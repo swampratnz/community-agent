@@ -2602,6 +2602,39 @@ tool, tier, table, or repository function — checked in `Router.handle()`
 No new write path, no `shortcut_hits` tracking. See docs/ARCHITECTURE.md's
 "WhatsApp text commands" section for the mechanism.
 
+### 24. WhatsApp text-command discovery (`community_info`, issue #872)
+
+§23 shipped the `!`-prefixed shortcuts with no discovery surface — WhatsApp
+has no client-native command picker the way Discord's `SlashCommandBuilder`
+gives §20 for free. This closes that gap with a single additive branch in
+`community_info`'s member-tier reply, not a new tool, tier, table, or model
+call.
+
+- **Branch condition is identity + config only.** `caller.platform ===
+  'whatsapp'` (platform-derived, resolved from the adapter exactly like every
+  other tier/identity check in this doc — never message content) **and**
+  `config.behaviour.whatsappTextCommandsEnabled`. Nothing a member types
+  influences which text renders.
+- **Fixed literal, never interpolated.** The appended block
+  (`WHATSAPP_TEXT_COMMANDS_TEXT`) is a hand-written string naming the four
+  §23 shortcuts, authored with the same discipline as
+  `MEMBER_CAPABILITIES_TEXT`/`ADMIN_CAPABILITIES_TEXT` — no caller or message
+  data ever reaches it.
+- **SECURITY: platform isolation.** A `SECURITY:`-prefixed test asserts a
+  Discord caller's `community_info` output is byte-identical regardless of
+  `whatsappTextCommandsEnabled`'s value — the WhatsApp branch structurally
+  cannot render for a Discord caller.
+- **SECURITY: no accidental always-on.** A second `SECURITY:`-prefixed test
+  asserts a WhatsApp caller with the flag off renders byte-identical to
+  `MEMBER_CAPABILITIES_TEXT` alone (today's behaviour, unchanged), and that
+  the appended block, when it does render, equals the fixed literal exactly.
+- **Admin/super_admin WhatsApp callers inherit it too**, since it's appended
+  to the member-tier segment every tier's reply already includes — not a new
+  tier-specific branch.
+
+No new tool, table, RBAC change, or data collection. See
+docs/ARCHITECTURE.md's `community_info` write-up for the mechanism.
+
 ## Platform-specific notes
 
 ### WhatsApp / Baileys ToS risk

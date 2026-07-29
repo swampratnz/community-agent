@@ -205,6 +205,13 @@ after(async () => {
       `${REPORT_CONTENT_ACK_HANDLER_CONVO}%`,
     ]);
     await pool.query(`DELETE FROM knowledge WHERE scope = $1`, [KNOWLEDGE_SEARCH_HANDLER_SCOPE]);
+    // The scope-leak test (issue #411 acceptance criterion 6) inserts a
+    // knowledge row directly via saveKnowledge and never removed it — a
+    // stray row left behind here previously survived across runs and, since
+    // suggest_knowledge's dedup guard searches the whole table regardless of
+    // scope, resurfaced as a false-positive "already covered" match against
+    // an unrelated test's fixture content (issue #872 build session).
+    await pool.query(`DELETE FROM knowledge WHERE scope = $1`, [KNOWLEDGE_ENTRY_ID_SCOPE_LEAK_SCOPE_A]);
     await pool.query(`DELETE FROM suggestions WHERE user_id = $1`, [RESOLVE_SUGGESTION_HANDLER_USER]);
     await pool.query(`DELETE FROM content_reports WHERE reporter_user_id = $1`, [
       RESOLVE_REPORT_HANDLER_USER,
@@ -2441,10 +2448,13 @@ test('SECURITY: set_language_preference rejects any language outside {auto,en,mi
 // (already trusted, tier-resolved data), so the handler is exercised directly
 // via the MCP server's registered tool, same pattern as the
 // moderation_history zod test above — no DB, no adapter behaviour involved.
-function communityInfoHandler(role: 'guest' | 'member' | 'admin' | 'super_admin') {
+function communityInfoHandler(
+  role: 'guest' | 'member' | 'admin' | 'super_admin',
+  platform: 'discord' | 'whatsapp' = 'discord',
+) {
   const adapter = stubAdapter(async () => {});
   const caller = {
-    platform: 'discord' as const,
+    platform,
     userId: 'caller-1',
     userName: 'Caller',
     role,
@@ -3002,6 +3012,58 @@ test('SECURITY: community_info admin-, member-, and guest-tier replies never con
         `${tierName}-tier reply must never name the super-admin-only tool "${id}"`,
       );
     }
+  }
+});
+
+test('SECURITY: community_info for a Discord caller is byte-identical regardless of whatsappTextCommandsEnabled (issue #872)', async () => {
+  const original = config.behaviour.whatsappTextCommandsEnabled;
+  try {
+    config.behaviour.whatsappTextCommandsEnabled = false;
+    const withFlagOff = (await communityInfoHandler('member', 'discord')).content[0]?.text ?? '';
+    config.behaviour.whatsappTextCommandsEnabled = true;
+    const withFlagOn = (await communityInfoHandler('member', 'discord')).content[0]?.text ?? '';
+
+    assert.equal(
+      withFlagOn,
+      withFlagOff,
+      'the WhatsApp shortcut-discovery branch must never render for a Discord caller',
+    );
+    assert.doesNotMatch(
+      withFlagOn,
+      /!whois/,
+      'a Discord reply must never mention the WhatsApp !whois shortcut',
+    );
+  } finally {
+    config.behaviour.whatsappTextCommandsEnabled = original;
+  }
+});
+
+test('SECURITY: community_info for a WhatsApp caller with whatsappTextCommandsEnabled off is byte-identical to MEMBER_CAPABILITIES_TEXT, and the appended block is the fixed literal when the flag is on (issue #872)', async () => {
+  const original = config.behaviour.whatsappTextCommandsEnabled;
+  try {
+    config.behaviour.whatsappTextCommandsEnabled = false;
+    const flagOffReply = (await communityInfoHandler('member', 'whatsapp')).content[0]?.text ?? '';
+    const discordReply = (await communityInfoHandler('member', 'discord')).content[0]?.text ?? '';
+    assert.equal(
+      flagOffReply,
+      discordReply,
+      'a WhatsApp caller with the flag off must render byte-identical to today (no accidental always-on)',
+    );
+
+    config.behaviour.whatsappTextCommandsEnabled = true;
+    const flagOnReply = (await communityInfoHandler('member', 'whatsapp')).content[0]?.text ?? '';
+    assert.equal(
+      flagOnReply,
+      `${discordReply}\n` +
+        "You're on WhatsApp, so you can also use these zero-wait shortcuts:\n" +
+        '- `!whois <topic>` — find members into a topic\n' +
+        '- `!projects [query]` — browse the project showcase\n' +
+        '- `!guidelines` — community guidelines\n' +
+        "- `!digest` — this week's digest",
+      'the appended block must be exactly the fixed literal, never caller- or model-composed text',
+    );
+  } finally {
+    config.behaviour.whatsappTextCommandsEnabled = original;
   }
 });
 
