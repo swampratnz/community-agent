@@ -5252,8 +5252,9 @@ test(
 
 test(
   'clear_warnings sends the target member exactly one confirmation DM when it actually clears an active ' +
-    'warning, wording the mute as lifted when the unmute attempt is not reported as failed (issue #865 ' +
-    'acceptance criterion #1)',
+    'warning, using the mute-free wording on a platform with no unmute_user capability at all (issue #865 ' +
+    'acceptance criterion #1, regressing PR #866 review: WhatsApp has no mute mechanism, so a bare ' +
+    '`!muteNote` wrongly claimed "mute lifted" here even though no unmute was ever attempted)',
   { skip },
   async () => {
     const convo = `${RUN}-warnings-cleared-notify`;
@@ -5269,6 +5270,8 @@ test(
     });
 
     const calls: Array<[string, string]> = [];
+    // stubAdapter's default adminCapabilities is empty — mirrors the real
+    // WhatsApp adapters, which have no unmute_user (or any mute) capability.
     const adapter = stubAdapter(async (userId, message) => {
       calls.push([userId, message]);
     });
@@ -5283,6 +5286,50 @@ test(
     // Filtered to the target: the same adapter also carries the unrelated
     // audited()-> notifySuperAdmins alert about the admin's own action
     // (issue #288), which is not what this test is pinning.
+    const toTarget = calls.filter(([userId]) => userId === target);
+    assert.equal(toTarget.length, 1, 'exactly one DM to the target member');
+    assert.match(toTarget[0][1], /warnings have been cleared/i);
+    assert.doesNotMatch(
+      toTarget[0][1],
+      /mute/i,
+      'no mute-lifted claim on a platform with no unmute_user capability',
+    );
+  },
+);
+
+test(
+  'clear_warnings words the DM as mute-lifted only when an unmute_user call was actually attempted and ' +
+    'succeeded (issue #865 acceptance criterion #1, Discord path)',
+  { skip },
+  async () => {
+    const convo = `${RUN}-warnings-cleared-notify-unmuted`;
+    const target = `${RUN}-warnings-cleared-notify-unmuted-target`;
+    await seedKnownUser('discord', convo, target);
+    await addWarning({
+      platform: 'discord',
+      userId: target,
+      reason: 'spam',
+      excerpt: null,
+      source: 'admin',
+      issuedBy: MANUAL_WARN_HANDLER_ADMIN,
+    });
+
+    const calls: Array<[string, string]> = [];
+    const adapter: PlatformAdapter = {
+      ...stubAdapter(async (userId, message) => {
+        calls.push([userId, message]);
+      }),
+      adminCapabilities: new Set(['unmute_user']),
+      performAdminAction: async () => {},
+    };
+    const registeredTool = clearWarningsHandler({
+      platform: 'discord',
+      userId: MANUAL_WARN_HANDLER_ADMIN,
+      adapter,
+    });
+    const result = await registeredTool.handler({ targetUserId: target });
+
+    assert.doesNotMatch(result.content[0]?.text ?? '', /^(Failed|Refusing)/);
     const toTarget = calls.filter(([userId]) => userId === target);
     assert.equal(toTarget.length, 1, 'exactly one DM to the target member');
     assert.match(toTarget[0][1], /mute has been lifted/i);

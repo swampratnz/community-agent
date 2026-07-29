@@ -2223,9 +2223,12 @@ export async function notifyKnowledgeTipResolved(
  * they can post again. Mirrors `notifyAppealResolved`'s shape exactly:
  * fire-and-forget, `.catch(logger.warn)`, never blocks or changes
  * `clear_warnings`' own reported outcome. `muteLifted` drives "mute lifted"
- * vs. "nothing to lift" wording, using the same `muteNote` signal
- * `clear_warnings` already computes for its own admin-facing reply — so this
- * never claims to have lifted a mute the caller was just told it could not.
+ * vs. "nothing to lift" wording; the caller passes `true` only when an
+ * `unmute_user` call was actually attempted AND succeeded — never merely
+ * because the platform lacks the capability (WhatsApp has no mute mechanism
+ * at all, so `muteLifted` must stay `false` there even on a genuine
+ * `cleared > 0` clear) — so this never claims to have lifted a mute that was
+ * either never attempted or that the caller was just told it could not.
  * Only ever called on a genuine `cleared > 0` transition; never for a no-op
  * clear. Exported separately so it's unit-testable without the MCP tool-call
  * transport, same convention as `notifyAppealResolved`. Honours the target's
@@ -4917,7 +4920,7 @@ export function buildToolServer(
       if (!(await isKnownUser(caller.platform, args.targetUserId))) {
         return text(`Refusing: user "${args.targetUserId}" has never been seen on ${caller.platform}.`, true);
       }
-      const state = { cleared: 0, muteNote: '' };
+      const state = { cleared: 0, muteNote: '', muteLifted: false };
       const { success, result } = await audited({
         actionKind: 'clear_warnings',
         targetUserId: args.targetUserId,
@@ -4936,6 +4939,7 @@ export function buildToolServer(
                 targetUserId: args.targetUserId,
                 conversationId: caller.conversationId,
               });
+              state.muteLifted = true;
             } catch (err) {
               logger.warn({ err, targetUserId: args.targetUserId }, 'Unmute after clear_warnings failed');
               muteNote = ' (but I could not lift the Discord mute — check my Manage Roles permission)';
@@ -4950,8 +4954,13 @@ export function buildToolServer(
       // Member-facing notice (issue #865) — only on a genuine cleared > 0
       // transition, never for a no-op clear, and always via the caller's own
       // platform adapter (clear_warnings never operates cross-platform).
+      // muteLifted is only true when an unmute_user call was attempted AND
+      // succeeded — platforms without the capability (WhatsApp has no mute
+      // mechanism at all) always get the mute-free wording, per the #866
+      // review (a bare `!state.muteNote` wrongly said "mute lifted" whenever
+      // the platform simply lacked unmute_user, not just when it failed).
       if (success && state.cleared > 0) {
-        await notifyWarningsCleared(adapter, args.targetUserId, caller.platform, !state.muteNote);
+        await notifyWarningsCleared(adapter, args.targetUserId, caller.platform, state.muteLifted);
       }
       return text(success ? result : `Failed: ${result}`);
     },
