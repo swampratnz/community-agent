@@ -897,7 +897,15 @@ function (`formatKnowledgeCitationNote`) live in `agent/tools.ts` — issue
 `formatKnowledgeCitationNote` off the same `getLangPref` read
 `sendKnowledgeShortcut` already resolves for the suffix, so a `'mi'`-
 preference member's low-rated-entry reply is one language throughout rather
-than an English caveat next to a te reo suffix. Separately, the eleven deterministic
+than an English caveat next to a te reo suffix. #789's own scope stopped at
+that caveat fragment, leaving the same function's `'may be outdated'`
+staleness tag English-only on both shortcut paths, and leaving the guest path
+resolving `note` before `lang` so its tag ignored a stored `'mi'` preference
+entirely; issue #848 closes that remaining fragment — a `KNOWLEDGE_STALE_NOTE_MI`
+branch on the already-threaded `lang` parameter, plus the same
+resolve-`lang`-before-`note` reorder in `sendGuestKnowledgeShortcut` that #789
+applied to the member path — so the staleness tag is one language throughout
+too, on both the member and guest shortcut paths. Separately, the eleven deterministic
 fallback/notice constants across `router.ts`/`core.ts`/`upstreamFailure.ts`
 also gain a
 fixed, human-authored `_PLAIN` counterpart honouring a standing `'plain'`
