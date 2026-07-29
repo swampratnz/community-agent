@@ -423,38 +423,51 @@ test('!digest replies with the fixed "Nothing to report" text when buildMemberDi
 
 // --- SECURITY: tier floors + silent fallthrough (acceptance criteria 3, 6) ---
 
-for (const cmd of ['!whois rust', '!projects', '!digest']) {
-  test(`SECURITY: a guest caller's "${cmd}" falls through to the normal turn — no distinguishing denial reply (acceptance criteria 3, 6)`, async (t) => {
-    mockPoolRole(t, null); // no community_users row -> guest
-    const router = makeRouter({
-      runTurn: async () => ({ text: REAL_TURN_REPLY }),
-      searchMemberInterestsFn: async () => {
-        throw new Error('searchMemberInterestsFn must never be invoked for a rejected caller');
-      },
-      searchProjectsFn: async () => {
-        throw new Error('searchProjectsFn must never be invoked for a rejected caller');
-      },
-      listRecentProjectsFn: async () => {
-        throw new Error('listRecentProjectsFn must never be invoked for a rejected caller');
-      },
-      buildMemberDigestContentFn: async () => {
-        throw new Error('buildMemberDigestContentFn must never be invoked for a rejected caller');
-      },
-    });
-    const { adapter, sent, trigger } = makeAdapter();
-    router.register(adapter);
-
-    await trigger(makeMessage({ text: cmd, userId: 'guest-1' }));
-
-    assert.equal(sent.length, 1);
-    assert.equal(
-      sent[0].text,
-      REAL_TURN_REPLY,
-      'a guest must get the normal turn reply, never a distinguishing "not authorized" text',
-    );
-    assert.ok(!sent[0].text.toLowerCase().includes("don't have access"));
+async function assertGuestFallsThroughSilently(
+  t: { mock: { method: typeof import('node:test').mock.method } },
+  cmd: string,
+) {
+  mockPoolRole(t, null); // no community_users row -> guest
+  const router = makeRouter({
+    runTurn: async () => ({ text: REAL_TURN_REPLY }),
+    searchMemberInterestsFn: async () => {
+      throw new Error('searchMemberInterestsFn must never be invoked for a rejected caller');
+    },
+    searchProjectsFn: async () => {
+      throw new Error('searchProjectsFn must never be invoked for a rejected caller');
+    },
+    listRecentProjectsFn: async () => {
+      throw new Error('listRecentProjectsFn must never be invoked for a rejected caller');
+    },
+    buildMemberDigestContentFn: async () => {
+      throw new Error('buildMemberDigestContentFn must never be invoked for a rejected caller');
+    },
   });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: cmd, userId: 'guest-1' }));
+
+  assert.equal(sent.length, 1);
+  assert.equal(
+    sent[0].text,
+    REAL_TURN_REPLY,
+    'a guest must get the normal turn reply, never a distinguishing "not authorized" text',
+  );
+  assert.ok(!sent[0].text.toLowerCase().includes("don't have access"));
 }
+
+test('SECURITY: a guest caller\'s "!whois rust" falls through to the normal turn — no distinguishing denial reply (acceptance criteria 3, 6)', async (t) => {
+  await assertGuestFallsThroughSilently(t, '!whois rust');
+});
+
+test('SECURITY: a guest caller\'s "!projects" falls through to the normal turn — no distinguishing denial reply (acceptance criteria 3, 6)', async (t) => {
+  await assertGuestFallsThroughSilently(t, '!projects');
+});
+
+test('SECURITY: a guest caller\'s "!digest" falls through to the normal turn — no distinguishing denial reply (acceptance criteria 3, 6)', async (t) => {
+  await assertGuestFallsThroughSilently(t, '!digest');
+});
 
 // --- SECURITY: the sole send path is adapter.sendMessage (criterion 7) -----
 
