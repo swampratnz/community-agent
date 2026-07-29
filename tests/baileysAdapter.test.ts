@@ -91,6 +91,171 @@ test('SECURITY: sendDirectMessage routes through filterOutbound — a secret can
   assert.ok(sent[0].includes('[redacted]'), 'the secret must have been redacted, not silently dropped');
 });
 
+// --- sendMessage / sendDirectMessage: bounded retry on a transient send failure (issue #852) ------
+
+/**
+ * Like stubSocket, but lets the test supply a custom `sendMessage`
+ * implementation (e.g. failing N times then succeeding) instead of the
+ * default always-succeeds recorder — for exercising sendMessage/
+ * sendDirectMessage's retry behaviour (issue #852, ported from #846's
+ * Discord `stubClientForSend`).
+ */
+function stubSocketForSend(
+  adapter: InstanceType<typeof BaileysAdapter>,
+  sendImpl: (
+    jid: string,
+    msg: { text?: string },
+  ) => Promise<{ key: { id: string }; message: { conversation: string } }>,
+  presenceImpl: (type: string, jid?: string) => Promise<void> = async () => {},
+) {
+  (
+    adapter as unknown as {
+      sock: {
+        sendMessage: typeof sendImpl;
+        sendPresenceUpdate: typeof presenceImpl;
+      };
+    }
+  ).sock = {
+    sendMessage: sendImpl,
+    sendPresenceUpdate: presenceImpl,
+  };
+}
+
+test('sendMessage: a transient send failure is retried and the reply is still delivered (issue #852)', async () => {
+  const adapter = new BaileysAdapter(0); // no send retry delay — asserting retry behaviour, not timing
+  let calls = 0;
+  stubSocketForSend(adapter, async (_jid, msg) => {
+    calls += 1;
+    if (calls === 1) throw new Error('transient Baileys send error');
+    return { key: { id: 'msg-1' }, message: { conversation: msg.text ?? '' } };
+  });
+  const messageIds = await adapter.sendMessage({
+    conversationId: '64211234567@s.whatsapp.net',
+    text: 'hello',
+  });
+  assert.equal(calls, 2, 'first attempt fails, the retry succeeds');
+  assert.deepEqual(messageIds, ['msg-1']);
+});
+
+test('sendDirectMessage: a transient send failure is retried and the DM is still delivered (issue #852)', async () => {
+  const adapter = new BaileysAdapter(0);
+  let calls = 0;
+  stubSocketForSend(adapter, async (_jid, msg) => {
+    calls += 1;
+    if (calls === 1) throw new Error('transient Baileys send error');
+    return { key: { id: 'msg-1' }, message: { conversation: msg.text ?? '' } };
+  });
+  await adapter.sendDirectMessage('64211234567', 'hello');
+  assert.equal(calls, 2, 'first attempt fails, the retry succeeds');
+});
+
+test(
+  'sendMessage: a send that fails on every attempt re-throws after BAILEYS_SEND_MAX_ATTEMPTS, unchanged ' +
+    'persistent-failure behaviour (issue #852)',
+  async () => {
+    const adapter = new BaileysAdapter(0);
+    let calls = 0;
+    stubSocketForSend(adapter, async () => {
+      calls += 1;
+      throw new Error('persistent Baileys send error');
+    });
+    await assert.rejects(
+      () => adapter.sendMessage({ conversationId: '64211234567@s.whatsapp.net', text: 'hello' }),
+      /persistent Baileys send error/,
+    );
+    assert.equal(
+      calls,
+      3,
+      'initial attempt plus 2 retries, then give up — router.ts still sees the rejection',
+    );
+  },
+);
+
+test('sendDirectMessage: a send that fails on every attempt re-throws after BAILEYS_SEND_MAX_ATTEMPTS (issue #852)', async () => {
+  const adapter = new BaileysAdapter(0);
+  let calls = 0;
+  stubSocketForSend(adapter, async () => {
+    calls += 1;
+    throw new Error('persistent Baileys send error');
+  });
+  await assert.rejects(
+    () => adapter.sendDirectMessage('64211234567', 'hello'),
+    /persistent Baileys send error/,
+  );
+  assert.equal(calls, 3, 'initial attempt plus 2 retries, then give up');
+});
+
+test(
+  'sendMessage: presence-clear and the retry cache fire exactly once even when the send needed a retry, ' +
+    'never once per attempt (issue #852)',
+  async () => {
+    const adapter = new BaileysAdapter(0);
+    let sendCalls = 0;
+    const presenceCalls: Array<{ type: string; jid?: string }> = [];
+    stubSocketForSend(
+      adapter,
+      async (_jid, msg) => {
+        sendCalls += 1;
+        if (sendCalls === 1) throw new Error('transient Baileys send error');
+        return { key: { id: 'msg-1' }, message: { conversation: msg.text ?? '' } };
+      },
+      async (type, jid) => {
+        presenceCalls.push({ type, jid });
+      },
+    );
+    await adapter.sendMessage({ conversationId: '64211234567@s.whatsapp.net', text: 'hello' });
+    assert.equal(sendCalls, 2, 'first attempt fails, the retry succeeds');
+    const cache = (adapter as unknown as { sentMessages: Map<string, unknown> }).sentMessages;
+    assert.equal(cache.size, 1, 'the retry cache holds exactly one entry, not one per attempt');
+    // The presence clear is fire-and-forget (not awaited by sendMessage) — give its microtask a tick.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.deepEqual(
+      presenceCalls,
+      [{ type: 'paused', jid: '64211234567@s.whatsapp.net' }],
+      'the presence clear fires exactly once per logical send, not once per attempt',
+    );
+  },
+);
+
+test(
+  'SECURITY: a retried WhatsApp send still runs outbound filtering exactly once — the retried payload is ' +
+    'byte-identical to the first attempt, not re-filtered per attempt (issue #852)',
+  async () => {
+    const adapter = new BaileysAdapter(0);
+    let filteredCalls = 0;
+    const adapterInternals = adapter as unknown as { filtered: (...args: unknown[]) => Promise<string> };
+    const originalFiltered = adapterInternals.filtered.bind(adapter);
+    adapterInternals.filtered = async (...args: unknown[]) => {
+      filteredCalls += 1;
+      return originalFiltered(...args);
+    };
+    const seenPayloads: string[] = [];
+    let attempts = 0;
+    stubSocketForSend(adapter, async (_jid, msg) => {
+      attempts += 1;
+      seenPayloads.push(msg.text ?? '');
+      if (attempts === 1) throw new Error('transient Baileys send error');
+      return { key: { id: 'msg-1' }, message: { conversation: msg.text ?? '' } };
+    });
+    await adapter.sendMessage({
+      conversationId: '64211234567@s.whatsapp.net',
+      text: 'secret is sk-ant-' + 'y'.repeat(30) + ' end',
+    });
+    assert.equal(attempts, 2, 'first attempt fails, the retry succeeds');
+    assert.equal(
+      filteredCalls,
+      1,
+      'outbound filtering must run once per logical send, not once per retry attempt',
+    );
+    assert.equal(
+      seenPayloads[0],
+      seenPayloads[1],
+      'the retried payload must be byte-identical to the first attempt — a retry cannot re-trigger or bypass filtering',
+    );
+    assert.ok(seenPayloads[0].includes('[redacted]'), 'the shared payload must already be redacted');
+  },
+);
+
 test(
   'performAdminAction("warn_user") sends the te reo Māori wrapper when params.language is "mi", with the ' +
     "admin's reason appended verbatim and untranslated (issue #618)",
