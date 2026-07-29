@@ -15,6 +15,7 @@ import {
   areKnowledgeEntriesLowRated,
   getLanguagePreference,
   hasConflictAmongIds,
+  listOwnProjects,
   listRecentProjects,
   recordShortcutHit,
   searchKnowledge,
@@ -75,6 +76,12 @@ export function buildSlashCommands() {
         o
           .setName('seeking_collaborators')
           .setDescription('Only show projects whose owner is looking for collaborators')
+          .setRequired(false),
+      )
+      .addBooleanOption((o) =>
+        o
+          .setName('mine')
+          .setDescription('Only show your own shared projects — ignores query/seeking_collaborators')
           .setRequired(false),
       )
       .toJSON(),
@@ -218,6 +225,15 @@ async function handleProjects(
   // not in toolsForRole's structural (platform, not tier) filtering.
   if (!toolsForRole(role, 'discord').includes('mcp__community__list_projects') || !atLeast(role, 'member')) {
     await replyEphemeral(interaction, NOT_AUTHORIZED_TEXT, deps);
+    return;
+  }
+  const mine = interaction.options.getBoolean('mine', false) ?? false;
+  if (mine) {
+    const projects = await listOwnProjects('discord', interaction.user.id);
+    const reply =
+      projects.length === 0 ? "You haven't shared any projects yet." : await formatProjectResults(projects);
+    recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
+    await replyEphemeral(interaction, reply, deps);
     return;
   }
   const query = interaction.options.getString('query', false);

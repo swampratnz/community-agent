@@ -299,6 +299,13 @@ test('buildSlashCommands defines exactly the five approved read-only commands, e
   ).options?.find((o) => o.name === 'seeking_collaborators');
   assert.ok(seekingCollaboratorsOption, '/projects must define a seeking_collaborators option (issue #854)');
   assert.equal(seekingCollaboratorsOption?.required, false);
+  const mineOption = (
+    byName.get('projects') as {
+      options?: Array<{ name: string; type: number; required?: boolean }>;
+    }
+  ).options?.find((o) => o.name === 'mine');
+  assert.ok(mineOption, '/projects must define a mine option (issue #867)');
+  assert.equal(mineOption?.required, false);
   assert.deepEqual((byName.get('guidelines') as { options?: unknown[] }).options ?? [], []);
   assert.deepEqual(
     (byName.get('digest') as { options?: unknown[] }).options ?? [],
@@ -442,6 +449,49 @@ test('/projects seeking_collaborators:true with no matching rows replies with th
   await handleInteraction(interaction as never, adapterDeps(adapter));
 
   assert.match(replies[0].content, /No projects are currently looking for collaborators\./);
+});
+
+test('SECURITY: a guest caller is rejected on /projects regardless of the mine option value (issue #867)', async (t) => {
+  const calls = mockPool(t, { memberRole: null });
+  const adapter = new DiscordAdapter();
+  const { interaction, replies } = fakeInteraction({
+    commandName: 'projects',
+    userId: 'guest-1',
+    booleanOptions: { mine: true },
+  });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].ephemeral, true);
+  assert.ok(
+    !calls.some((c) => c.sql.includes('FROM member_projects')),
+    'the mine option must never let a guest reach listOwnProjects',
+  );
+});
+
+test('/projects mine:true calls listOwnProjects scoped to the caller identity, ignores query/seeking_collaborators, and has a distinct empty-state message (issue #867)', async (t) => {
+  const calls = mockPool(t, { memberRole: 'member', projectRows: [] });
+  const adapter = new DiscordAdapter();
+  const { interaction, replies } = fakeInteraction({
+    commandName: 'projects',
+    userId: 'member-1',
+    options: { query: 'rag' },
+    booleanOptions: { mine: true, seeking_collaborators: true },
+  });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  const mineCall = calls.find((c) => c.sql.includes('FROM member_projects'));
+  assert.ok(mineCall, 'listOwnProjects must have run');
+  assert.match(mineCall.sql, /WHERE platform = \$1 AND user_id = \$2/);
+  assert.doesNotMatch(
+    mineCall.sql,
+    /<=>/,
+    'mine:true must never fall through to the embedding-similarity search path',
+  );
+  assert.deepEqual(mineCall.params, ['discord', 'member-1']);
+  assert.match(replies[0].content, /You haven't shared any projects yet\./);
 });
 
 test("SECURITY: /kb tracks knowledge_search's own toolsForRole reachability rather than a hardcoded role check — a guest CAN use /kb, exactly like the chat-path tool (acceptance criteria 4, 12)", async (t) => {

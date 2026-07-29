@@ -130,6 +130,15 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   projects are currently looking for collaborators." No new tool, table,
   migration, or model call — one `AND seeking_collaborators` clause on the two
   existing repository queries.
+- **`list_projects` (and `/projects`) can now recall the caller's own shared
+  projects by name** (#867): a new optional `mine` boolean (Discord: same
+  `mine` option) returns only the projects the caller has published
+  themselves — ignoring any `query`/`seekingCollaborators` when set — so a
+  member editing or removing a project with `share_project` no longer has to
+  guess or luckily re-find the exact name it was saved under. A caller with
+  nothing shared yet gets a distinct "You haven't shared any projects yet."
+  reply. No new tool, table, migration, or model call — one indexed
+  `platform`/`user_id` read on the existing `member_projects` table.
 - **The weekly admin digest's flywheel-throughput line now counts successful
   `find_helper` connections, not just knowledge candidates and shared
   projects** (#820): a new `countHelperMatchesSince` repository function
