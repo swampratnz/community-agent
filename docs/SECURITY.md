@@ -789,7 +789,24 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   deliberately self-published free text, never inferred, never message
   content, so this is no more exposure than a queryable "intros channel";
   the 5-result cap limits per-query yield, not enumeration across many
-  queries. Revisit if abused.
+  queries. Revisit if abused. **Self-match extension (issue #882):**
+  `who_is_into`'s `query` argument is optional; when omitted, the caller's own
+  published `member_interests` row supplies the implicit query — a SQL
+  self-join (`searchMemberInterestsForSelf`, `storage/repository/
+  memberDiscovery.ts`) reuses the caller's already-stored `embedding` rather
+  than re-embedding, so the vector never leaves SQL. This adds no new data
+  access: it reads only the caller's own opted-in row and searches the exact
+  same `member_interests` table every caller's query already searches, so it
+  can never surface a row a typed query couldn't already reach. The implicit
+  query is built solely from that stored row, never from `interactions`
+  (SECURITY-pinned, same #634 AC #4 invariant), and the caller's own row is
+  always excluded from its own results (SECURITY-pinned; both correctness —
+  a caller must never see themselves as a "100% match" — and privacy). A
+  caller with no published row (or one whose embedding failed at publish
+  time) gets a guidance reply directing them to `set_my_interests`; no search
+  runs against other members' data in that case. Same `member`-tier
+  re-assertion, no new tool, no new RBAC surface; `/whois`'s Discord option
+  mirrors the same optional-argument/self-match/guidance shape.
 - **Peer help handoff** (`set_helper_availability`/`find_helper`, issue #729):
   the active-side consumer of `member_interests` above — the first
   **proactive, bot-initiated member→member DM** in the system. An adversarial

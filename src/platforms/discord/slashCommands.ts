@@ -20,6 +20,7 @@ import {
   recordShortcutHit,
   searchKnowledge,
   searchMemberInterests,
+  searchMemberInterestsForSelf,
   searchProjects,
 } from '../../storage/repository.js';
 import {
@@ -90,8 +91,8 @@ export function buildSlashCommands() {
       .addStringOption((o) =>
         o
           .setName('query')
-          .setDescription('Topic/keyword to search published member interests')
-          .setRequired(true),
+          .setDescription('Optional topic/keyword; omit to find members like you')
+          .setRequired(false),
       )
       .toJSON(),
     new SlashCommandBuilder()
@@ -264,12 +265,23 @@ async function handleWhois(interaction: ChatInputCommandInteraction, deps: Slash
     await replyEphemeral(interaction, NOT_AUTHORIZED_TEXT, deps);
     return;
   }
-  const query = interaction.options.getString('query', true);
-  const hits = await searchMemberInterests(query);
-  const reply =
-    hits.length === 0
-      ? 'No members have published interests matching that yet.'
-      : await formatInterestResults(hits);
+  const query = interaction.options.getString('query', false);
+  let reply: string;
+  if (query) {
+    const hits = await searchMemberInterests(query);
+    reply =
+      hits.length === 0
+        ? 'No members have published interests matching that yet.'
+        : await formatInterestResults(hits);
+  } else {
+    const selfMatch = await searchMemberInterestsForSelf('discord', interaction.user.id);
+    reply = !selfMatch.hasProfile
+      ? 'You haven\'t published interests yet — tell the bot your interests (e.g. "set my interests to ' +
+        '...") first, then /whois with no topic will search using your own published interests.'
+      : selfMatch.hits.length === 0
+        ? 'No other members have published interests matching yours yet.'
+        : await formatInterestResults(selfMatch.hits);
+  }
   recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
   await replyEphemeral(interaction, reply, deps);
 }

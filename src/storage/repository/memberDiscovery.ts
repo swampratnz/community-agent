@@ -104,6 +104,65 @@ export async function searchMemberInterests(
   }));
 }
 
+export type SelfInterestMatchResult =
+  { hasProfile: false } | { hasProfile: true; hits: MemberInterestSearchHit[] };
+
+/**
+ * `who_is_into`'s no-`query` path (issue #882): match the caller's OWN
+ * published `member_interests` row against every other published row,
+ * excluding the caller's own — the implicit query is the caller's already-
+ * stored `embedding`, never re-embedded and never sourced from `interactions`
+ * (SECURITY: same #634 AC #4 invariant `searchMemberInterests` preserves).
+ * The self-join keeps the vector inside SQL end to end rather than pulling it
+ * into JS and back (the technique `listDuplicateKnowledge` already uses for
+ * knowledge's near-duplicate self-join, `repository/knowledge.ts`).
+ *
+ * `hasProfile: false` covers both "no row" and "row exists but has no
+ * embedding yet" (an earlier `set_my_interests` embed failure) — either way
+ * there is no implicit query to run, and the caller sees the same guidance
+ * `who_is_into` returns for a first-time caller.
+ */
+export async function searchMemberInterestsForSelf(
+  platform: Platform,
+  userId: string,
+  limit = WHO_IS_INTO_LIMIT,
+): Promise<SelfInterestMatchResult> {
+  const clampedLimit = Math.min(Math.max(Math.trunc(limit) || WHO_IS_INTO_LIMIT, 1), 50);
+  const { rows } = await pool.query(
+    `WITH me AS (
+       SELECT embedding FROM member_interests
+        WHERE platform = $1 AND user_id = $2 AND embedding IS NOT NULL
+     )
+     SELECT mi.platform, mi.user_id, mi.interests,
+            1 - (mi.embedding <=> me.embedding) AS similarity
+       FROM member_interests mi, me
+      WHERE mi.embedding IS NOT NULL
+        AND NOT (mi.platform = $1 AND mi.user_id = $2)
+      ORDER BY mi.embedding <=> me.embedding
+      LIMIT $3`,
+    [platform, userId, clampedLimit],
+  );
+  if (rows.length > 0) {
+    return {
+      hasProfile: true,
+      hits: rows.map((r) => ({
+        platform: r.platform as Platform,
+        userId: r.user_id,
+        interests: r.interests as string,
+        similarity: Number(r.similarity),
+      })),
+    };
+  }
+  // Empty result is ambiguous by itself (no profile vs. a profile with no
+  // matches) — disambiguate with a cheap existence check only in this
+  // branch, so the common case (a match exists) never pays for it.
+  const { rows: meRows } = await pool.query(
+    `SELECT 1 FROM member_interests WHERE platform = $1 AND user_id = $2 AND embedding IS NOT NULL`,
+    [platform, userId],
+  );
+  return meRows.length > 0 ? { hasProfile: true, hits: [] } : { hasProfile: false };
+}
+
 /**
  * Batched lookup of published `member_interests` text for a set of owners,
  * keyed by `"platform:userId"` — used by list_projects' cross-reference

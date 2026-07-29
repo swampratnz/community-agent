@@ -12918,7 +12918,7 @@ function whoIsIntoHandler(caller: {
         string,
         {
           handler: (args: {
-            query: string;
+            query?: string;
           }) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
         }
       >;
@@ -13091,6 +13091,134 @@ test(
     assert.match(results.content[0]?.text ?? '', /searchable without self-disclosure/);
 
     await pool.query(`DELETE FROM member_interests WHERE platform = 'discord' AND user_id = $1`, [publisher]);
+  },
+);
+
+test(
+  'who_is_into() with no query and no published row for the caller returns guidance directing them to set_my_interests, without running any search (issue #882 AC #3)',
+  { skip },
+  async () => {
+    const caller = `${RUN}-who-is-into-self-no-profile`;
+    const otherPublisher = `${RUN}-who-is-into-self-no-profile-other`;
+    const setTool = setMyInterestsHandler({ platform: 'discord', userId: otherPublisher });
+    const created = await setTool.handler({ interests: 'some other member entirely' });
+    assert.equal(created.isError, false);
+
+    const whoTool = whoIsIntoHandler({ platform: 'discord', userId: caller });
+    const result = await whoTool.handler({});
+    assert.equal(result.isError, false);
+    assert.match(result.content[0]?.text ?? '', /set_my_interests/);
+    assert.doesNotMatch(
+      result.content[0]?.text ?? '',
+      /some other member entirely/,
+      'no search may run against other members when the caller has no published row',
+    );
+
+    await pool.query(`DELETE FROM member_interests WHERE platform = 'discord' AND user_id = $1`, [
+      otherPublisher,
+    ]);
+  },
+);
+
+test(
+  "who_is_into() with no query and a published row for the caller matches other members against the caller's own text, excluding the caller's own row (issue #882 AC #2)",
+  { skip },
+  async () => {
+    const caller = `${RUN}-who-is-into-self-match-caller`;
+    const otherMember = `${RUN}-who-is-into-self-match-other`;
+    const callerText = 'Building retrieval-augmented generation systems with Claude and pgvector';
+
+    const callerSetTool = setMyInterestsHandler({ platform: 'discord', userId: caller });
+    assert.equal((await callerSetTool.handler({ interests: callerText })).isError, false);
+    const otherSetTool = setMyInterestsHandler({ platform: 'discord', userId: otherMember });
+    assert.equal(
+      (await otherSetTool.handler({ interests: 'Also building RAG systems with Claude and pgvector' }))
+        .isError,
+      false,
+    );
+
+    const whoTool = whoIsIntoHandler({ platform: 'discord', userId: caller });
+    const result = await whoTool.handler({});
+    assert.equal(result.isError, false);
+    const rendered = result.content[0]?.text ?? '';
+    assert.match(rendered, /Also building RAG systems with Claude and pgvector/);
+    assert.doesNotMatch(
+      rendered,
+      new RegExp(callerText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+      "the caller's own row must never be returned as a match to their own implicit query",
+    );
+
+    await pool.query(`DELETE FROM member_interests WHERE platform = 'discord' AND user_id = ANY($1)`, [
+      [caller, otherMember],
+    ]);
+  },
+);
+
+test(
+  "SECURITY: who_is_into() with no query builds its implicit query only from the caller's own published " +
+    'member_interests row — chat content in `interactions` never influences which member ranks as the ' +
+    'closer self-match — and the caller is never returned as a match to their own implicit query ' +
+    '(issue #882 AC #4)',
+  { skip },
+  async () => {
+    const caller = `${RUN}-who-is-into-self-security-caller`;
+    const matchesPublished = `${RUN}-who-is-into-self-security-matches-published`;
+    const matchesChatOnly = `${RUN}-who-is-into-self-security-matches-chat`;
+    const conversationId = `${RUN}-who-is-into-self-security-convo`;
+    const publishedText = 'Distributed systems and Rust programming';
+    const chatOnlyText = 'I am secretly obsessed with underwater basket weaving';
+
+    // Chat content on a topic the caller never published — must never seed
+    // the implicit query, since that is built solely from the caller's own
+    // published member_interests row (never `interactions`).
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: caller,
+      role: 'member',
+      direction: 'inbound',
+      content: chatOnlyText,
+    });
+
+    const callerSetTool = setMyInterestsHandler({ platform: 'discord', userId: caller });
+    assert.equal((await callerSetTool.handler({ interests: publishedText })).isError, false);
+    // One member whose PUBLISHED text closely matches the caller's own
+    // published topic, and one whose published text closely matches only the
+    // caller's unpublished CHAT topic — if the implicit query were wrongly
+    // seeded from `interactions`, the latter would rank first instead.
+    const matchesPublishedSetTool = setMyInterestsHandler({ platform: 'discord', userId: matchesPublished });
+    assert.equal(
+      (await matchesPublishedSetTool.handler({ interests: 'Expert in distributed systems and Rust' }))
+        .isError,
+      false,
+    );
+    const matchesChatSetTool = setMyInterestsHandler({ platform: 'discord', userId: matchesChatOnly });
+    assert.equal(
+      (await matchesChatSetTool.handler({ interests: 'Passionate about underwater basket weaving' })).isError,
+      false,
+    );
+
+    const whoTool = whoIsIntoHandler({ platform: 'discord', userId: caller });
+    const result = await whoTool.handler({});
+    assert.equal(result.isError, false);
+    const rendered = result.content[0]?.text ?? '';
+    assert.doesNotMatch(
+      rendered,
+      new RegExp(publishedText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+      "the caller's own row must never appear in their own self-match results",
+    );
+    const publishedMatchIndex = rendered.indexOf('Expert in distributed systems and Rust');
+    const chatMatchIndex = rendered.indexOf('Passionate about underwater basket weaving');
+    assert.ok(publishedMatchIndex >= 0, 'the member matching the published topic must appear');
+    assert.ok(
+      chatMatchIndex < 0 || publishedMatchIndex < chatMatchIndex,
+      'the member matching the published topic must rank ahead of the member matching only the unpublished chat topic',
+    );
+
+    await pool.query(`DELETE FROM member_interests WHERE platform = 'discord' AND user_id = ANY($1)`, [
+      [caller, matchesPublished, matchesChatOnly],
+    ]);
+    await pool.query(`DELETE FROM interactions WHERE user_id = $1`, [caller]);
   },
 );
 
