@@ -173,6 +173,120 @@ test('SECURITY: isAllowedSender matches a full Baileys-style JID entry (shared W
   assert.equal(isAllowedSender('64299999999', ['64211234567@s.whatsapp.net']), false);
 });
 
+// --- issue #891: image message extraction -----------------------------
+
+function imagePayload(image: Record<string, unknown>, overrides: Record<string, unknown> = {}) {
+  return {
+    object: 'whatsapp_business_account',
+    entry: [
+      {
+        changes: [
+          {
+            value: {
+              contacts: [{ profile: { name: 'Jamie' }, wa_id: '64211234567' }],
+              messages: [
+                {
+                  from: '64211234567',
+                  id: 'wamid.IMG1',
+                  timestamp: '1700000000',
+                  type: 'image',
+                  image,
+                  ...overrides,
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+test('extractMessages: a well-formed captioned image is extracted with text left empty and the caption on the new image field (issue #891)', () => {
+  const result = extractMessages(
+    imagePayload({ id: 'media-123', mime_type: 'image/png', caption: "what's this error?" }),
+  );
+  assert.deepEqual(result, [
+    {
+      from: '64211234567',
+      id: 'wamid.IMG1',
+      timestampMs: 1700000000000,
+      text: '',
+      name: 'Jamie',
+      image: { mediaId: 'media-123', mimeType: 'image/png', caption: "what's this error?" },
+    },
+  ]);
+});
+
+test('extractMessages: an uncaptioned image is extracted with image.caption undefined, not an empty string', () => {
+  const result = extractMessages(imagePayload({ id: 'media-456', mime_type: 'image/jpeg' }));
+  assert.equal(result.length, 1);
+  assert.equal(result[0].image?.caption, undefined);
+  assert.equal(result[0].text, '');
+});
+
+test("extractMessages: an image message missing Meta's own media id is treated as malformed and skipped, exactly like the pre-#891 baseline", () => {
+  assert.deepEqual(extractMessages(imagePayload({ mime_type: 'image/png', caption: 'no id here' })), []);
+});
+
+test('extractMessages: an image with no declared mime_type still extracts (mimeType falls back to an empty string, refused downstream by the MIME allowlist rather than crashing here)', () => {
+  const result = extractMessages(imagePayload({ id: 'media-789' }));
+  assert.equal(result.length, 1);
+  assert.equal(result[0].image?.mimeType, '');
+});
+
+test('extractMessages: a plain text message is byte-identical to before #891 — image handling is additive, not a rewrite of the text path', () => {
+  const payload = {
+    object: 'whatsapp_business_account',
+    entry: [
+      {
+        changes: [
+          {
+            value: {
+              contacts: [{ profile: { name: 'Jamie' }, wa_id: '64211234567' }],
+              messages: [
+                {
+                  from: '64211234567',
+                  id: 'wamid.TXT1',
+                  timestamp: '1700000000',
+                  type: 'text',
+                  text: { body: 'kia ora' },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ],
+  };
+  assert.deepEqual(extractMessages(payload), [
+    { from: '64211234567', id: 'wamid.TXT1', timestampMs: 1700000000000, text: 'kia ora', name: 'Jamie' },
+  ]);
+});
+
+test('extractMessages: non-text, non-image message types (audio, document, status, etc.) remain silently skipped', () => {
+  const payload = {
+    object: 'whatsapp_business_account',
+    entry: [
+      {
+        changes: [
+          {
+            value: {
+              messages: [
+                { from: '64211234567', id: 'wamid.AUD1', type: 'audio', timestamp: '1' },
+                { from: '64211234567', id: 'wamid.DOC1', type: 'document', timestamp: '1' },
+                { from: '64211234567', id: 'wamid.STK1', type: 'sticker', timestamp: '1' },
+              ],
+            },
+          },
+          { value: { statuses: [{ id: 'wamid.2', status: 'delivered' }] } },
+        ],
+      },
+    ],
+  };
+  assert.deepEqual(extractMessages(payload), []);
+});
+
 test('extractMessages: malformed or unrelated payloads yield an empty array', () => {
   assert.deepEqual(extractMessages(null), []);
   assert.deepEqual(extractMessages({}), []);

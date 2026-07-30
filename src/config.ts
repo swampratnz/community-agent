@@ -459,6 +459,30 @@ const EnvSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true'),
+  // WhatsApp Cloud API counterpart to WHATSAPP_IMAGE_INPUT_* above (issue
+  // #891): closes the last silent-drop gap on the docs' own recommended
+  // production WhatsApp path, mirroring Baileys' #879 gate order and
+  // conservative-default rationale (see the comment above IMAGE_INPUT_ENABLED)
+  // adapted to the Cloud webhook shape. WHATSAPP_CLOUD_-prefixed and fully
+  // independent of both WHATSAPP_IMAGE_INPUT_* (Baileys) and IMAGE_INPUT_*
+  // (Discord) — an operator enables/tunes each platform's rollout separately.
+  WHATSAPP_CLOUD_IMAGE_INPUT_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+  WHATSAPP_CLOUD_IMAGE_INPUT_MIN_ROLE: z
+    .enum(['super_admin', 'admin', 'member', 'guest'])
+    .default('super_admin'),
+  // Same default as WHATSAPP_IMAGE_INPUT_MAX_BYTES — comfortably inside the
+  // Anthropic API's own per-image limit. Unlike Baileys' `fileLength` (present
+  // on the message itself, pre-download), Meta's Cloud webhook `image` object
+  // carries no byte size, so this is enforced once the media-URL resolve call
+  // reports `file_size` — strictly BEFORE the separate byte-download call.
+  WHATSAPP_CLOUD_IMAGE_INPUT_MAX_BYTES: z.coerce.number().int().positive().default(5_000_000),
+  // Same default as WHATSAPP_IMAGE_INPUT_DAILY_LIMIT_PER_USER, checked before
+  // any Graph media call — bounds the real per-image multimodal token cost a
+  // single sender could otherwise run up.
+  WHATSAPP_CLOUD_IMAGE_INPUT_DAILY_LIMIT_PER_USER: z.coerce.number().int().min(0).default(10),
 
   // Database
   DATABASE_URL: z.string().min(1),
@@ -1313,6 +1337,12 @@ export const config = {
       appSecret: env.WHATSAPP_CLOUD_APP_SECRET,
       webhookPort: env.WHATSAPP_CLOUD_WEBHOOK_PORT,
       welcomeEnabled: env.WHATSAPP_CLOUD_WELCOME_ENABLED ?? false,
+      image: {
+        enabled: env.WHATSAPP_CLOUD_IMAGE_INPUT_ENABLED ?? false,
+        minRole: env.WHATSAPP_CLOUD_IMAGE_INPUT_MIN_ROLE,
+        maxBytes: env.WHATSAPP_CLOUD_IMAGE_INPUT_MAX_BYTES,
+        dailyLimitPerUser: env.WHATSAPP_CLOUD_IMAGE_INPUT_DAILY_LIMIT_PER_USER,
+      },
     },
   },
   db: {
