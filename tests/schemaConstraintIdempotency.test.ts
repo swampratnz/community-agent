@@ -76,10 +76,14 @@ test('schema.sql: every constraint re-add is preceded by its own DROP CONSTRAINT
 });
 
 test('schema.sql: shortcut_hits_kind_check permits every ShortcutKind, in one pair (regression: issue #874 row blocked all migrations)', () => {
-  const pairs = [
-    ...schema.matchAll(/ADD\s+CONSTRAINT\s+shortcut_hits_kind_check\s*\n?\s*CHECK\s*\([^)]*\)/g),
-  ];
+  // Matched to the statement terminator rather than to a closing paren: a
+  // `CHECK (kind IN (...))` has NESTED parens, so a `\([^)]*\)` pattern stops at
+  // the inner `IN (` list's paren and silently examines only part of the clause.
+  // That happened to cover every literal here, but it would quietly stop doing
+  // so if the clause shape ever changed (PR #900 review).
+  const pairs = [...schema.matchAll(/ADD\s+CONSTRAINT\s+shortcut_hits_kind_check[\s\S]*?;/g)];
   assert.equal(pairs.length, 1, 'exactly one shortcut_hits_kind_check re-add is expected');
+  assert.match(pairs[0][0], /\)\s*\)\s*;$/, 'the whole CHECK (... IN (...)) clause should be captured');
 
   // Derived from the `ShortcutKind` union rather than hardcoded here, so adding
   // a 7th kind to the type without widening the constraint fails THIS test
