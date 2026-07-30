@@ -2699,7 +2699,7 @@ test('community_info: admin-tier reply stays byte-identical, never gains SUPER_A
     '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, check which knowledge entries are rated poorly, and review recurring unhelpful-answer themes across all answers\n' +
     '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
     '- Curate the knowledge base: save a new knowledge entry, browse knowledge entries, edit a knowledge entry, delete a knowledge entry, or merge two entries together, and check for near-duplicate entries or conflicting entries\n' +
-    "- Review knowledge candidates, accept a candidate or decline a candidate, track knowledge gaps (questions I couldn't answer), recurring question clusters, raw context digests, pull your own admin-digest snapshot on demand, or get a review-queue roll-up of all five review queues at once\n" +
+    "- Review knowledge candidates, accept a candidate or decline a candidate, track knowledge gaps (questions I couldn't answer), recurring question clusters, raw context digests, pull your own admin-digest snapshot on demand, get a review-queue roll-up of all five review queues at once, or check how quickly I've been answering members (response latency)\n" +
     '- See who is waiting for access, or who has joined or left the server\n' +
     "- Add a note about a member, review notes on a member, delete a note, or look up a member's history across conversations\n" +
     '- Set the community guidelines or the welcome message shown to new members\n' +
