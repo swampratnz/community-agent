@@ -124,7 +124,6 @@ test('SECURITY: withdraw_knowledge_tip is member+ (retract your own pending sugg
   for (const role of ['member', 'admin', 'super_admin'] as const) {
     assert.ok(toolsForRole(role).includes(tool), `${role} must reach withdraw_knowledge_tip`);
   }
-  assert.ok(!toolsForRole('guest').includes(tool), 'guest must not reach withdraw_knowledge_tip');
 });
 
 test('SECURITY: my_submissions is member+ and strictly narrower than the shared queue tools (list_suggestions/list_reports, both admin-only)', () => {

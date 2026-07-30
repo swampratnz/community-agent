@@ -555,7 +555,7 @@ test(
 );
 
 test(
-  'repository: withdrawOwnKnowledgeTips flips only the caller\'s OWN pending tips and reports their ids; a caller with none mutates nothing (issue #895)',
+  "repository: withdrawOwnKnowledgeTips flips only the caller's OWN pending tips and reports their ids; a caller with none mutates nothing (issue #895)",
   { skip },
   async () => {
     const platform = 'discord';
@@ -588,13 +588,14 @@ test(
     assert.deepEqual(
       new Set(withdrawn),
       new Set([tip1.id, tip2.id]),
-      'both of the caller\'s pending tips are withdrawn',
+      "both of the caller's pending tips are withdrawn",
     );
 
     const rows = (
-      await pool.query(`SELECT id, status, reviewed_by, reviewed_at FROM knowledge_candidates WHERE id = ANY($1)`, [
-        [tip1.id, tip2.id],
-      ])
+      await pool.query(
+        `SELECT id, status, reviewed_by, reviewed_at FROM knowledge_candidates WHERE id = ANY($1)`,
+        [[tip1.id, tip2.id]],
+      )
     ).rows;
     for (const row of rows) {
       assert.equal(row.status, 'withdrawn', `tip #${row.id} is now withdrawn`);
@@ -677,7 +678,7 @@ test(
 );
 
 test(
-  "SECURITY: repository: withdrawOwnKnowledgeTips leaves an already-accepted or already-declined tip byte-unchanged (issue #895)",
+  'SECURITY: repository: withdrawOwnKnowledgeTips leaves an already-accepted or already-declined tip byte-unchanged (issue #895)',
   { skip },
   async () => {
     const platform = 'discord';
@@ -739,7 +740,9 @@ test(
     );
 
     await pool.query(`DELETE FROM knowledge WHERE id = $1`, [accepted.knowledgeId]);
-    await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [[acceptedTip.id, declinedTip.id]]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [
+      [acceptedTip.id, declinedTip.id],
+    ]);
   },
 );
 

@@ -1688,8 +1688,7 @@ const MEMBER_CAPABILITIES_TEXT =
   "- Check what I've stored about you, your active warnings, or your filed suggestions/reports\n" +
   '- Catch you up on recent activity in this conversation ("what did I miss?")\n' +
   '- Suggest how the bot or community could be better, or suggest a knowledge-base tip for other members ' +
-  "to find later — and withdraw a knowledge tip you filed before an admin reviews it, if you change your " +
-  'mind\n' +
+  'to find later, or withdraw one before an admin reviews it\n' +
   '- Rate my last answer helpful or not\n' +
   '- Ask to talk to a human community admin, if I\'m not getting you anywhere ("can I talk to a ' +
   'human?")\n' +
@@ -3645,7 +3644,7 @@ export function buildToolServer(
   const withdrawKnowledgeTip = tool(
     'withdraw_knowledge_tip',
     'Withdraw your OWN still-pending suggest_knowledge tip(s) — use this if you filed one by mistake, as a ' +
-      "joke, or want to fix it before an admin reviews it. It only ever affects tips YOU filed and only ones " +
+      'joke, or want to fix it before an admin reviews it. It only ever affects tips YOU filed and only ones ' +
       "still pending; it cannot touch anyone else's tip, a machine-drafted candidate, or a tip already " +
       'reviewed. The tip is marked withdrawn and kept on record (not deleted).',
     {},

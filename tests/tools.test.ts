@@ -2640,8 +2640,10 @@ test('community_info reply stays concise, not a wall of text (issue #92)', async
   // rather than silently growing into a wall of text. Bumped again for issue
   // #729's set_helper_availability/find_helper line, and again for issue
   // #808's request_human_help line, and again for issue #840's
-  // request_project_connection line.
-  assert.ok(replyText.length < 1950, `reply should stay short; was ${replyText.length} chars`);
+  // request_project_connection line, and again for issue #895's
+  // withdraw_knowledge_tip clause (folded into the existing suggest_knowledge
+  // line, not a new one).
+  assert.ok(replyText.length < 2010, `reply should stay short; was ${replyText.length} chars`);
 });
 
 test('community_info appends the full ADMIN_CAPABILITIES_TEXT rundown for admin/super_admin callers, on top of the member content (issue #367)', async () => {
@@ -2740,7 +2742,7 @@ const MEMBER_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__my_data', /what I've stored about you/i],
   ['mcp__community__suggest_improvement', /suggest/i],
   ['mcp__community__suggest_knowledge', /knowledge-base tip/i],
-  ['mcp__community__withdraw_knowledge_tip', /withdraw a knowledge tip/i],
+  ['mcp__community__withdraw_knowledge_tip', /withdraw one before an admin reviews it/i],
   ['mcp__community__rate_answer', /rate my last answer/i],
   ['mcp__community__request_human_help', /talk to a human/i],
   ['mcp__community__set_response_style', /simply/i],
@@ -2817,7 +2819,7 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
     "- Check what I've stored about you, your active warnings, or your filed suggestions/reports\n" +
     '- Catch you up on recent activity in this conversation ("what did I miss?")\n' +
     '- Suggest how the bot or community could be better, or suggest a knowledge-base tip for other members ' +
-    'to find later\n' +
+    'to find later, or withdraw one before an admin reviews it\n' +
     '- Rate my last answer helpful or not\n' +
     '- Ask to talk to a human community admin, if I\'m not getting you anywhere ("can I talk to a ' +
     'human?")\n' +
@@ -2844,7 +2846,8 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
       'appeal_moderation line, issue #646 added the share_project/list_projects line, issue #634 added the ' +
       'set_my_interests/who_is_into line, issue #729 added the set_helper_availability/find_helper line, ' +
       'issue #808 added the request_human_help line, issue #840 added the request_project_connection line, ' +
-      'issue #841 added the community_digest line; ' +
+      'issue #841 added the community_digest line, issue #895 added the withdraw_knowledge_tip clause to ' +
+      'the suggest_knowledge line; ' +
       'otherwise unchanged since #367)',
   );
 });
@@ -3106,9 +3109,10 @@ test('community_info: super_admin reply stays under a hard char cap, not a wall 
   // caps for issue #729's set_helper_availability/find_helper line, and again
   // alongside the member/admin caps for issue #808's request_human_help line,
   // and again alongside the member/admin caps for issue #840's
-  // request_project_connection line.
+  // request_project_connection line, and again alongside the member cap for
+  // issue #895's withdraw_knowledge_tip clause.
   assert.ok(
-    superAdminReply.length < 4460,
+    superAdminReply.length < 4530,
     `super_admin reply should stay short; was ${superAdminReply.length} chars`,
   );
 });
