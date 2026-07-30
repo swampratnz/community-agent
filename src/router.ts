@@ -51,6 +51,7 @@ import {
   recordShortcutHit as recordShortcutHitDefault,
   searchKnowledge,
   searchMemberInterests,
+  searchMemberInterestsForSelf,
   searchProjects,
 } from './storage/repository.js';
 import {
@@ -483,7 +484,13 @@ export class Router {
    * `tryWhatsAppTextCommand`'s `!whois`/`!projects`/`!digest` branches —
    * overridable so the WhatsApp text-command tests can assert `runTurn` (and
    * therefore `embed()`, which only the real search functions would call) is
-   * never reached, without a live DB.
+   * never reached, without a live DB. `searchMemberInterestsForSelfFn`
+   * defaults to the real `searchMemberInterestsForSelf` (issue #889), a
+   * trailing field added after `!whois`/`!projects`/`!guidelines`/`!digest`
+   * shipped so every existing positional `new Router(...)` call site stays
+   * unaffected; consulted only from `tryWhatsAppTextCommand`'s bare-`!whois`
+   * branch (no captured query), porting the same self-match `who_is_into`/
+   * `/whois` already have to the third surface.
    */
   constructor(
     private readonly runTurn: typeof runAgentTurn = runAgentTurn,
@@ -509,6 +516,7 @@ export class Router {
     private readonly searchProjectsFn: typeof searchProjects = searchProjects,
     private readonly listRecentProjectsFn: typeof listRecentProjects = listRecentProjects,
     private readonly buildMemberDigestContentFn: typeof buildMemberDigestContent = buildMemberDigestContent,
+    private readonly searchMemberInterestsForSelfFn: typeof searchMemberInterestsForSelf = searchMemberInterestsForSelf,
   ) {
     setInterval(() => this.sweep(), this.RATE_WINDOW_MS * 5).unref();
   }
@@ -1693,15 +1701,32 @@ export class Router {
     if (msg.platform !== 'whatsapp') return null;
     const text = msg.text.trim();
 
-    const whoisMatch = /^!whois\s+(.+)$/i.exec(text);
+    const whoisMatch = /^!whois(?:\s+(.+))?$/i.exec(text);
     if (whoisMatch) {
       if (!atLeast(role, 'member')) return null;
-      const query = whoisMatch[1].trim();
-      if (!query) return null;
-      const hits = await this.searchMemberInterestsFn(query);
-      return hits.length === 0
+      const query = whoisMatch[1]?.trim();
+      if (query) {
+        const hits = await this.searchMemberInterestsFn(query);
+        return hits.length === 0
+          ? 'No members have published interests matching that yet.'
+          : await formatInterestResults(hits);
+      }
+      // Bare `!whois` (issue #889): mirror who_is_into's/`/whois`'s own
+      // no-argument self-match — the implicit query is the caller's own
+      // already-stored `member_interests` embedding, keyed on
+      // `msg.platform`/`msg.userId` only, never re-embedded and never
+      // sourced from the surrounding message text (SECURITY: #634 AC #4 /
+      // #882's "never inferred from chat content" invariant).
+      const selfMatch = await this.searchMemberInterestsForSelfFn(msg.platform, msg.userId);
+      if (!selfMatch.hasProfile) {
+        return (
+          "You haven't published interests yet — call set_my_interests first, then who_is_into with no " +
+          'topic will search using your own published interests.'
+        );
+      }
+      return selfMatch.hits.length === 0
         ? 'No members have published interests matching that yet.'
-        : await formatInterestResults(hits);
+        : await formatInterestResults(selfMatch.hits);
     }
 
     const projectsMatch = /^!projects(?:\s+(.+))?$/i.exec(text);

@@ -1,8 +1,11 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import type { AgentReply } from '../src/agent/core.js';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
-import type { MemberInterestSearchHit } from '../src/storage/repository/memberDiscovery.js';
+import type { IncomingMessage, OutgoingMessage, Platform, PlatformAdapter } from '../src/platforms/types.js';
+import type {
+  MemberInterestSearchHit,
+  SelfInterestMatchResult,
+} from '../src/storage/repository/memberDiscovery.js';
 import type { MemberProject, MemberProjectSearchHit } from '../src/storage/repository/memberProjects.js';
 import type { ShortcutKind } from '../src/storage/repository/shortcutHits.js';
 
@@ -115,6 +118,11 @@ interface RouterOpts {
   runTurn?: () => Promise<AgentReply>;
   role?: 'admin' | 'member' | null;
   searchMemberInterestsFn?: (query: string) => Promise<MemberInterestSearchHit[]>;
+  searchMemberInterestsForSelfFn?: (
+    platform: Platform,
+    userId: string,
+    limit?: number,
+  ) => Promise<SelfInterestMatchResult>;
   searchProjectsFn?: (query: string, limit?: number) => Promise<MemberProjectSearchHit[]>;
   listRecentProjectsFn?: (limit?: number) => Promise<MemberProject[]>;
   buildMemberDigestContentFn?: () => Promise<string | null>;
@@ -128,7 +136,8 @@ interface RouterOpts {
  * Builds a Router with every DB-backed dependency this file's tests care
  * about either stubbed out (countReplies, checkPaused — deterministic,
  * DB-free) or overridable (the four issue #859 search/digest/guidelines
- * functions), so a `!whois`/`!projects`/`!digest`/`!guidelines` test never
+ * functions, plus `searchMemberInterestsForSelfFn` for issue #889's bare
+ * `!whois`), so a `!whois`/`!projects`/`!digest`/`!guidelines` test never
  * needs a live Postgres or the real (slow, model-download-on-first-use)
  * `embed()` pipeline — mirroring `knowledgeShortcutRouter.test.ts`'s
  * `searchKnowledgeForShortcut` injection for the exact same reason.
@@ -163,6 +172,7 @@ function makeRouter(opts: RouterOpts = {}): Router {
     opts.searchProjectsFn, // 21
     opts.listRecentProjectsFn, // 22
     opts.buildMemberDigestContentFn, // 23
+    opts.searchMemberInterestsForSelfFn, // 24
   );
 }
 
@@ -252,22 +262,6 @@ test('!whois <query> from a member is served deterministically: zero query() cal
   assert.match(sent[0].text, /rust and distributed systems/);
 });
 
-test('!whois with no query text falls through to a normal turn (the Discord command requires one too)', async (t) => {
-  mockPoolRole(t, 'member');
-  const router = makeRouter({
-    searchMemberInterestsFn: async () => {
-      throw new Error('searchMemberInterestsFn must never be called with no query');
-    },
-  });
-  const { adapter, sent, trigger } = makeAdapter();
-  router.register(adapter);
-
-  await trigger(makeMessage({ text: '!whois', userId: 'member-1' }));
-
-  assert.equal(sent.length, 1);
-  assert.equal(sent[0].text, REAL_TURN_REPLY);
-});
-
 test('!whois replies with the no-match text when searchMemberInterestsFn returns no hits', async (t) => {
   mockPoolRole(t, 'member');
   const router = makeRouter({ runTurn: throwingRunTurn, searchMemberInterestsFn: async () => [] });
@@ -277,6 +271,89 @@ test('!whois replies with the no-match text when searchMemberInterestsFn returns
   await trigger(makeMessage({ text: '!whois someone', userId: 'member-1' }));
 
   assert.equal(sent[0].text, 'No members have published interests matching that yet.');
+});
+
+// --- bare !whois self-match (issue #889) ------------------------------------
+
+test('acceptance criterion 2: bare !whois from a member with a published profile searches via searchMemberInterestsForSelfFn, keyed on the caller identity, excluding no re-embed', async (t) => {
+  mockPoolRole(t, 'member');
+  const hits: MemberInterestSearchHit[] = [
+    { platform: 'whatsapp', userId: 'target-1', interests: 'rust and distributed systems', similarity: 0.77 },
+  ];
+  let callCount = 0;
+  let calledWith: [Platform, string] | undefined;
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    searchMemberInterestsFn: async () => {
+      throw new Error('searchMemberInterestsFn (the query-search path) must never be called for bare !whois');
+    },
+    searchMemberInterestsForSelfFn: async (platform, userId) => {
+      callCount += 1;
+      calledWith = [platform, userId];
+      return { hasProfile: true, hits };
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!whois', userId: 'member-1' }));
+
+  assert.equal(sent.length, 1);
+  assert.equal(callCount, 1, 'searchMemberInterestsForSelfFn must be invoked exactly once');
+  assert.deepEqual(calledWith, ['whatsapp', 'member-1']);
+  assert.match(sent[0].text, /<member-interests/);
+  assert.match(sent[0].text, /rust and distributed systems/);
+});
+
+test('acceptance criterion 3: bare !whois from a member with a published profile but zero hits returns the existing no-match string', async (t) => {
+  mockPoolRole(t, 'member');
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    searchMemberInterestsForSelfFn: async () => ({ hasProfile: true, hits: [] }),
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!whois', userId: 'member-1' }));
+
+  assert.equal(sent[0].text, 'No members have published interests matching that yet.');
+});
+
+test('acceptance criterion 4: bare !whois from a member with no published profile returns the who_is_into first-time-caller guidance, with no search result rendered', async (t) => {
+  mockPoolRole(t, 'member');
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    searchMemberInterestsForSelfFn: async () => ({ hasProfile: false }),
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!whois', userId: 'member-1' }));
+
+  assert.match(sent[0].text, /haven't published interests yet/);
+  assert.match(sent[0].text, /set_my_interests/);
+});
+
+test('a bare "!whois" with only trailing whitespace still takes the no-argument self-match branch', async (t) => {
+  mockPoolRole(t, 'member');
+  let callCount = 0;
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    searchMemberInterestsFn: async () => {
+      throw new Error('searchMemberInterestsFn must never be called when there is no non-whitespace query');
+    },
+    searchMemberInterestsForSelfFn: async () => {
+      callCount += 1;
+      return { hasProfile: false };
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!whois   ', userId: 'member-1' }));
+
+  assert.equal(callCount, 1);
+  assert.match(sent[0].text, /haven't published interests yet/);
 });
 
 // --- !projects ------------------------------------------------------------------
@@ -510,6 +587,9 @@ async function assertGuestFallsThroughSilently(
     searchMemberInterestsFn: async () => {
       throw new Error('searchMemberInterestsFn must never be invoked for a rejected caller');
     },
+    searchMemberInterestsForSelfFn: async () => {
+      throw new Error('searchMemberInterestsForSelfFn must never be invoked for a rejected caller');
+    },
     searchProjectsFn: async () => {
       throw new Error('searchProjectsFn must never be invoked for a rejected caller');
     },
@@ -538,12 +618,50 @@ test('SECURITY: a guest caller\'s "!whois rust" falls through to the normal turn
   await assertGuestFallsThroughSilently(t, '!whois rust');
 });
 
+test('SECURITY: a guest caller\'s bare "!whois" falls through to the normal turn — searchMemberInterestsForSelfFn is never invoked (issue #889 acceptance criterion 5)', async (t) => {
+  await assertGuestFallsThroughSilently(t, '!whois');
+});
+
 test('SECURITY: a guest caller\'s "!projects" falls through to the normal turn — no distinguishing denial reply (acceptance criteria 3, 6)', async (t) => {
   await assertGuestFallsThroughSilently(t, '!projects');
 });
 
 test('SECURITY: a guest caller\'s "!digest" falls through to the normal turn — no distinguishing denial reply (acceptance criteria 3, 6)', async (t) => {
   await assertGuestFallsThroughSilently(t, '!digest');
+});
+
+test("SECURITY: bare !whois's implicit query is built only from the caller's platform/userId, never from any other message field (issue #634 AC #4 / #889 acceptance criterion 6)", async (t) => {
+  mockPoolRole(t, 'member');
+  let calledArgs: unknown[] | undefined;
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    searchMemberInterestsFn: async () => {
+      throw new Error(
+        'searchMemberInterestsFn (the explicit-query path) must never be called for bare !whois',
+      );
+    },
+    searchMemberInterestsForSelfFn: async (...args: unknown[]) => {
+      calledArgs = args;
+      return { hasProfile: true, hits: [] };
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  // userName carries another member's published interest phrase — the
+  // literal !whois token is the only text consulted; the implicit query
+  // must come only from platform/userId, never from this or any other
+  // surrounding message field.
+  await trigger(
+    makeMessage({
+      text: '!whois',
+      userId: 'member-1',
+      userName: "Alice's rust and distributed-systems interests",
+    }),
+  );
+
+  assert.deepEqual(calledArgs?.slice(0, 2), ['whatsapp', 'member-1']);
+  assert.equal(sent[0].text, 'No members have published interests matching that yet.');
 });
 
 // --- SECURITY: the sole send path is adapter.sendMessage (criterion 7) -----

@@ -72,6 +72,15 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   `set_my_interests` first, rather than an error or an empty search. Same
   member-tier requirement, same 5-result cap, same rendering as a typed
   query; `who_is_into(query)` and `/whois <query>` are unchanged.
+- **WhatsApp's `!whois` shortcut can now find "members like me" too, closing
+  the last of the three surfaces #882 built this for** (#889): a bare
+  `!whois` (no query text) now matches other members' published interests
+  against your own, excluding your own entry — the same self-match
+  `who_is_into` and Discord's `/whois` already got. A member with no
+  published interests gets the same first-time nudge to run
+  `set_my_interests`. Previously a bare `!whois` fell through to a full paid
+  agent turn; now it's served for free like every other `!`-prefixed
+  shortcut. `!whois <query>` is unchanged.
 - **`my_submissions` now tells a contributor whether their accepted knowledge
   tip actually helped anyone** (#880): an accepted tip whose linked
   `knowledge` entry has a positive `retrieval_count` now shows a "used N

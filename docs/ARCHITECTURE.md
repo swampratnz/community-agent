@@ -2430,7 +2430,7 @@ regardless of either flag.
 `WHATSAPP_TEXT_COMMANDS_ENABLED` (off by default) is the WhatsApp counterpart
 to the Discord slash commands above, re-keyed for a platform with no native
 command-picker UI: a trimmed, case-insensitive WhatsApp message beginning
-`!whois <query>`, `!projects [query]`, `!guidelines`, or `!digest` is served
+`!whois [query]`, `!projects [query]`, `!guidelines`, or `!digest` is served
 by the same deterministic, zero-`query()`-call path, checked in
 `Router.handle()` (`tryWhatsAppTextCommand`) alongside the other router-level
 shortcuts (the knowledge shortcut, ack shortcut, etc.). `!kb` is deliberately
@@ -2442,13 +2442,23 @@ WhatsApp itself with the flag off.
 
 Each command reuses the identical repository/render functions the Discord
 commands and chat-path tools call (`searchMemberInterests`/
-`formatInterestResults`, `searchProjects`/`listRecentProjects`/
-`formatProjectResults`, `getCommunityGuidelines`/`getCommunityGuidelinesMi`,
+`searchMemberInterestsForSelf`/`formatInterestResults`,
+`searchProjects`/`listRecentProjects`/`formatProjectResults`,
+`getCommunityGuidelines`/`getCommunityGuidelinesMi`,
 `buildMemberDigestContent`), injectable on `Router` the same way
 `tryKnowledgeShortcut`'s `searchKnowledgeForShortcut` already is. Tier floors
 mirror the Discord side exactly: `!whois`, `!projects`, `!digest` require
 `atLeast(role, 'member')` (the same runtime floor each tool's own handler
 applies); `!guidelines` has no tier gate, matching `community_guidelines`.
+
+A bare `!whois` (no query, issue #889) mirrors `who_is_into`'s/`/whois`'s own
+no-argument self-match: it looks up the caller's own published
+`member_interests` row via `searchMemberInterestsForSelf(msg.platform,
+msg.userId)` — never re-embedded, never sourced from the surrounding message
+text — and searches for similar members, excluding the caller. No published
+row (or one with no embedding) returns the same first-time-caller guidance
+`who_is_into` gives today, directing the caller to `set_my_interests`;
+`!whois <query>` is unchanged.
 
 **Gating behaviour deliberately differs from Discord's.** Discord's ephemeral
 reply lets a denied caller be told "you don't have access" at zero visibility
