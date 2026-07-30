@@ -2,6 +2,7 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import type { OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
 import type { ContextDigest } from '../src/storage/repository.js';
+import type { MemberDigestContentDeps, MemberDigestRunDeps } from '../src/memberDigest.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -46,6 +47,58 @@ const { config } = await import('../src/config.js');
 after(async () => {
   await closeDb();
 });
+
+const unexpected = (name: string) => () => {
+  throw new Error(`unexpected ${name} call: stub it explicitly if this test means to exercise it`);
+};
+
+/**
+ * Deps whose every read THROWS. Spread `throwingRunDeps()` (or, for
+ * `buildMemberDigestContent`, `throwingContentDeps()`) as the base of a deps
+ * object and override only the reads the test actually exercises.
+ *
+ * Why throwing rather than `async () => 0`: every field here defaults to a real
+ * repository read (issue #868), so an omitted stub used to mean a live Postgres
+ * query from this file. Because `node:test` runs test FILES in parallel, those
+ * stray reads landed on tables other files were counting, which is one source
+ * of the suite's cross-file flakiness. A throwing stub keeps the DB out of it
+ * AND refuses to pass vacuously — a test that unexpectedly reaches one of these
+ * reads names the read in its failure instead of quietly succeeding on a zero.
+ *
+ * The deps types have no optional fields, so adding a new digest signal breaks
+ * these two helpers (one compile error, one place) and then every call site that
+ * needs to stub it — which is the whole point.
+ */
+function throwingContentDeps(): MemberDigestContentDeps {
+  return {
+    getDigests: unexpected('getDigests'),
+    getNewKnowledgeTitles: unexpected('getNewKnowledgeTitles'),
+    getNewProjectCount: unexpected('getNewProjectCount'),
+    getReleaseWatchUpdates: unexpected('getReleaseWatchUpdates'),
+    getMemberTipCount: unexpected('getMemberTipCount'),
+    getNewInterestCount: unexpected('getNewInterestCount'),
+  };
+}
+
+function throwingRunDeps(): MemberDigestRunDeps {
+  return {
+    ...throwingContentDeps(),
+    wasSentRecently: unexpected('wasSentRecently'),
+    recordSent: unexpected('recordSent'),
+  };
+}
+
+/**
+ * `config` is deeply readonly by design (it's parsed once at import time and
+ * must never be mutated in production). These tests still need to flip
+ * feature flags around a try/finally, so this narrow cast is the sanctioned
+ * test-only escape hatch — kept as one named helper so the intent is visible
+ * rather than scattered as bare assignments the type system silently allowed
+ * only because `tests/` went untypechecked.
+ */
+function mutable<T>(o: T): { -readonly [K in keyof T]: T[K] } {
+  return o;
+}
 
 function makeAdapter(platform: 'discord' | 'whatsapp' = 'discord'): {
   adapter: PlatformAdapter;
@@ -414,12 +467,13 @@ test('formatMemberDigestMessage: a quiet week across all five inputs (topics, kn
 
 test('makeDefaultMemberDigestRun: MEMBER_DIGEST_CHANNEL_ID unset, runOnce is a no-op — no send, no freshness read', async () => {
   const original = config.memberDigest.channelId;
-  config.memberDigest.channelId = undefined;
+  mutable(config.memberDigest).channelId = undefined;
   try {
     const { adapter, sent } = makeAdapter();
     let wasSentRecentlyCalled = false;
     let memberTipCountCalled = false;
     const runOnce = makeDefaultMemberDigestRun([adapter], {
+      ...throwingRunDeps(),
       wasSentRecently: async () => {
         wasSentRecentlyCalled = true;
         return false;
@@ -445,7 +499,7 @@ test('makeDefaultMemberDigestRun: MEMBER_DIGEST_CHANNEL_ID unset, runOnce is a n
       'the new count read is never invoked when the digest is inert (channel unconfigured)',
     );
   } finally {
-    config.memberDigest.channelId = original;
+    mutable(config.memberDigest).channelId = original;
   }
 });
 
@@ -455,6 +509,7 @@ test('makeDefaultMemberDigestRun: inside the freshness window, runOnce is a no-o
   let knowledgeCalled = false;
   let memberTipCountCalled = false;
   const runOnce = makeDefaultMemberDigestRun([adapter], {
+    ...throwingRunDeps(),
     wasSentRecently: async () => true,
     getDigests: async () => {
       digestsCalled = true;
@@ -480,6 +535,7 @@ test('makeDefaultMemberDigestRun: inside the freshness window, runOnce is a no-o
 test('makeDefaultMemberDigestRun: no connected Discord adapter — no-op, no throw, no send', async () => {
   const { adapter: whatsappAdapter, sent } = makeAdapter('whatsapp');
   const runOnce = makeDefaultMemberDigestRun([whatsappAdapter], {
+    ...throwingRunDeps(),
     wasSentRecently: async () => false,
     getDigests: async () => [makeDigest({ topic: 'x', questionCount: 1 })],
     getNewKnowledgeTitles: async () => [],
@@ -493,6 +549,7 @@ test('makeDefaultMemberDigestRun: a quiet week (no digests, no new knowledge, no
   const { adapter, sent } = makeAdapter();
   let recordCalled = false;
   const runOnce = makeDefaultMemberDigestRun([adapter], {
+    ...throwingRunDeps(),
     wasSentRecently: async () => false,
     getDigests: async () => [],
     getNewKnowledgeTitles: async () => [],
@@ -512,6 +569,7 @@ test('makeDefaultMemberDigestRun: past the freshness window with content, posts 
   const { adapter, sent } = makeAdapter();
   let recordCalled = false;
   const runOnce = makeDefaultMemberDigestRun([adapter], {
+    ...throwingRunDeps(),
     wasSentRecently: async () => false,
     getDigests: async () => [makeDigest({ topic: 'MCP server auth', questionCount: 4 })],
     getNewKnowledgeTitles: async () => ['Setting up MCP auth'],
@@ -536,6 +594,7 @@ test('makeDefaultMemberDigestRun: getMemberTipCount is called with the exact sam
   let knowledgeSince: Date | undefined;
   let tipSince: Date | undefined;
   const runOnce = makeDefaultMemberDigestRun([adapter], {
+    ...throwingRunDeps(),
     wasSentRecently: async () => false,
     getDigests: async () => [],
     getNewKnowledgeTitles: async (since) => {
@@ -568,6 +627,7 @@ test("makeDefaultMemberDigestRun: an only-projects week (zero topics, zero new k
   const { adapter, sent } = makeAdapter();
   let recordCalled = false;
   const runOnce = makeDefaultMemberDigestRun([adapter], {
+    ...throwingRunDeps(),
     wasSentRecently: async () => false,
     getDigests: async () => [],
     getNewKnowledgeTitles: async () => [],
@@ -592,6 +652,7 @@ test('makeDefaultMemberDigestRun: getNewProjectCount is called with the exact sa
   let knowledgeSince: Date | undefined;
   let projectSince: Date | undefined;
   const runOnce = makeDefaultMemberDigestRun([adapter], {
+    ...throwingRunDeps(),
     wasSentRecently: async () => false,
     getDigests: async () => [],
     getNewKnowledgeTitles: async (since) => {
@@ -620,11 +681,12 @@ test('makeDefaultMemberDigestRun: getNewProjectCount is called with the exact sa
 
 test('SECURITY: makeDefaultMemberDigestRun never calls getReleaseWatchUpdates when RELEASE_WATCH_ENABLED is unset/false, and the digest is byte-identical to today for a fixture with other content', async () => {
   const original = config.releaseWatch.enabled;
-  config.releaseWatch.enabled = false;
+  mutable(config.releaseWatch).enabled = false;
   try {
     const { adapter, sent } = makeAdapter();
     let releaseWatchCalled = false;
     const runOnce = makeDefaultMemberDigestRun([adapter], {
+      ...throwingRunDeps(),
       wasSentRecently: async () => false,
       getDigests: async () => [makeDigest({ topic: 'MCP server auth', questionCount: 4 })],
       getNewKnowledgeTitles: async () => ['Setting up MCP auth'],
@@ -646,20 +708,21 @@ test('SECURITY: makeDefaultMemberDigestRun never calls getReleaseWatchUpdates wh
       'byte-identical to the pre-#733 output — no release-watch section, even though the injected dep would have returned content',
     );
   } finally {
-    config.releaseWatch.enabled = original;
+    mutable(config.releaseWatch).enabled = original;
   }
 });
 
 test('makeDefaultMemberDigestRun: with RELEASE_WATCH_ENABLED true, getReleaseWatchUpdates is called with the shared `since` window and configured doc paths, and its result reaches the sent message', async () => {
   const originalEnabled = config.releaseWatch.enabled;
   const originalPaths = config.releaseWatch.docPaths;
-  config.releaseWatch.enabled = true;
-  config.releaseWatch.docPaths = ['release-notes', 'about-claude/model-deprecations'];
+  mutable(config.releaseWatch).enabled = true;
+  mutable(config.releaseWatch).docPaths = ['release-notes', 'about-claude/model-deprecations'];
   try {
     const { adapter, sent } = makeAdapter();
     let receivedSince: Date | undefined;
     let receivedPaths: readonly string[] | undefined;
     const runOnce = makeDefaultMemberDigestRun([adapter], {
+      ...throwingRunDeps(),
       wasSentRecently: async () => false,
       getDigests: async () => [],
       getNewKnowledgeTitles: async (since) => {
@@ -689,18 +752,19 @@ test('makeDefaultMemberDigestRun: with RELEASE_WATCH_ENABLED true, getReleaseWat
       '🆕 Anthropic platform updates this week: [docs: release-notes/overview](https://platform.claude.com/docs/en/release-notes/overview)',
     );
   } finally {
-    config.releaseWatch.enabled = originalEnabled;
-    config.releaseWatch.docPaths = originalPaths;
+    mutable(config.releaseWatch).enabled = originalEnabled;
+    mutable(config.releaseWatch).docPaths = originalPaths;
   }
 });
 
 test('makeDefaultMemberDigestRun: an only-release-watch week (zero topics, zero new knowledge, zero new projects) still posts — release-watch is a 4th input to the same null-guard OR condition', async () => {
   const original = config.releaseWatch.enabled;
-  config.releaseWatch.enabled = true;
+  mutable(config.releaseWatch).enabled = true;
   try {
     const { adapter, sent } = makeAdapter();
     let recordCalled = false;
     const runOnce = makeDefaultMemberDigestRun([adapter], {
+      ...throwingRunDeps(),
       wasSentRecently: async () => false,
       getDigests: async () => [],
       getNewKnowledgeTitles: async () => [],
@@ -717,7 +781,7 @@ test('makeDefaultMemberDigestRun: an only-release-watch week (zero topics, zero 
     assert.equal(sent[0].text, '🆕 Anthropic platform updates this week: docs: release-notes/overview');
     assert.equal(recordCalled, true);
   } finally {
-    config.releaseWatch.enabled = original;
+    mutable(config.releaseWatch).enabled = original;
   }
 });
 
@@ -727,6 +791,7 @@ test('makeDefaultMemberDigestRun: an only-interests week (zero topics, zero new 
   const { adapter, sent } = makeAdapter();
   let recordCalled = false;
   const runOnce = makeDefaultMemberDigestRun([adapter], {
+    ...throwingRunDeps(),
     wasSentRecently: async () => false,
     getDigests: async () => [],
     getNewKnowledgeTitles: async () => [],
@@ -754,6 +819,7 @@ test('makeDefaultMemberDigestRun: getNewInterestCount is called with the exact s
   let projectSince: Date | undefined;
   let interestSince: Date | undefined;
   const runOnce = makeDefaultMemberDigestRun([adapter], {
+    ...throwingRunDeps(),
     wasSentRecently: async () => false,
     getDigests: async () => [],
     getNewKnowledgeTitles: async () => [],
@@ -783,10 +849,11 @@ test('makeDefaultMemberDigestRun: getNewInterestCount is called with the exact s
 
 test('SECURITY: makeDefaultMemberDigestRun drops a digest topic below MEMBER_DIGEST_MIN_DISTINCT_USERS — its own k-anonymity floor, independent of the builder/export floors', async () => {
   const original = config.memberDigest.minDistinctUsers;
-  config.memberDigest.minDistinctUsers = 3;
+  mutable(config.memberDigest).minDistinctUsers = 3;
   try {
     const { adapter, sent } = makeAdapter();
     const runOnce = makeDefaultMemberDigestRun([adapter], {
+      ...throwingRunDeps(),
       wasSentRecently: async () => false,
       getDigests: async () => [
         makeDigest({ topic: 'below floor', distinctUsers: 2, questionCount: 5 }),
@@ -803,17 +870,18 @@ test('SECURITY: makeDefaultMemberDigestRun drops a digest topic below MEMBER_DIG
     assert.doesNotMatch(sent[0].text, /below floor/, 'a topic under the floor never reaches the post');
     assert.match(sent[0].text, /at floor/, 'a topic exactly at the floor is included');
   } finally {
-    config.memberDigest.minDistinctUsers = original;
+    mutable(config.memberDigest).minDistinctUsers = original;
   }
 });
 
 test('makeDefaultMemberDigestRun: a week where every digest is below the k-floor and there is no new knowledge sends nothing', async () => {
   const original = config.memberDigest.minDistinctUsers;
-  config.memberDigest.minDistinctUsers = 3;
+  mutable(config.memberDigest).minDistinctUsers = 3;
   try {
     const { adapter, sent } = makeAdapter();
     let recordCalled = false;
     const runOnce = makeDefaultMemberDigestRun([adapter], {
+      ...throwingRunDeps(),
       wasSentRecently: async () => false,
       getDigests: async () => [makeDigest({ topic: 'below floor', distinctUsers: 2 })],
       getNewKnowledgeTitles: async () => [],
@@ -828,13 +896,14 @@ test('makeDefaultMemberDigestRun: a week where every digest is below the k-floor
     assert.equal(sent.length, 0, 'the only digest this week was below the floor — nothing to post');
     assert.equal(recordCalled, false);
   } finally {
-    config.memberDigest.minDistinctUsers = original;
+    mutable(config.memberDigest).minDistinctUsers = original;
   }
 });
 
 test("SECURITY: makeDefaultMemberDigestRun never surfaces a WhatsApp-sourced digest topic to the Discord audience — only platform 'discord'/null topics are eligible", async () => {
   const { adapter, sent } = makeAdapter();
   const runOnce = makeDefaultMemberDigestRun([adapter], {
+    ...throwingRunDeps(),
     wasSentRecently: async () => false,
     getDigests: async () => [
       makeDigest({ topic: 'whatsapp-only topic', platform: 'whatsapp', questionCount: 5 }),
@@ -866,6 +935,7 @@ test('SECURITY: makeDefaultMemberDigestRun posts to exactly MEMBER_DIGEST_CHANNE
   const { adapter: discordAdapter, sent } = makeAdapter('discord');
   const { adapter: whatsappAdapter } = makeAdapter('whatsapp');
   const runOnce = makeDefaultMemberDigestRun([whatsappAdapter, discordAdapter], {
+    ...throwingRunDeps(),
     wasSentRecently: async () => false,
     getDigests: async () => [makeDigest({ topic: 'MCP server auth', questionCount: 1 })],
     getNewKnowledgeTitles: async () => [],
@@ -896,6 +966,7 @@ test("SECURITY: makeDefaultMemberDigestRun never leaks a ContextDigest's distinc
     questionCount: 4,
   });
   const runOnce = makeDefaultMemberDigestRun([adapter], {
+    ...throwingRunDeps(),
     wasSentRecently: async () => false,
     getDigests: async () => [adversarialDigest],
     getNewKnowledgeTitles: async () => [],
@@ -1308,6 +1379,7 @@ test(
 
 test("buildMemberDigestContent: with injected deps, gathers, applies the two-floor eligible filter, and renders exactly like makeDefaultMemberDigestRun's own inlined logic used to", async () => {
   const message = await buildMemberDigestContent({
+    ...throwingContentDeps(),
     getDigests: async () => [
       makeDigest({ topic: 'below floor', distinctUsers: 2, questionCount: 5 }),
       makeDigest({ topic: 'at floor', distinctUsers: 3, questionCount: 1 }),
@@ -1315,9 +1387,6 @@ test("buildMemberDigestContent: with injected deps, gathers, applies the two-flo
     getNewKnowledgeTitles: async () => ['Setting up MCP auth'],
     getNewProjectCount: async () => 1,
     getMemberTipCount: async () => 0,
-    // Un-injected deps fall through to the REAL repository (see
-    // buildMemberDigestContent's `deps.x ?? <repo fn>` defaults), so a missing
-    // stub here is a silent live-Postgres dependency, not a no-op.
     getNewInterestCount: async () => 0,
   });
   assert.equal(
@@ -1328,6 +1397,7 @@ test("buildMemberDigestContent: with injected deps, gathers, applies the two-flo
 
 test('buildMemberDigestContent: every input empty renders null, same as formatMemberDigestMessage directly', async () => {
   const message = await buildMemberDigestContent({
+    ...throwingContentDeps(),
     getDigests: async () => [],
     getNewKnowledgeTitles: async () => [],
     getNewProjectCount: async () => 0,
@@ -1361,11 +1431,19 @@ test(
       const { adapter, sent } = makeAdapter();
       let recordCalled = false;
       const runOnce = makeDefaultMemberDigestRun([adapter], {
+        ...throwingRunDeps(),
         wasSentRecently: async () => false,
         getDigests: async () => [makeDigest({ topic: 'post-pull topic', questionCount: 2 })],
         getNewKnowledgeTitles: async () => [],
         getNewProjectCount: async () => 0,
         getMemberTipCount: async () => 0,
+        // Stubbed even though this test's assertions (a send happened, a send
+        // was recorded) don't depend on them: the unstubbed versions read
+        // member_interests / release-watch pages live, and getReleaseWatchUpdates
+        // was additionally reached only when a sibling test happened to leave
+        // config.releaseWatch.enabled true — an order dependency, not a contract.
+        getNewInterestCount: async () => 0,
+        getReleaseWatchUpdates: async () => [],
         recordSent: async () => {
           recordCalled = true;
         },

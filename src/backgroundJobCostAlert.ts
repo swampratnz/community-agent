@@ -72,13 +72,21 @@ export function formatBackgroundJobCostAlertMessage(
  * migration. A job absent from either window (no cost recorded) is treated
  * as 0, not skipped.
  */
+/**
+ * {@link makeDefaultBackgroundJobCostAlertRun}'s deps. Required, not optional
+ * (issue #868): `sumCosts` defaults to a real `background_job_costs` read, so
+ * an omitted stub is a live Postgres query from a test, not a no-op. Pass
+ * nothing at all (production) for the repository default.
+ */
+export type BackgroundJobCostAlertRunDeps = {
+  sumCosts: (days: number) => Promise<{ total: number; byJob: Array<{ job: string; costUsd: number }> }>;
+};
+
 export function makeDefaultBackgroundJobCostAlertRun(
   adapters: readonly PlatformAdapter[],
-  deps: {
-    sumCosts?: (days: number) => Promise<{ total: number; byJob: Array<{ job: string; costUsd: number }> }>;
-  } = {},
+  deps?: BackgroundJobCostAlertRunDeps,
 ): () => Promise<void> {
-  const sumCosts = deps.sumCosts ?? sumBackgroundJobCosts;
+  const sumCosts = deps?.sumCosts ?? sumBackgroundJobCosts;
   const trackers = new Map<BackgroundJob, BackgroundJobCostAlertTracker>();
 
   return async () => {

@@ -20,7 +20,22 @@ orientation and never authority. If it is wrong, fix it in your PR.
 
 ## Build / test / verify
 
-- `npm run typecheck` — must be clean.
+- `npm run typecheck` — must be clean. This now also runs
+  `npm run typecheck:tests` (`tsconfig.tests.json`), because the main tsconfig
+  covers `src/**` only and `tsx` strips types without checking them, so `tests/`
+  went entirely untypechecked — which is how a whole class of test bug survived:
+  an injected-`deps` object that omits a field silently falls through to the
+  REAL repository function, so a "unit" test quietly queries live Postgres, and
+  since `node:test` runs test FILES in parallel those stray reads land on tables
+  other files are counting (a source of the cross-file flakiness that reddens
+  unrelated PRs). `tests/` has a large backlog of pre-existing type errors, so
+  this is an **incremental ratchet**: the config's `include` lists only the test
+  files that are clean today, kept alphabetical one-per-line so concurrent PRs
+  merge cleanly. Bringing another file to zero and adding it is the unit of
+  progress; never delete an entry to turn a red build green. Related: the deps
+  types in `memberDigest.ts`/`usageCostDigest.ts`/`backgroundJobCostAlert.ts`
+  have **no optional fields** on purpose — pass nothing at all (production) or
+  every field (tests); see `docs/STANDARDS.md` for the throwing-stub pattern.
 - `npm test` — Node test runner via tsx; must pass. Security invariants live
   here (tool gating, confirm flow, secret redaction, WhatsApp wire helpers) —
   when you touch those areas, extend the tests.

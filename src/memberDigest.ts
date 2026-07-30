@@ -144,6 +144,52 @@ export function formatMemberDigestMessage(
 }
 
 /**
+ * The content-gather deps for {@link buildMemberDigestContent}. **Every field is
+ * required on purpose** (issue #868): these default to real repository reads, so
+ * a *partial* deps object silently leaves the un-stubbed reads pointing at live
+ * Postgres. A test that stubbed 5 of 6 fields still hit the DB for the 6th, and
+ * because `node:test` runs files in parallel those stray reads/writes made
+ * global count/delta assertions in other files flaky.
+ *
+ * Requiring every field converts that into a compile error: adding a new signal
+ * here breaks every test call site until its author decides, per site, whether
+ * to stub the new read or accept a real one. Pass nothing at all (production,
+ * and every on-demand pull) to get the repository defaults for all of them.
+ *
+ * A shared spread-base for tests is fine ONLY if every field THROWS (see
+ * `throwingContentDeps` in tests/memberDigest.test.ts). A base of inert
+ * `async () => 0` stubs would re-create this footgun in a quieter form: a newly
+ * added signal would silently acquire a plausible zero nobody chose, and the
+ * test that was supposed to cover it would pass vacuously.
+ */
+export type MemberDigestContentDeps = {
+  getDigests: (days: number, limit: number) => Promise<ContextDigest[]>;
+  getNewKnowledgeTitles: (since: Date, limit: number) => Promise<string[]>;
+  getNewProjectCount: (since: Date) => Promise<number>;
+  getReleaseWatchUpdates: (
+    since: Date,
+    pathPrefixes: readonly string[],
+    limit: number,
+  ) => Promise<Array<{ pageTitle: string; sourceUrl: string | null }>>;
+  getMemberTipCount: (since: Date) => Promise<number>;
+  getNewInterestCount: (since: Date) => Promise<number>;
+};
+
+/**
+ * {@link makeDefaultMemberDigestRun}'s deps: the content gather plus the
+ * cadence bookkeeping. All-required for the same reason as
+ * {@link MemberDigestContentDeps} — and note the content half is genuinely
+ * load-bearing here, because the run threads these straight into
+ * `buildMemberDigestContent`. Before #868 a cadence-only test (stubbing just
+ * `wasSentRecently`/`recordSent`) reached the gather with 6 undefined deps and
+ * ran the real reads against Postgres.
+ */
+export type MemberDigestRunDeps = MemberDigestContentDeps & {
+  wasSentRecently: (days: number) => Promise<boolean>;
+  recordSent: () => Promise<void>;
+};
+
+/**
  * Gathers every member-digest signal (the same 6 reads `makeDefaultMemberDigestRun`
  * used to run inline) and renders them via {@link formatMemberDigestMessage}, returning
  * the exact text the weekly push would post right now, or `null` on a quiet
@@ -158,31 +204,21 @@ export function formatMemberDigestMessage(
  * closure, so a caller of this helper (an on-demand pull) can never suppress
  * or advance the next scheduled weekly push.
  *
- * Every dependency is injectable (tests only, same shape as
- * `makeDefaultMemberDigestRun`'s own deps) so the content logic can be
+ * Every dependency is injectable (tests only) so the content logic can be
  * exercised without a real DB; production and every on-demand pull call this
  * with no arguments, using the already-exported repository defaults.
+ *
+ * The deps parameter is ALL-OR-NOTHING by type ({@link MemberDigestContentDeps}
+ * has no optional fields) — see that type's own comment for why a partial
+ * object is a footgun rather than a convenience.
  */
-export async function buildMemberDigestContent(
-  deps: {
-    getDigests?: (days: number, limit: number) => Promise<ContextDigest[]>;
-    getNewKnowledgeTitles?: (since: Date, limit: number) => Promise<string[]>;
-    getNewProjectCount?: (since: Date) => Promise<number>;
-    getReleaseWatchUpdates?: (
-      since: Date,
-      pathPrefixes: readonly string[],
-      limit: number,
-    ) => Promise<Array<{ pageTitle: string; sourceUrl: string | null }>>;
-    getMemberTipCount?: (since: Date) => Promise<number>;
-    getNewInterestCount?: (since: Date) => Promise<number>;
-  } = {},
-): Promise<string | null> {
-  const getDigests = deps.getDigests ?? listContextDigests;
-  const getNewKnowledgeTitles = deps.getNewKnowledgeTitles ?? listCuratedKnowledgeCreatedSince;
-  const getNewProjectCount = deps.getNewProjectCount ?? countProjectsSharedSince;
-  const getReleaseWatchUpdates = deps.getReleaseWatchUpdates ?? listReleaseWatchUpdatesSince;
-  const getMemberTipCount = deps.getMemberTipCount ?? countAcceptedMemberKnowledgeTipsSince;
-  const getNewInterestCount = deps.getNewInterestCount ?? countInterestsPublishedSince;
+export async function buildMemberDigestContent(deps?: MemberDigestContentDeps): Promise<string | null> {
+  const getDigests = deps?.getDigests ?? listContextDigests;
+  const getNewKnowledgeTitles = deps?.getNewKnowledgeTitles ?? listCuratedKnowledgeCreatedSince;
+  const getNewProjectCount = deps?.getNewProjectCount ?? countProjectsSharedSince;
+  const getReleaseWatchUpdates = deps?.getReleaseWatchUpdates ?? listReleaseWatchUpdatesSince;
+  const getMemberTipCount = deps?.getMemberTipCount ?? countAcceptedMemberKnowledgeTipsSince;
+  const getNewInterestCount = deps?.getNewInterestCount ?? countInterestsPublishedSince;
 
   const since = new Date(Date.now() - FRESHNESS_DAYS * 24 * 3_600_000);
   // RELEASE_WATCH_ENABLED gates the read itself, not just its output — when
@@ -237,23 +273,10 @@ export async function buildMemberDigestContent(
  */
 export function makeDefaultMemberDigestRun(
   adapters: readonly PlatformAdapter[],
-  deps: {
-    wasSentRecently?: (days: number) => Promise<boolean>;
-    getDigests?: (days: number, limit: number) => Promise<ContextDigest[]>;
-    getNewKnowledgeTitles?: (since: Date, limit: number) => Promise<string[]>;
-    getNewProjectCount?: (since: Date) => Promise<number>;
-    getReleaseWatchUpdates?: (
-      since: Date,
-      pathPrefixes: readonly string[],
-      limit: number,
-    ) => Promise<Array<{ pageTitle: string; sourceUrl: string | null }>>;
-    getMemberTipCount?: (since: Date) => Promise<number>;
-    getNewInterestCount?: (since: Date) => Promise<number>;
-    recordSent?: () => Promise<void>;
-  } = {},
+  deps?: MemberDigestRunDeps,
 ): () => Promise<void> {
-  const wasSentRecently = deps.wasSentRecently ?? wasMemberDigestSentRecently;
-  const recordSent = deps.recordSent ?? recordMemberDigestSent;
+  const wasSentRecently = deps?.wasSentRecently ?? wasMemberDigestSentRecently;
+  const recordSent = deps?.recordSent ?? recordMemberDigestSent;
 
   return async () => {
     // MEMBER_DIGEST_CHANNEL_ID is config-set only — never model- or
@@ -274,14 +297,11 @@ export function makeDefaultMemberDigestRun(
       return;
     }
 
-    const message = await buildMemberDigestContent({
-      getDigests: deps.getDigests,
-      getNewKnowledgeTitles: deps.getNewKnowledgeTitles,
-      getNewProjectCount: deps.getNewProjectCount,
-      getReleaseWatchUpdates: deps.getReleaseWatchUpdates,
-      getMemberTipCount: deps.getMemberTipCount,
-      getNewInterestCount: deps.getNewInterestCount,
-    });
+    // Passed straight through, not re-listed field-by-field: MemberDigestRunDeps
+    // is a superset of MemberDigestContentDeps, so a new content signal needs no
+    // change here. The old explicit list was a second place to forget one, which
+    // is how #822's and #839's new deps reached the gather as `undefined`.
+    const message = await buildMemberDigestContent(deps);
     // Quiet week — nothing to post. Deliberately leaves the freshness row
     // untouched (same convention as adminDigest.ts's quiet-week skip) so a
     // week that starts quiet but gains a digest/knowledge entry partway

@@ -1,0 +1,33 @@
+{
+  // Typecheck gate for `tests/`, which the main tsconfig deliberately omits
+  // (`include: ["src/**/*.ts"]`) and which `tsx` never checks — it strips types
+  // and runs. That gap is why a whole class of test bug went undetected: an
+  // injected-deps object that omits a field silently falls through to the REAL
+  // repository function, so a "unit" test quietly queries live Postgres. Because
+  // `node:test` runs test FILES in parallel, those stray reads/writes land on
+  // tables other files are counting, producing the cross-file flakiness that has
+  // reddened unrelated PRs (issue #868 fixed one instance by hand; the deps
+  // types are now all-required so the compiler finds the rest).
+  //
+  // `tests/` has a large backlog of pre-existing type errors, so this is an
+  // INCREMENTAL RATCHET, not a big-bang switch: `include` lists only files that
+  // are type-clean today. Adding a file is the unit of progress — bring it to
+  // zero errors, then list it here and it can never regress.
+  //
+  // Listed alphabetically, one per line, so two PRs adding different files land
+  // in different hunks and merge cleanly (same reasoning as
+  // tests/security-floor.json's per-file entries).
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    // tests/ sits outside src/, so the shared rootDir has to widen for this
+    // project. noEmit means nothing is written regardless.
+    "rootDir": "."
+  },
+  "include": [
+    "src/**/*.ts",
+    "tests/backgroundJobCostAlert.test.ts",
+    "tests/memberDigest.test.ts",
+    "tests/usageCostDigest.test.ts"
+  ]
+}
