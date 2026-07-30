@@ -20,6 +20,7 @@ preamble, which src/agent/changelog.ts skips, so `whats_new` never shows it
 to members. Append numbers; never remove them.
 Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #775 #784 #804 #807 #809 #810 #812 #814 #816 #817 #818 #819 #821 #824 #825
+#868 #896 #899
 -->
 
 
@@ -155,16 +156,26 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-07-29
 
 ### Fixed
-- **WhatsApp reconnects after WhatsApp itself refuses the connection.** On the
-  morning of 29 July, WhatsApp began rejecting the bot's connection outright
-  (a refusal, not a logout — the pairing was never lost), and Dave was
-  unreachable on WhatsApp for about six hours. Discord was unaffected
+- **WhatsApp reconnects after WhatsApp itself refuses the connection** (#857).
+  On the morning of 29 July, WhatsApp began rejecting the bot's connection
+  outright (a refusal, not a logout — the pairing was never lost), and Dave
+  was unreachable on WhatsApp for about six hours. Discord was unaffected
   throughout. The WhatsApp library has been updated to the release published
   the same day, which addresses the rejection.
-- **The bot no longer retries forever when WhatsApp is refusing it.** Reconnect
-  attempts are now capped (~an hour of retrying by default) instead of looping
-  indefinitely; when the budget runs out it logs one clear, actionable error
-  and alerts an admin rather than retrying silently in the background.
+- **The bot no longer retries forever when WhatsApp is refusing it** (#857).
+  Reconnect attempts are now capped (~an hour of retrying by default) instead
+  of looping indefinitely; when the budget runs out it logs one clear,
+  actionable error and alerts an admin rather than retrying silently in the
+  background.
+- **A transient WhatsApp send failure no longer silently drops a reply or DM**
+  (#855, issue #852): the WhatsApp (Baileys) adapter's `sendMessage` and
+  `sendDirectMessage` now retry a failed socket send up to twice more (a
+  short fixed delay between attempts) before giving up, porting #849's
+  Discord bounded-retry fix to WhatsApp's own send paths — the gap #849
+  itself named as its natural next step. A persistent failure still surfaces
+  exactly as it does today, just one retry-delay later; the retried send
+  re-sends the identical already-filtered message, never re-derived or
+  re-filtered.
 
 ### Added
 - **`clear_warnings` now tells the member their warnings were cleared** (#865):
@@ -514,6 +525,15 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   rendering, failing safe (no caveat, not a dropped reply) if either lookup
   errors. No new tool, tier, or config flag, and byte-identical output when
   the low-rated knob is at its default.
+- **A transient Discord API blip no longer silently drops a reply or DM**
+  (#849, issue #846): `sendMessage` and `sendDirectMessage` now retry a
+  failed `send()` call up to twice more (a short fixed delay between
+  attempts) before giving up, mirroring the bounded-retry shape this file's
+  muted-role overwrite already used. Previously the only trace of a dropped
+  reply was a "respond failed" log line, with nothing sent to the member at
+  all; a persistent failure still surfaces exactly as it does today, just one
+  retry-delay later. A multi-chunk reply only re-sends the one chunk that
+  actually failed, never a chunk already delivered.
 
 ## 2026-07-27
 
