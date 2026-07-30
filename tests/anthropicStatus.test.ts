@@ -14,6 +14,7 @@ const {
   pollAnthropicStatus,
   formatStatusMessage,
   formatStatusIncidentAlert,
+  formatStatusResolvedAlert,
   getStatusCache,
   resetStatusCacheForTests,
 } = await import('../src/status/anthropicStatus.js');
@@ -211,6 +212,40 @@ test(
     assert.ok(
       alert.includes(memberFacing),
       'the alert body must contain the member-facing rendering verbatim',
+    );
+  },
+);
+
+// --- formatStatusResolvedAlert (pure, issue #905) ----------------------------
+
+test(
+  'formatStatusResolvedAlert renders a distinct, clearly-"resolved"-worded message that delegates its ' +
+    'body to formatStatusMessage verbatim',
+  () => {
+    const now = Date.parse('2026-07-30T00:05:00.000Z');
+    const state = {
+      fetchedAt: new Date('2026-07-30T00:02:00.000Z'),
+      summary: { indicator: 'none' as const, description: 'All Systems Operational', incidents: [] },
+    };
+    const alert = formatStatusResolvedAlert(state, now);
+    assert.match(alert, /resolved/i, 'the message must clearly read as a recovery/resolved alert');
+    assert.notEqual(
+      alert,
+      formatStatusIncidentAlert(
+        { fetchedAt: state.fetchedAt, summary: { indicator: 'major', description: 'x', incidents: [] } },
+        now,
+      ),
+      'the resolved alert must be visibly distinct from the incident-start alert',
+    );
+    assert.equal(
+      alert,
+      `✅ Proactive alert (Anthropic status resolved): ${formatStatusMessage(state, now)}`,
+      'the body must be exactly formatStatusMessage\'s existing "No known Anthropic incidents..." rendering',
+    );
+    assert.ok(
+      alert.includes(formatStatusMessage(state, now)),
+      'the resolved alert must contain the member-facing rendering verbatim, with no additional ' +
+        'interpolation of summary fields',
     );
   },
 );

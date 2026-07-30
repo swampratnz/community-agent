@@ -25,7 +25,13 @@ const {
 } = await import('../src/backgroundJobs.js');
 const { getJobHealthSnapshot, resetJobHealthRegistryForTests } =
   await import('../src/backgroundJobHealth.js');
-const { pollAnthropicStatus, resetStatusCacheForTests } = await import('../src/status/anthropicStatus.js');
+const {
+  pollAnthropicStatus,
+  resetStatusCacheForTests,
+  formatStatusResolvedAlert,
+  formatStatusMessage,
+  getStatusCache,
+} = await import('../src/status/anthropicStatus.js');
 const { WindowClosedError } = await import('../src/platforms/whatsapp/cloudAdapter.js');
 
 const POLL_MS = 5 * 60_000;
@@ -293,7 +299,7 @@ test(
     tracker = step.tracker;
 
     step = stepStatusIncidentTracker(tracker, 'none');
-    assert.equal(step.shouldAlert, false, 'the resolve transition itself never alerts');
+    assert.equal(step.shouldAlert, false, 'the resolve transition itself never fires shouldAlert');
     tracker = step.tracker;
 
     step = stepStatusIncidentTracker(tracker, 'critical');
@@ -302,8 +308,71 @@ test(
 );
 
 test(
+  'stepStatusIncidentTracker: shouldAlertResolved (issue #905) is true only on the active(true) -> none ' +
+    'transition, false for every other case, and never true alongside shouldAlert in the same step',
+  () => {
+    let tracker = initialStatusIncidentTracker();
+
+    // none -> none: never armed, never fires either flag.
+    let step = stepStatusIncidentTracker(tracker, 'none');
+    assert.equal(step.shouldAlert, false);
+    assert.equal(step.shouldAlertResolved, false, 'none -> none never fires the resolved alert');
+    tracker = step.tracker;
+
+    // none -> incident: arms the latch, fires shouldAlert only.
+    step = stepStatusIncidentTracker(tracker, 'minor');
+    assert.equal(step.shouldAlert, true);
+    assert.equal(step.shouldAlertResolved, false, 'the start transition never fires the resolved alert');
+    tracker = step.tracker;
+
+    // incident -> incident (repeat, still active): neither flag fires.
+    step = stepStatusIncidentTracker(tracker, 'minor');
+    assert.equal(step.shouldAlert, false);
+    assert.equal(step.shouldAlertResolved, false, 'repeating the same active incident fires neither flag');
+    tracker = step.tracker;
+
+    // incident -> different-but-still-non-none incident: neither flag fires.
+    step = stepStatusIncidentTracker(tracker, 'critical');
+    assert.equal(
+      step.shouldAlert,
+      false,
+      'escalating severity while still active does not re-fire shouldAlert',
+    );
+    assert.equal(step.shouldAlertResolved, false, 'escalating severity while still active is not a resolve');
+    tracker = step.tracker;
+
+    // active(true) -> none: the resolve edge. Fires shouldAlertResolved only.
+    step = stepStatusIncidentTracker(tracker, 'none');
+    assert.equal(step.shouldAlert, false, 'shouldAlert and shouldAlertResolved are never both true');
+    assert.equal(step.shouldAlertResolved, true, 'active -> none fires the resolved alert exactly once');
+    tracker = step.tracker;
+
+    // none -> none again, now that the latch is disarmed: neither flag fires.
+    step = stepStatusIncidentTracker(tracker, 'none');
+    assert.equal(step.shouldAlert, false);
+    assert.equal(
+      step.shouldAlertResolved,
+      false,
+      'a disarmed latch does not re-fire resolved on repeat none',
+    );
+
+    // Exhaustively re-check every transition never yields both flags true.
+    for (const from of ['none', 'minor', 'major', 'critical'] as const) {
+      for (const to of ['none', 'minor', 'major', 'critical'] as const) {
+        const t = stepStatusIncidentTracker({ active: from !== 'none' }, to);
+        assert.ok(
+          !(t.shouldAlert && t.shouldAlertResolved),
+          `shouldAlert and shouldAlertResolved must never both be true (${from} -> ${to})`,
+        );
+      }
+    }
+  },
+);
+
+test(
   'startStatusCheck: DMs super admins exactly once on a none -> incident transition, no repeat while the ' +
-    'incident stays active, no DM on the resolve transition, and fires again for a later separate incident',
+    'incident stays active, exactly one resolved DM on the resolve transition, and fires again (start + ' +
+    'resolved) for a later separate incident (issue #905)',
   async (t) => {
     resetStatusCacheForTests();
     const { adapter, dms } = makeAdapter();
@@ -332,13 +401,69 @@ test(
       body = ALL_OPERATIONAL_BODY;
       t.mock.timers.tick(POLL_MS); // resolves
       await flush();
-      assert.equal(dms.length, 1, 'the resolve transition itself sends no DM (out of scope for this issue)');
+      assert.equal(dms.length, 2, 'exactly one resolved DM follows the incident-start DM, in order');
+      assert.match(dms[1].text, /resolved/i);
+      assert.doesNotMatch(dms[1].text, /Elevated errors on the Messages API/);
 
       body = OTHER_INCIDENT_BODY;
       t.mock.timers.tick(POLL_MS); // a later, separate incident
       await flush();
-      assert.equal(dms.length, 2, 'a later, separate incident after re-arming alerts again');
-      assert.match(dms[1].text, /Total outage on the Messages API/);
+      assert.equal(dms.length, 3, 'a later, separate incident after re-arming alerts again');
+      assert.match(dms[2].text, /Total outage on the Messages API/);
+    } finally {
+      clearInterval(timer!);
+    }
+  },
+);
+
+test('startStatusCheck: a none -> none sequence (status stays operational) yields zero alertSuperAdmins calls', async (t) => {
+  resetStatusCacheForTests();
+  const { adapter, dms } = makeAdapter();
+  const runOnce = () => pollAnthropicStatus(async () => ALL_OPERATIONAL_BODY);
+
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const timer = startStatusCheck([adapter], runOnce);
+  try {
+    await flush();
+    t.mock.timers.tick(POLL_MS);
+    await flush();
+    t.mock.timers.tick(POLL_MS);
+    await flush();
+    assert.equal(dms.length, 0, 'staying operational across several polls sends no DM at all');
+  } finally {
+    clearInterval(timer!);
+  }
+});
+
+test(
+  'startStatusCheck: a none -> major -> major -> none sequence still yields exactly one start DM and one ' +
+    'resolved DM — no repeat while the incident remains active across multiple polls',
+  async (t) => {
+    resetStatusCacheForTests();
+    const { adapter, dms } = makeAdapter();
+    let body = ALL_OPERATIONAL_BODY;
+    const runOnce = () => pollAnthropicStatus(async () => body);
+
+    t.mock.timers.enable({ apis: ['setInterval'] });
+    const timer = startStatusCheck([adapter], runOnce);
+    try {
+      await flush(); // none
+
+      body = INCIDENT_BODY;
+      t.mock.timers.tick(POLL_MS); // -> major
+      await flush();
+      assert.equal(dms.length, 1, 'one start DM');
+
+      t.mock.timers.tick(POLL_MS); // still major
+      await flush();
+      t.mock.timers.tick(POLL_MS); // still major
+      await flush();
+      assert.equal(dms.length, 1, 'no repeat start DM across multiple polls while still active');
+
+      body = ALL_OPERATIONAL_BODY;
+      t.mock.timers.tick(POLL_MS); // -> none
+      await flush();
+      assert.equal(dms.length, 2, 'exactly one resolved DM follows');
     } finally {
       clearInterval(timer!);
     }
@@ -438,6 +563,67 @@ test(
         ['super-1'],
         'the DM recipient is exactly the configured SUPER_ADMIN_DISCORD_IDS set — the same super-admin-only ' +
           'fan-out as every job-failure alert above, no broader audience',
+      );
+    } finally {
+      clearInterval(timer!);
+    }
+  },
+);
+
+test(
+  'SECURITY: the resolved alert (issue #905) targets exactly the same super-admin recipient set as the ' +
+    'incident-start alert — no broadened scope, no channel post — and its body exposes no data beyond ' +
+    'what formatStatusMessage/state.summary already surfaces to any check_status caller: on the resolve ' +
+    'edge the body equals the incident-free formatStatusMessage rendering and contains no incident name ' +
+    'or description string',
+  async (t) => {
+    resetStatusCacheForTests();
+    const { adapter, dms } = makeAdapter();
+    let body = ALL_OPERATIONAL_BODY;
+    const runOnce = () => pollAnthropicStatus(async () => body);
+
+    t.mock.timers.enable({ apis: ['setInterval'] });
+    const timer = startStatusCheck([adapter], runOnce);
+    try {
+      await flush(); // initial run: operational
+      body = INCIDENT_BODY;
+      t.mock.timers.tick(POLL_MS); // none -> incident: start DM
+      await flush();
+
+      body = ALL_OPERATIONAL_BODY;
+      t.mock.timers.tick(POLL_MS); // incident -> none: resolved DM
+      await flush();
+
+      assert.equal(dms.length, 2, 'exactly one start DM and one resolved DM');
+      assert.deepEqual(
+        dms.map((d) => d.userId),
+        ['super-1', 'super-1'],
+        'the resolved DM recipient set is identical to the incident-start DM recipient set — super admins only',
+      );
+
+      const resolvedBody = dms[1].text;
+      const state = getStatusCache();
+      assert.ok(state);
+      const memberFacingBody = formatStatusMessage(state, Date.now());
+      assert.equal(
+        resolvedBody,
+        formatStatusResolvedAlert(state, Date.now()),
+        'sanity: the sent DM matches the pure formatter for the same state',
+      );
+      assert.ok(
+        resolvedBody.includes(memberFacingBody),
+        'the resolved DM body must contain exactly the incident-free formatStatusMessage rendering — no ' +
+          'data beyond what a member-tier check_status caller already sees',
+      );
+      assert.doesNotMatch(
+        resolvedBody,
+        /Elevated errors on the Messages API/,
+        'the resolved DM must carry no incident name string from the prior, now-resolved incident',
+      );
+      assert.doesNotMatch(
+        resolvedBody,
+        /Major System Outage/,
+        'the resolved DM must carry no incident description string from the prior, now-resolved incident',
       );
     } finally {
       clearInterval(timer!);

@@ -193,3 +193,16 @@ export function formatStatusMessage(state: StatusCacheState | null, now: number)
 export function formatStatusIncidentAlert(state: StatusCacheState, now: number): string {
   return `🔔 Proactive alert (Anthropic status changed): ${formatStatusMessage(state, now)}`;
 }
+
+/**
+ * The proactive super-admin DM sent on the symmetric `incident → 'none'`
+ * transition (issue #905), completing `formatStatusIncidentAlert`'s pair.
+ * Reuses `formatStatusMessage` verbatim for the same reason: one reviewed
+ * interpolation path for Anthropic-supplied text, not a second one for the
+ * resolve side. On this transition the cache always has zero active
+ * incidents, so the body is always the fixed "No known Anthropic incidents
+ * right now..." rendering — never Anthropic-supplied incident text.
+ */
+export function formatStatusResolvedAlert(state: StatusCacheState, now: number): string {
+  return `✅ Proactive alert (Anthropic status resolved): ${formatStatusMessage(state, now)}`;
+}

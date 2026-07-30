@@ -130,7 +130,7 @@
   "securityGateCanary.test.ts": 1,
   "securityGateWrite.test.ts": 7,
   "staleKnowledgeAlert.router.test.ts": 3,
-  "statusCheckAlert.test.ts": 3,
+  "statusCheckAlert.test.ts": 4,
   "suggestIssue.test.ts": 3,
   "systemPrompt.test.ts": 19,
   "tools.test.ts": 286,
