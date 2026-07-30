@@ -156,14 +156,11 @@ Behaviour rules:
  * this exact text instead as skills/prompt-review/SKILL.md's body, and it is
  * dropped from GUIDELINES here — the skill replaces the bullet, never
  * duplicates it, so the capability is never absent from both places.
- */
-/**
- * The #635 prompt-review checklist. Exported because it must stay
- * BYTE-IDENTICAL to the body of `skills/prompt-review/SKILL.md`: when
- * `AGENT_SKILLS_ENABLED` is off this text is inlined into GUIDELINES, and when
- * it is on core.ts drops it here and loads the SKILL.md instead, so the two
- * copies forking would silently change behaviour between flag states.
- * `tests/agentSkillsEnabled.test.ts` asserts the equality (nothing else did).
+ *
+ * Exported because it must therefore stay BYTE-IDENTICAL to that SKILL.md
+ * body: the two copies forking would silently change behaviour between flag
+ * states. `tests/agentSkillsEnabled.test.ts` asserts the equality (nothing
+ * else did).
  */
 export const PROMPT_REVIEW_CLAUSE = `
 - Reviewing a member's own prompt/system prompt/tool schema: when a member

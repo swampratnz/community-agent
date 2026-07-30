@@ -63,6 +63,16 @@ export function formatBackgroundJobCostAlertMessage(
 }
 
 /**
+ * {@link makeDefaultBackgroundJobCostAlertRun}'s deps. Required, not optional
+ * (issue #868): `sumCosts` defaults to a real `background_job_costs` read, so
+ * an omitted stub is a live Postgres query from a test, not a no-op. Pass
+ * nothing at all (production) for the repository default.
+ */
+export type BackgroundJobCostAlertRunDeps = {
+  sumCosts: (days: number) => Promise<{ total: number; byJob: Array<{ job: string; costUsd: number }> }>;
+};
+
+/**
  * Builds the default `runOnce`, closing a per-job tracker map over the tick
  * (same "closure holds mutable state across ticks" shape `usageAlert.ts`'s
  * `startUsageAlert` uses for its single tracker, just keyed per job here).
@@ -73,16 +83,6 @@ export function formatBackgroundJobCostAlertMessage(
  * migration. A job absent from either window (no cost recorded) is treated
  * as 0, not skipped.
  */
-/**
- * {@link makeDefaultBackgroundJobCostAlertRun}'s deps. Required, not optional
- * (issue #868): `sumCosts` defaults to a real `background_job_costs` read, so
- * an omitted stub is a live Postgres query from a test, not a no-op. Pass
- * nothing at all (production) for the repository default.
- */
-export type BackgroundJobCostAlertRunDeps = {
-  sumCosts: (days: number) => Promise<{ total: number; byJob: Array<{ job: string; costUsd: number }> }>;
-};
-
 export function makeDefaultBackgroundJobCostAlertRun(
   adapters: readonly PlatformAdapter[],
   deps?: BackgroundJobCostAlertRunDeps,
