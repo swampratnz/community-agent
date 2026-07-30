@@ -89,6 +89,7 @@ import {
   listRoster,
   listSuggestions,
   MEMBER_PROJECT_CAP,
+  mergeKnowledgeEntries,
   oldestAccessRequestAgeDays,
   oldestOpenAppealAgeDays,
   oldestOpenReportAgeDays,
@@ -1741,7 +1742,7 @@ const ADMIN_CAPABILITIES_TEXT =
   "- Manage membership: add a new member, remove a member, link a member's cross-platform identity, or unlink a member's cross-platform identity\n" +
   '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, check which knowledge entries are rated poorly, and review recurring unhelpful-answer themes across all answers\n' +
   '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
-  '- Curate the knowledge base: save a new knowledge entry, browse knowledge entries, edit a knowledge entry, or delete a knowledge entry, and check for near-duplicate entries or conflicting entries\n' +
+  '- Curate the knowledge base: save a new knowledge entry, browse knowledge entries, edit a knowledge entry, delete a knowledge entry, or merge two entries together, and check for near-duplicate entries or conflicting entries\n' +
   "- Review knowledge candidates, accept a candidate or decline a candidate, track knowledge gaps (questions I couldn't answer), recurring question clusters, raw context digests, pull your own admin-digest snapshot on demand, get a review-queue roll-up of all five review queues at once, or check how quickly I've been answering members (response latency)\n" +
   '- See who is waiting for access, or who has joined or left the server\n' +
   "- Add a note about a member, review notes on a member, delete a note, or look up a member's history across conversations\n" +
@@ -5976,6 +5977,68 @@ export function buildToolServer(
     },
   );
 
+  const mergeKnowledgeTool = tool(
+    'merge_knowledge',
+    "Consolidate a detected duplicate/conflict pair into one entry: keeps `keepId`, folds `mergeId`'s " +
+      'retrieval_count/last_retrieved_at history onto it, then deletes `mergeId`. Optional title/content/scope ' +
+      "override the survivor's content (and re-embed it) exactly like update_knowledge; omit them to leave " +
+      "keepId's existing wording untouched. Use this after list_duplicate_knowledge or list_knowledge_conflicts " +
+      'to act on a pair instead of a manual update_knowledge + delete_knowledge. Requires confirmation. Admin only.',
+    {
+      keepId: z.number().describe('Knowledge entry id to keep (the survivor)'),
+      mergeId: z.number().describe('Knowledge entry id to merge into keepId and delete'),
+      title: z
+        .string()
+        .optional()
+        .describe("New title for the survivor; omit to leave keepId's title unchanged"),
+      content: z
+        .string()
+        .optional()
+        .describe("New content for the survivor; omit to leave keepId's content unchanged"),
+      scope: z
+        .string()
+        .optional()
+        .describe("New scope for the survivor; omit to leave keepId's scope unchanged"),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'merge_knowledge');
+      return requireConfirm(
+        `merge knowledge entry #${args.mergeId} into #${args.keepId}`,
+        'admin',
+        async () => {
+          // Pre-merge text of the entry being deleted, same recoverability
+          // precedent as update_knowledge's `prior` capture — a merge deletes
+          // mergeId, so this is the only record of what it contained.
+          const prior = await getKnowledgeContentById(args.mergeId);
+          const { success, result } = await audited({
+            actionKind: 'merge_knowledge',
+            params: {
+              keepId: args.keepId,
+              mergeId: args.mergeId,
+              title: args.title,
+              content: args.content,
+              scope: args.scope,
+              mergedTitle: prior?.title,
+              mergedContent: prior?.content,
+            },
+            run: async () => {
+              const outcome = await mergeKnowledgeEntries(args.keepId, args.mergeId, {
+                title: args.title,
+                content: args.content,
+                scope: args.scope,
+              });
+              if (!outcome.merged) throw new Error(outcome.error ?? 'Merge failed.');
+              return 'merged';
+            },
+          });
+          return success
+            ? `Merged knowledge entry #${args.mergeId} into #${args.keepId}.`
+            : `Failed: ${result}`;
+        },
+      );
+    },
+  );
+
   const listAccessRequestsTool = tool(
     'list_access_requests',
     'List gated guests who have asked the bot for access — identity and request count only, never message content. Admin only.',
@@ -7886,6 +7949,7 @@ export function buildToolServer(
       listKnowledgeConflictsTool,
       updateKnowledgeTool,
       deleteKnowledgeTool,
+      mergeKnowledgeTool,
       listAccessRequestsTool,
       addMemberNoteTool,
       listMemberNotesTool,

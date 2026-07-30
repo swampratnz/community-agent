@@ -2698,7 +2698,7 @@ test('community_info: admin-tier reply stays byte-identical, never gains SUPER_A
     "- Manage membership: add a new member, remove a member, link a member's cross-platform identity, or unlink a member's cross-platform identity\n" +
     '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, check which knowledge entries are rated poorly, and review recurring unhelpful-answer themes across all answers\n' +
     '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
-    '- Curate the knowledge base: save a new knowledge entry, browse knowledge entries, edit a knowledge entry, or delete a knowledge entry, and check for near-duplicate entries or conflicting entries\n' +
+    '- Curate the knowledge base: save a new knowledge entry, browse knowledge entries, edit a knowledge entry, delete a knowledge entry, or merge two entries together, and check for near-duplicate entries or conflicting entries\n' +
     "- Review knowledge candidates, accept a candidate or decline a candidate, track knowledge gaps (questions I couldn't answer), recurring question clusters, raw context digests, pull your own admin-digest snapshot on demand, get a review-queue roll-up of all five review queues at once, or check how quickly I've been answering members (response latency)\n" +
     '- See who is waiting for access, or who has joined or left the server\n' +
     "- Add a note about a member, review notes on a member, delete a note, or look up a member's history across conversations\n" +
@@ -2878,6 +2878,7 @@ const ADMIN_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__list_knowledge', /browse knowledge entries/i],
   ['mcp__community__update_knowledge', /edit a knowledge entry/i],
   ['mcp__community__delete_knowledge', /delete a knowledge entry/i],
+  ['mcp__community__merge_knowledge', /merge two entries together/i],
   ['mcp__community__list_duplicate_knowledge', /near-duplicate entries/i],
   ['mcp__community__list_knowledge_conflicts', /conflicting entries/i],
   ['mcp__community__list_access_requests', /waiting for access/i],
@@ -2973,8 +2974,10 @@ test('community_info: admin reply stays under a hard char cap, not a wall of tex
   // alongside the member cap for issue #729's set_helper_availability/
   // find_helper line, and again alongside the member cap for issue #808's
   // request_human_help line, and again alongside the member cap for issue
-  // #840's request_project_connection line.
-  assert.ok(adminReply.length < 3850, `admin reply should stay short; was ${adminReply.length} chars`);
+  // #840's request_project_connection line; bumped again for issue #886's
+  // merge_knowledge clause (consolidated into the existing knowledge-base
+  // curation bullet, not a new one).
+  assert.ok(adminReply.length < 3900, `admin reply should stay short; was ${adminReply.length} chars`);
 });
 
 test('SECURITY: community_info member-tier and guest-tier replies never name an admin/super_admin-only tool or contain any ADMIN_CAPABILITIES_TEXT-unique line (issue #367, issue #311)', async () => {
@@ -3480,6 +3483,60 @@ test('SECURITY: update_knowledge registers a pending CONFIRM action instead of o
     'an in-place overwrite of trusted, member-facing knowledge must be CONFIRM-gated like delete_knowledge',
   );
   cancelPendingAction('discord', 'convo-update-knowledge', 'admin-1');
+});
+
+test('SECURITY: merge_knowledge registers a pending CONFIRM action instead of merging in place (issue #886 acceptance criterion 5)', async () => {
+  const adapter = stubAdapter(async () => {});
+  const caller = {
+    platform: 'discord' as const,
+    userId: 'admin-1',
+    userName: 'Admin',
+    role: 'admin' as const,
+    conversationId: 'convo-merge-knowledge',
+  };
+  const server = buildToolServer(caller, adapter);
+  const registeredTool = (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+      >;
+    }
+  )._registeredTools['merge_knowledge'];
+
+  const result = await registeredTool.handler({ keepId: 5, mergeId: 6 });
+  assert.match(result.content[0].text, /CONFIRM/, 'must ask for out-of-band confirmation');
+  assert.ok(
+    hasPendingAction('discord', 'convo-merge-knowledge', 'admin-1'),
+    'a destructive merge must be CONFIRM-gated like update_knowledge/delete_knowledge',
+  );
+  cancelPendingAction('discord', 'convo-merge-knowledge', 'admin-1');
+});
+
+test('SECURITY: merge_knowledge rejects member and guest callers before any repository call (issue #886 acceptance criterion 4)', async () => {
+  const adapter = stubAdapter(async () => {});
+  for (const role of ['member', 'guest'] as const) {
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${role}-1`,
+      userName: 'Caller',
+      role,
+      conversationId: `convo-merge-knowledge-${role}`,
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<string, { handler: (args: object) => Promise<unknown> }>;
+      }
+    )._registeredTools['merge_knowledge'];
+
+    await assert.rejects(() => registeredTool.handler({ keepId: 1, mergeId: 2 }), /Permission denied/);
+    assert.equal(
+      hasPendingAction('discord', `convo-merge-knowledge-${role}`, `${role}-1`),
+      false,
+      `${role} must never reach the CONFIRM gate, let alone a repository call`,
+    );
+  }
 });
 
 test('SECURITY: purge_user_data rejects a malformed/wrong-platform id instead of a false-success 0-row purge (advisory B4)', async () => {
@@ -21649,6 +21706,139 @@ test(
       reserveVoiceTranscriptionSlot(`discord:${collidingId}`, limit),
       false,
       'the Discord quota is independently exhausted after its own single slot',
+    );
+  },
+);
+
+test(
+  'merge_knowledge merges the confirmed pair via the tool handler and records the pre-merge title/content of the deleted entry in admin_audit (issue #886 acceptance criteria 1 and 5)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-merge-knowledge-tool-scope`;
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-merge-knowledge-tool-admin`,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: `${RUN}-merge-knowledge-tool-convo`,
+    };
+    const server = buildToolServer(caller, adapter);
+    const tools = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          {
+            handler: (
+              args: Record<string, unknown>,
+            ) => Promise<{ content: Array<{ text: string }>; isError?: boolean }>;
+          }
+        >;
+      }
+    )._registeredTools;
+
+    const { id: keepId } = await saveKnowledge({ title: 'Keep me', content: 'Survivor content.', scope });
+    const { id: mergeId } = await saveKnowledge({
+      title: 'Retire me',
+      content: 'Loser content, must be recorded pre-delete.',
+      scope,
+    });
+
+    const result = await tools['merge_knowledge'].handler({ keepId, mergeId });
+    assert.equal(result.isError, false);
+    assert.match(result.content[0]?.text ?? '', /CONFIRM/);
+
+    const { rows: beforeConfirm } = await pool.query(
+      `SELECT count(*)::int AS n FROM admin_audit WHERE action_kind = 'merge_knowledge'`,
+    );
+
+    const pending = takePendingAction('discord', caller.conversationId, caller.userId);
+    assert.ok(pending, 'must register a pending action');
+    const execResult = await pending?.execute();
+    assert.match(execResult ?? '', new RegExp(`Merged knowledge entry #${mergeId} into #${keepId}`));
+
+    const goneRow = await pool.query(`SELECT 1 FROM knowledge WHERE id = $1`, [mergeId]);
+    assert.equal(goneRow.rows.length, 0, 'mergeId is deleted once confirmed');
+
+    const { rows: afterConfirm } = await pool.query(
+      `SELECT count(*)::int AS n FROM admin_audit WHERE action_kind = 'merge_knowledge'`,
+    );
+    assert.equal(
+      afterConfirm[0].n,
+      beforeConfirm[0].n + 1,
+      'exactly one new admin_audit row for the confirmed merge',
+    );
+    const { rows: auditRows } = await pool.query(
+      `SELECT params FROM admin_audit WHERE action_kind = 'merge_knowledge' ORDER BY id DESC LIMIT 1`,
+    );
+    const params = auditRows[0].params as {
+      keepId: number;
+      mergeId: number;
+      mergedTitle: string | null;
+      mergedContent: string;
+    };
+    assert.equal(params.keepId, keepId);
+    assert.equal(params.mergeId, mergeId);
+    assert.equal(params.mergedTitle, 'Retire me', "audit row records the deleted entry's pre-merge title");
+    assert.equal(
+      params.mergedContent,
+      'Loser content, must be recorded pre-delete.',
+      "audit row records the deleted entry's pre-merge content",
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [keepId]);
+    await pool.query(
+      `DELETE FROM admin_audit WHERE action_kind = 'merge_knowledge' AND params->>'keepId' = $1`,
+      [String(keepId)],
+    );
+  },
+);
+
+test(
+  'SECURITY: merge_knowledge rejects keepId === mergeId and a nonexistent id with zero mutation and no admin_audit success row (issue #886 acceptance criterion 3)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-merge-knowledge-guard-scope`;
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-merge-knowledge-guard-admin`,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: `${RUN}-merge-knowledge-guard-convo`,
+    };
+    const server = buildToolServer(caller, adapter);
+    const tools = (
+      server.instance as unknown as {
+        _registeredTools: Record<string, { handler: (args: Record<string, unknown>) => Promise<unknown> }>;
+      }
+    )._registeredTools;
+
+    const { id } = await saveKnowledge({ title: 'Guarded', content: 'Do not merge me away.', scope });
+
+    await tools['merge_knowledge'].handler({ keepId: id, mergeId: id });
+    const sameIdResult = await takePendingAction('discord', caller.conversationId, caller.userId)?.execute();
+    assert.match(sameIdResult ?? '', /Failed/);
+
+    await tools['merge_knowledge'].handler({ keepId: id, mergeId: -1 });
+    const missingResult = await takePendingAction('discord', caller.conversationId, caller.userId)?.execute();
+    assert.match(missingResult ?? '', /Failed/);
+
+    const row = await pool.query(`SELECT title, content FROM knowledge WHERE id = $1`, [id]);
+    assert.equal(row.rows.length, 1, 'the guarded row still exists, untouched');
+    assert.equal(row.rows[0].title, 'Guarded');
+    assert.equal(row.rows[0].content, 'Do not merge me away.');
+
+    const { rows: successRows } = await pool.query(
+      `SELECT 1 FROM admin_audit WHERE action_kind = 'merge_knowledge' AND success = true AND params->>'keepId' = $1`,
+      [String(id)],
+    );
+    assert.equal(successRows.length, 0, 'neither rejected call produced a successful admin_audit row');
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
+    await pool.query(
+      `DELETE FROM admin_audit WHERE action_kind = 'merge_knowledge' AND params->>'keepId' = $1`,
+      [String(id)],
     );
   },
 );

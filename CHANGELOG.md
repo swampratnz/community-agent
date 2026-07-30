@@ -72,6 +72,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   `set_my_interests` first, rather than an error or an empty search. Same
   member-tier requirement, same 5-result cap, same rendering as a typed
   query; `who_is_into(query)` and `/whois <query>` are unchanged.
+- **Admins can now merge a duplicate/conflict knowledge pair with one command**
+  (#886): `merge_knowledge(keepId, mergeId)` keeps `keepId`, folds `mergeId`'s
+  usage history onto it, and deletes `mergeId` — the consolidation step
+  `list_duplicate_knowledge`/`list_knowledge_conflicts` always described but
+  never actually implemented. Previously, cleaning up a detected pair meant
+  two disconnected manual calls (`update_knowledge` then `delete_knowledge`)
+  that silently dropped the retired entry's retrieval history. Optional
+  `title`/`content`/`scope` let you also rewrite the survivor in the same
+  step; admin-tier and confirmation-gated, same as `update_knowledge`/
+  `delete_knowledge`.
 - **WhatsApp's `!whois` shortcut can now find "members like me" too, closing
   the last of the three surfaces #882 built this for** (#889): a bare
   `!whois` (no query text) now matches other members' published interests
