@@ -1949,9 +1949,15 @@ already uses, no new send path — with a message built by
 Anthropic-supplied `name`/`description` a second time. The latch stays
 armed while the indicator remains non-`'none'` (no repeat DM per poll) and
 re-arms once it drops back to `'none'`, so a later, separate incident alerts
-again; the resolve transition itself sends no DM (out of scope for v1). A
-poll that *fails* never advances this tracker — that failure path is handled
-entirely by the existing job-failure alerting above.
+again. Issue #905 completes the pair with the symmetric resolve edge: on the
+`active(true) → 'none'` transition, `stepStatusIncidentTracker` also returns
+`shouldAlertResolved`, and `startStatusCheck` DMs the same super admins via
+the same `alertSuperAdmins` path with a message built by
+`formatStatusResolvedAlert` — reusing `formatStatusMessage` verbatim exactly
+as the incident-start alert does, so the resolved DM's body is always the
+fixed "No known Anthropic incidents..." rendering, never Anthropic-supplied
+incident text. A poll that *fails* never advances this tracker — that
+failure path is handled entirely by the existing job-failure alerting above.
 
 ## Suggestion capture
 
