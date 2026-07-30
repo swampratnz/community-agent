@@ -309,7 +309,7 @@ test(
 
 test(
   'stepStatusIncidentTracker: shouldAlertResolved (issue #905) is true only on the active(true) -> none ' +
-    "transition, false for every other case, and never true alongside shouldAlert in the same step",
+    'transition, false for every other case, and never true alongside shouldAlert in the same step',
   () => {
     let tracker = initialStatusIncidentTracker();
 
@@ -333,7 +333,11 @@ test(
 
     // incident -> different-but-still-non-none incident: neither flag fires.
     step = stepStatusIncidentTracker(tracker, 'critical');
-    assert.equal(step.shouldAlert, false, 'escalating severity while still active does not re-fire shouldAlert');
+    assert.equal(
+      step.shouldAlert,
+      false,
+      'escalating severity while still active does not re-fire shouldAlert',
+    );
     assert.equal(step.shouldAlertResolved, false, 'escalating severity while still active is not a resolve');
     tracker = step.tracker;
 
@@ -346,7 +350,11 @@ test(
     // none -> none again, now that the latch is disarmed: neither flag fires.
     step = stepStatusIncidentTracker(tracker, 'none');
     assert.equal(step.shouldAlert, false);
-    assert.equal(step.shouldAlertResolved, false, 'a disarmed latch does not re-fire resolved on repeat none');
+    assert.equal(
+      step.shouldAlertResolved,
+      false,
+      'a disarmed latch does not re-fire resolved on repeat none',
+    );
 
     // Exhaustively re-check every transition never yields both flags true.
     for (const from of ['none', 'minor', 'major', 'critical'] as const) {
@@ -408,27 +416,24 @@ test(
   },
 );
 
-test(
-  'startStatusCheck: a none -> none sequence (status stays operational) yields zero alertSuperAdmins calls',
-  async (t) => {
-    resetStatusCacheForTests();
-    const { adapter, dms } = makeAdapter();
-    const runOnce = () => pollAnthropicStatus(async () => ALL_OPERATIONAL_BODY);
+test('startStatusCheck: a none -> none sequence (status stays operational) yields zero alertSuperAdmins calls', async (t) => {
+  resetStatusCacheForTests();
+  const { adapter, dms } = makeAdapter();
+  const runOnce = () => pollAnthropicStatus(async () => ALL_OPERATIONAL_BODY);
 
-    t.mock.timers.enable({ apis: ['setInterval'] });
-    const timer = startStatusCheck([adapter], runOnce);
-    try {
-      await flush();
-      t.mock.timers.tick(POLL_MS);
-      await flush();
-      t.mock.timers.tick(POLL_MS);
-      await flush();
-      assert.equal(dms.length, 0, 'staying operational across several polls sends no DM at all');
-    } finally {
-      clearInterval(timer!);
-    }
-  },
-);
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const timer = startStatusCheck([adapter], runOnce);
+  try {
+    await flush();
+    t.mock.timers.tick(POLL_MS);
+    await flush();
+    t.mock.timers.tick(POLL_MS);
+    await flush();
+    assert.equal(dms.length, 0, 'staying operational across several polls sends no DM at all');
+  } finally {
+    clearInterval(timer!);
+  }
+});
 
 test(
   'startStatusCheck: a none -> major -> major -> none sequence still yields exactly one start DM and one ' +
@@ -568,7 +573,7 @@ test(
 test(
   'SECURITY: the resolved alert (issue #905) targets exactly the same super-admin recipient set as the ' +
     'incident-start alert — no broadened scope, no channel post — and its body exposes no data beyond ' +
-    "what formatStatusMessage/state.summary already surfaces to any check_status caller: on the resolve " +
+    'what formatStatusMessage/state.summary already surfaces to any check_status caller: on the resolve ' +
     'edge the body equals the incident-free formatStatusMessage rendering and contains no incident name ' +
     'or description string',
   async (t) => {
@@ -602,7 +607,7 @@ test(
       const memberFacingBody = formatStatusMessage(state, Date.now());
       assert.equal(
         resolvedBody,
-        formatStatusResolvedAlert(state!, Date.now()),
+        formatStatusResolvedAlert(state, Date.now()),
         'sanity: the sent DM matches the pure formatter for the same state',
       );
       assert.ok(
