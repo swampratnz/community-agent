@@ -467,6 +467,20 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   erase regardless of review status — while a machine-drafted row
   (`source_user_id IS NULL`) never matches that predicate, pinned by a
   `SECURITY:` test extending the existing purge coverage.
+- **Knowledge tip impact** (`my_submissions`, issue #880): a nullable
+  `knowledge_candidates.knowledge_id` FK (`ON DELETE SET NULL`, mirroring the
+  existing `digest_id` FK) links an accepted candidate to the `knowledge` row
+  it became. `acceptKnowledgeCandidate` writes it in the SAME `UPDATE` that
+  flips the row to `'accepted'`, from the `knowledgeId` that call's own
+  `saveKnowledge` computed — it is never accepted as caller input on any
+  path. `listOwnKnowledgeCandidates` (already hard-scoped to the caller's own
+  `(source_platform, source_user_id)`, issue #830) `LEFT JOIN`s `knowledge` on
+  that column to surface its `retrieval_count`; `my_submissions` appends a
+  "used N times" suffix only for an `accepted` tip with a positive count, so
+  the previously admin-only `list_knowledge` metric (#134) is now also
+  visible to the member whose OWN accepted tip it is — an aggregate integer
+  with no member-identifying content, and reachable only through a call
+  already scoped to the caller's own rows, pinned by a `SECURITY:` test.
 - **Knowledge gaps** (`knowledge_gaps`, issue #208): the `knowledge_search`
   handler persists a below-floor miss — a call that came back with hits but
   none cleared `KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD` — so admins can see
@@ -1590,6 +1604,21 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   `left_at IS NOT NULL` rows older than the configured window and logs the
   count purged. Must be `0` or **at least 30 days** (enforced at startup).
   Currently-present rows (`left_at IS NULL`) are never touched.
+- **`response_latency`** (admin tier, issue #877) answers VISION's
+  "time-to-first-answer" north-star metric by reading only `created_at` and
+  the already-written `meta.replyToUserId`/`addressed_to_bot` fields on
+  existing `interactions` rows — no new column, table, or tracking. It is
+  **aggregate-only**, matching `review_queue`/`question_digest`'s existing
+  exposure envelope: the reply is exactly a fixed label plus a count and two
+  duration numbers (median/p90 seconds), never a per-message timestamp pair,
+  user id, display name, or message excerpt (pinned by a `SECURITY:` test
+  asserting the exact reply shape). `callerScope()`-scoped like every sibling
+  admin-insight tool: a report scoped to one admin's conversations is proven
+  never to reflect another conversation's rows (pinned by a `SECURITY:` test
+  seeding two conversations and asserting the figures differ). An admin
+  already has full read access to every conversation `callerScope()` grants
+  them, so an aggregate over exactly those conversations exposes nothing they
+  couldn't already read directly.
 
 ### 7. Cross-platform identity linking (`link_member` / `unlink_member`)
 A member's Discord account and WhatsApp number are, by default, two unrelated

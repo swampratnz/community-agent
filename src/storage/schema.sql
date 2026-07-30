@@ -985,6 +985,21 @@ CREATE INDEX IF NOT EXISTS knowledge_candidates_source_rate_idx
   ON knowledge_candidates (source_platform, source_user_id, created_at DESC);
 
 -- ---------------------------------------------------------------------------
+-- Links an accepted candidate to the durable `knowledge` entry it became
+-- (issue #880), so a contributor's `my_submissions` view can surface that
+-- entry's `retrieval_count` back to them — closing the loop `suggest_knowledge`
+-- (#633) and the status-only `my_submissions` view (#830) left open at
+-- "accepted". Set exactly once, by `acceptKnowledgeCandidate`, from the
+-- `knowledge.id` that same call's `saveKnowledge` produced — never accepted as
+-- caller input. Nullable and unset for every pre-existing row and every
+-- pending/declined candidate; mirrors the existing `digest_id BIGINT
+-- REFERENCES context_digests(id) ON DELETE SET NULL` FK shape so a later
+-- `knowledge` deletion (e.g. `delete_knowledge`) drops the link rather than
+-- the candidate row.
+-- ---------------------------------------------------------------------------
+ALTER TABLE knowledge_candidates ADD COLUMN IF NOT EXISTS knowledge_id BIGINT REFERENCES knowledge(id) ON DELETE SET NULL;
+
+-- ---------------------------------------------------------------------------
 -- Restart-safe freshness guard + trend store for the weekly super-admin
 -- cost-trend DM (issue #578), off unless USAGE_COST_DIGEST_ENABLED. A single
 -- global row (`id` pinned to `true`, never more than one) — this signal is

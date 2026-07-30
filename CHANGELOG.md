@@ -72,6 +72,24 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   `set_my_interests` first, rather than an error or an empty search. Same
   member-tier requirement, same 5-result cap, same rendering as a typed
   query; `who_is_into(query)` and `/whois <query>` are unchanged.
+- **`my_submissions` now tells a contributor whether their accepted knowledge
+  tip actually helped anyone** (#880): an accepted tip whose linked
+  `knowledge` entry has a positive `retrieval_count` now shows a "used N
+  times in answers so far" suffix, closing the loop `suggest_knowledge`
+  (#633) and the status-only `my_submissions` view (#830) left open at
+  "accepted". Pending, declined, and accepted-but-not-yet-retrieved tips are
+  unaffected — no premature "used 0 times" text. The count itself already
+  existed (#134, admin-only via `list_knowledge`); this only surfaces a
+  member's own count back to them, scoped exactly as tightly as their
+  existing tip-status view.
+- **A new admin tool, `response_latency`, answers how quickly members are
+  actually getting answered** (#877) — VISION's own "time-to-first-answer"
+  north-star metric, which had no measurement behind it until now. Given a
+  recent window (default 7 days, max 30), it reports the count of replies
+  plus the median and p90 response time in seconds, derived entirely from
+  timestamps and metadata the bot already stores on every turn (no new
+  tracking). Scoped to the admin's own conversations, aggregate-only — never
+  a per-message timestamp, user id, or excerpt.
 - **Admins can now get a real-time nudge when members keep asking a
   near-identical question, closing the last of the three signals #650 named
   as future work** (#887, `REPEAT_QUESTION_ALERT_ENABLED`, off by default):
