@@ -729,7 +729,7 @@ test(
     await recordKnowledgeRetrieval([mergeId]);
 
     const before = await pool.query(
-      `SELECT id, title, content, scope, retrieval_count, last_retrieved_at FROM knowledge WHERE id = ANY($1::bigint[])`,
+      `SELECT id, title, content, scope, retrieval_count, last_retrieved_at, updated_at FROM knowledge WHERE id = ANY($1::bigint[])`,
       [[keepId, mergeId]],
     );
     const keepBefore = before.rows.find((r) => Number(r.id) === keepId);
@@ -744,7 +744,7 @@ test(
     assert.equal(outcome.merged, true);
 
     const after = await pool.query(
-      `SELECT title, content, scope, retrieval_count, last_retrieved_at FROM knowledge WHERE id = $1`,
+      `SELECT title, content, scope, retrieval_count, last_retrieved_at, updated_at FROM knowledge WHERE id = $1`,
       [keepId],
     );
     assert.equal(after.rows.length, 1, 'exactly one row remains for keepId');
@@ -767,6 +767,13 @@ test(
         new Date(mergeBefore.last_retrieved_at).getTime(),
       ),
       'last_retrieved_at is the later of the two pre-merge timestamps',
+    );
+    assert.equal(
+      new Date(after.rows[0].updated_at).getTime(),
+      new Date(keepBefore.updated_at).getTime(),
+      'updated_at is untouched by a no-override merge — the knowledge_set_updated_at trigger fires on ' +
+        'any UPDATE that targets title/content/scope/embedding regardless of whether the value actually ' +
+        'changes, so a content-unchanged merge must never assign those columns (issue #886 review)',
     );
 
     const goneRow = await pool.query(`SELECT 1 FROM knowledge WHERE id = $1`, [mergeId]);

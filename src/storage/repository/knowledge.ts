@@ -757,6 +757,17 @@ export async function deleteKnowledge(id: number): Promise<boolean> {
  * "undefined = leave unchanged" convention — omitting all three re-embeds
  * nothing and leaves the survivor's wording byte-identical.
  *
+ * When none of `title`/`content`/`scope` is supplied, the fold-only `UPDATE`
+ * deliberately touches only `retrieval_count`/`last_retrieved_at` — same
+ * split `recordKnowledgeRetrieval` uses, and for the same reason: the
+ * `knowledge_set_updated_at` trigger fires on any `UPDATE` that *targets*
+ * `scope`/`title`/`content`/`embedding`, even when the assigned value is
+ * unchanged. Re-assigning those columns to their own values on a pure
+ * no-override merge would silently bump `updated_at`, defeating
+ * `isKnowledgeStale`/`countStaleKnowledge`'s staleness detection and
+ * reshuffling `listKnowledge`'s recency ordering for an entry whose wording
+ * never actually changed.
+ *
  * Guards against a single bad id silently deleting the wrong entry with no
  * recovery path: `keepId === mergeId`, or either id not existing, fails with
  * no mutation. Runs as sequential queries, matching this file's existing
@@ -783,6 +794,8 @@ export async function mergeKnowledgeEntries(
   if (!keep) return { merged: false, error: `No knowledge entry with id ${keepId}.` };
   if (!merge) return { merged: false, error: `No knowledge entry with id ${mergeId}.` };
 
+  const hasOverride = input.title !== undefined || input.content !== undefined || input.scope !== undefined;
+
   const title = input.title !== undefined ? input.title : keep.title;
   const content = input.content !== undefined ? input.content : keep.content;
   const scope = input.scope !== undefined ? input.scope : keep.scope;
@@ -798,22 +811,31 @@ export async function mergeKnowledgeEntries(
 
   const retrievalCount = Number(keep.retrieval_count) + Number(merge.retrieval_count);
 
-  await pool.query(
-    `UPDATE knowledge
-        SET title = $2, content = $3, scope = $4, embedding = COALESCE($5, embedding),
-            retrieval_count = $6, last_retrieved_at = GREATEST($7::timestamptz, $8::timestamptz)
-      WHERE id = $1`,
-    [
-      keepId,
-      title ?? null,
-      content,
-      scope,
-      embedding ? pgvector.toSql(embedding) : null,
-      retrievalCount,
-      keep.last_retrieved_at,
-      merge.last_retrieved_at,
-    ],
-  );
+  if (hasOverride) {
+    await pool.query(
+      `UPDATE knowledge
+          SET title = $2, content = $3, scope = $4, embedding = COALESCE($5, embedding),
+              retrieval_count = $6, last_retrieved_at = GREATEST($7::timestamptz, $8::timestamptz)
+        WHERE id = $1`,
+      [
+        keepId,
+        title ?? null,
+        content,
+        scope,
+        embedding ? pgvector.toSql(embedding) : null,
+        retrievalCount,
+        keep.last_retrieved_at,
+        merge.last_retrieved_at,
+      ],
+    );
+  } else {
+    await pool.query(
+      `UPDATE knowledge
+          SET retrieval_count = $2, last_retrieved_at = GREATEST($3::timestamptz, $4::timestamptz)
+        WHERE id = $1`,
+      [keepId, retrievalCount, keep.last_retrieved_at, merge.last_retrieved_at],
+    );
+  }
 
   await pool.query(`DELETE FROM knowledge WHERE id = $1`, [mergeId]);
 
