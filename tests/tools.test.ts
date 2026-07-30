@@ -106,6 +106,9 @@ const {
   insertContextDigest,
   insertKnowledgeCandidate,
   listKnowledgeCandidates,
+  acceptKnowledgeCandidate,
+  declineKnowledgeCandidate,
+  recordKnowledgeRetrieval,
   addWarning,
   addMemberNote,
   upsertMember,
@@ -18106,6 +18109,98 @@ test(
 );
 
 test(
+  'my_submissions appends a "used N times" suffix for an accepted knowledge tip whose linked entry has a positive retrieval_count (issue #880)',
+  { skip },
+  async () => {
+    const userId = `${MY_SUBMISSIONS_HANDLER_USER}-tip-impact`;
+    const tip = await createKnowledgeTip({
+      platform: 'whatsapp',
+      userId,
+      topic: `${MY_SUBMISSIONS_HANDLER_USER} tip impact topic`,
+      title: 'a genuinely useful tip',
+      content: 'the useful content',
+    });
+    assert.ok(tip);
+    const accepted = await acceptKnowledgeCandidate({ id: tip.id, reviewedBy: 'admin-1' });
+    assert.ok(accepted);
+    // One call per hit, mirroring real knowledge_search usage — a single call's
+    // WHERE id = ANY($1) increments a duplicated id only once, not once per repeat.
+    for (let i = 0; i < 3; i++) {
+      await recordKnowledgeRetrieval([accepted.knowledgeId]);
+    }
+
+    const result = await mySubmissionsHandler(userId).handler();
+    const output = result.content[0]?.text ?? '';
+
+    assert.equal(result.isError, false);
+    assert.match(
+      output,
+      new RegExp(
+        `#${tip.id} \\[accepted\\] a genuinely useful tip — filed .* — used 3 times in answers so far`,
+      ),
+      'the accepted, retrieved tip shows an impact suffix with the exact count',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [accepted.knowledgeId]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [tip.id]);
+  },
+);
+
+test(
+  'my_submissions never appends a "used N times" suffix for a pending tip, a declined tip, or an accepted-but-unretrieved tip (issue #880)',
+  { skip },
+  async () => {
+    const userId = `${MY_SUBMISSIONS_HANDLER_USER}-tip-no-impact`;
+    const pending = await createKnowledgeTip({
+      platform: 'whatsapp',
+      userId,
+      topic: `${MY_SUBMISSIONS_HANDLER_USER} tip no-impact pending topic`,
+      title: 'still pending tip',
+      content: 'pending content',
+    });
+    const toDecline = await createKnowledgeTip({
+      platform: 'whatsapp',
+      userId,
+      topic: `${MY_SUBMISSIONS_HANDLER_USER} tip no-impact declined topic`,
+      title: 'declined tip',
+      content: 'declined content',
+    });
+    const toAccept = await createKnowledgeTip({
+      platform: 'whatsapp',
+      userId,
+      topic: `${MY_SUBMISSIONS_HANDLER_USER} tip no-impact accepted topic`,
+      title: 'accepted but unretrieved tip',
+      content: 'accepted but unretrieved content',
+    });
+    assert.ok(pending && toDecline && toAccept);
+    await declineKnowledgeCandidate(toDecline.id, 'admin-1');
+    const accepted = await acceptKnowledgeCandidate({ id: toAccept.id, reviewedBy: 'admin-1' });
+    assert.ok(accepted);
+
+    const result = await mySubmissionsHandler(userId).handler();
+    const output = result.content[0]?.text ?? '';
+
+    assert.equal(result.isError, false);
+    assert.doesNotMatch(
+      output,
+      /used \d+ times/,
+      'no tip here has a positive retrieval_count, so no impact suffix ever renders — never "used 0 times"',
+    );
+    assert.match(output, new RegExp(`#${pending.id} \\[pending\\] still pending tip — filed [^\\n]*$`, 'm'));
+    assert.match(output, new RegExp(`#${toDecline.id} \\[declined\\] declined tip — filed [^\\n]*$`, 'm'));
+    assert.match(
+      output,
+      new RegExp(`#${toAccept.id} \\[accepted\\] accepted but unretrieved tip — filed [^\\n]*$`, 'm'),
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [accepted.knowledgeId]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [
+      [pending.id, toDecline.id, toAccept.id],
+    ]);
+  },
+);
+
+test(
   "SECURITY: my_submissions never leaks another member's knowledge tip content, and never surfaces a machine-drafted (no submitter) candidate, in the caller's own view (issue #830)",
   { skip },
   async () => {
@@ -18158,6 +18253,62 @@ test(
       /a machine-drafted candidate title/,
       "SECURITY: a machine-drafted (no submitter) candidate must never appear in any real caller's own view",
     );
+  },
+);
+
+test(
+  "SECURITY: my_submissions never surfaces another member's knowledge_id or retrieval_count — a caller with nothing of their own must never see another member's accepted, retrieved, linked tip (issue #880)",
+  { skip },
+  async () => {
+    const userA = `${MY_SUBMISSIONS_HANDLER_USER}-tip-impact-security-a`;
+    const userB = `${MY_SUBMISSIONS_HANDLER_USER}-tip-impact-security-b`;
+
+    const theirs = await createKnowledgeTip({
+      platform: 'whatsapp',
+      userId: userB,
+      topic: `${MY_SUBMISSIONS_HANDLER_USER} tip impact security other topic`,
+      title: "B's popular tip title",
+      content: "B's popular tip content",
+    });
+    assert.ok(theirs);
+    const accepted = await acceptKnowledgeCandidate({ id: theirs.id, reviewedBy: 'admin-1' });
+    assert.ok(accepted);
+    // One call per hit, mirroring real knowledge_search usage — a single call's
+    // WHERE id = ANY($1) increments a duplicated id only once, not once per repeat.
+    for (let i = 0; i < 2; i++) {
+      await recordKnowledgeRetrieval([accepted.knowledgeId]);
+    }
+
+    // A has filed nothing at all.
+    const resultA = await mySubmissionsHandler(userA).handler();
+    const outputA = resultA.content[0]?.text ?? '';
+    assert.equal(resultA.isError, true, 'A has nothing filed, including no knowledge tips');
+    assert.doesNotMatch(
+      outputA,
+      /B's popular tip title/,
+      "SECURITY: another member's accepted, retrieved, linked tip must never appear in a caller with nothing filed",
+    );
+    assert.doesNotMatch(
+      outputA,
+      /used \d+ times/,
+      "SECURITY: another member's retrieval_count impact suffix must never leak into an unrelated caller's view",
+    );
+    assert.doesNotMatch(
+      outputA,
+      new RegExp(String(accepted.knowledgeId)),
+      "SECURITY: another member's linked knowledge_id must never appear in an unrelated caller's view",
+    );
+
+    // B, asking about their own submissions, correctly sees their own impact line —
+    // confirming the suffix mechanism works at all, so outputA's absence above is
+    // a scoping property and not just a broken feature.
+    const resultB = await mySubmissionsHandler(userB).handler();
+    const outputB = resultB.content[0]?.text ?? '';
+    assert.match(outputB, /B's popular tip title/);
+    assert.match(outputB, /used 2 times in answers so far/);
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [accepted.knowledgeId]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [theirs.id]);
   },
 );
 

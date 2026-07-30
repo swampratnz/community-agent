@@ -3690,8 +3690,15 @@ export function buildToolServer(
         if (lines.length > 0) lines.push('');
         lines.push('Your knowledge tips:');
         for (const k of knowledgeTips) {
+          // "used N times" only for an accepted tip with a positive retrieval
+          // count (issue #880) — never "used 0 times" for an accepted-but-
+          // unretrieved or non-accepted tip, which would read as discouraging.
+          const impact =
+            k.status === 'accepted' && k.retrievalCount && k.retrievalCount > 0
+              ? ` — used ${k.retrievalCount} time${k.retrievalCount === 1 ? '' : 's'} in answers so far`
+              : '';
           lines.push(
-            `- #${k.id} [${k.status}] ${truncateForEcho(k.title)} — filed ${formatRelativeAge(k.createdAt)}`,
+            `- #${k.id} [${k.status}] ${truncateForEcho(k.title)} — filed ${formatRelativeAge(k.createdAt)}${impact}`,
           );
         }
       }

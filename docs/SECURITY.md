@@ -467,6 +467,20 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   erase regardless of review status — while a machine-drafted row
   (`source_user_id IS NULL`) never matches that predicate, pinned by a
   `SECURITY:` test extending the existing purge coverage.
+- **Knowledge tip impact** (`my_submissions`, issue #880): a nullable
+  `knowledge_candidates.knowledge_id` FK (`ON DELETE SET NULL`, mirroring the
+  existing `digest_id` FK) links an accepted candidate to the `knowledge` row
+  it became. `acceptKnowledgeCandidate` writes it in the SAME `UPDATE` that
+  flips the row to `'accepted'`, from the `knowledgeId` that call's own
+  `saveKnowledge` computed — it is never accepted as caller input on any
+  path. `listOwnKnowledgeCandidates` (already hard-scoped to the caller's own
+  `(source_platform, source_user_id)`, issue #830) `LEFT JOIN`s `knowledge` on
+  that column to surface its `retrieval_count`; `my_submissions` appends a
+  "used N times" suffix only for an `accepted` tip with a positive count, so
+  the previously admin-only `list_knowledge` metric (#134) is now also
+  visible to the member whose OWN accepted tip it is — an aggregate integer
+  with no member-identifying content, and reachable only through a call
+  already scoped to the caller's own rows, pinned by a `SECURITY:` test.
 - **Knowledge gaps** (`knowledge_gaps`, issue #208): the `knowledge_search`
   handler persists a below-floor miss — a call that came back with hits but
   none cleared `KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD` — so admins can see
