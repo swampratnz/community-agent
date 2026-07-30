@@ -18,6 +18,7 @@ process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS = 'super-1';
+process.env.SUPER_ADMIN_WHATSAPP_NUMBERS ??= 'admin-open,admin-closed';
 
 const {
   formatDepartedAdminAlertMessage,
@@ -32,6 +33,7 @@ const {
   queuePendingAlert,
   PENDING_ALERT_QUEUE_CAP,
 } = await import('../src/pendingAlertQueue.js');
+const { WindowClosedError } = await import('../src/platforms/whatsapp/cloudAdapter.js');
 
 type AdminRosterEntry = {
   platform: 'discord' | 'whatsapp';
@@ -71,6 +73,44 @@ function makeAdapter(connected = true): {
 // technique as tests/backgroundJobs.test.ts.
 function flush(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
+}
+
+/**
+ * A fake Cloud-like adapter (mirrors `tests/notifyAdminsWindowReopenQueue.test.ts`'s
+ * `makeFakeCloudAdapter`): `sendDirectMessage` rejects with whatever
+ * `rejections[userId]` names, and `queueForWindowReopen` records what was
+ * queued, per-recipient, for assertion.
+ */
+function makeCloudAdapter(rejections: Record<string, unknown>): {
+  adapter: PlatformAdapter;
+  dms: Array<{ userId: string; text: string }>;
+  queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }>;
+} {
+  const dms: Array<{ userId: string; text: string }> = [];
+  const queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }> = [];
+  const adapter: PlatformAdapter = {
+    platform: 'whatsapp',
+    adminCapabilities: new Set(),
+    async start() {},
+    async stop() {},
+    isConnected: () => true,
+    onMessage() {},
+    async sendMessage(_out: OutgoingMessage) {},
+    async sendDirectMessage(userId: string, text: string) {
+      if (userId in rejections) throw rejections[userId];
+      dms.push({ userId, text });
+    },
+    queueForWindowReopen(userId: string, message: string, priority: 'system' | 'low') {
+      queued.push({ userId, message, priority });
+    },
+    async conversationsForUser() {
+      return [];
+    },
+    async performAdminAction() {
+      return '';
+    },
+  };
+  return { adapter, dms, queued };
 }
 
 function roster(entries: Array<Partial<AdminRosterEntry>>): AdminRosterEntry[] {
@@ -265,4 +305,65 @@ test('SECURITY: alertSuperAdmins queues the message byte-identical to what a liv
     'the system-priority departed-admin alert survives a low-priority flood',
   );
   resetPendingAlertsForTests();
+});
+
+// --- Per-recipient window-reopen queue extension (issue #888) ---
+
+test("alertSuperAdmins: a WindowClosedError rejection queues via queueForWindowReopen at 'system' priority instead of only logging (issue #888 acceptance criterion 1/2)", async () => {
+  const { adapter, dms, queued } = makeCloudAdapter({
+    'admin-closed': new WindowClosedError('admin-closed'),
+  });
+
+  await alertSuperAdmins([adapter], 'departed-admin alert, one recipient window closed');
+  await flush();
+
+  assert.deepEqual(
+    dms.map((d) => d.userId),
+    ['admin-open'],
+    'the open-window recipient is still delivered live',
+  );
+  assert.deepEqual(queued, [
+    {
+      userId: 'admin-closed',
+      message: 'departed-admin alert, one recipient window closed',
+      priority: 'system',
+    },
+  ]);
+});
+
+test('SECURITY: alertSuperAdmins — a rejection that is NOT a WindowClosedError is never queued via queueForWindowReopen; it stays logged-and-dropped (issue #888 acceptance criterion 4)', async () => {
+  const { adapter, dms, queued } = makeCloudAdapter({
+    'admin-closed': new Error('502 from Graph API'),
+  });
+
+  await alertSuperAdmins([adapter], 'departed-admin alert, unrelated failure');
+  await flush();
+
+  assert.deepEqual(
+    dms.map((d) => d.userId),
+    ['admin-open'],
+  );
+  assert.deepEqual(
+    queued,
+    [],
+    'a non-WindowClosedError rejection must never populate the window-reopen queue',
+  );
+});
+
+test('alertSuperAdmins: an adapter with no queueForWindowReopen (Discord/Baileys shape) falls through to log-and-drop for a WindowClosedError rejection — no crash, byte-identical to today (issue #888 acceptance criterion 5)', async () => {
+  const { adapter, dms } = makeAdapter(true);
+  const original = adapter.sendDirectMessage.bind(adapter);
+  adapter.sendDirectMessage = async (userId: string, text: string) => {
+    if (userId === 'super-1') throw new WindowClosedError('super-1');
+    return original(userId, text);
+  };
+
+  await assert.doesNotReject(alertSuperAdmins([adapter], 'departed-admin alert, discord recipient'));
+  await flush();
+
+  assert.deepEqual(
+    dms,
+    [],
+    'the only recipient rejected and there is no queueForWindowReopen to fall back to',
+  );
 });

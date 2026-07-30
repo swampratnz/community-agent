@@ -11,6 +11,7 @@ import {
   type JobFailureTracker,
 } from './backgroundJobHealth.js';
 import { queuePendingAlert } from './pendingAlertQueue.js';
+import { WindowClosedError } from './platforms/whatsapp/cloudAdapter.js';
 import type { PlatformAdapter } from './platforms/types.js';
 
 type UsageAlertStats = Awaited<ReturnType<typeof usageStats>>;
@@ -133,9 +134,17 @@ async function alertSuperAdmins(adapters: readonly PlatformAdapter[], message: s
   }
   for (const adapter of connected) {
     for (const id of superAdminIds(adapter.platform)) {
-      adapter
-        .sendDirectMessage(id, message)
-        .catch((err) => logger.warn({ err, platform: adapter.platform, id }, 'Usage alert DM failed'));
+      adapter.sendDirectMessage(id, message).catch((err) => {
+        if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+          adapter.queueForWindowReopen(id, message, 'system');
+          logger.warn(
+            { platform: adapter.platform, id },
+            'Usage alert: recipient window closed, queued for reopen',
+          );
+          return;
+        }
+        logger.warn({ err, platform: adapter.platform, id }, 'Usage alert DM failed');
+      });
     }
   }
 }

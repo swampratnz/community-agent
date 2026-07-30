@@ -31,6 +31,7 @@ process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS = 'super-1';
+process.env.SUPER_ADMIN_WHATSAPP_NUMBERS ??= 'admin-open,admin-closed';
 process.env.CONTEXT_BUILDER_ENABLED = 'true';
 process.env.KNOWLEDGE_REFRESH_ENABLED = 'true';
 process.env.DOCS_INGEST_ENABLED = 'true';
@@ -73,6 +74,7 @@ const { getJobHealthSnapshot, resetJobHealthRegistryForTests } =
   await import('../src/backgroundJobHealth.js');
 const { getPendingAlertsForTests, getPendingAlertEntriesForTests, resetPendingAlertsForTests } =
   await import('../src/pendingAlertQueue.js');
+const { WindowClosedError } = await import('../src/platforms/whatsapp/cloudAdapter.js');
 
 // Pin the docs-ingest dead-URL feature OFF by default here (issue #611): the
 // pre-existing docs-ingest tests in this file drive real page-fetch failures
@@ -122,6 +124,44 @@ function makeAdapter(): { adapter: PlatformAdapter; dms: Array<{ userId: string;
 // asserting — same technique as tests/agentCoreUsageLimitAlert.test.ts.
 function flush(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
+}
+
+/**
+ * A fake Cloud-like adapter (mirrors `tests/notifyAdminsWindowReopenQueue.test.ts`'s
+ * `makeFakeCloudAdapter`): `sendDirectMessage` rejects with whatever
+ * `rejections[userId]` names, and `queueForWindowReopen` records what was
+ * queued, per-recipient, for assertion (issue #888).
+ */
+function makeCloudAdapter(rejections: Record<string, unknown>): {
+  adapter: PlatformAdapter;
+  dms: Array<{ userId: string; text: string }>;
+  queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }>;
+} {
+  const dms: Array<{ userId: string; text: string }> = [];
+  const queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }> = [];
+  const adapter: PlatformAdapter = {
+    platform: 'whatsapp',
+    adminCapabilities: new Set(),
+    async start() {},
+    async stop() {},
+    isConnected: () => true,
+    onMessage() {},
+    async sendMessage(_out: OutgoingMessage) {},
+    async sendDirectMessage(userId: string, text: string) {
+      if (userId in rejections) throw rejections[userId];
+      dms.push({ userId, text });
+    },
+    queueForWindowReopen(userId: string, message: string, priority: 'system' | 'low') {
+      queued.push({ userId, message, priority });
+    },
+    async conversationsForUser() {
+      return [];
+    },
+    async performAdminAction() {
+      return '';
+    },
+  };
+  return { adapter, dms, queued };
 }
 
 const JOBS = [
@@ -635,6 +675,90 @@ test('SECURITY: a queued failure-threshold alert (zero connected adapters) is by
   }
   assert.deepEqual(getPendingAlertsForTests(), [liveBody]);
   resetPendingAlertsForTests();
+});
+
+// --- Per-recipient window-reopen queue extension (issue #888) ---
+
+test("alertSuperAdmins (via startDocsIngest): a WindowClosedError rejection queues via queueForWindowReopen at 'system' priority instead of only logging (issue #888 acceptance criterion 1/2)", async (t) => {
+  const { adapter, dms, queued } = makeCloudAdapter({
+    'admin-closed': new WindowClosedError('admin-closed'),
+  });
+  const alwaysFail = async () => {
+    throw new Error('sentinel-window-closed-888');
+  };
+
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const timer = startDocsIngest([adapter], alwaysFail);
+  try {
+    await flush();
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush();
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush(); // threshold reached
+    assert.deepEqual(
+      dms.map((d) => d.userId),
+      ['admin-open'],
+      'the open-window recipient is still delivered live',
+    );
+    assert.equal(queued.length, 1);
+    assert.equal(queued[0]?.userId, 'admin-closed');
+    assert.equal(queued[0]?.priority, 'system');
+    assert.match(queued[0]?.message ?? '', /docs-ingest/);
+  } finally {
+    clearInterval(timer!);
+  }
+});
+
+test('SECURITY: alertSuperAdmins (via startDocsIngest) — a rejection that is NOT a WindowClosedError is never queued via queueForWindowReopen; it stays logged-and-dropped (issue #888 acceptance criterion 4)', async (t) => {
+  const { adapter, dms, queued } = makeCloudAdapter({
+    'admin-closed': new Error('502 from Graph API'),
+  });
+  const alwaysFail = async () => {
+    throw new Error('sentinel-not-window-closed-888');
+  };
+
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const timer = startDocsIngest([adapter], alwaysFail);
+  try {
+    await flush();
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush();
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush();
+    assert.deepEqual(
+      dms.map((d) => d.userId),
+      ['admin-open'],
+    );
+    assert.deepEqual(
+      queued,
+      [],
+      'a non-WindowClosedError rejection must never populate the window-reopen queue',
+    );
+  } finally {
+    clearInterval(timer!);
+  }
+});
+
+test('alertSuperAdmins (via startDocsIngest): an adapter with no queueForWindowReopen (Discord/Baileys shape) falls through to log-and-drop for a WindowClosedError rejection — no crash, byte-identical to today (issue #888 acceptance criterion 5)', async (t) => {
+  const { adapter } = makeAdapter();
+  adapter.sendDirectMessage = async () => {
+    throw new WindowClosedError('super-1');
+  };
+  const alwaysFail = async () => {
+    throw new Error('sentinel-discord-fallback-888');
+  };
+
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  let timer: ReturnType<typeof setInterval> | null = null;
+  await assert.doesNotReject(async () => {
+    timer = startDocsIngest([adapter], alwaysFail);
+    await flush();
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush();
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush();
+  });
+  clearInterval(timer!);
 });
 
 test('SECURITY: the alert DM body never contains the caught error message or stack — only the fixed template (job name, failure count, last-success timestamp)', async (t) => {

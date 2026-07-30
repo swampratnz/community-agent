@@ -23,6 +23,7 @@ process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS = 'super-1';
+process.env.SUPER_ADMIN_WHATSAPP_NUMBERS ??= 'admin-open,admin-closed';
 
 const { formatAdminLeverageAlertMessage, makeDefaultAdminLeverageAlertRun, startAdminLeverageAlert } =
   await import('../src/adminLeverageAlert.js');
@@ -30,6 +31,7 @@ const { pool, closeDb } = await import('../src/storage/db.js');
 const { getLastAdminLeverageAlertRate, recordAdminLeverageAlertSent } =
   await import('../src/storage/repository.js');
 const { getPendingAlertsForTests, resetPendingAlertsForTests } = await import('../src/pendingAlertQueue.js');
+const { WindowClosedError } = await import('../src/platforms/whatsapp/cloudAdapter.js');
 
 after(async () => {
   await closeDb();
@@ -84,6 +86,44 @@ function makeAdapter(): { adapter: PlatformAdapter; dms: Array<{ userId: string;
 // technique as tests/engagementAlert.test.ts / tests/departedAdminAlert.test.ts.
 function flush(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
+}
+
+/**
+ * A fake Cloud-like adapter (mirrors `tests/notifyAdminsWindowReopenQueue.test.ts`'s
+ * `makeFakeCloudAdapter`): `sendDirectMessage` rejects with whatever
+ * `rejections[userId]` names, and `queueForWindowReopen` records what was
+ * queued, per-recipient, for assertion (issue #888).
+ */
+function makeCloudAdapter(rejections: Record<string, unknown>): {
+  adapter: PlatformAdapter;
+  dms: Array<{ userId: string; text: string }>;
+  queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }>;
+} {
+  const dms: Array<{ userId: string; text: string }> = [];
+  const queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }> = [];
+  const adapter: PlatformAdapter = {
+    platform: 'whatsapp',
+    adminCapabilities: new Set(),
+    async start() {},
+    async stop() {},
+    isConnected: () => true,
+    onMessage() {},
+    async sendMessage(_out: OutgoingMessage) {},
+    async sendDirectMessage(userId: string, text: string) {
+      if (userId in rejections) throw rejections[userId];
+      dms.push({ userId, text });
+    },
+    queueForWindowReopen(userId: string, message: string, priority: 'system' | 'low') {
+      queued.push({ userId, message, priority });
+    },
+    async conversationsForUser() {
+      return [];
+    },
+    async performAdminAction() {
+      return '';
+    },
+  };
+  return { adapter, dms, queued };
 }
 
 // --- formatAdminLeverageAlertMessage ----------------------------------------
@@ -176,6 +216,42 @@ test('makeDefaultAdminLeverageAlertRun: on the first eligible tick (no prior sen
   assert.match(dms[0].text, /14 actions \/ 2 admins = 7\.0\/admin/);
   assert.equal(recordedRate, 7, 'the send is recorded with the derived rate');
 });
+
+// adminLeverageAlert.ts imports departedAdminAlert.ts's `alertSuperAdmins` by
+// reference (issue #785) rather than a second copy — this test proves that
+// shared function's window-reopen fix (tests/departedAdminAlert.test.ts)
+// reaches this producer too, with zero code change of its own (issue #888
+// acceptance criterion 3).
+test(
+  "makeDefaultAdminLeverageAlertRun: inherits departedAdminAlert.ts's shared alertSuperAdmins window-reopen " +
+    "fix — a WindowClosedError rejection queues via queueForWindowReopen at 'system' priority instead of " +
+    'only logging, with no code change in this producer (issue #888 acceptance criterion 3)',
+  async () => {
+    const { adapter, dms, queued } = makeCloudAdapter({
+      'admin-closed': new WindowClosedError('admin-closed'),
+    });
+    const runOnce = makeDefaultAdminLeverageAlertRun(
+      [adapter],
+      async () => [activityRow({ actionCount: 9 })],
+      async () => [{ platform: 'discord', platformUserId: 'a1' }],
+      async () => false,
+      async () => {},
+      async () => null,
+    );
+
+    await runOnce();
+    await flush();
+
+    assert.deepEqual(
+      dms.map((d) => d.userId),
+      ['admin-open'],
+      'the open-window recipient is still delivered live',
+    );
+    assert.equal(queued.length, 1);
+    assert.equal(queued[0]?.userId, 'admin-closed');
+    assert.equal(queued[0]?.priority, 'system');
+  },
+);
 
 test('makeDefaultAdminLeverageAlertRun: zero admins records a null rate rather than a divide-by-zero artifact', async () => {
   const { adapter } = makeAdapter();

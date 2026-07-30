@@ -2847,6 +2847,35 @@ fire-and-forget. No new mechanism, no schema change, no new privileged data
 access — the same already-reviewed per-recipient queue, now fed by 5
 producers instead of 2.
 
+Issue #888 extended the same recovery to six standalone periodic-job alert
+senders that each implement their own near-identical
+`alertSuperAdmins(adapters, message)` helper and, until now, only logged and
+dropped on any rejection: `departedAdminAlert.ts` (also reused by
+`engagementAlert.ts` and `adminLeverageAlert.ts`), `backgroundJobs.ts`
+(shared by the job-failure alert, the status-incident alert, and the
+dev-team-watch alert), `health.ts`, `usageAlert.ts`, `usageCostDigest.ts`,
+and `backgroundJobCostAlert.ts`. Each now catches `WindowClosedError`
+specifically and calls `queueForWindowReopen(id, message, 'system')` —
+`'system'`, since every one of these six alerts is super-admin-only and must
+never be evicted by a member-reachable `'low'` alert (#545); `SECURITY:`
+tests pin the priority for all six, including `usageCostDigest.ts` and
+`backgroundJobCostAlert.ts`, which have no pre-existing all-disconnected
+`queuePendingAlert('system')` branch to inherit the tier from. A rejection
+that is NOT a `WindowClosedError` (a generic Graph API failure, missing
+config) is unaffected — still logged-and-dropped exactly as before, pinned
+by a dedicated `SECURITY:` test per touched test file, so an unrelated or
+transient failure can never accumulate state in this queue. Discord/Baileys
+(no `queueForWindowReopen`) fall through to the same log-and-drop, byte-
+identical to today. No new mechanism, no new queue, and the existing
+all-disconnected `queuePendingAlert` branch (where present) is unchanged —
+this only adds the connected-but-window-closed sibling case for these six
+producers. Deliberately still out of scope (named growth path, not bundled
+here): `router.ts`'s `notifyAccessRequest`/`alertSuperAdminsBudgetCheckFailed`,
+`agent/core.ts`'s usage-limit alert, `adminDigest.ts`'s per-admin digest send
+(a single `await`/`try`/`catch`, not a per-recipient loop), and `health.ts`'s
+`flushPendingAlerts` itself (queuing a flush-failure back into this same
+queue needs its own analysis to avoid a resend loop).
+
 ### `/healthz` endpoint
 Opt-in (`HEALTH_PORT` unset = no listening port at all — matches this
 pipeline's "new surface is opt-in" pattern). Unauthenticated by design, but

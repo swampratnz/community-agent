@@ -14,6 +14,7 @@ process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS = 'super-1';
+process.env.SUPER_ADMIN_WHATSAPP_NUMBERS ??= 'admin-open,admin-closed';
 process.env.USAGE_ALERT_DAILY_REPLIES = '10';
 
 const POLL_MS = 60 * 60_000; // usageAlert.ts's fixed hourly CHECK_INTERVAL_MS
@@ -104,6 +105,44 @@ function makeAdapter(connected = true): {
     },
   };
   return { adapter, dms };
+}
+
+/**
+ * A fake Cloud-like adapter (mirrors `tests/notifyAdminsWindowReopenQueue.test.ts`'s
+ * `makeFakeCloudAdapter`): `sendDirectMessage` rejects with whatever
+ * `rejections[userId]` names, and `queueForWindowReopen` records what was
+ * queued, per-recipient, for assertion (issue #888).
+ */
+function makeCloudAdapter(rejections: Record<string, unknown>): {
+  adapter: PlatformAdapter;
+  dms: Array<{ userId: string; text: string }>;
+  queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }>;
+} {
+  const dms: Array<{ userId: string; text: string }> = [];
+  const queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }> = [];
+  const adapter: PlatformAdapter = {
+    platform: 'whatsapp',
+    adminCapabilities: new Set(),
+    async start() {},
+    async stop() {},
+    isConnected: () => true,
+    onMessage() {},
+    async sendMessage(_out: OutgoingMessage) {},
+    async sendDirectMessage(userId: string, text: string) {
+      if (userId in rejections) throw rejections[userId];
+      dms.push({ userId, text });
+    },
+    queueForWindowReopen(userId: string, message: string, priority: 'system' | 'low') {
+      queued.push({ userId, message, priority });
+    },
+    async conversationsForUser() {
+      return [];
+    },
+    async performAdminAction() {
+      return '';
+    },
+  };
+  return { adapter, dms, queued };
 }
 
 // check()'s alert path is fire-and-forget (`void alertSuperAdmins(...)`, no
@@ -227,4 +266,73 @@ test('SECURITY: usageAlert.ts queues the message byte-identical to what a live s
     clearInterval(queueTimer!);
     resetPendingAlertsForTests();
   }
+});
+
+// --- Per-recipient window-reopen queue extension (issue #888) ---
+
+test("startUsageAlert: a WindowClosedError rejection queues via queueForWindowReopen at 'system' priority instead of only logging (issue #888 acceptance criterion 1/2)", async (t) => {
+  const { startUsageAlert } = await modules(t);
+  outbound = 15;
+  const { WindowClosedError } = await import('../src/platforms/whatsapp/cloudAdapter.js');
+  const { adapter, dms, queued } = makeCloudAdapter({
+    'admin-closed': new WindowClosedError('admin-closed'),
+  });
+
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const timer = startUsageAlert([adapter]);
+  try {
+    await flush();
+    assert.deepEqual(
+      dms.map((d) => d.userId),
+      ['admin-open'],
+      'the open-window recipient is still delivered live',
+    );
+    assert.equal(queued.length, 1);
+    assert.equal(queued[0]?.userId, 'admin-closed');
+    assert.equal(queued[0]?.priority, 'system');
+    assert.match(queued[0]?.message ?? '', /Usage alert/);
+  } finally {
+    clearInterval(timer!);
+  }
+});
+
+test('SECURITY: startUsageAlert — a rejection that is NOT a WindowClosedError is never queued via queueForWindowReopen; it stays logged-and-dropped (issue #888 acceptance criterion 4)', async (t) => {
+  const { startUsageAlert } = await modules(t);
+  outbound = 15;
+  const { adapter, dms, queued } = makeCloudAdapter({ 'admin-closed': new Error('502 from Graph API') });
+
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const timer = startUsageAlert([adapter]);
+  try {
+    await flush();
+    assert.deepEqual(
+      dms.map((d) => d.userId),
+      ['admin-open'],
+    );
+    assert.deepEqual(
+      queued,
+      [],
+      'a non-WindowClosedError rejection must never populate the window-reopen queue',
+    );
+  } finally {
+    clearInterval(timer!);
+  }
+});
+
+test('startUsageAlert: an adapter with no queueForWindowReopen (Discord/Baileys shape) falls through to log-and-drop for a WindowClosedError rejection — no crash, byte-identical to today (issue #888 acceptance criterion 5)', async (t) => {
+  const { startUsageAlert } = await modules(t);
+  outbound = 15;
+  const { WindowClosedError } = await import('../src/platforms/whatsapp/cloudAdapter.js');
+  const { adapter } = makeAdapter(true);
+  adapter.sendDirectMessage = async () => {
+    throw new WindowClosedError('super-1');
+  };
+
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  let timer: ReturnType<typeof setInterval> | null = null;
+  await assert.doesNotReject(async () => {
+    timer = startUsageAlert([adapter]);
+    await flush();
+  });
+  clearInterval(timer!);
 });

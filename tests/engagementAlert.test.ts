@@ -23,6 +23,7 @@ process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS = 'super-1';
+process.env.SUPER_ADMIN_WHATSAPP_NUMBERS ??= 'admin-open,admin-closed';
 
 const { formatEngagementAlertMessage, makeDefaultEngagementAlertRun, startEngagementAlert } =
   await import('../src/engagementAlert.js');
@@ -30,6 +31,7 @@ const { pool, closeDb } = await import('../src/storage/db.js');
 const { getLastEngagementAlertPercentage, recordEngagementAlertSent } =
   await import('../src/storage/repository.js');
 const { getPendingAlertsForTests, resetPendingAlertsForTests } = await import('../src/pendingAlertQueue.js');
+const { WindowClosedError } = await import('../src/platforms/whatsapp/cloudAdapter.js');
 
 after(async () => {
   await closeDb();
@@ -63,6 +65,44 @@ function makeAdapter(): { adapter: PlatformAdapter; dms: Array<{ userId: string;
     },
   };
   return { adapter, dms };
+}
+
+/**
+ * A fake Cloud-like adapter (mirrors `tests/notifyAdminsWindowReopenQueue.test.ts`'s
+ * `makeFakeCloudAdapter`): `sendDirectMessage` rejects with whatever
+ * `rejections[userId]` names, and `queueForWindowReopen` records what was
+ * queued, per-recipient, for assertion (issue #888).
+ */
+function makeCloudAdapter(rejections: Record<string, unknown>): {
+  adapter: PlatformAdapter;
+  dms: Array<{ userId: string; text: string }>;
+  queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }>;
+} {
+  const dms: Array<{ userId: string; text: string }> = [];
+  const queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }> = [];
+  const adapter: PlatformAdapter = {
+    platform: 'whatsapp',
+    adminCapabilities: new Set(),
+    async start() {},
+    async stop() {},
+    isConnected: () => true,
+    onMessage() {},
+    async sendMessage(_out: OutgoingMessage) {},
+    async sendDirectMessage(userId: string, text: string) {
+      if (userId in rejections) throw rejections[userId];
+      dms.push({ userId, text });
+    },
+    queueForWindowReopen(userId: string, message: string, priority: 'system' | 'low') {
+      queued.push({ userId, message, priority });
+    },
+    async conversationsForUser() {
+      return [];
+    },
+    async performAdminAction() {
+      return '';
+    },
+  };
+  return { adapter, dms, queued };
 }
 
 // alertSuperAdmins is fire-and-forget (`void alertSuperAdmins(...)`, no
@@ -168,6 +208,41 @@ test('makeDefaultEngagementAlertRun: on the first eligible tick (no prior send),
   assert.match(dms[0].text, /42%/);
   assert.equal(recordedPercentage, 42, 'the send is recorded with the current percentage');
 });
+
+// engagementAlert.ts imports departedAdminAlert.ts's `alertSuperAdmins` by
+// reference (issue #568) rather than a second copy — this test proves that
+// shared function's window-reopen fix (tests/departedAdminAlert.test.ts)
+// reaches this producer too, with zero code change of its own (issue #888
+// acceptance criterion 3).
+test(
+  "makeDefaultEngagementAlertRun: inherits departedAdminAlert.ts's shared alertSuperAdmins window-reopen " +
+    "fix — a WindowClosedError rejection queues via queueForWindowReopen at 'system' priority instead of " +
+    'only logging, with no code change in this producer (issue #888 acceptance criterion 3)',
+  async () => {
+    const { adapter, dms, queued } = makeCloudAdapter({
+      'admin-closed': new WindowClosedError('admin-closed'),
+    });
+    const runOnce = makeDefaultEngagementAlertRun(
+      [adapter],
+      async () => stats({ percentage: 42 }),
+      async () => false,
+      async () => {},
+      async () => null,
+    );
+
+    await runOnce();
+    await flush();
+
+    assert.deepEqual(
+      dms.map((d) => d.userId),
+      ['admin-open'],
+      'the open-window recipient is still delivered live',
+    );
+    assert.equal(queued.length, 1);
+    assert.equal(queued[0]?.userId, 'admin-closed');
+    assert.equal(queued[0]?.priority, 'system');
+  },
+);
 
 test('makeDefaultEngagementAlertRun: restart-safe cadence — a tick within the freshness window sends nothing further', async () => {
   const { adapter, dms } = makeAdapter();
