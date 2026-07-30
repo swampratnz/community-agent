@@ -144,6 +144,6 @@
   "whatsappCloudAdapter.test.ts": 21,
   "whatsappCloudWire.test.ts": 8,
   "whatsappImageInputSystemPromptEnabled.test.ts": 1,
-  "whatsappTextCommandsRouter.test.ts": 6,
+  "whatsappTextCommandsRouter.test.ts": 8,
   "whatsappWire.test.ts": 1
 }

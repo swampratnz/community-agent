@@ -2745,6 +2745,20 @@ tool, tier, table, or repository function — checked in `Router.handle()`
   with the flag on** — Discord already has its own (ephemeral, denial-capable)
   command surface via §20, so this dispatcher never fires there regardless of
   this flag's state.
+- **Bare `!whois` self-match (issue #889).** `!whois` with no argument mirrors
+  `who_is_into`'s/`/whois`'s own no-argument self-match rather than falling
+  through to a normal turn: it calls `searchMemberInterestsForSelf(msg.platform,
+  msg.userId)`, the same function §22 already uses for the other two surfaces.
+  **SECURITY: no inference from message content.** The implicit query is
+  sourced exclusively from `msg.platform`/`msg.userId` and the caller's own
+  already-stored `member_interests.embedding` — never re-embedded, never
+  parsed from the surrounding message text — preserving #634 AC #4's "never
+  inferred from chat content" invariant; pinned by a test asserting the search
+  is keyed on the caller's identity even when another field on the same
+  message carries another member's interest phrase. The same `member`-tier
+  gate and silent-fallthrough-on-denial convention above apply unchanged; a
+  guest sending bare `!whois` falls through with `searchMemberInterestsForSelfFn`
+  never invoked. `!whois <query>` behaviour is unchanged.
 
 No new write path, no `shortcut_hits` tracking. See docs/ARCHITECTURE.md's
 "WhatsApp text commands" section for the mechanism.
