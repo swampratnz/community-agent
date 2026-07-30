@@ -1415,6 +1415,12 @@ export const FEATURE_FLAG_MAP: readonly FeatureFlagEntry[] = [
     category: 'Admin Alerts & Digest',
   },
   {
+    envVar: 'REPEAT_QUESTION_ALERT_ENABLED',
+    configPath: 'repeatQuestionAlert.enabled',
+    label: 'Real-time repeat-question-cluster alert',
+    category: 'Admin Alerts & Digest',
+  },
+  {
     envVar: 'USAGE_COST_DIGEST_ENABLED',
     configPath: 'usageCostDigest.enabled',
     label: 'Weekly cost-trend DM',

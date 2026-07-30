@@ -72,6 +72,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   `set_my_interests` first, rather than an error or an empty search. Same
   member-tier requirement, same 5-result cap, same rendering as a typed
   query; `who_is_into(query)` and `/whois <query>` are unchanged.
+- **Admins can now get a real-time nudge when members keep asking a
+  near-identical question, closing the last of the three signals #650 named
+  as future work** (#887, `REPEAT_QUESTION_ALERT_ENABLED`, off by default):
+  mirrors the real-time knowledge-gap alert (#650) and stale-knowledge alert
+  (#701), but for the plain "asked N times recently" cluster the weekly
+  digest and the on-demand `question_digest` admin tool already surface.
+  Rate-limited and cooldown-gated per conversation so it can't scale query
+  volume with message volume; off by default like its two siblings.
 
 ## 2026-07-29
 

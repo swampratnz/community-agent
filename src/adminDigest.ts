@@ -44,9 +44,15 @@ import {
 } from './storage/repository.js';
 import type { Platform, PlatformAdapter } from './platforms/types.js';
 
-/** Freshness window and cluster window/limit — mirrors `question_digest`'s own defaults (tools.ts). */
-const FRESHNESS_DAYS = 7;
-const CLUSTER_LIMIT = 5;
+/**
+ * Freshness window and cluster window/limit — mirrors `question_digest`'s own
+ * defaults (tools.ts). Exported so the real-time repeat-question alert
+ * (issue #887) can call `recentQuestionClusters` with the identical window
+ * the weekly digest and `question_digest` already use, keeping the instant
+ * alert and the pull paths reporting on the same data.
+ */
+export const FRESHNESS_DAYS = 7;
+export const CLUSTER_LIMIT = 5;
 const SNIPPET_MAX_CHARS = 300;
 
 /**
