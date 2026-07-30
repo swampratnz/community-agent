@@ -27,7 +27,7 @@ import {
 // --- Knowledge candidates (issue #102, the knowledge_candidates half of #51
 // its adversarial review deferred) --------------------------------------------
 
-export type KnowledgeCandidateStatus = 'pending' | 'accepted' | 'declined';
+export type KnowledgeCandidateStatus = 'pending' | 'accepted' | 'declined' | 'withdrawn';
 
 export interface KnowledgeCandidate {
   id: number;
@@ -172,6 +172,31 @@ export async function createKnowledgeTip(input: {
     ],
   );
   return rows[0] ? { id: Number(rows[0].id) } : null;
+}
+
+/**
+ * Let a member withdraw their OWN still-pending suggest_knowledge tip(s)
+ * (issue #895) — the one member content-submission flow that previously had
+ * no self-service retraction, unlike its sibling `withdrawOwnReports`
+ * (content_reports). Strictly scoped to the caller's own identity via
+ * `source_platform = $1 AND source_user_id = $2`: a machine-drafted
+ * candidate (`source_user_id IS NULL`) can never match, and neither can
+ * another member's tip. Only ever flips a `'pending'` row — an already-
+ * `'accepted'`/`'declined'` tip is a finished review and is left untouched,
+ * matching `withdrawOwnReports`'s own "still-open" scoping. Non-destructive:
+ * the row is kept as `'withdrawn'`, never deleted, `reviewed_by` set to the
+ * withdrawer's own id. Returns the withdrawn ids (empty array if the caller
+ * had no pending tips).
+ */
+export async function withdrawOwnKnowledgeTips(platform: Platform, userId: string): Promise<number[]> {
+  const { rows } = await pool.query(
+    `UPDATE knowledge_candidates
+        SET status = 'withdrawn', reviewed_by = $2, reviewed_at = now()
+      WHERE source_platform = $1 AND source_user_id = $2 AND status = 'pending'
+      RETURNING id`,
+    [platform, userId],
+  );
+  return rows.map((r) => Number(r.id));
 }
 
 /**

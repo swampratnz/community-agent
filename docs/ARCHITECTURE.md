@@ -760,12 +760,12 @@ this list — unlike the others it's implemented on both WhatsApp adapters
 | Talk to the bot | ❌ | ✅ | ✅ | ✅ |
 | Search memory (own conversation), knowledge, `forget_me` | ❌ | ✅ | ✅ | ✅ |
 | `my_data` (read-only summary of the caller's own stored footprint — the IPP6 access counterpart to `forget_me`) | ❌ | ✅ | ✅ | ✅ |
-| `my_submissions` (read back the caller's OWN previously-filed suggestions, content reports, moderation appeals, and suggest_knowledge tips, self-scoped in SQL — a pull-based fallback for a missed resolution DM) | ❌ | ✅ | ✅ | ✅ |
+| `my_submissions` (read back the caller's OWN previously-filed suggestions, content reports, moderation appeals, and suggest_knowledge tips — including a withdrawn tip, rendered distinctly as `[withdrawn]` — self-scoped in SQL — a pull-based fallback for a missed resolution DM) | ❌ | ✅ | ✅ | ✅ |
 | `report_content` (flag harassment/spam/rule violations to admins) | ❌ | ✅ *(rate-capped, 5/24h)* | ✅ | ✅ |
 | `appeal_moderation` (ask admins to review the caller's OWN active warning(s)/mute; refuses cleanly with none) | ❌ | ✅ *(rate-capped, 1 per `MODERATION_APPEAL_COOLDOWN_HOURS`, default 24h)* | ✅ | ✅ |
 | `community_guidelines` (read the community's rules, verbatim, or a not-set-yet message) | ❌ | ✅ | ✅ | ✅ |
 | `suggest_improvement` (file a bot-improvement idea; write-only) | ❌ | ✅ *(rate-capped, 3/24h)* | ✅ | ✅ |
-| `suggest_knowledge` (suggest a durable knowledge-base tip; write-only into the SAME admin-reviewed `knowledge_candidates` queue the context builder feeds — dedup-guarded, never influences answers before an admin accepts it) | ❌ | ✅ *(rate-capped, 3/24h)* | ✅ | ✅ |
+| `suggest_knowledge` (suggest a durable knowledge-base tip; write-only into the SAME admin-reviewed `knowledge_candidates` queue the context builder feeds — dedup-guarded, never influences answers before an admin accepts it) / `withdraw_knowledge_tip` (retract the caller's OWN still-pending tip(s), scoped in SQL to `source_platform`/`source_user_id`; never touches another member's tip, a machine-drafted candidate, or an already-reviewed one — issue #895) | ❌ | ✅ *(rate-capped, 3/24h)* | ✅ | ✅ |
 | `set_my_interests` (publish self-declared interests for member-to-member discovery; free text or the literal `'clear'`, one row per identity, upsert/clear semantics; explicitly floors at `member`, excluding open-mode guests) / `who_is_into` (embedding-similarity search over published interests only; same `member` floor; a caller with no published interests of their own can still search; a matched member with ≥1 active shared project also gets a `Shared projects: "X", "Y"` line, batched-looked-up from `member_projects` — issue #718) | ❌ | ✅ | ✅ | ✅ |
 | `share_project` (publish a self-declared project to the member showcase; upsert-by-name edits, `remove: true` takes it down; per-member cap of 3, rate-capped 3 new shares/24h; explicitly floors at `member`, excluding open-mode guests) / `list_projects` (browse/search the showcase; same `member` floor; a project whose owner has published interests also gets an `Interests: <text>` line, batched-looked-up from `member_interests` — issue #718; each rendered row is prefixed with the project's DB id, e.g. `[#42]` — issue #840; an optional `seekingCollaborators` boolean narrows either path to only active projects with `seeking_collaborators = true` — issue #854; an optional `mine` boolean, ignoring `query`/`seekingCollaborators` when set, instead returns only the caller's own active projects via `listOwnProjects`, self-scoped by identity — the recall path `share_project`'s own name-based edit/remove needs — issue #867) | ❌ | ✅ | ✅ | ✅ |
 | `set_helper_availability` (opt in/out of being notified for `find_helper` requests matching the caller's own published interests; requires an existing `set_my_interests` row; instantly reversible, no CONFIRM) / `find_helper` (ask for member-to-member help; embedding-matches `topic` against opted-in helpers and sends AT MOST ONE DM, to the single best eligible candidate — never a broadcast, never a name/handle disclosed back to the requester; both rate-capped, both behind `FIND_HELPER_ENABLED`, off by default — issue #729) | ❌ | ✅ | ✅ | ✅ |
@@ -1458,6 +1458,25 @@ and review flow above, rather than a separate table or a privileged surface:
   only for an `accepted` tip with a positive count, never a premature
   "used 0 times" for one that's accepted but not yet served, or for a
   pending/declined tip.
+- **Self-service retraction (`withdraw_knowledge_tip`, issue #895)**: the one
+  gap left after #830/#880 — a member could read their tip's status back but
+  had no lever except waiting or DMing an admin. Mirrors `withdraw_report`'s
+  `withdrawOwnReports` shape exactly, one table over: `withdrawOwnKnowledgeTips`
+  flips only rows matching `source_platform = caller.platform AND
+  source_user_id = caller.userId AND status = 'pending'` to `'withdrawn'`
+  (`reviewed_by` set to the withdrawer's own id), never touching a machine-
+  drafted candidate (`source_user_id IS NULL` never equals a real caller id)
+  or an already-`accepted`/`declined` row (a finished review is immutable).
+  Non-destructive — kept as `'withdrawn'`, never deleted — so
+  `list_knowledge_candidates(status: 'withdrawn')` still shows an admin what
+  was retracted. `my_submissions` renders it as `[withdrawn]`, distinct from
+  `[pending]`, via the same generic per-status interpolation every other
+  status already uses — no separate render branch needed. No CONFIRM (a
+  non-destructive status flip, same posture as `decline_knowledge_candidate`);
+  a withdrawn tip's topic still blocks `hasQueuedCandidateForTopic`'s dedup
+  guard exactly as a pending one would (that guard matches any status), so a
+  member wanting to fix a withdrawn tip's wording resubmits under
+  `suggest_knowledge`'s existing rate cap, same as any fresh tip.
 
 #### Implicit drafting from a helpful answer (`rate_answer`, issue #726)
 

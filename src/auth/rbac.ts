@@ -100,6 +100,12 @@ export const MEMBER_TOOLS = [
   // admin's accept_knowledge_candidate call; the read/accept/decline side
   // stays admin-tier, same shape as suggest_improvement/list_suggestions.
   'mcp__community__suggest_knowledge',
+  // Retract your OWN still-pending suggest_knowledge tip(s) (issue #895) —
+  // scoped in SQL to source_platform/source_user_id, so it can never touch
+  // another member's tip or a machine-drafted candidate, and never touches
+  // an already-reviewed (accepted/declined) tip. Same shape as
+  // withdraw_report for content_reports.
+  'mcp__community__withdraw_knowledge_tip',
   // Write-only, boolean-only rating of the bot's own last answer to the
   // caller (rate-capped); the read side (list_answer_feedback) is
   // admin-tier — a member can never read the aggregate feedback queue.
