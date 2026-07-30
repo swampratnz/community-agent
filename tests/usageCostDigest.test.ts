@@ -23,7 +23,9 @@ process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS = 'super-1';
+process.env.SUPER_ADMIN_WHATSAPP_NUMBERS ??= 'admin-open,admin-closed';
 
+const { WindowClosedError } = await import('../src/platforms/whatsapp/cloudAdapter.js');
 const {
   formatUsageCostDigestMessage,
   formatCacheHitRateTrendLine,
@@ -67,6 +69,52 @@ function makeAdapter(): { adapter: PlatformAdapter; dms: Array<{ userId: string;
   };
   return { adapter, dms };
 }
+
+/**
+ * A fake Cloud-like adapter (mirrors `tests/notifyAdminsWindowReopenQueue.test.ts`'s
+ * `makeFakeCloudAdapter`): `sendDirectMessage` rejects with whatever
+ * `rejections[userId]` names, and `queueForWindowReopen` records what was
+ * queued, per-recipient, for assertion (issue #888).
+ */
+function makeCloudAdapter(rejections: Record<string, unknown>): {
+  adapter: PlatformAdapter;
+  dms: Array<{ userId: string; text: string }>;
+  queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }>;
+} {
+  const dms: Array<{ userId: string; text: string }> = [];
+  const queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }> = [];
+  const adapter: PlatformAdapter = {
+    platform: 'whatsapp',
+    adminCapabilities: new Set(),
+    async start() {},
+    async stop() {},
+    isConnected: () => true,
+    onMessage() {},
+    async sendMessage(_out: OutgoingMessage) {},
+    async sendDirectMessage(userId: string, text: string) {
+      if (userId in rejections) throw rejections[userId];
+      dms.push({ userId, text });
+    },
+    queueForWindowReopen(userId: string, message: string, priority: 'system' | 'low') {
+      queued.push({ userId, message, priority });
+    },
+    async conversationsForUser() {
+      return [];
+    },
+    async performAdminAction() {
+      return '';
+    },
+  };
+  return { adapter, dms, queued };
+}
+
+const DEFAULT_RUN_DEPS = {
+  wasSentRecently: async () => false,
+  getStats: async () => ({ costUsd: 7, backgroundCostUsd: 3, cacheUsage: NO_CACHE_ACTIVITY }),
+  getLastTotal: async () => null,
+  getLastCacheHitRate: async () => null,
+  recordSent: async () => {},
+};
 
 // alertSuperAdmins is fire-and-forget (`void alertSuperAdmins(...)`, no
 // await), so give the microtask queue a turn before asserting — same
@@ -359,6 +407,64 @@ test('SECURITY: makeDefaultUsageCostDigestRun sends the DM to exactly the config
     'super-1',
     'the DM goes only to the configured super-admin id (SUPER_ADMIN_DISCORD_IDS)',
   );
+});
+
+// --- Per-recipient window-reopen queue extension (issue #888) ---
+
+test("makeDefaultUsageCostDigestRun: a WindowClosedError rejection queues via queueForWindowReopen at 'system' priority instead of only logging (issue #888 acceptance criterion 1/2)", async () => {
+  const { adapter, dms, queued } = makeCloudAdapter({
+    'admin-closed': new WindowClosedError('admin-closed'),
+  });
+  const runOnce = makeDefaultUsageCostDigestRun([adapter], DEFAULT_RUN_DEPS);
+
+  await runOnce();
+  await flush();
+
+  assert.deepEqual(
+    dms.map((d) => d.userId),
+    ['admin-open'],
+    'the open-window recipient is still delivered live',
+  );
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0]?.userId, 'admin-closed');
+  assert.equal(
+    queued[0]?.priority,
+    'system',
+    "the cost digest has no existing queuePendingAlert('system') branch to inherit from — 'system' is a new, deliberate choice here (adversarial review correction)",
+  );
+});
+
+test('SECURITY: makeDefaultUsageCostDigestRun — a rejection that is NOT a WindowClosedError is never queued via queueForWindowReopen; it stays logged-and-dropped (issue #888 acceptance criterion 4)', async () => {
+  const { adapter, dms, queued } = makeCloudAdapter({
+    'admin-closed': new Error('502 from Graph API'),
+  });
+  const runOnce = makeDefaultUsageCostDigestRun([adapter], DEFAULT_RUN_DEPS);
+
+  await runOnce();
+  await flush();
+
+  assert.deepEqual(
+    dms.map((d) => d.userId),
+    ['admin-open'],
+  );
+  assert.deepEqual(
+    queued,
+    [],
+    'a non-WindowClosedError rejection must never populate the window-reopen queue',
+  );
+});
+
+test('makeDefaultUsageCostDigestRun: an adapter with no queueForWindowReopen (Discord/Baileys shape) falls through to log-and-drop for a WindowClosedError rejection — no crash, byte-identical to today (issue #888 acceptance criterion 5)', async () => {
+  const { adapter } = makeAdapter();
+  adapter.sendDirectMessage = async () => {
+    throw new WindowClosedError('super-1');
+  };
+  const runOnce = makeDefaultUsageCostDigestRun([adapter], DEFAULT_RUN_DEPS);
+
+  await assert.doesNotReject(async () => {
+    await runOnce();
+    await flush();
+  });
 });
 
 test('startUsageCostDigest: USAGE_COST_DIGEST_ENABLED unset (default) creates no timer', () => {

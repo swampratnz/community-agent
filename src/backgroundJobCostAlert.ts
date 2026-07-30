@@ -3,6 +3,7 @@ import { logger } from './logger.js';
 import { superAdminIds } from './auth/roles.js';
 import { startTrackedJob } from './backgroundJobs.js';
 import { sumBackgroundJobCosts, type BackgroundJob } from './storage/repository.js';
+import { WindowClosedError } from './platforms/whatsapp/cloudAdapter.js';
 import type { PlatformAdapter } from './platforms/types.js';
 
 /** The three background jobs that write `background_job_costs` rows (issue #401) — a fixed enum, never derived from anything dynamic. */
@@ -134,9 +135,17 @@ async function alertSuperAdmins(adapters: readonly PlatformAdapter[], message: s
   for (const adapter of adapters) {
     if (!adapter.isConnected()) continue; // can't send through a dead connection
     for (const id of superAdminIds(adapter.platform)) {
-      adapter
-        .sendDirectMessage(id, message)
-        .catch((err) => logger.warn({ err, platform: adapter.platform, id }, 'Cost-spike alert DM failed'));
+      adapter.sendDirectMessage(id, message).catch((err) => {
+        if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+          adapter.queueForWindowReopen(id, message, 'system');
+          logger.warn(
+            { platform: adapter.platform, id },
+            'Cost-spike alert: recipient window closed, queued for reopen',
+          );
+          return;
+        }
+        logger.warn({ err, platform: adapter.platform, id }, 'Cost-spike alert DM failed');
+      });
     }
   }
 }

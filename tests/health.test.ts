@@ -17,6 +17,7 @@ process.env.WHATSAPP_CLOUD_VERIFY_TOKEN ??= 'test-verify-token';
 process.env.WHATSAPP_CLOUD_APP_SECRET ??= 'test-app-secret';
 process.env.HEALTH_ALERT_AFTER_MINUTES = '1';
 process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1,super-2';
+process.env.SUPER_ADMIN_WHATSAPP_NUMBERS ??= 'admin-open,admin-closed';
 
 const {
   startDisconnectAlerts,
@@ -37,6 +38,45 @@ const { notifyReportFiled } = await import('../src/agent/tools.js');
 // prove the flush path (unmodified since #545) also drains a message queued
 // from a NEW producer, not just the original three.
 const { alertSuperAdmins: departedAdminAlertSuperAdmins } = await import('../src/departedAdminAlert.js');
+const { WindowClosedError } = await import('../src/platforms/whatsapp/cloudAdapter.js');
+
+/**
+ * A fake Cloud-like adapter (mirrors `tests/notifyAdminsWindowReopenQueue.test.ts`'s
+ * `makeFakeCloudAdapter`): `sendDirectMessage` rejects with whatever
+ * `rejections[userId]` names, and `queueForWindowReopen` records what was
+ * queued, per-recipient, for assertion (issue #888).
+ */
+function makeFakeCloudAdapter(rejections: Record<string, unknown>): {
+  adapter: PlatformAdapter;
+  dms: Array<{ userId: string; text: string }>;
+  queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }>;
+} {
+  const dms: Array<{ userId: string; text: string }> = [];
+  const queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }> = [];
+  const adapter: PlatformAdapter = {
+    platform: 'whatsapp',
+    adminCapabilities: new Set(),
+    async start() {},
+    async stop() {},
+    isConnected: () => true,
+    onMessage() {},
+    async sendMessage() {},
+    async sendDirectMessage(userId: string, text: string) {
+      if (userId in rejections) throw rejections[userId];
+      dms.push({ userId, text });
+    },
+    queueForWindowReopen(userId: string, message: string, priority: 'system' | 'low') {
+      queued.push({ userId, message, priority });
+    },
+    async conversationsForUser() {
+      return [];
+    },
+    async performAdminAction() {
+      return '';
+    },
+  };
+  return { adapter, dms, queued };
+}
 
 function makeFakeAdapter(connected: boolean): {
   adapter: PlatformAdapter;
@@ -117,6 +157,71 @@ test('alertSuperAdmins: the pending queue never exceeds 5 entries, dropping the 
     getPendingAlertsForTests(),
     ['message-2', 'message-3', 'message-4', 'message-5', 'message-6'],
     'the oldest entry (message-1) should have been dropped once the cap of 5 was exceeded',
+  );
+});
+
+// --- Per-recipient window-reopen queue extension (issue #888) ---
+
+// alertSuperAdmins's per-recipient rejection handling is fire-and-forget
+// (`.catch(...)`, no await), so give the microtask queue a turn before
+// asserting on `queued` — same technique used throughout this codebase's
+// alertSuperAdmins tests (e.g. tests/departedAdminAlert.test.ts).
+function flushMicrotasks(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+test("alertSuperAdmins: a WindowClosedError rejection queues via queueForWindowReopen at 'system' priority instead of only logging (issue #888 acceptance criterion 1/2)", async () => {
+  const { adapter, dms, queued } = makeFakeCloudAdapter({
+    'admin-closed': new WindowClosedError('admin-closed'),
+  });
+
+  await alertSuperAdmins([adapter], 'health alert, one recipient window closed');
+  await flushMicrotasks();
+
+  assert.deepEqual(
+    dms.map((d) => d.userId),
+    ['admin-open'],
+    'the open-window recipient is still delivered live',
+  );
+  assert.deepEqual(queued, [
+    { userId: 'admin-closed', message: 'health alert, one recipient window closed', priority: 'system' },
+  ]);
+});
+
+test('SECURITY: alertSuperAdmins — a rejection that is NOT a WindowClosedError is never queued via queueForWindowReopen; it stays logged-and-dropped (issue #888 acceptance criterion 4)', async () => {
+  const { adapter, dms, queued } = makeFakeCloudAdapter({
+    'admin-closed': new Error('502 from Graph API'),
+  });
+
+  await alertSuperAdmins([adapter], 'health alert, unrelated failure');
+  await flushMicrotasks();
+
+  assert.deepEqual(
+    dms.map((d) => d.userId),
+    ['admin-open'],
+  );
+  assert.deepEqual(
+    queued,
+    [],
+    'a non-WindowClosedError rejection must never populate the window-reopen queue',
+  );
+});
+
+test('alertSuperAdmins: an adapter with no queueForWindowReopen (Discord/Baileys shape) falls through to log-and-drop for a WindowClosedError rejection — no crash, byte-identical to today (issue #888 acceptance criterion 5)', async () => {
+  const { adapter, dms } = makeFakeAdapter(true);
+  const original = adapter.sendDirectMessage.bind(adapter);
+  adapter.sendDirectMessage = async (userId: string, text: string) => {
+    if (userId === 'super-1') throw new WindowClosedError('super-1');
+    return original(userId, text);
+  };
+
+  await assert.doesNotReject(alertSuperAdmins([adapter], 'health alert, discord recipients'));
+  await flushMicrotasks();
+
+  assert.deepEqual(
+    dms.map((d) => d.userId),
+    ['super-2'],
+    'the rejected recipient has no queueForWindowReopen to fall back to, so it is simply dropped',
   );
 });
 
