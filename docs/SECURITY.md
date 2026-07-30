@@ -481,6 +481,26 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   visible to the member whose OWN accepted tip it is — an aggregate integer
   with no member-identifying content, and reachable only through a call
   already scoped to the caller's own rows, pinned by a `SECURITY:` test.
+- **Knowledge tip withdrawal** (`withdraw_knowledge_tip`, issue #895): the
+  one member content-submission flow that previously had no self-service
+  retraction — mirrors `withdraw_report`/`withdrawOwnReports` exactly, one
+  table over. `MEMBER_TOOLS` (member+, guests refused), no arguments, so
+  there is no caller-supplied id and no id-guessing surface — the only
+  inputs are the caller's own resolved `platform`/`userId`.
+  `withdrawOwnKnowledgeTips` is strictly self-scoped in SQL
+  (`source_platform = $1 AND source_user_id = $2 AND status = 'pending'`): a
+  machine-drafted candidate (`source_user_id IS NULL`) can never match a real
+  caller id, and another member's row can never match a different
+  `source_user_id`, pinned by a `SECURITY:` test. Only a still-`'pending'`
+  row is touched — an already-`accepted`/`declined` tip is a finished review
+  and stays byte-unchanged (`status`, `reviewed_by`, `reviewed_at`, and an
+  accepted row's `knowledge_id` link), pinned by a `SECURITY:` test — a
+  member cannot retroactively alter a completed review outcome. Non-
+  destructive (the row is kept as `'withdrawn'`, never deleted, same
+  accountability posture as `withdraw_report`'s own `'withdrawn'` status), so
+  `list_knowledge_candidates` can still show an admin what was retracted; no
+  CONFIRM gate, matching `decline_knowledge_candidate`'s own low-blast-radius
+  status-flip precedent.
 - **Knowledge gaps** (`knowledge_gaps`, issue #208): the `knowledge_search`
   handler persists a below-floor miss — a call that came back with hits but
   none cleared `KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD` — so admins can see

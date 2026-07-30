@@ -60,6 +60,7 @@ const {
   candidateTopicAlreadyReviewed,
   createKnowledgeTip,
   listOwnKnowledgeCandidates,
+  withdrawOwnKnowledgeTips,
   KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY,
   KNOWLEDGE_TIP_TITLE_MAX_CHARS,
   KNOWLEDGE_TIP_CONTENT_MAX_CHARS,
@@ -550,6 +551,195 @@ test(
     assert.deepEqual(await withdrawOwnReports('whatsapp', reporterA), [], 'platform is part of the scope');
 
     await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [[a1.id, a2.id, b1.id]]);
+  },
+);
+
+test(
+  'repository: withdrawOwnKnowledgeTips flips only the caller\'s OWN pending tips and reports their ids; a caller with none mutates nothing (issue #895)',
+  { skip },
+  async () => {
+    const platform = 'discord';
+    const memberId = `${RUN}-wdkt-member`;
+
+    // No pending tips yet — must return an empty array and touch nothing.
+    assert.deepEqual(
+      await withdrawOwnKnowledgeTips(platform, memberId),
+      [],
+      'withdrawing with zero pending tips returns an empty id list',
+    );
+
+    const tip1 = await createKnowledgeTip({
+      platform,
+      userId: memberId,
+      topic: `${RUN}-wdkt-topic-1`,
+      title: 'first pending tip',
+      content: 'first pending tip content',
+    });
+    const tip2 = await createKnowledgeTip({
+      platform,
+      userId: memberId,
+      topic: `${RUN}-wdkt-topic-2`,
+      title: 'second pending tip',
+      content: 'second pending tip content',
+    });
+    assert.ok(tip1 && tip2, 'fixtures recorded');
+
+    const withdrawn = await withdrawOwnKnowledgeTips(platform, memberId);
+    assert.deepEqual(
+      new Set(withdrawn),
+      new Set([tip1.id, tip2.id]),
+      'both of the caller\'s pending tips are withdrawn',
+    );
+
+    const rows = (
+      await pool.query(`SELECT id, status, reviewed_by, reviewed_at FROM knowledge_candidates WHERE id = ANY($1)`, [
+        [tip1.id, tip2.id],
+      ])
+    ).rows;
+    for (const row of rows) {
+      assert.equal(row.status, 'withdrawn', `tip #${row.id} is now withdrawn`);
+      assert.equal(row.reviewed_by, memberId, `tip #${row.id}'s reviewed_by is the withdrawer's own id`);
+      assert.ok(row.reviewed_at, `tip #${row.id} has a reviewed_at timestamp`);
+    }
+
+    // A second call has nothing left pending — empty result, no re-withdrawal.
+    assert.deepEqual(
+      await withdrawOwnKnowledgeTips(platform, memberId),
+      [],
+      'a second withdraw call finds nothing pending left',
+    );
+
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [[tip1.id, tip2.id]]);
+  },
+);
+
+test(
+  "SECURITY: repository: withdrawOwnKnowledgeTips never touches another member's pending tip or a machine-drafted candidate (issue #895)",
+  { skip },
+  async () => {
+    const platform = 'discord';
+    const memberA = `${RUN}-wdkt-A`;
+    const memberB = `${RUN}-wdkt-B`;
+
+    const digestId = await insertContextDigest({
+      periodStart: new Date(Date.now() - 86_400_000),
+      periodEnd: new Date(),
+      topic: `${RUN}-wdkt-digest-topic`,
+      summary: 'aggregate summary',
+      exampleRefs: [],
+      distinctUsers: 3,
+      questionCount: 4,
+    });
+    const machineDraftedId = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-wdkt-machine-topic`,
+      title: 'machine drafted title',
+      content: 'machine drafted content',
+    });
+
+    const tipA = await createKnowledgeTip({
+      platform,
+      userId: memberA,
+      topic: `${RUN}-wdkt-A-topic`,
+      title: "A's pending tip",
+      content: "A's pending tip content",
+    });
+    const tipB = await createKnowledgeTip({
+      platform,
+      userId: memberB,
+      topic: `${RUN}-wdkt-B-topic`,
+      title: "B's pending tip",
+      content: "B's pending tip content",
+    });
+    assert.ok(tipA && tipB, 'fixtures recorded');
+
+    const withdrawn = await withdrawOwnKnowledgeTips(platform, memberA);
+    assert.deepEqual(withdrawn, [tipA.id], "only A's own pending tip is withdrawn");
+
+    const statusOf = async (id: number) =>
+      (await pool.query(`SELECT status FROM knowledge_candidates WHERE id = $1`, [id])).rows[0]?.status;
+    assert.equal(await statusOf(tipA.id), 'withdrawn', "A's tip is now withdrawn");
+    assert.equal(
+      await statusOf(tipB.id),
+      'pending',
+      "SECURITY: B's tip must be untouched — a member can only withdraw their own",
+    );
+    assert.equal(
+      await statusOf(machineDraftedId),
+      'pending',
+      'SECURITY: a machine-drafted candidate (source_user_id IS NULL) must never match a real caller id',
+    );
+
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [
+      [tipA.id, tipB.id, machineDraftedId],
+    ]);
+  },
+);
+
+test(
+  "SECURITY: repository: withdrawOwnKnowledgeTips leaves an already-accepted or already-declined tip byte-unchanged (issue #895)",
+  { skip },
+  async () => {
+    const platform = 'discord';
+    const acceptedMemberId = `${RUN}-wdkt-accepted`;
+    const declinedMemberId = `${RUN}-wdkt-declined`;
+
+    const acceptedTip = await createKnowledgeTip({
+      platform,
+      userId: acceptedMemberId,
+      topic: `${RUN}-wdkt-accepted-topic`,
+      title: 'already accepted tip',
+      content: 'already accepted tip content',
+    });
+    const declinedTip = await createKnowledgeTip({
+      platform,
+      userId: declinedMemberId,
+      topic: `${RUN}-wdkt-declined-topic`,
+      title: 'already declined tip',
+      content: 'already declined tip content',
+    });
+    assert.ok(acceptedTip && declinedTip, 'fixtures recorded');
+
+    const accepted = await acceptKnowledgeCandidate({ id: acceptedTip.id, reviewedBy: 'admin-1' });
+    const declined = await declineKnowledgeCandidate(declinedTip.id, 'admin-1');
+    assert.ok(accepted && declined);
+
+    const before = async (id: number) =>
+      (
+        await pool.query(
+          `SELECT status, reviewed_by, reviewed_at, knowledge_id FROM knowledge_candidates WHERE id = $1`,
+          [id],
+        )
+      ).rows[0];
+    const acceptedBefore = await before(acceptedTip.id);
+    const declinedBefore = await before(declinedTip.id);
+
+    assert.deepEqual(
+      await withdrawOwnKnowledgeTips(platform, acceptedMemberId),
+      [],
+      'an accepted tip is not pending, so nothing is withdrawn',
+    );
+    assert.deepEqual(
+      await withdrawOwnKnowledgeTips(platform, declinedMemberId),
+      [],
+      'a declined tip is not pending, so nothing is withdrawn',
+    );
+
+    const acceptedAfter = await before(acceptedTip.id);
+    const declinedAfter = await before(declinedTip.id);
+    assert.deepEqual(
+      acceptedAfter,
+      acceptedBefore,
+      'SECURITY: an already-accepted tip (status, reviewed_by, reviewed_at, knowledge_id) is byte-unchanged',
+    );
+    assert.deepEqual(
+      declinedAfter,
+      declinedBefore,
+      'SECURITY: an already-declined tip (status, reviewed_by, reviewed_at) is byte-unchanged',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [accepted.knowledgeId]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [[acceptedTip.id, declinedTip.id]]);
   },
 );
 

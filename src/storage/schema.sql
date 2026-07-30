@@ -999,6 +999,19 @@ CREATE INDEX IF NOT EXISTS knowledge_candidates_source_rate_idx
 -- ---------------------------------------------------------------------------
 ALTER TABLE knowledge_candidates ADD COLUMN IF NOT EXISTS knowledge_id BIGINT REFERENCES knowledge(id) ON DELETE SET NULL;
 
+-- Widens the status CHECK to add 'withdrawn' (issue #895): lets a member
+-- retract their OWN still-pending suggest_knowledge tip via
+-- withdraw_knowledge_tip, the same self-service lever content_reports'
+-- 'withdrawn' status already gives report filers. Non-destructive (the row
+-- is kept, never deleted) and distinct from an admin-initiated 'declined',
+-- same rationale as content_reports' own 'withdrawn' vs. 'dismissed' split.
+-- Same idempotent DROP CONSTRAINT IF EXISTS / re-add convention as
+-- shortcut_hits.kind above, safe to re-run against a table that already
+-- holds rows in the original three statuses.
+ALTER TABLE knowledge_candidates DROP CONSTRAINT IF EXISTS knowledge_candidates_status_check;
+ALTER TABLE knowledge_candidates ADD CONSTRAINT knowledge_candidates_status_check
+  CHECK (status IN ('pending', 'accepted', 'declined', 'withdrawn'));
+
 -- ---------------------------------------------------------------------------
 -- Restart-safe freshness guard + trend store for the weekly super-admin
 -- cost-trend DM (issue #578), off unless USAGE_COST_DIGEST_ENABLED. A single

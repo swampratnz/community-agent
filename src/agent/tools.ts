@@ -142,6 +142,7 @@ import {
   FIND_HELPER_REQUESTER_DAILY_LIMIT,
   FIND_HELPER_WEEKLY_LIMIT_PER_HELPER,
   withdrawOwnReports,
+  withdrawOwnKnowledgeTips,
   SUGGESTION_MAX_CHARS,
   SUGGESTION_RATE_LIMIT_PER_DAY,
   PROJECT_CONNECTION_REQUESTER_DAILY_LIMIT,
@@ -1687,7 +1688,8 @@ const MEMBER_CAPABILITIES_TEXT =
   "- Check what I've stored about you, your active warnings, or your filed suggestions/reports\n" +
   '- Catch you up on recent activity in this conversation ("what did I miss?")\n' +
   '- Suggest how the bot or community could be better, or suggest a knowledge-base tip for other members ' +
-  'to find later\n' +
+  "to find later — and withdraw a knowledge tip you filed before an admin reviews it, if you change your " +
+  'mind\n' +
   '- Rate my last answer helpful or not\n' +
   '- Ask to talk to a human community admin, if I\'m not getting you anywhere ("can I talk to a ' +
   'human?")\n' +
@@ -3635,6 +3637,27 @@ export function buildToolServer(
       return text(
         `Withdrew your report${ids.length > 1 ? 's' : ''} ${list}. ` +
           "They won't be actioned; the admins have been notified of the withdrawal.",
+      );
+    },
+    { annotations: { readOnlyHint: false } },
+  );
+
+  const withdrawKnowledgeTip = tool(
+    'withdraw_knowledge_tip',
+    'Withdraw your OWN still-pending suggest_knowledge tip(s) — use this if you filed one by mistake, as a ' +
+      "joke, or want to fix it before an admin reviews it. It only ever affects tips YOU filed and only ones " +
+      "still pending; it cannot touch anyone else's tip, a machine-drafted candidate, or a tip already " +
+      'reviewed. The tip is marked withdrawn and kept on record (not deleted).',
+    {},
+    async () => {
+      const ids = await withdrawOwnKnowledgeTips(caller.platform, caller.userId);
+      if (ids.length === 0) {
+        return text('You have no pending knowledge tips to withdraw.', true);
+      }
+      const list = ids.map((id) => `#${id}`).join(', ');
+      return text(
+        `Withdrew your knowledge tip${ids.length > 1 ? 's' : ''} ${list}. ` +
+          "They won't be reviewed — feel free to resubmit a better version with suggest_knowledge.",
       );
     },
     { annotations: { readOnlyHint: false } },
@@ -6251,7 +6274,7 @@ export function buildToolServer(
       'Admin only.',
     {
       status: z
-        .enum(['pending', 'accepted', 'declined'])
+        .enum(['pending', 'accepted', 'declined', 'withdrawn'])
         .optional()
         .describe('Filter by status (default: all statuses)'),
       limit: z.number().optional().describe('Max entries (default 50, max 200)'),
@@ -7843,6 +7866,7 @@ export function buildToolServer(
       forgetMe,
       reportContent,
       withdrawReport,
+      withdrawKnowledgeTip,
       mySubmissions,
       myWarnings,
       appealModeration,

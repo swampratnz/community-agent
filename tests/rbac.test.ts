@@ -118,6 +118,15 @@ test('SECURITY: withdraw_report is member+ (retract your own report; scoping to 
   }
 });
 
+test('SECURITY: withdraw_knowledge_tip is member+ (retract your own pending suggest_knowledge tip; scoping to own pending tips is enforced in SQL, issue #895)', () => {
+  const tool = 'mcp__community__withdraw_knowledge_tip';
+  assert.ok(MEMBER_TOOLS.includes(tool), 'withdraw_knowledge_tip must be in MEMBER_TOOLS');
+  for (const role of ['member', 'admin', 'super_admin'] as const) {
+    assert.ok(toolsForRole(role).includes(tool), `${role} must reach withdraw_knowledge_tip`);
+  }
+  assert.ok(!toolsForRole('guest').includes(tool), 'guest must not reach withdraw_knowledge_tip');
+});
+
 test('SECURITY: my_submissions is member+ and strictly narrower than the shared queue tools (list_suggestions/list_reports, both admin-only)', () => {
   const tool = 'mcp__community__my_submissions';
   const sharedQueueTools = ['mcp__community__list_suggestions', 'mcp__community__list_reports'];

@@ -2740,6 +2740,7 @@ const MEMBER_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__my_data', /what I've stored about you/i],
   ['mcp__community__suggest_improvement', /suggest/i],
   ['mcp__community__suggest_knowledge', /knowledge-base tip/i],
+  ['mcp__community__withdraw_knowledge_tip', /withdraw a knowledge tip/i],
   ['mcp__community__rate_answer', /rate my last answer/i],
   ['mcp__community__request_human_help', /talk to a human/i],
   ['mcp__community__set_response_style', /simply/i],

@@ -107,6 +107,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   digest and the on-demand `question_digest` admin tool already surface.
   Rate-limited and cooldown-gated per conversation so it can't scale query
   volume with message volume; off by default like its two siblings.
+- **Members can now withdraw their own pending knowledge tips** (#895,
+  `withdraw_knowledge_tip`) — the one contribution flow (`suggest_knowledge`)
+  that had no self-service retraction, unlike its sibling `withdraw_report`
+  for content reports. If you fat-finger a tip, regret a joke submission, or
+  want to fix it before an admin reviews it, you can now withdraw it
+  yourself instead of waiting or asking an admin to decline it. Only ever
+  touches tips YOU filed and only ones still pending — a machine-drafted
+  candidate and an already-reviewed tip are both untouched. The tip is kept
+  on record as withdrawn, not deleted, and `my_submissions` shows it
+  distinctly from pending/accepted/declined.
 
 ## 2026-07-29
 
