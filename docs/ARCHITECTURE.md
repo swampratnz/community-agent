@@ -1417,6 +1417,18 @@ and review flow above, rather than a separate table or a privileged surface:
   admin-overridden) title; the declined wording is neutral-to-supportive,
   same as `resolve_appeal`'s `dismissed` case — `decline_knowledge_candidate`
   takes no reason argument, so nothing is fabricated.
+- **Impact loop closure (issue #880)**: acceptance told a contributor their
+  tip was in `knowledge`, but never whether it actually helped anyone —
+  `knowledge.retrieval_count` (#134) tracked exactly that, but only ever
+  surfaced to admins via `list_knowledge`. `acceptKnowledgeCandidate` now
+  persists the `knowledgeId` it already computes onto a new nullable
+  `knowledge_candidates.knowledge_id` FK, in the SAME `UPDATE` that flips the
+  row to `'accepted'` (mirroring the existing `digest_id` FK shape).
+  `listOwnKnowledgeCandidates` `LEFT JOIN`s `knowledge` on that column so
+  `my_submissions` can append a "used N times in answers so far" suffix —
+  only for an `accepted` tip with a positive count, never a premature
+  "used 0 times" for one that's accepted but not yet served, or for a
+  pending/declined tip.
 
 #### Implicit drafting from a helpful answer (`rate_answer`, issue #726)
 
@@ -1637,6 +1649,35 @@ serve. That decision used to be made and thrown away in the same request;
   id. With the flag off, every call site's staleness check runs exactly as
   before #701 (the member-facing caveat is unaffected) with no extra query,
   no write, no DM.
+- **Real-time repeat-question-cluster alert (issue #887,
+  `REPEAT_QUESTION_ALERT_ENABLED`, off by default).** The generic
+  repeat-question half #650 explicitly deferred — the last of the three
+  signals #650's own text named as future work, closing that list. Promotes
+  the weekly digest's/`question_digest`'s `recentQuestionClusters` line to an
+  instant admin DM the moment a single conversation's cluster crosses
+  `REPEAT_QUESTION_ALERT_THRESHOLD` (default 3). Unlike #650/#701, whose
+  triggering events are cheap pre-bounded inserts/flags,
+  `recentQuestionClusters` scans and clusters every `addressed_to_bot`
+  inbound message in its window, so running it on every turn would scale
+  query volume with raw message volume — `router.ts`'s `respond()` instead
+  gates the call itself behind a new per-conversation cooldown
+  (`REPEAT_QUESTION_ALERT_COOLDOWN_MINUTES`, default 15, keyed like the
+  existing `convoKey` maps), checked only after a genuine success
+  (`reply.ok === true`). There is no persisted per-cluster `alerted_at`
+  stamp (unlike `knowledge_gaps`/`knowledge`, `interactions` has no stable
+  cluster identity to key one against): the cooldown itself doubles as the
+  anti-repeat mechanism — once a conversation is checked, whether or not it
+  alerted, it can't be checked again until the cooldown elapses. The check
+  is scoped to `[msg.conversationId]` only, strictly narrower than
+  `question_digest`'s `callerScope()`. On a crossed cluster, `router.ts`
+  reserves a guild-wide rolling-hour slot
+  (`REPEAT_QUESTION_ALERT_RATE_LIMIT_PER_HOUR`, default 5, identical
+  sliding-window shape to `reserveKnowledgeGapAlertSlot`) and, only on a
+  successful reservation, fires one `notifyAdmins` DM naming the cluster's
+  `representative` (`truncateForEcho`-capped, the same bound the other two
+  alerts already apply) and its `count` — never a conversation id, platform
+  id, or user id. With the flag off, `respond()` performs no
+  `recentQuestionClusters` call and no DM, byte-identical to today.
 
 On top of the digests sits the **anonymised community-context export**
 (issue #53, `CONTEXT_EXPORT_ENABLED`): after a producing builder run,

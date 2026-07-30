@@ -44,6 +44,7 @@ import {
   listRecentProjects,
   markKnowledgeGapsAlerted,
   markStaleKnowledgeAlerted,
+  recentQuestionClusters,
   recordAccessRequest,
   recordEscalatedKnowledgeGap,
   recordInteraction,
@@ -53,6 +54,7 @@ import {
   searchMemberInterests,
   searchProjects,
 } from './storage/repository.js';
+import { FRESHNESS_DAYS, CLUSTER_LIMIT } from './adminDigest.js';
 import {
   RATE_LIMIT_NOTICE_TEXT,
   RATE_LIMIT_NOTICE_TEXT_MI,
@@ -430,6 +432,17 @@ export class Router {
    */
   private readonly autoAnswerThreadParents = new Map<string, { parent: string; at: number }>();
 
+  /**
+   * Last-checked timestamp per conversation for the repeat-question-cluster
+   * alert (issue #887), keyed by `convoKey` — `${platform}:${conversationId}`.
+   * Gates `recentQuestionClustersFn` itself (not just the resulting DM)
+   * behind `REPEAT_QUESTION_ALERT_COOLDOWN_MINUTES`; see
+   * `shouldCheckRepeatQuestionCluster`'s doc comment. Pruned in `sweep()` on
+   * the cooldown window itself — a stale entry past its own cooldown carries
+   * no meaning and would only grow the map for an inactive conversation.
+   */
+  private readonly repeatQuestionAlertLastCheck = new Map<string, number>();
+
   private readonly PAUSE_NOTIFY_WINDOW_MS = 3_600_000; // 1 hour — a pause is typically longer-lived than a rate-limit burst
   private readonly BUDGET_CHECK_FAILURE_ALERT_WINDOW_MS = 900_000; // 15 minutes — a DB recording failure is a systemic condition, not per-user
   private readonly REPEAT_SHORTCUT_WINDOW_MS = 120_000; // 2 minutes — long enough for a double-tap/impatient-resend, short enough that a genuinely new question with identical text is unlikely
@@ -484,6 +497,11 @@ export class Router {
    * overridable so the WhatsApp text-command tests can assert `runTurn` (and
    * therefore `embed()`, which only the real search functions would call) is
    * never reached, without a live DB.
+   * `recentQuestionClustersFn` defaults to the real DB-backed clustering read
+   * (issue #887), consulted only from `maybeAlertRepeatQuestion` below when
+   * `config.repeatQuestionAlert.enabled` is true and the per-conversation
+   * cooldown has elapsed — overridable so tests can assert on its call count
+   * directly (acceptance criterion 2) without a live DB.
    */
   constructor(
     private readonly runTurn: typeof runAgentTurn = runAgentTurn,
@@ -509,6 +527,7 @@ export class Router {
     private readonly searchProjectsFn: typeof searchProjects = searchProjects,
     private readonly listRecentProjectsFn: typeof listRecentProjects = listRecentProjects,
     private readonly buildMemberDigestContentFn: typeof buildMemberDigestContent = buildMemberDigestContent,
+    private readonly recentQuestionClustersFn: typeof recentQuestionClusters = recentQuestionClusters,
   ) {
     setInterval(() => this.sweep(), this.RATE_WINDOW_MS * 5).unref();
   }
@@ -611,6 +630,90 @@ export class Router {
     ).catch((err) => logger.warn({ err, id }, 'Stale-knowledge admin notification failed'));
   }
 
+  /** Rolling-hour timestamps for `REPEAT_QUESTION_ALERT_RATE_LIMIT_PER_HOUR` (issue #887) — guild-wide, same reasoning as `knowledgeGapAlertTimestamps` above (the `listAdmins()` audience is guild-wide too). */
+  private readonly repeatQuestionAlertTimestamps: number[] = [];
+
+  /**
+   * Reserve one repeat-question-cluster-alert slot against a rolling hourly
+   * cap, identical sliding-window shape as `reserveKnowledgeGapAlertSlot`.
+   * Returns false without reserving if the guild already hit `limit` within
+   * the last hour — the caller (below) simply drops the DM in that case; the
+   * underlying cluster is unaffected and still visible via the weekly digest
+   * / `question_digest` (acceptance criterion 4).
+   */
+  private reserveRepeatQuestionAlertSlot(limit: number): boolean {
+    const now = Date.now();
+    const windowMs = 60 * 60 * 1000;
+    const recent = this.repeatQuestionAlertTimestamps.filter((t) => now - t < windowMs);
+    this.repeatQuestionAlertTimestamps.length = 0;
+    this.repeatQuestionAlertTimestamps.push(...recent);
+    if (recent.length >= limit) return false;
+    this.repeatQuestionAlertTimestamps.push(now);
+    return true;
+  }
+
+  /**
+   * Per-conversation cooldown gate for the repeat-question-cluster alert
+   * (issue #887), keyed identically to `convoKey` — `${platform}:${conversationId}`.
+   * Unlike `reserveKnowledgeGapAlertSlot`/`reserveStaleKnowledgeAlertSlot`
+   * (which gate a cheap, already-triggered DM), this gates the underlying
+   * `recentQuestionClusters` DB call itself, since that call scans and
+   * clusters every `addressed_to_bot` inbound message in its window —
+   * running it on every turn would scale query volume with raw message
+   * volume (acceptance criterion 2). Returns `true` (and stamps `now`,
+   * arming the cooldown) at most once per `cooldownMs` per conversation,
+   * regardless of whether the check that follows ends up alerting — the
+   * cooldown doubles as this feature's only anti-repeat mechanism, since
+   * `interactions` has no stable per-cluster identity to persist an
+   * `alerted_at`-style stamp against (unlike `knowledge_gaps`/`knowledge`).
+   */
+  private shouldCheckRepeatQuestionCluster(key: string, cooldownMs: number): boolean {
+    const now = Date.now();
+    const last = this.repeatQuestionAlertLastCheck.get(key);
+    if (last !== undefined && now - last < cooldownMs) return false;
+    this.repeatQuestionAlertLastCheck.set(key, now);
+    return true;
+  }
+
+  /**
+   * Real-time admin nudge for a generic repeat-question cluster (issue #887)
+   * — the third and last signal named in #650's own deferral list, closing
+   * it. Fired from `respond()` after a genuine success (`reply.ok === true`),
+   * gated first by the per-conversation cooldown above (so the underlying
+   * `recentQuestionClustersFn` call itself is skipped, not just the DM), then
+   * scoped to `[msg.conversationId]` ONLY — strictly narrower than the
+   * admin-tier `question_digest` tool's `callerScope()`, so a cluster from a
+   * conversation the triggering turn wasn't in can never surface here.
+   * SECURITY: the DM body is a strict subset of what `question_digest`
+   * already returns for the same single-conversation scope — the cluster's
+   * `representative` text (`truncateForEcho`-capped, the same bound
+   * `maybeAlertStaleKnowledge`/the knowledge-gap alert already apply) and its
+   * `count`, never a conversation id, platform id, or user id.
+   */
+  private async maybeAlertRepeatQuestion(msg: IncomingMessage): Promise<void> {
+    const cooldownMs = config.repeatQuestionAlert.cooldownMinutes * 60_000;
+    if (!this.shouldCheckRepeatQuestionCluster(this.convoKey(msg), cooldownMs)) return;
+
+    const clusters = await this.recentQuestionClustersFn(
+      [msg.conversationId],
+      FRESHNESS_DAYS,
+      CLUSTER_LIMIT,
+    ).catch((err) => {
+      logger.warn({ err }, 'Repeat-question cluster check failed');
+      return [];
+    });
+    const crossed = clusters.find((c) => c.count >= config.repeatQuestionAlert.threshold);
+    if (!crossed) return;
+    if (!this.reserveRepeatQuestionAlertSlot(config.repeatQuestionAlert.rateLimitPerHour)) return;
+
+    await this.notifyAdminsFn(
+      (platform) => this.adapters.get(platform),
+      `A repeat question has come up ${crossed.count} times recently and might be worth turning ` +
+        `into a FAQ: "${truncateForEcho(crossed.representative)}"`,
+      msg.userId,
+    ).catch((err) => logger.warn({ err }, 'Repeat-question cluster admin notification failed'));
+  }
+
   private sweep(): void {
     const now = Date.now();
     for (const [key, hits] of this.userHits) {
@@ -643,6 +746,10 @@ export class Router {
     }
     for (const [key, entry] of this.autoAnswerThreadParents) {
       if (now - entry.at > ESCALATION_WINDOW_MS) this.autoAnswerThreadParents.delete(key);
+    }
+    const repeatQuestionCooldownMs = config.repeatQuestionAlert.cooldownMinutes * 60_000;
+    for (const [key, at] of this.repeatQuestionAlertLastCheck) {
+      if (now - at > repeatQuestionCooldownMs) this.repeatQuestionAlertLastCheck.delete(key);
     }
     sweepExpiredPendingActions();
   }
@@ -2074,6 +2181,19 @@ export class Router {
         for (const id of reply.staleKnowledgeAlertIds) {
           await this.maybeAlertStaleKnowledge(id, msg.userId);
         }
+      }
+
+      // Real-time admin nudge for a generic repeat-question cluster (issue
+      // #887) — the last of the three signals #650 explicitly named as
+      // future work, closing that deferral. Unlike the two alerts above,
+      // this isn't threaded off a tool-set `AgentReply` field: it reuses
+      // `recentQuestionClusters` directly, so the gate is explicit here —
+      // `reply.ok === true` only, matching the "turn ended in genuine
+      // success" bar the other two alerts get for free from their own
+      // turn-scoped-ref plumbing. See `maybeAlertRepeatQuestion`'s own doc
+      // comment for the cooldown/rate-limit/scope mechanics.
+      if (config.repeatQuestionAlert.enabled && reply.ok === true) {
+        await this.maybeAlertRepeatQuestion(msg);
       }
 
       // Approaching-daily-budget warning (issue #511): append-only, same

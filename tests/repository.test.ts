@@ -1598,13 +1598,22 @@ test(
     );
 
     // Accept with an override — the override text, not the drafted text, must land in knowledge.
+    // SECURITY (issue #880): `acceptKnowledgeCandidate`'s input type has no `knowledgeId`/`knowledge_id`
+    // field at all — the link is always the value THIS call's own `saveKnowledge` computes, never
+    // caller-suppliable. A forged extra property (cast past the type) must have zero effect.
     const accepted = await acceptKnowledgeCandidate({
       id: acceptId,
       title: 'Overridden title',
       content: 'Overridden answer content, fixed at accept time.',
       reviewedBy: 'admin-1',
+      ...({ knowledgeId: 999_999_999, knowledge_id: 999_999_999 } as unknown as object),
     });
     assert.ok(accepted);
+    assert.notEqual(
+      accepted.knowledgeId,
+      999_999_999,
+      'SECURITY: a forged knowledgeId-shaped extra property must never override the computed value',
+    );
     const knowledgeRow = await pool.query(`SELECT title, content FROM knowledge WHERE id = $1`, [
       accepted.knowledgeId,
     ]);
@@ -1616,8 +1625,27 @@ test(
     assert.equal(acceptedRow.reviewedBy, 'admin-1');
     assert.ok(acceptedRow.reviewedAt);
 
+    // issue #880: the accept call persists the link back onto the candidate row, in the same call.
+    const linkedRow = await pool.query(`SELECT knowledge_id FROM knowledge_candidates WHERE id = $1`, [
+      acceptId,
+    ]);
+    assert.equal(
+      Number(linkedRow.rows[0].knowledge_id),
+      accepted.knowledgeId,
+      "acceptKnowledgeCandidate persists the returned knowledgeId onto the candidate's knowledge_id",
+    );
+
     const reAccept = await acceptKnowledgeCandidate({ id: acceptId, reviewedBy: 'admin-2' });
     assert.equal(reAccept, null, 'accepting an already-accepted candidate is a no-op, not a double publish');
+    const unchangedLinkedRow = await pool.query(
+      `SELECT knowledge_id FROM knowledge_candidates WHERE id = $1`,
+      [acceptId],
+    );
+    assert.equal(
+      Number(unchangedLinkedRow.rows[0].knowledge_id),
+      accepted.knowledgeId,
+      're-accepting an already-accepted candidate writes nothing — knowledge_id is unchanged',
+    );
 
     // Decline the other candidate: retained as 'declined', knowledge untouched.
     const declined = await declineKnowledgeCandidate(declineId, 'admin-1');
@@ -8248,6 +8276,65 @@ test(
     );
 
     await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [[t1.id, t2.id]]);
+  },
+);
+
+test(
+  "repository: listOwnKnowledgeCandidates surfaces the linked knowledge entry's retrieval_count for an accepted+linked tip, and null for a pending/declined/unlinked one (issue #880)",
+  { skip },
+  async () => {
+    const userId = `${RUN}-my-knowledge-tip-impact-user`;
+
+    const toAccept = await createKnowledgeTip({
+      platform: 'discord',
+      userId,
+      topic: `${RUN} impact tip topic accept`,
+      title: 'accepted and retrieved tip',
+      content: 'accepted tip content',
+    });
+    const toDecline = await createKnowledgeTip({
+      platform: 'discord',
+      userId,
+      topic: `${RUN} impact tip topic decline`,
+      title: 'declined tip',
+      content: 'declined tip content',
+    });
+    const pending = await createKnowledgeTip({
+      platform: 'discord',
+      userId,
+      topic: `${RUN} impact tip topic pending`,
+      title: 'still pending tip',
+      content: 'pending tip content',
+    });
+    assert.ok(toAccept && toDecline && pending, 'fixtures recorded');
+
+    const accepted = await acceptKnowledgeCandidate({ id: toAccept.id, reviewedBy: 'admin-1' });
+    assert.ok(accepted);
+    await declineKnowledgeCandidate(toDecline.id, 'admin-1');
+    // One call per hit, mirroring real knowledge_search usage — a single call's
+    // WHERE id = ANY($1) increments a duplicated id only once, not once per repeat.
+    for (let i = 0; i < 5; i++) {
+      await recordKnowledgeRetrieval([accepted.knowledgeId]);
+    }
+
+    const own = await listOwnKnowledgeCandidates('discord', userId, 50);
+    const acceptedRow = own.find((c) => c.id === toAccept.id);
+    const declinedRow = own.find((c) => c.id === toDecline.id);
+    const pendingRow = own.find((c) => c.id === pending.id);
+    assert.ok(acceptedRow && declinedRow && pendingRow, 'all three own tips are present');
+
+    assert.equal(
+      acceptedRow.retrievalCount,
+      5,
+      'the accepted, linked candidate reads back its knowledge entry’s retrieval_count',
+    );
+    assert.equal(declinedRow.retrievalCount, null, 'a declined (unlinked) candidate reads back null, not 0');
+    assert.equal(pendingRow.retrievalCount, null, 'a pending (unlinked) candidate reads back null, not 0');
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [accepted.knowledgeId]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [
+      [toAccept.id, toDecline.id, pending.id],
+    ]);
   },
 );
 

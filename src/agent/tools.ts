@@ -1416,6 +1416,12 @@ export const FEATURE_FLAG_MAP: readonly FeatureFlagEntry[] = [
     category: 'Admin Alerts & Digest',
   },
   {
+    envVar: 'REPEAT_QUESTION_ALERT_ENABLED',
+    configPath: 'repeatQuestionAlert.enabled',
+    label: 'Real-time repeat-question-cluster alert',
+    category: 'Admin Alerts & Digest',
+  },
+  {
     envVar: 'USAGE_COST_DIGEST_ENABLED',
     configPath: 'usageCostDigest.enabled',
     label: 'Weekly cost-trend DM',
@@ -3690,8 +3696,15 @@ export function buildToolServer(
         if (lines.length > 0) lines.push('');
         lines.push('Your knowledge tips:');
         for (const k of knowledgeTips) {
+          // "used N times" only for an accepted tip with a positive retrieval
+          // count (issue #880) — never "used 0 times" for an accepted-but-
+          // unretrieved or non-accepted tip, which would read as discouraging.
+          const impact =
+            k.status === 'accepted' && k.retrievalCount && k.retrievalCount > 0
+              ? ` — used ${k.retrievalCount} time${k.retrievalCount === 1 ? '' : 's'} in answers so far`
+              : '';
           lines.push(
-            `- #${k.id} [${k.status}] ${truncateForEcho(k.title)} — filed ${formatRelativeAge(k.createdAt)}`,
+            `- #${k.id} [${k.status}] ${truncateForEcho(k.title)} — filed ${formatRelativeAge(k.createdAt)}${impact}`,
           );
         }
       }
