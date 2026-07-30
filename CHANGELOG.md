@@ -98,6 +98,19 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   digest and the on-demand `question_digest` admin tool already surface.
   Rate-limited and cooldown-gated per conversation so it can't scale query
   volume with message volume; off by default like its two siblings.
+- **The WhatsApp Cloud API — the docs' own recommended production WhatsApp
+  path — can now answer from an attached image too, closing the last
+  silent-drop gap on that path** (#891): a Cloud API member at or above
+  `WHATSAPP_CLOUD_IMAGE_INPUT_MIN_ROLE` can attach a screenshot, stack trace,
+  or billing-page image and get a reply grounded in what it actually shows,
+  mirroring #879's WhatsApp/Baileys image-attachment input. Off by default
+  (`WHATSAPP_CLOUD_IMAGE_INPUT_ENABLED`), `super_admin`-only by default, with
+  the same MIME allowlist, byte cap, and daily-per-sender cap as the other
+  two platforms' image features — all checked before any Graph API call, so
+  a below-tier or over-cap sender's image is never fetched. Previously an
+  image (with or without a caption) sent to the Cloud API bot got total
+  silence, not even a "can't handle images" reply. No image bytes are ever
+  stored.
 
 ## 2026-07-29
 

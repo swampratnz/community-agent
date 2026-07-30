@@ -453,7 +453,9 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
       const role = await resolveRole('whatsapp', senderId);
       if (!atLeast(role, minRole)) return undefined;
     }
-    if (!reserveImageInputDaily(`whatsapp-cloud:${senderId}`, config.whatsapp.cloud.image.dailyLimitPerUser)) {
+    if (
+      !reserveImageInputDaily(`whatsapp-cloud:${senderId}`, config.whatsapp.cloud.image.dailyLimitPerUser)
+    ) {
       logger.info(
         { sender: hashId(senderId), limit: config.whatsapp.cloud.image.dailyLimitPerUser },
         'WhatsApp Cloud image attachment refused — sender hit the daily image-input cap',
@@ -495,7 +497,10 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
    * actual byte-download call. This call transfers only JSON metadata, never
    * image bytes.
    */
-  private async resolveMediaUrl(mediaId: string, accessToken: string): Promise<{ url: string; fileSize: number }> {
+  private async resolveMediaUrl(
+    mediaId: string,
+    accessToken: string,
+  ): Promise<{ url: string; fileSize: number }> {
     const res = await fetch(`https://graph.facebook.com/${GRAPH_API_VERSION}/${mediaId}`, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
