@@ -192,6 +192,7 @@ const {
   isProjectConnectionRequesterAtDailyCap,
   PROJECT_CONNECTION_OWNER_WEEKLY_LIMIT,
   PROJECT_CONNECTION_REQUESTER_DAILY_LIMIT,
+  responseLatencyStats,
 } = await import('../src/storage/repository.js');
 
 // Unique per test-run tag so fixtures never collide across runs and can be
@@ -1802,13 +1803,22 @@ test(
     );
 
     // Accept with an override — the override text, not the drafted text, must land in knowledge.
+    // SECURITY (issue #880): `acceptKnowledgeCandidate`'s input type has no `knowledgeId`/`knowledge_id`
+    // field at all — the link is always the value THIS call's own `saveKnowledge` computes, never
+    // caller-suppliable. A forged extra property (cast past the type) must have zero effect.
     const accepted = await acceptKnowledgeCandidate({
       id: acceptId,
       title: 'Overridden title',
       content: 'Overridden answer content, fixed at accept time.',
       reviewedBy: 'admin-1',
+      ...({ knowledgeId: 999_999_999, knowledge_id: 999_999_999 } as unknown as object),
     });
     assert.ok(accepted);
+    assert.notEqual(
+      accepted.knowledgeId,
+      999_999_999,
+      'SECURITY: a forged knowledgeId-shaped extra property must never override the computed value',
+    );
     const knowledgeRow = await pool.query(`SELECT title, content FROM knowledge WHERE id = $1`, [
       accepted.knowledgeId,
     ]);
@@ -1820,8 +1830,27 @@ test(
     assert.equal(acceptedRow.reviewedBy, 'admin-1');
     assert.ok(acceptedRow.reviewedAt);
 
+    // issue #880: the accept call persists the link back onto the candidate row, in the same call.
+    const linkedRow = await pool.query(`SELECT knowledge_id FROM knowledge_candidates WHERE id = $1`, [
+      acceptId,
+    ]);
+    assert.equal(
+      Number(linkedRow.rows[0].knowledge_id),
+      accepted.knowledgeId,
+      "acceptKnowledgeCandidate persists the returned knowledgeId onto the candidate's knowledge_id",
+    );
+
     const reAccept = await acceptKnowledgeCandidate({ id: acceptId, reviewedBy: 'admin-2' });
     assert.equal(reAccept, null, 'accepting an already-accepted candidate is a no-op, not a double publish');
+    const unchangedLinkedRow = await pool.query(
+      `SELECT knowledge_id FROM knowledge_candidates WHERE id = $1`,
+      [acceptId],
+    );
+    assert.equal(
+      Number(unchangedLinkedRow.rows[0].knowledge_id),
+      accepted.knowledgeId,
+      're-accepting an already-accepted candidate writes nothing — knowledge_id is unchanged',
+    );
 
     // Decline the other candidate: retained as 'declined', knowledge untouched.
     const declined = await declineKnowledgeCandidate(declineId, 'admin-1');
@@ -8456,6 +8485,65 @@ test(
 );
 
 test(
+  "repository: listOwnKnowledgeCandidates surfaces the linked knowledge entry's retrieval_count for an accepted+linked tip, and null for a pending/declined/unlinked one (issue #880)",
+  { skip },
+  async () => {
+    const userId = `${RUN}-my-knowledge-tip-impact-user`;
+
+    const toAccept = await createKnowledgeTip({
+      platform: 'discord',
+      userId,
+      topic: `${RUN} impact tip topic accept`,
+      title: 'accepted and retrieved tip',
+      content: 'accepted tip content',
+    });
+    const toDecline = await createKnowledgeTip({
+      platform: 'discord',
+      userId,
+      topic: `${RUN} impact tip topic decline`,
+      title: 'declined tip',
+      content: 'declined tip content',
+    });
+    const pending = await createKnowledgeTip({
+      platform: 'discord',
+      userId,
+      topic: `${RUN} impact tip topic pending`,
+      title: 'still pending tip',
+      content: 'pending tip content',
+    });
+    assert.ok(toAccept && toDecline && pending, 'fixtures recorded');
+
+    const accepted = await acceptKnowledgeCandidate({ id: toAccept.id, reviewedBy: 'admin-1' });
+    assert.ok(accepted);
+    await declineKnowledgeCandidate(toDecline.id, 'admin-1');
+    // One call per hit, mirroring real knowledge_search usage — a single call's
+    // WHERE id = ANY($1) increments a duplicated id only once, not once per repeat.
+    for (let i = 0; i < 5; i++) {
+      await recordKnowledgeRetrieval([accepted.knowledgeId]);
+    }
+
+    const own = await listOwnKnowledgeCandidates('discord', userId, 50);
+    const acceptedRow = own.find((c) => c.id === toAccept.id);
+    const declinedRow = own.find((c) => c.id === toDecline.id);
+    const pendingRow = own.find((c) => c.id === pending.id);
+    assert.ok(acceptedRow && declinedRow && pendingRow, 'all three own tips are present');
+
+    assert.equal(
+      acceptedRow.retrievalCount,
+      5,
+      'the accepted, linked candidate reads back its knowledge entry’s retrieval_count',
+    );
+    assert.equal(declinedRow.retrievalCount, null, 'a declined (unlinked) candidate reads back null, not 0');
+    assert.equal(pendingRow.retrievalCount, null, 'a pending (unlinked) candidate reads back null, not 0');
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [accepted.knowledgeId]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [
+      [toAccept.id, toDecline.id, pending.id],
+    ]);
+  },
+);
+
+test(
   "SECURITY: repository: listOwnKnowledgeCandidates only returns the caller's OWN knowledge tips — never another identity's, never cross-platform, and never a machine-drafted (NULL source) candidate (issue #830)",
   { skip },
   async () => {
@@ -13455,5 +13543,159 @@ test(
       await clearDocsIngestUrlFailures([]);
       await markDocsIngestUrlsReported([]);
     });
+  },
+);
+
+// responseLatencyStats (issue #877) — VISION's "time-to-first-answer"
+// north-star metric, derived from interactions timestamps/meta already
+// written on every turn. Helpers insert rows directly (not via
+// recordInteraction, which always calls the real embedding model and has no
+// created_at override) so deltas are exact and deterministic.
+
+async function insertLatencyInbound(conversationId: string, userId: string, createdAt: Date) {
+  await pool.query(
+    `INSERT INTO interactions
+       (platform, conversation_id, user_id, role, direction, content, addressed_to_bot, created_at)
+     VALUES ('discord',$1,$2,'member','inbound','a question',true,$3)`,
+    [conversationId, userId, createdAt],
+  );
+}
+
+async function insertLatencyReply(conversationId: string, replyToUserId: string, createdAt: Date) {
+  await pool.query(
+    `INSERT INTO interactions
+       (platform, conversation_id, user_id, role, direction, content, meta, created_at)
+     VALUES ('discord',$1,'bot','member','outbound','an answer',$2,$3)`,
+    [conversationId, JSON.stringify({ replyToUserId }), createdAt],
+  );
+}
+
+async function insertLatencyProactiveOutbound(conversationId: string, createdAt: Date) {
+  await pool.query(
+    `INSERT INTO interactions
+       (platform, conversation_id, user_id, role, direction, content, meta, created_at)
+     VALUES ('discord',$1,'bot','member','outbound','digest push','{}'::jsonb,$2)`,
+    [conversationId, createdAt],
+  );
+}
+
+test(
+  'repository: responseLatencyStats pairs each reply with the preceding inbound message from the same member and computes count/median/p90 in seconds',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-latency-basic`;
+    const now = new Date();
+    const userA = `${RUN}-latency-user-a`;
+    const userB = `${RUN}-latency-user-b`;
+    const userC = `${RUN}-latency-user-c`;
+
+    // Three independent pairs (distinct members, so the lateral join can
+    // never cross-pair) with exact 10s/20s/30s deltas.
+    await insertLatencyInbound(conversationId, userA, new Date(now.getTime() - 30_000));
+    await insertLatencyReply(conversationId, userA, new Date(now.getTime() - 20_000)); // +10s
+    await insertLatencyInbound(conversationId, userB, new Date(now.getTime() - 25_000));
+    await insertLatencyReply(conversationId, userB, new Date(now.getTime() - 5_000)); // +20s
+    await insertLatencyInbound(conversationId, userC, new Date(now.getTime() - 30_000));
+    await insertLatencyReply(conversationId, userC, now); // +30s
+
+    const stats = await responseLatencyStats([conversationId], 7);
+    assert.ok(stats, 'three qualifying pairs must yield a non-null result');
+    assert.equal(stats.count, 3);
+    assert.equal(stats.medianSeconds, 20, 'median of [10,20,30] is the middle value');
+    assert.equal(stats.p90Seconds, 28, 'p90 of [10,20,30] via percentile_cont interpolates to 28');
+
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'repository: responseLatencyStats excludes proactive outbound rows with no meta.replyToUserId from pairing (acceptance criterion 3)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-latency-proactive`;
+    const now = new Date();
+    const user = `${RUN}-latency-proactive-user`;
+
+    await insertLatencyInbound(conversationId, user, new Date(now.getTime() - 15_000));
+    await insertLatencyReply(conversationId, user, now); // +15s, a real reply
+    await insertLatencyProactiveOutbound(conversationId, now); // a digest/alert push — must not count
+
+    const stats = await responseLatencyStats([conversationId], 7);
+    assert.ok(stats);
+    assert.equal(stats.count, 1, 'the proactive push contributes nothing to count');
+    assert.equal(stats.medianSeconds, 15);
+
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'repository: responseLatencyStats returns null (not NaN/Infinity/a throw) when there are zero qualifying pairs (acceptance criterion 4)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-latency-empty`;
+    const stats = await responseLatencyStats([conversationId], 7);
+    assert.equal(stats, null);
+  },
+);
+
+test(
+  "repository: responseLatencyStats windows only on the OUTBOUND row's created_at — a recent reply to an old question still counts (acceptance criterion 5)",
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-latency-window`;
+    const now = new Date();
+    const user = `${RUN}-latency-window-user`;
+
+    // The inbound question is 20 days old (well outside a 7-day window);
+    // the reply itself is recent. Only the reply's created_at gates inclusion.
+    await insertLatencyInbound(conversationId, user, new Date(now.getTime() - 20 * 86_400_000));
+    await insertLatencyReply(conversationId, user, new Date(now.getTime() - 60_000));
+
+    const stats = await responseLatencyStats([conversationId], 7);
+    assert.ok(stats, 'a recent reply must count even though the question it answers is old');
+    assert.equal(stats.count, 1);
+    assert.ok(
+      stats.medianSeconds > 19 * 86_400,
+      'the reported delta reflects the true (old) question timestamp, not a clamped one',
+    );
+
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'SECURITY: repository: responseLatencyStats excludes conversations outside the given scope (acceptance criterion 6)',
+  { skip },
+  async () => {
+    const inScopeConvo = `${RUN}-c-latency-scope-in`;
+    const outOfScopeConvo = `${RUN}-c-latency-scope-out`;
+    const now = new Date();
+    const inScopeUser = `${RUN}-latency-scope-in-user`;
+    const outOfScopeUser = `${RUN}-latency-scope-out-user`;
+
+    // Deliberately distinguishable deltas so a leak is unmistakable: the
+    // in-scope pair is 5s, the out-of-scope pair is 500s.
+    await insertLatencyInbound(inScopeConvo, inScopeUser, new Date(now.getTime() - 5_000));
+    await insertLatencyReply(inScopeConvo, inScopeUser, now);
+    await insertLatencyInbound(outOfScopeConvo, outOfScopeUser, new Date(now.getTime() - 500_000));
+    await insertLatencyReply(outOfScopeConvo, outOfScopeUser, now);
+
+    const scoped = await responseLatencyStats([inScopeConvo], 7);
+    assert.ok(scoped);
+    assert.equal(scoped.count, 1, 'scope must reflect only the in-scope conversation');
+    assert.equal(
+      scoped.medianSeconds,
+      5,
+      "SECURITY: the out-of-scope conversation's 500s delta must never influence the scoped figures",
+    );
+
+    const unscoped = await responseLatencyStats(null, 7);
+    assert.ok(unscoped);
+    assert.ok(unscoped.count >= 2, 'without a scope filter (super admin), both conversations contribute');
+
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [
+      [inScopeConvo, outOfScopeConvo],
+    ]);
   },
 );

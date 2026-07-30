@@ -121,6 +121,7 @@ import {
   resolveDisplayName,
   resolveModerationAppeal,
   resolveSuggestion,
+  responseLatencyStats,
   rosterCounts,
   resolveLinkedIdentities,
   saveKnowledge,
@@ -1736,7 +1737,7 @@ const ADMIN_CAPABILITIES_TEXT =
   '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, check which knowledge entries are rated poorly, and review recurring unhelpful-answer themes across all answers\n' +
   '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
   '- Curate the knowledge base: save a new knowledge entry, browse knowledge entries, edit a knowledge entry, delete a knowledge entry, or merge two entries together, and check for near-duplicate entries or conflicting entries\n' +
-  "- Review knowledge candidates, accept a candidate or decline a candidate, track knowledge gaps (questions I couldn't answer), recurring question clusters, raw context digests, pull your own admin-digest snapshot on demand, or get a review-queue roll-up of all five review queues at once\n" +
+  "- Review knowledge candidates, accept a candidate or decline a candidate, track knowledge gaps (questions I couldn't answer), recurring question clusters, raw context digests, pull your own admin-digest snapshot on demand, get a review-queue roll-up of all five review queues at once, or check how quickly I've been answering members (response latency)\n" +
   '- See who is waiting for access, or who has joined or left the server\n' +
   "- Add a note about a member, review notes on a member, delete a note, or look up a member's history across conversations\n" +
   '- Set the community guidelines or the welcome message shown to new members\n' +
@@ -3690,8 +3691,15 @@ export function buildToolServer(
         if (lines.length > 0) lines.push('');
         lines.push('Your knowledge tips:');
         for (const k of knowledgeTips) {
+          // "used N times" only for an accepted tip with a positive retrieval
+          // count (issue #880) — never "used 0 times" for an accepted-but-
+          // unretrieved or non-accepted tip, which would read as discouraging.
+          const impact =
+            k.status === 'accepted' && k.retrievalCount && k.retrievalCount > 0
+              ? ` — used ${k.retrievalCount} time${k.retrievalCount === 1 ? '' : 's'} in answers so far`
+              : '';
           lines.push(
-            `- #${k.id} [${k.status}] ${truncateForEcho(k.title)} — filed ${formatRelativeAge(k.createdAt)}`,
+            `- #${k.id} [${k.status}] ${truncateForEcho(k.title)} — filed ${formatRelativeAge(k.createdAt)}${impact}`,
           );
         }
       }
@@ -6588,6 +6596,27 @@ export function buildToolServer(
     { annotations: { readOnlyHint: true } },
   );
 
+  const responseLatencyTool = tool(
+    'response_latency',
+    "Show how quickly your conversations' members are getting answered — count of replies, median and " +
+      'p90 response time in seconds, over a recent window (default 7 days, max 30). Pairs each reply to a ' +
+      "member with that member's preceding message; proactive digest/alert pushes are never counted. " +
+      'Aggregate only — never a per-message timestamp, user id, or message excerpt. Admin only.',
+    { days: z.number().optional().describe('Window in days (default 7, max 30)') },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'response_latency');
+      const allowed = await callerScope();
+      const stats = await responseLatencyStats(allowed, args.days ?? 7);
+      const days = Math.min(Math.max(Math.trunc(args.days ?? 7) || 7, 1), 30);
+      if (!stats) return text(`⏱️ Response latency (last ${days}d): not enough data yet.`);
+      return text(
+        `⏱️ Response latency (last ${days}d): ${stats.count} replies, ` +
+          `median ${Math.round(stats.medianSeconds)}s, p90 ${Math.round(stats.p90Seconds)}s`,
+      );
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
   const moderationHistory = tool(
     'moderation_history',
     "Show recent moderation actions (warnings, timeouts, kicks, bans, deletions, announcements) in your conversations — for checking prior history before escalating. Optionally filter to one member and/or one action kind, e.g. to review a specific member's prior warnings before deciding whether to escalate. Admin only.",
@@ -7928,6 +7957,7 @@ export function buildToolServer(
       adminDigestTool,
       reviewQueueTool,
       listKnowledgeGaps,
+      responseLatencyTool,
       moderationHistory,
       listReportsTool,
       resolveReportTool,

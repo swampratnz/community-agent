@@ -553,6 +553,29 @@ issue #787, the age), matching `list_appeals`. Access requests, suggestions,
 and knowledge candidates stay guild-wide, matching their own `list_*` tools'
 existing scope.
 
+`response_latency` (admin-tier, `days` optional, default 7/max 30, read-only,
+no CONFIRM; issue #877) answers the one north-star metric `docs/VISION.md`
+names — "time-to-first-answer in auto-answer channels down" — that had no
+implementation: how quickly the bot actually answers members, derived
+entirely from `interactions` timestamps and `meta` already written on every
+turn, no new column or tracking. `responseLatencyStats`
+(`src/storage/repository/responseLatency.ts`) pairs each qualifying OUTBOUND
+row — `direction = 'outbound'` with `meta.replyToUserId` set, i.e. a real
+reply to a member, never a proactive digest/alert push (those never set that
+key) — with the most recent prior INBOUND row in the SAME
+`(platform, conversation_id)` from that member with `addressed_to_bot = true`
+at or before the outbound's own `created_at`, via a `LATERAL` join (the same
+pairing shape `answerFeedbackGrounding` already uses for a different
+purpose). Only the outbound row's `created_at` has to fall inside the
+window — the question it answers may be older, since what VISION's metric
+cares about is when replies happen, not when questions arrive. The deltas
+(seconds) aggregate to `count`/`percentile_cont(0.5)`/`percentile_cont(0.9)`;
+zero qualifying pairs renders a fixed "not enough data yet" message rather
+than `NaN`/`Infinity`. `callerScope()`-scoped like every sibling admin-insight
+tool, and aggregate-only — the reply is exactly the fixed label plus three
+numbers, never a user id, display name, or message excerpt, matching
+`review_queue`/`question_digest`'s existing exposure envelope.
+
 `feature_flags` (super-admin, no arguments, read-only, no CONFIRM; issue
 #559) answers a different, static question `admin_digest`/`community_info`
 don't: "which of this deployment's ~28 opt-in `*_ENABLED` config flags are
@@ -757,6 +780,7 @@ this list — unlike the others it's implemented on both WhatsApp adapters
 | `admin_digest` (on-demand pull of the caller's own weekly admin-digest snapshot; no arguments, no CONFIRM — never affects the weekly push's cadence) | ❌ | ❌ | ✅ *caller only* | ✅ |
 | `review_queue` (single roll-up of the five review queues below — `list_access_requests`/`list_suggestions`/`list_knowledge_candidates`/`list_reports`/`list_appeals` — as bare pending/open counts, no arguments, no CONFIRM, no new query; see below) | ❌ | ❌ | ✅ *(reports scoped to caller's conversations, appeals to caller's platform — see below)* | ✅ |
 | `list_knowledge_gaps` (recurring below-floor knowledge_search misses — the miss-specific complement to `question_digest`) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
+| `response_latency` (VISION's "time-to-first-answer" north-star metric: count/median/p90 seconds pairing each real reply to a member with the message it answered, days-windowed default 7/max 30; no arguments beyond `days`, read-only, no CONFIRM; aggregate-only — never a per-message timestamp, user id, or excerpt; issue #877) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `moderation_history` (warn/timeout/kick/delete/announce log, filterable by member/action) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `list_member_warnings` (one member's full `member_warnings` history — auto + admin strikes, with reason/excerpt — the read `moderation_history` can't reach) | ❌ | ❌ | ✅ *(platform/user-scoped, not conversation-scoped — same as `clear_warnings`)* | ✅ |
 | `list_muted_members` (currently-muted members by identity — user id, strike count, `active`/`stale` status, last-warning timestamp; never reason/excerpt; closes the growth path #403 named for the digest's bare `🔇 N` count) | ❌ | ❌ | ✅ *(guild-wide, not conversation-scoped — same as `clear_warnings`)* | ✅ |
@@ -1411,6 +1435,18 @@ and review flow above, rather than a separate table or a privileged surface:
   admin-overridden) title; the declined wording is neutral-to-supportive,
   same as `resolve_appeal`'s `dismissed` case — `decline_knowledge_candidate`
   takes no reason argument, so nothing is fabricated.
+- **Impact loop closure (issue #880)**: acceptance told a contributor their
+  tip was in `knowledge`, but never whether it actually helped anyone —
+  `knowledge.retrieval_count` (#134) tracked exactly that, but only ever
+  surfaced to admins via `list_knowledge`. `acceptKnowledgeCandidate` now
+  persists the `knowledgeId` it already computes onto a new nullable
+  `knowledge_candidates.knowledge_id` FK, in the SAME `UPDATE` that flips the
+  row to `'accepted'` (mirroring the existing `digest_id` FK shape).
+  `listOwnKnowledgeCandidates` `LEFT JOIN`s `knowledge` on that column so
+  `my_submissions` can append a "used N times in answers so far" suffix —
+  only for an `accepted` tip with a positive count, never a premature
+  "used 0 times" for one that's accepted but not yet served, or for a
+  pending/declined tip.
 
 #### Implicit drafting from a helpful answer (`rate_answer`, issue #726)
 
