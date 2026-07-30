@@ -1325,6 +1325,12 @@ export const FEATURE_FLAG_MAP: readonly FeatureFlagEntry[] = [
     label: 'WhatsApp Cloud welcome message',
     category: 'WhatsApp',
   },
+  {
+    envVar: 'WHATSAPP_CLOUD_IMAGE_INPUT_ENABLED',
+    configPath: 'whatsapp.cloud.image.enabled',
+    label: 'WhatsApp image-attachment input (Cloud API)',
+    category: 'WhatsApp',
+  },
   // Cost/Model
   {
     envVar: 'ACK_SHORTCUT_ENABLED',

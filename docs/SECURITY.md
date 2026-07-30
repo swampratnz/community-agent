@@ -2633,18 +2633,20 @@ regardless. The mechanism is also fully optional: no note, an empty note, or a
 failed post all leave the pipeline exactly as it was, so removing it needs no
 migration.
 
-### 22. Image-attachment input (`IMAGE_INPUT_ENABLED` Discord / `WHATSAPP_IMAGE_INPUT_ENABLED` WhatsApp-Baileys, both off by default, `super_admin`-only default, issues #783 / #879)
+### 22. Image-attachment input (`IMAGE_INPUT_ENABLED` Discord / `WHATSAPP_IMAGE_INPUT_ENABLED` WhatsApp-Baileys / `WHATSAPP_CLOUD_IMAGE_INPUT_ENABLED` WhatsApp Cloud API, all off by default, `super_admin`-only default, issues #783 / #879 / #891)
 
 Lets an eligible caller attach a single image (screenshot, stack trace,
 billing page) alongside their message; `runAgentTurn`/`execTurn`
 (`src/agent/core.ts`) pass it to `query()` as an image content block
 alongside the turn's text, so the model can ground its answer in what was
-actually shown — identically regardless of which platform's adapter
-populated `IncomingMessage.image`. Shipped first for Discord (#783), then
-mirrored onto `BaileysAdapter` (#879, `WhatsAppCloudAdapter` explicitly out
-of scope for v1, matching the existing `WHATSAPP_VOICE_*` Baileys-only
-precedent). Off by default on both platforms; this is a **genuinely new
-untrusted-input class**, not a symmetry extension of an existing one:
+actually shown — identically regardless of which adapter populated
+`IncomingMessage.image`. Shipped first for Discord (#783), then mirrored
+onto `BaileysAdapter` (#879, `WhatsAppCloudAdapter` explicitly out of scope
+for that v1, matching the existing `WHATSAPP_VOICE_*` Baileys-only
+precedent), then onto `WhatsAppCloudAdapter` itself (#891, closing that named
+gap on the docs' own recommended production WhatsApp path). Off by default
+on all three adapters; this is a **genuinely new untrusted-input class**, not
+a symmetry extension of an existing one:
 
 - **Unlike voice transcription, this is unfilterable at the boundary.**
   `DISCORD_VOICE_*`/`WHATSAPP_VOICE_*` (§13) only ever produce ordinary
@@ -2657,81 +2659,108 @@ untrusted-input class**, not a symmetry extension of an existing one:
   `systemPrompt.ts` clause below — no sanitizer can inspect model-side image
   interpretation, so there is nothing else to add. This residual gap is
   accepted, not hidden: it is the reason this feature defaults to
-  `super_admin` on BOTH platforms rather than the wider default a plain
+  `super_admin` on ALL THREE adapters rather than the wider default a plain
   symmetry argument with voice might suggest.
 - **Same gate order as the voice features, independently configured per
-  platform.** `maybeFetchImageAttachment` — `src/platforms/discord/adapter.ts`
-  for Discord, `src/platforms/whatsapp/baileysAdapter.ts` for WhatsApp —
-  checks, in order, all before any network fetch: `IMAGE_INPUT_ENABLED` /
-  `WHATSAPP_IMAGE_INPUT_ENABLED` → caller tier vs. `IMAGE_INPUT_MIN_ROLE` /
-  `WHATSAPP_IMAGE_INPUT_MIN_ROLE` (default `'super_admin'` on both — the pure
-  `isSuperAdmin(platform, senderId)` env check with no DB call at that
-  default, else `resolveRole`/`atLeast`) → `IMAGE_INPUT_DAILY_LIMIT_PER_USER`
-  / `WHATSAPP_IMAGE_INPUT_DAILY_LIMIT_PER_USER` (a rolling calendar-day cap
-  per platform-qualified sender — `` `discord:${id}` `` / `` `whatsapp:${id}` ``
-  — checked via the shared `reserveImageInputDaily`, same shape as
+  adapter — with one Cloud-API-specific wrinkle.**
+  `maybeFetchImageAttachment` — `src/platforms/discord/adapter.ts` for
+  Discord, `src/platforms/whatsapp/baileysAdapter.ts` for WhatsApp/Baileys,
+  `src/platforms/whatsapp/cloudAdapter.ts` for WhatsApp Cloud API — checks,
+  in order, all before any network fetch: `IMAGE_INPUT_ENABLED` /
+  `WHATSAPP_IMAGE_INPUT_ENABLED` / `WHATSAPP_CLOUD_IMAGE_INPUT_ENABLED` →
+  caller tier vs. `IMAGE_INPUT_MIN_ROLE` / `WHATSAPP_IMAGE_INPUT_MIN_ROLE` /
+  `WHATSAPP_CLOUD_IMAGE_INPUT_MIN_ROLE` (default `'super_admin'` on all
+  three — the pure `isSuperAdmin(platform, senderId)` env check with no DB
+  call at that default, else `resolveRole`/`atLeast`) →
+  `IMAGE_INPUT_DAILY_LIMIT_PER_USER` / `WHATSAPP_IMAGE_INPUT_DAILY_LIMIT_PER_USER`
+  / `WHATSAPP_CLOUD_IMAGE_INPUT_DAILY_LIMIT_PER_USER` (a rolling calendar-day
+  cap per platform-qualified sender — `` `discord:${id}` `` /
+  `` `whatsapp:${id}` `` / `` `whatsapp-cloud:${id}` `` — checked via the
+  shared `reserveImageInputDaily`, same shape as
   `reserveImageGenDaily`/`reserveDevTeamDispatchDaily`) → MIME allowlist
-  (`image/png`, `image/jpeg`, `image/webp`) and `IMAGE_INPUT_MAX_BYTES` /
-  `WHATSAPP_IMAGE_INPUT_MAX_BYTES`, both read from each platform's own
-  pre-fetch attachment metadata (Discord's `contentType`/`size`, WhatsApp's
-  `mimetype`/`fileLength`) so the check never itself fetches. Only then is
-  the attachment downloaded and base64-encoded. Every refusal path — flag
-  off, below-tier, at daily cap, bad MIME, over byte cap — is pinned by a
-  dedicated `SECURITY:` test asserting **zero** fetch/download calls, in
-  `tests/discordImageInput.test.ts` (Discord) and
-  `tests/baileysImageInput.test.ts` (WhatsApp).
-- **The two platforms' flags are fully independent.** `WHATSAPP_IMAGE_INPUT_*`
-  is `WHATSAPP_`-prefixed and separate from the unprefixed Discord
-  `IMAGE_INPUT_*` flags, mirroring the existing `DISCORD_VOICE_*`/
-  `WHATSAPP_VOICE_*` split rather than coupling both platforms' rollout to
-  one flag pair — an operator can enable, tune, or leave off either platform
-  independently. Pinned by a `SECURITY:` test in
-  `tests/baileysImageInput.test.ts` asserting that enabling Discord's
-  `IMAGE_INPUT_ENABLED` does not, by itself, enable WhatsApp image
-  downloading.
-- **One image per message, no OCR/moderation-scan extension on either
-  platform, `WhatsAppCloudAdapter` out of scope.** These are named,
-  deliberate scope limits (see `docs/CAPABILITY-IDEAS.md` §A1 and issue
-  #879's "smallest viable version"), not gaps discovered later: multiple
-  attachments, Cloud API parity, and OCR-then-moderation-scan are growth
-  paths for a future proposal to size against observed usage, not this one.
+  (`image/png`, `image/jpeg`, `image/webp`). Discord and Baileys then check
+  `IMAGE_INPUT_MAX_BYTES` / `WHATSAPP_IMAGE_INPUT_MAX_BYTES` from the
+  attachment's own pre-fetch metadata (Discord's `contentType`/`size`,
+  WhatsApp/Baileys' `mimetype`/`fileLength`) so the check never itself
+  fetches, THEN downloads. Meta's Cloud API webhook `image` object carries a
+  declared `mime_type` but no byte size at all — unlike Baileys' `fileLength`
+  — so `WHATSAPP_CLOUD_IMAGE_INPUT_MAX_BYTES` is instead checked against the
+  `file_size` returned by the lightweight, metadata-only `GET /{media-id}`
+  call that resolves the Graph-hosted download URL (`resolveMediaUrl`),
+  strictly BEFORE the separate byte-download `GET` (`downloadMediaBytes`); a
+  role/daily-cap/MIME rejection still short-circuits before either Graph call
+  fires, and an over-cap image is refused after the metadata call but with
+  the byte-download call never made. Every refusal path — flag off,
+  below-tier, at daily cap, bad MIME, over byte cap — is pinned by a
+  dedicated `SECURITY:` test asserting **zero** fetch/download calls (for
+  Cloud's byte-cap case, zero *byte-download* calls specifically, since the
+  one metadata call is unavoidable given Meta's wire shape), in
+  `tests/discordImageInput.test.ts` (Discord), `tests/baileysImageInput.test.ts`
+  (WhatsApp/Baileys), and `tests/whatsappCloudImageInput.test.ts` (WhatsApp
+  Cloud API).
+- **All three adapters' flags are fully independent.**
+  `WHATSAPP_IMAGE_INPUT_*` and `WHATSAPP_CLOUD_IMAGE_INPUT_*` are
+  `WHATSAPP_`/`WHATSAPP_CLOUD_`-prefixed and separate from the unprefixed
+  Discord `IMAGE_INPUT_*` flags and from each other, mirroring the existing
+  `DISCORD_VOICE_*`/`WHATSAPP_VOICE_*` split rather than coupling every
+  adapter's rollout to one flag pair — an operator can enable, tune, or leave
+  off any adapter independently. Pinned by `SECURITY:` tests in
+  `tests/baileysImageInput.test.ts` (Discord's flag doesn't enable WhatsApp)
+  and `tests/whatsappCloudImageInput.test.ts` (neither Discord's nor
+  Baileys' flag enables the Cloud API adapter).
+- **One image per message, no OCR/moderation-scan extension on any
+  adapter.** These are named, deliberate scope limits (see
+  `docs/CAPABILITY-IDEAS.md` §A1 and issue #879's "smallest viable version"),
+  not gaps discovered later: multiple attachments and OCR-then-moderation-scan
+  are growth paths for a future proposal to size against observed usage, not
+  this one. Cloud-API parity itself was the named #879 gap that #891 closes.
 - **No storage.** The base64 bytes are held in memory for the one `query()`
   call and discarded; `IncomingMessage.image` is never passed to
   `recordInteraction` anywhere in `src/router.ts` — the `interactions` row for
   an image-bearing turn contains `text` only, byte-identical in shape to a
-  turn without one, regardless of which platform the turn came from. Pinned
+  turn without one, regardless of which adapter the turn came from. Pinned
   by a platform-agnostic `SECURITY:` test in `tests/router.test.ts` spying on
   `pool.query` and asserting the inserted `content` never contains the image
-  payload. `forget_me`/purge semantics are unaffected because there is
+  payload — this test is adapter-agnostic (it exercises `IncomingMessage`
+  directly), so it already covers the Cloud API adapter without a dedicated
+  copy. `forget_me`/purge semantics are unaffected because there is
   nothing new to purge.
-- **Injection-defense clause, same precedent as pasted prompts, gated on
-  EITHER platform's flag.** When `IMAGE_INPUT_ENABLED` OR
-  `WHATSAPP_IMAGE_INPUT_ENABLED` is on, `systemPrompt.ts`'s `GUIDELINES`
-  gains an explicit clause (mirroring `PROMPT_REVIEW_CLAUSE`'s framing for a
-  pasted prompt) stating that text rendered inside an attached image is
-  untrusted data to look at and answer from, never an instruction —
+- **Injection-defense clause, same precedent as pasted prompts, gated on ANY
+  adapter's flag.** When `IMAGE_INPUT_ENABLED` OR `WHATSAPP_IMAGE_INPUT_ENABLED`
+  OR `WHATSAPP_CLOUD_IMAGE_INPUT_ENABLED` is on, `systemPrompt.ts`'s
+  `GUIDELINES` gains an explicit clause (mirroring `PROMPT_REVIEW_CLAUSE`'s
+  framing for a pasted prompt) stating that text rendered inside an attached
+  image is untrusted data to look at and answer from, never an instruction —
   including anything styled as a role claim or a system-style directive. One
-  shared clause covers both platforms' image turns (the risk and wording are
-  identical regardless of which platform's flag tripped it), present
-  whenever EITHER flag could apply, absent when both are off. Widening the
-  gate to WhatsApp (`config.discord.image.enabled ||
+  shared clause covers all three adapters' image turns (the risk and wording
+  are identical regardless of which adapter's flag tripped it), present
+  whenever ANY flag could apply, absent when all three are off. Widening the
+  gate to WhatsApp/Baileys (`config.discord.image.enabled ||
   config.whatsapp.image.enabled`, previously Discord-only) was a **must-ship
-  correctness fix in #879**, not an optional follow-up: shipping the
-  WhatsApp image path without it would have silently reintroduced the exact
-  injection-mitigation gap #783's design closed, just on the other platform.
-  All four flag combinations are pinned by dedicated `SECURITY:` tests —
-  `tests/discordImageInput.test.ts` (both off),
+  correctness fix in #879**; widening it again to the Cloud API
+  (`|| config.whatsapp.cloud.image.enabled`) is the equivalent fix in #891 —
+  shipping either WhatsApp path without extending this condition would have
+  silently reintroduced the exact injection-mitigation gap #783's design
+  closed, just on a different adapter. Pinned by dedicated `SECURITY:` tests
+  — `tests/discordImageInput.test.ts` (all three off),
   `tests/imageInputSystemPromptEnabled.test.ts` (Discord only),
-  `tests/whatsappImageInputSystemPromptEnabled.test.ts` (WhatsApp only), and
-  `tests/imageInputSystemPromptBothEnabled.test.ts` (both on) — each its own
-  process, since `config` (and the `GUIDELINES` string it feeds) is read
-  once per process and can't be toggled mid-run.
-- **Byte-identical when off.** With both `IMAGE_INPUT_ENABLED` and
-  `WHATSAPP_IMAGE_INPUT_ENABLED` unset (the default), message handling on
-  either platform — including any attachment, image or not — is unchanged
-  from today for every role: no fetch/download, no `image` field on the
-  `IncomingMessage`, no systemPrompt clause. Pinned by a `SECURITY:` test per
-  platform that runs a super admin (well above every cap) through the
+  `tests/whatsappImageInputSystemPromptEnabled.test.ts` (Baileys only),
+  `tests/whatsappCloudImageInputSystemPromptEnabled.test.ts` (Cloud API
+  only), and `tests/imageInputSystemPromptBothEnabled.test.ts` (Discord +
+  Baileys both on) — each its own process, since `config` (and the
+  `GUIDELINES` string it feeds) is read once per process and can't be
+  toggled mid-run.
+- **Byte-identical when off.** With all of `IMAGE_INPUT_ENABLED`,
+  `WHATSAPP_IMAGE_INPUT_ENABLED`, and `WHATSAPP_CLOUD_IMAGE_INPUT_ENABLED`
+  unset (the default), message handling on every adapter — including any
+  attachment, image or not — is unchanged from today for every role: no
+  fetch/download, no `image` field on the `IncomingMessage`, no systemPrompt
+  clause. On the Cloud API specifically, an inbound image (captioned or not)
+  produces no reply at all with the flag off — matching the total silence
+  that existed before #891, since the caption is promoted to the turn's
+  `text` only once the image is actually accepted (see `cloudWire.ts`'s
+  `CloudInboundMessage.image` doc comment). Pinned by a `SECURITY:` test per
+  adapter that runs a super admin (well above every cap) through the
   flag-off path and asserts zero fetch/download calls regardless.
 
 ### 23. WhatsApp text commands (`!whois`, `!projects`, `!guidelines`, `!digest`, `WHATSAPP_TEXT_COMMANDS_ENABLED`, off by default, issue #859)

@@ -215,36 +215,46 @@ message would be — a scan fired against the message's native (always empty,
 for a voice bubble) `content` would never see what was actually said. See
 SECURITY.md §13 for the full posture.
 
-## Image-attachment input (Discord #783, WhatsApp/Baileys #879)
+## Image-attachment input (Discord #783, WhatsApp/Baileys #879, WhatsApp Cloud API #891)
 
 `IMAGE_INPUT_ENABLED` (Discord, **off by default**, `CAPABILITY-IDEAS.md`
-§A1) and its WhatsApp counterpart `WHATSAPP_IMAGE_INPUT_ENABLED` (Baileys
-only, also off by default, issue #879) let an eligible caller attach a
-single image (a screenshot, stack trace, or billing page) alongside their
-message; the model answers grounded in what the image actually shows rather
-than whatever caption (or nothing) was typed. One attachment per message, no
-OCR, no moderation-scan extension on either platform — see the "smallest
-viable version" in each issue for what is deliberately deferred.
-`WhatsAppCloudAdapter` is out of scope for #879, matching the existing
-`WHATSAPP_VOICE_*`/Baileys-only precedent.
+§A1), its WhatsApp/Baileys counterpart `WHATSAPP_IMAGE_INPUT_ENABLED` (also
+off by default, issue #879), and its WhatsApp Cloud API counterpart
+`WHATSAPP_CLOUD_IMAGE_INPUT_ENABLED` (also off by default, issue #891) let an
+eligible caller attach a single image (a screenshot, stack trace, or billing
+page) alongside their message; the model answers grounded in what the image
+actually shows rather than whatever caption (or nothing) was typed. One
+attachment per message, no OCR, no moderation-scan extension on any of the
+three adapters — see the "smallest viable version" in each issue for what is
+deliberately deferred. `WhatsAppCloudAdapter` was out of scope for #879
+(matching the `WHATSAPP_VOICE_*`/Baileys-only precedent); #891 closes that
+named gap.
 
 The gate — `maybeFetchImageAttachment` in `src/platforms/discord/adapter.ts`
-for Discord, the same-named method in
-`src/platforms/whatsapp/baileysAdapter.ts` for WhatsApp — mirrors the voice
-gate's shape above on both platforms: flag → `IMAGE_INPUT_MIN_ROLE` /
-`WHATSAPP_IMAGE_INPUT_MIN_ROLE` (default `'super_admin'` on both) →
-`IMAGE_INPUT_DAILY_LIMIT_PER_USER` / `WHATSAPP_IMAGE_INPUT_DAILY_LIMIT_PER_USER`
-(a rolling calendar-day cap per platform-qualified sender, shared
-`reserveImageInputDaily` in `src/agent/tools.ts`) → MIME allowlist
-(`image/png`, `image/jpeg`, `image/webp`) + `IMAGE_INPUT_MAX_BYTES` /
-`WHATSAPP_IMAGE_INPUT_MAX_BYTES`, both read from the attachment's own
-pre-fetch metadata (Discord's `contentType`/`size`, WhatsApp's
-`mimetype`/`fileLength`) — before ever downloading it. The fetched bytes are
+for Discord, the same-named method in `src/platforms/whatsapp/baileysAdapter.ts`
+for WhatsApp/Baileys, and again in `src/platforms/whatsapp/cloudAdapter.ts`
+for WhatsApp Cloud API — mirrors the voice gate's shape above on all three
+adapters: flag → `IMAGE_INPUT_MIN_ROLE` / `WHATSAPP_IMAGE_INPUT_MIN_ROLE` /
+`WHATSAPP_CLOUD_IMAGE_INPUT_MIN_ROLE` (default `'super_admin'` on all three)
+→ `IMAGE_INPUT_DAILY_LIMIT_PER_USER` / `WHATSAPP_IMAGE_INPUT_DAILY_LIMIT_PER_USER`
+/ `WHATSAPP_CLOUD_IMAGE_INPUT_DAILY_LIMIT_PER_USER` (a rolling calendar-day
+cap per platform-qualified sender, shared `reserveImageInputDaily` in
+`src/agent/tools.ts`) → MIME allowlist (`image/png`, `image/jpeg`,
+`image/webp`) + `IMAGE_INPUT_MAX_BYTES` / `WHATSAPP_IMAGE_INPUT_MAX_BYTES` /
+`WHATSAPP_CLOUD_IMAGE_INPUT_MAX_BYTES` → fetch. Discord and Baileys read MIME
+and byte size from the attachment's own pre-fetch metadata (Discord's
+`contentType`/`size`, WhatsApp/Baileys' `mimetype`/`fileLength`) before ever
+downloading it. The Cloud API's webhook `image` object carries a declared
+`mime_type` but — unlike Baileys — no byte size at all, so the byte cap is
+instead enforced immediately after the (lightweight, metadata-only)
+`GET /{media-id}` call that resolves the Graph-hosted download URL, strictly
+before the separate byte-download `GET`; a MIME or role/daily-cap rejection
+still short-circuits before either Graph call. The fetched bytes are
 base64-encoded and carried on `IncomingMessage.image`, unset for every other
-message, regardless of which platform populated it. The two platforms' flags
-are fully independent — `WHATSAPP_`-prefixed and separate from the
-unprefixed Discord flags, mirroring the existing `DISCORD_VOICE_*`/
-`WHATSAPP_VOICE_*` split rather than sharing one flag pair.
+message, regardless of which adapter populated it. All three flags are fully
+independent — `WHATSAPP_`/`WHATSAPP_CLOUD_`-prefixed and separate from the
+unprefixed Discord flags and from each other, mirroring the existing
+`DISCORD_VOICE_*`/`WHATSAPP_VOICE_*` split rather than sharing one flag pair.
 
 `runAgentTurn`/`execTurn` (`src/agent/core.ts`) thread that optional image
 through to the SDK: absent an image, `query()`'s `prompt` stays the plain
@@ -261,13 +271,14 @@ Unlike voice transcription (which only ever yields ordinary `text` flowing
 through the same moderation/injection handling), an image is a genuinely new
 untrusted-input class: text rendered inside it is interpreted model-side and
 is invisible to every inbound filter, including `moderator.scan`. The only
-defence is an explicit `systemPrompt.ts` clause, present whenever EITHER
-platform's flag could apply (`config.discord.image.enabled ||
-config.whatsapp.image.enabled`) — one shared clause, since the risk and the
-wording are identical regardless of which platform's turn triggered it —
-stating that image-borne text is untrusted data to answer from, never an
-instruction. See SECURITY.md §22 for the full threat model and why the
-default is `super_admin` rather than a wider tier on both platforms.
+defence is an explicit `systemPrompt.ts` clause, present whenever ANY of the
+three adapters' flags could apply (`config.discord.image.enabled ||
+config.whatsapp.image.enabled || config.whatsapp.cloud.image.enabled`) — one
+shared clause, since the risk and the wording are identical regardless of
+which adapter's turn triggered it — stating that image-borne text is
+untrusted data to answer from, never an instruction. See SECURITY.md §22 for
+the full threat model and why the default is `super_admin` rather than a
+wider tier on all three adapters.
 
 ## Memory & "learning"
 
