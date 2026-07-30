@@ -652,6 +652,39 @@ const EnvSchema = z.object({
   // stale_alerted_at-stamped (see markStaleKnowledgeAlerted's doc comment) so
   // a rate-limited entry does not retry-storm on every subsequent serve.
   KNOWLEDGE_STALE_ALERT_RATE_LIMIT_PER_HOUR: z.coerce.number().int().positive().default(5),
+  // Real-time admin nudge (issue #887) for the third and last signal #650
+  // explicitly deferred: a plain "members keep asking near-identical things"
+  // cluster (recentQuestionClusters, already consumed by the weekly digest
+  // and the on-demand question_digest tool) crossing
+  // REPEAT_QUESTION_ALERT_THRESHOLD in a single conversation, promoted from
+  // weekly-digest-only to an instant, rate-limited notifyAdmins DM — same
+  // promote-to-instant-DM shape as KNOWLEDGE_GAP_ALERT_ENABLED (#650) and
+  // KNOWLEDGE_STALE_ALERT_ENABLED (#701). Off by default, consistent with
+  // this repo's convention for new proactive DMs.
+  REPEAT_QUESTION_ALERT_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+  // Cluster size (matching recentQuestionClusters' own count) that triggers
+  // the alert. Same default as KNOWLEDGE_GAP_ALERT_THRESHOLD.
+  REPEAT_QUESTION_ALERT_THRESHOLD: z.coerce.number().int().positive().default(3),
+  // Guild-wide rolling-hour cap on repeat-question-cluster alerts, identical
+  // sliding-window shape to KNOWLEDGE_GAP_ALERT_RATE_LIMIT_PER_HOUR. Once
+  // exhausted within the trailing hour, a further crossed cluster still does
+  // not notify, but the underlying weekly-digest/question_digest signal is
+  // unaffected — this cap only ever drops the extra DM, never data.
+  REPEAT_QUESTION_ALERT_RATE_LIMIT_PER_HOUR: z.coerce.number().int().positive().default(5),
+  // Per-conversation cooldown, in minutes, between recentQuestionClusters
+  // checks (issue #887). Unlike KNOWLEDGE_GAP_ALERT/KNOWLEDGE_STALE_ALERT,
+  // whose triggering events are cheap pre-bounded inserts/flags,
+  // recentQuestionClusters scans and clusters every addressed-to-bot inbound
+  // message in its window — running it on every turn would scale query
+  // volume with raw message volume. This cooldown also doubles as the
+  // anti-repeat mechanism (no persisted per-cluster alerted_at, since
+  // `interactions` has no stable cluster identity to stamp): once a
+  // conversation has been checked, whether or not it alerted, it can't be
+  // checked again until the cooldown elapses.
+  REPEAT_QUESTION_ALERT_COOLDOWN_MINUTES: z.coerce.number().int().positive().default(15),
   // Weekly member-facing digest post (issue #645): widens the audience of
   // already-admin-visible k-floored `context_digests` topics + curated
   // "new in the knowledge base" titles to a Discord channel, so a member who
@@ -1362,6 +1395,12 @@ export const config = {
   knowledgeStaleAlert: {
     enabled: env.KNOWLEDGE_STALE_ALERT_ENABLED ?? false,
     rateLimitPerHour: env.KNOWLEDGE_STALE_ALERT_RATE_LIMIT_PER_HOUR,
+  },
+  repeatQuestionAlert: {
+    enabled: env.REPEAT_QUESTION_ALERT_ENABLED ?? false,
+    threshold: env.REPEAT_QUESTION_ALERT_THRESHOLD,
+    rateLimitPerHour: env.REPEAT_QUESTION_ALERT_RATE_LIMIT_PER_HOUR,
+    cooldownMinutes: env.REPEAT_QUESTION_ALERT_COOLDOWN_MINUTES,
   },
   accessRequestAlert: {
     enabled: env.ACCESS_REQUEST_ALERT_ENABLED ?? false,
