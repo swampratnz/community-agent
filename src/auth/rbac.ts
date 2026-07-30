@@ -277,14 +277,6 @@ export const ADMIN_TOOLS = [
   // exclusion like list_reports; appeals uses caller.platform like
   // list_appeals. No new scoping decision, no new data exposure.
   'mcp__community__review_queue',
-  // Time-to-first-answer aggregate (issue #877). Admin-tier and
-  // callerScope()-scoped exactly like review_queue/question_digest above.
-  // Registering the tool and asserting the tier INSIDE the handler is not
-  // enough on its own: the per-turn surface is tier-derived from
-  // toolsForRole(), and filterFeatureFlaggedTools only ever REMOVES entries —
-  // so a tool missing from this list is never offered to the SDK for any
-  // role, admin included, and is dead code in production (issue #877 review).
-  'mcp__community__response_latency',
   'mcp__community__list_knowledge_gaps',
   'mcp__community__moderation_history',
   'mcp__community__add_member',
