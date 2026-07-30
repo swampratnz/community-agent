@@ -37,6 +37,40 @@ git rm --cached -r . && git reset --hard
 - DB-touching changes should pass against a real Postgres + pgvector locally
   (`npm run migrate` then `npm test`) in addition to CI's service container.
 
+### Injected deps must be all-or-nothing
+
+Several background jobs take an injectable `deps` object whose fields default to
+real repository reads (`memberDigest.ts`, `usageCostDigest.ts`,
+`backgroundJobCostAlert.ts`). Those deps types have **no optional fields** on
+purpose: a *partial* object silently leaves the un-stubbed reads pointing at
+live Postgres, so a "unit" test quietly queries the DB. Because `node:test` runs
+test **files** in parallel, those stray reads land on tables other files are
+counting — one of the sources of this suite's cross-file flakiness.
+
+So: pass **nothing at all** (production, and any on-demand caller) to get the
+repository defaults, or pass **every** field (tests). To stub only the reads your
+test cares about, spread a base whose every field *throws* — see
+`throwingRunDeps`/`throwingContentDeps` in `tests/memberDigest.test.ts`. Don't
+build a base of inert `async () => 0` stubs: a newly added signal would silently
+acquire a plausible zero nobody chose and the test meant to cover it would pass
+vacuously.
+
+### `npm run typecheck:tests` — the tests typecheck ratchet
+
+`tsconfig.json` covers `src/**` only, and `tsx` strips types without checking
+them, so for a long time nothing typechecked `tests/` at all — which is exactly
+how the partial-deps bug above went unnoticed. `tsconfig.tests.json` closes that
+gap, and `npm run typecheck` now runs it (so CI and the build worker pick it up
+with no workflow change).
+
+`tests/` still has a large backlog of pre-existing type errors, so this is an
+**incremental ratchet**: `tsconfig.tests.json`'s `include` lists only the test
+files that are type-clean today, and a listed file can never regress. **Adding a
+file is the unit of progress** — bring it to zero errors, then add it to the
+list, alphabetically, one per line (so concurrent PRs land in different hunks,
+same reasoning as `tests/security-floor.json`). Don't remove a file to make a
+red build green.
+
 ## Finding your way around
 
 `docs/agents/` is a committed context pack: `module-map.md` (one line per `src/`

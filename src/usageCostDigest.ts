@@ -80,6 +80,27 @@ export function formatCacheHitRateTrendLine(currentHitRate: number, previousHitR
 }
 
 /**
+ * {@link makeDefaultUsageCostDigestRun}'s deps. **Every field is required on
+ * purpose** (issue #868): each one defaults to a real repository read, so a
+ * *partial* deps object silently leaves the rest pointing at live Postgres.
+ * `node:test` runs files in parallel, so those stray reads made global
+ * count/delta assertions in other files flaky — `usageStats`' own aggregates
+ * being a repeat offender. Requiring every field turns a forgotten stub into a
+ * compile error; pass nothing at all (production) for the repository defaults.
+ */
+export type UsageCostDigestRunDeps = {
+  wasSentRecently: (days: number) => Promise<boolean>;
+  getLastTotal: () => Promise<number | null>;
+  getLastCacheHitRate: () => Promise<number | null>;
+  recordSent: (totalCostUsd: number, cacheHitRate: number | null) => Promise<void>;
+  getStats: (days: number) => Promise<{
+    costUsd: number;
+    backgroundCostUsd: number;
+    cacheUsage: { readTokens: number; creationTokens: number };
+  }>;
+};
+
+/**
  * Builds the default weekly `runOnce`, closing the freshness guard +
  * `usageStats(7)` read + persisted-total delta over one tick. Every
  * dependency is injectable (tests only) so the cadence/delta logic can be
@@ -88,23 +109,13 @@ export function formatCacheHitRateTrendLine(currentHitRate: number, previousHitR
  */
 export function makeDefaultUsageCostDigestRun(
   adapters: readonly PlatformAdapter[],
-  deps: {
-    wasSentRecently?: (days: number) => Promise<boolean>;
-    getLastTotal?: () => Promise<number | null>;
-    getLastCacheHitRate?: () => Promise<number | null>;
-    recordSent?: (totalCostUsd: number, cacheHitRate: number | null) => Promise<void>;
-    getStats?: (days: number) => Promise<{
-      costUsd: number;
-      backgroundCostUsd: number;
-      cacheUsage: { readTokens: number; creationTokens: number };
-    }>;
-  } = {},
+  deps?: UsageCostDigestRunDeps,
 ): () => Promise<void> {
-  const wasSentRecently = deps.wasSentRecently ?? wasUsageCostDigestSentRecently;
-  const getLastTotal = deps.getLastTotal ?? getLastUsageCostDigestTotal;
-  const getLastCacheHitRate = deps.getLastCacheHitRate ?? getLastUsageCostDigestCacheHitRate;
-  const recordSent = deps.recordSent ?? recordUsageCostDigestSent;
-  const getStats = deps.getStats ?? usageStats;
+  const wasSentRecently = deps?.wasSentRecently ?? wasUsageCostDigestSentRecently;
+  const getLastTotal = deps?.getLastTotal ?? getLastUsageCostDigestTotal;
+  const getLastCacheHitRate = deps?.getLastCacheHitRate ?? getLastUsageCostDigestCacheHitRate;
+  const recordSent = deps?.recordSent ?? recordUsageCostDigestSent;
+  const getStats = deps?.getStats ?? usageStats;
 
   return async () => {
     if (await wasSentRecently(FRESHNESS_DAYS)) return; // still inside this week's freshness window
