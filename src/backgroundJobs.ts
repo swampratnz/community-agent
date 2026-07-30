@@ -22,6 +22,7 @@ import {
   pollAnthropicStatus,
   getStatusCache,
   formatStatusIncidentAlert,
+  formatStatusResolvedAlert,
   type StatusIndicator,
 } from './status/anthropicStatus.js';
 import {
@@ -366,15 +367,20 @@ export function initialStatusIncidentTracker(): StatusIncidentTracker {
  * level fires exactly once (latch stays "active" across subsequent non-`none`
  * polls, no repeat DM), and the latch re-arms as soon as the indicator drops
  * back to `'none'`, so a later, separate incident alerts again.
+ *
+ * `shouldAlertResolved` (issue #905) is the symmetric second edge: true only
+ * on the `active(true) -> 'none'` transition, i.e. admins were actually told
+ * about the incident that just ended. A `none -> none` poll never fires it,
+ * since the latch was never armed in the first place.
  */
 export function stepStatusIncidentTracker(
   tracker: StatusIncidentTracker,
   indicator: StatusIndicator,
-): { tracker: StatusIncidentTracker; shouldAlert: boolean } {
+): { tracker: StatusIncidentTracker; shouldAlert: boolean; shouldAlertResolved: boolean } {
   if (indicator === 'none') {
-    return { tracker: { active: false }, shouldAlert: false };
+    return { tracker: { active: false }, shouldAlert: false, shouldAlertResolved: tracker.active };
   }
-  return { tracker: { active: true }, shouldAlert: !tracker.active };
+  return { tracker: { active: true }, shouldAlert: !tracker.active, shouldAlertResolved: false };
 }
 
 /**
@@ -389,12 +395,14 @@ export function stepStatusIncidentTracker(
  * boolean return, not a thrown error, drives the tracker here; the
  * try/catch below is only a defensive backstop against an unexpected throw.
  *
- * A second, distinct branch (issue #601) fires only on a SUCCESSFUL poll: it
- * steps `stepStatusIncidentTracker` over the freshly-updated cache's
- * indicator and, on a `none -> incident` transition, DMs super admins via the
- * same `alertSuperAdmins` this function already uses for failure alerts —
- * orthogonal to the failure-count tracker above, which only ever reacts to
- * the poll *failing*, never to what a successful poll's content says.
+ * A second, distinct branch (issue #601, completed by #905) fires only on a
+ * SUCCESSFUL poll: it steps `stepStatusIncidentTracker` over the freshly-
+ * updated cache's indicator and DMs super admins via the same
+ * `alertSuperAdmins` this function already uses for failure alerts — on a
+ * `none -> incident` transition (`shouldAlert`) and, symmetrically, on the
+ * `incident -> none` transition (`shouldAlertResolved`). Both are orthogonal
+ * to the failure-count tracker above, which only ever reacts to the poll
+ * *failing*, never to what a successful poll's content says.
  */
 export function startStatusCheck(
   adapters: readonly PlatformAdapter[],
@@ -416,8 +424,9 @@ export function startStatusCheck(
     }
     if (succeeded) {
       lastSuccessAt = Date.now();
-      // Proactive super-admin DM on a none -> incident transition (issue
-      // #601) — only on a SUCCESSFUL poll, so a failed fetch (which never
+      // Proactive super-admin DMs on a none -> incident transition (issue
+      // #601) and the symmetric incident -> none resolve transition (issue
+      // #905) — only on a SUCCESSFUL poll, so a failed fetch (which never
       // advances the cache) can never itself flip the latch.
       const state = getStatusCache();
       if (state) {
@@ -425,6 +434,9 @@ export function startStatusCheck(
         incidentTracker = incidentStep.tracker;
         if (incidentStep.shouldAlert) {
           void alertSuperAdmins(adapters, formatStatusIncidentAlert(state, Date.now()));
+        }
+        if (incidentStep.shouldAlertResolved) {
+          void alertSuperAdmins(adapters, formatStatusResolvedAlert(state, Date.now()));
         }
       }
     }
