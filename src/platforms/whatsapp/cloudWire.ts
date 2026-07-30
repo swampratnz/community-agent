@@ -83,11 +83,31 @@ export interface CloudInboundMessage {
   timestampMs: number;
   text: string;
   name: string;
+  /**
+   * Present only for an inbound `image` message (issue #891, the WhatsApp
+   * Cloud API counterpart to Discord's #783 / Baileys' #879 image-attachment
+   * input). Carries exactly Meta's own webhook metadata — media id, declared
+   * MIME type, and an optional caption — extracted regardless of
+   * `WHATSAPP_CLOUD_IMAGE_INPUT_ENABLED`, since this is a pure wire helper
+   * with no config access (see the file doc comment); the CALLER
+   * (`onCloudMessage`) is the single gate that decides whether to fetch the
+   * bytes. `text` above stays `''` for an image message — Meta delivers a
+   * caption as `image.caption`, never as a separate text message — so the
+   * caption is promoted to the turn's `text` only once the image is actually
+   * accepted, mirroring the total silence a below-flag/below-tier/refused
+   * image already produces today.
+   */
+  image?: { mediaId: string; mimeType: string; caption?: string };
 }
 
 interface MetaContact {
   profile?: { name?: string };
   wa_id?: string;
+}
+interface MetaImage {
+  id?: string;
+  mime_type?: string;
+  caption?: string;
 }
 interface MetaMessage {
   from?: string;
@@ -95,6 +115,7 @@ interface MetaMessage {
   timestamp?: string;
   type?: string;
   text?: { body?: string };
+  image?: MetaImage;
 }
 interface MetaValue {
   contacts?: MetaContact[];
@@ -112,9 +133,12 @@ interface MetaPayload {
 }
 
 /**
- * Normalise a Meta `messages` webhook payload into inbound text messages.
- * Non-text message types (image/audio/status/etc.) and malformed entries are
- * silently skipped — only well-formed text messages are actionable here.
+ * Normalise a Meta `messages` webhook payload into inbound messages. Text and
+ * (issue #891) well-formed image messages are extracted; every other type
+ * (audio/document/sticker/video/status/etc.) and malformed entries are
+ * silently skipped, unchanged from before #891 — an image entry missing its
+ * own `image.id` (Meta's media id) is treated as malformed too, since there
+ * is nothing to ever fetch.
  */
 export function extractMessages(payload: unknown): CloudInboundMessage[] {
   const out: CloudInboundMessage[] = [];
@@ -132,14 +156,28 @@ export function extractMessages(payload: unknown): CloudInboundMessage[] {
       }
 
       for (const msg of value.messages) {
-        if (msg.type !== 'text' || !msg.from || !msg.id || typeof msg.text?.body !== 'string') continue;
-        out.push({
-          from: msg.from,
-          id: msg.id,
-          timestampMs: Number(msg.timestamp ?? 0) * 1000,
-          text: msg.text.body,
-          name: nameByWaId.get(msg.from) ?? '',
-        });
+        if (!msg.from || !msg.id) continue;
+        const name = nameByWaId.get(msg.from) ?? '';
+        const timestampMs = Number(msg.timestamp ?? 0) * 1000;
+
+        if (msg.type === 'text') {
+          if (typeof msg.text?.body !== 'string') continue;
+          out.push({ from: msg.from, id: msg.id, timestampMs, text: msg.text.body, name });
+          continue;
+        }
+
+        if (msg.type === 'image') {
+          const mediaId = msg.image?.id;
+          if (!mediaId) continue;
+          out.push({
+            from: msg.from,
+            id: msg.id,
+            timestampMs,
+            text: '',
+            name,
+            image: { mediaId, mimeType: msg.image?.mime_type ?? '', caption: msg.image?.caption },
+          });
+        }
       }
     }
   }

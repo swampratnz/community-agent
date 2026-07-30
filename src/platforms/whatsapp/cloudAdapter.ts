@@ -5,12 +5,15 @@ import {
   type ServerResponse,
 } from 'node:http';
 import { config } from '../../config.js';
-import { logger } from '../../logger.js';
+import { logger, hashId } from '../../logger.js';
 import type { AlertPriority } from '../../pendingAlertQueue.js';
 import { filterOutbound } from '../../agent/outbound.js';
 import { runtimeSecrets } from '../../agent/secrets.js';
+import { reserveImageInputDaily } from '../../agent/tools.js';
 import { getCodeAnswersPolicy, getCommunityGuidelines, getWelcomeMessage } from '../../storage/policies.js';
 import { blockUser, isKnownConversation, unblockUser } from '../../storage/repository.js';
+import { isSuperAdmin, resolveRole } from '../../auth/roles.js';
+import { atLeast } from '../../auth/rbac.js';
 import {
   extractMessages,
   isAllowedSender,
@@ -368,6 +371,24 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
     if (!this.handler) return;
     if (!isAllowedSender(msg.from, config.whatsapp.allowedJids)) return;
 
+    // WhatsApp Cloud API image-attachment input (opt-in,
+    // WHATSAPP_CLOUD_IMAGE_INPUT_ENABLED, issue #891) — mirrors Baileys'
+    // #879 flow via maybeFetchImageAttachment, adapted to the Cloud webhook
+    // shape. `msg.text` is always '' for an image message (see
+    // extractMessages'/CloudInboundMessage's doc comments) — Meta delivers a
+    // caption as `image.caption`, never a separate text message — so the
+    // caption is promoted to `text` ONLY once the image is actually
+    // accepted. With the flag off, on any gate rejection, or an uncaptioned
+    // accepted image, `text` stays '' and the message is dropped below,
+    // exactly like today's total silence on an inbound image.
+    let text = msg.text;
+    let image: IncomingMessage['image'] | undefined;
+    if (msg.image) {
+      image = await this.maybeFetchImageAttachment(msg.image, msg.from);
+      text = image ? (msg.image.caption ?? '') : '';
+      if (!text) return;
+    }
+
     await this.maybeSendFirstContactWelcome(msg.from);
 
     const normalised: IncomingMessage = {
@@ -375,7 +396,8 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
       conversationId: msg.from,
       userId: msg.from,
       userName: msg.name || msg.from,
-      text: msg.text,
+      text,
+      ...(image ? { image } : {}),
       isDirect: true,
       addressedToBot: true,
       timestamp: msg.timestampMs,
@@ -383,6 +405,122 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
       raw: msg,
     };
     await this.handler(normalised);
+  }
+
+  /**
+   * Resolve a single WhatsApp Cloud image message to an
+   * `IncomingMessage.image` payload, or `undefined` to leave it untouched —
+   * the SINGLE gate for the feature (issue #891), mirroring
+   * `BaileysAdapter.maybeFetchImageAttachment` (#879)'s gate order adapted to
+   * the Cloud webhook shape:
+   *   1. WHATSAPP_CLOUD_IMAGE_INPUT_ENABLED must be on (off by default);
+   *   2. the sender's resolved tier must meet
+   *      WHATSAPP_CLOUD_IMAGE_INPUT_MIN_ROLE (default 'super_admin'). At the
+   *      default this stays a pure `isSuperAdmin` env check — no DB call —
+   *      exactly like the other two platforms' image gates;
+   *   3. WHATSAPP_CLOUD_IMAGE_INPUT_DAILY_LIMIT_PER_USER is checked next,
+   *      BEFORE any Graph API call — a sender already at their daily cap is
+   *      refused without a single network round-trip;
+   *   4. the message's own declared `mimetype` (Meta's webhook metadata) must
+   *      be on the allowlist (image/png, image/jpeg, image/webp) — checked
+   *      with STILL zero Graph API calls;
+   *   5. only then is Meta's media-URL resolve call made (`resolveMediaUrl`,
+   *      `GET /{media-id}`). Unlike Baileys' `fileLength` (present on the
+   *      message itself, pre-download), Meta's Cloud webhook `image` object
+   *      carries no byte size at all — this lightweight metadata call is the
+   *      earliest point one becomes available, so the byte cap
+   *      (WHATSAPP_CLOUD_IMAGE_INPUT_MAX_BYTES) is enforced immediately on
+   *      its `file_size`, strictly BEFORE the separate, actual byte-download
+   *      call (`downloadMediaBytes`) below it — the resolve call itself never
+   *      transfers image bytes;
+   *   6. only past every check above are the bytes themselves downloaded and
+   *      base64-encoded.
+   * Any resolve/download failure is logged and swallowed (returns undefined)
+   * so a bad attachment is dropped rather than crashing the handler or
+   * leaking internals. The bytes are held only for the return value —
+   * `runAgentTurn` passes them to `query()` for this one turn and nothing
+   * here persists them.
+   */
+  private async maybeFetchImageAttachment(
+    image: NonNullable<CloudInboundMessage['image']>,
+    senderId: string,
+  ): Promise<IncomingMessage['image'] | undefined> {
+    if (!config.whatsapp.cloud.image.enabled) return undefined;
+    const minRole = config.whatsapp.cloud.image.minRole;
+    if (minRole === 'super_admin') {
+      if (!isSuperAdmin('whatsapp', senderId)) return undefined;
+    } else {
+      const role = await resolveRole('whatsapp', senderId);
+      if (!atLeast(role, minRole)) return undefined;
+    }
+    if (!reserveImageInputDaily(`whatsapp-cloud:${senderId}`, config.whatsapp.cloud.image.dailyLimitPerUser)) {
+      logger.info(
+        { sender: hashId(senderId), limit: config.whatsapp.cloud.image.dailyLimitPerUser },
+        'WhatsApp Cloud image attachment refused — sender hit the daily image-input cap',
+      );
+      return undefined;
+    }
+    const mimeType = image.mimeType;
+    if (mimeType !== 'image/png' && mimeType !== 'image/jpeg' && mimeType !== 'image/webp') {
+      logger.info(
+        { mimeType },
+        'WhatsApp Cloud image attachment outside the MIME allowlist — ignored without any Graph API call',
+      );
+      return undefined;
+    }
+    const { phoneNumberId, accessToken } = config.whatsapp.cloud;
+    if (!phoneNumberId || !accessToken) return undefined;
+    try {
+      const { url, fileSize } = await this.resolveMediaUrl(image.mediaId, accessToken);
+      if (fileSize > config.whatsapp.cloud.image.maxBytes) {
+        logger.info(
+          { size: fileSize, cap: config.whatsapp.cloud.image.maxBytes },
+          'WhatsApp Cloud image attachment over the byte cap — ignored without downloading its bytes',
+        );
+        return undefined;
+      }
+      const buffer = await this.downloadMediaBytes(url, accessToken);
+      return { data: buffer.toString('base64'), mimeType };
+    } catch (err) {
+      logger.warn({ err }, 'WhatsApp Cloud image-attachment fetch failed — dropping the attachment');
+      return undefined;
+    }
+  }
+
+  /**
+   * Step 1 of the Cloud image-attachment fetch (issue #891): resolve Meta's
+   * media id to a short-lived, Graph-hosted URL plus its declared byte size.
+   * Split out as its own seam (like `resolveMediaUrl`'s sibling
+   * `downloadMediaBytes` below) so tests can spy on it independently of the
+   * actual byte-download call. This call transfers only JSON metadata, never
+   * image bytes.
+   */
+  private async resolveMediaUrl(mediaId: string, accessToken: string): Promise<{ url: string; fileSize: number }> {
+    const res = await fetch(`https://graph.facebook.com/${GRAPH_API_VERSION}/${mediaId}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      throw new Error(`WhatsApp Cloud media URL resolve failed: ${res.status} ${detail}`);
+    }
+    const body = (await res.json().catch(() => ({}))) as { url?: string; file_size?: number | string };
+    if (!body.url) throw new Error('WhatsApp Cloud media URL resolve failed: no url in response');
+    return { url: body.url, fileSize: Number(body.file_size ?? 0) };
+  }
+
+  /**
+   * Step 2 of the Cloud image-attachment fetch: download the resolved URL's
+   * raw bytes, authenticated with the bot's own access token (Meta requires
+   * this even though the URL itself is short-lived/opaque). Only ever
+   * called after `resolveMediaUrl`'s byte-size check has already passed.
+   */
+  private async downloadMediaBytes(url: string, accessToken: string): Promise<Buffer> {
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      throw new Error(`WhatsApp Cloud media download failed: ${res.status} ${detail}`);
+    }
+    return Buffer.from(await res.arrayBuffer());
   }
 
   /**
