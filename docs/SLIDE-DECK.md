@@ -8,7 +8,17 @@ a short talk track for the presenter. Sources: `README.md`,
 `docs/VISION.md`, `docs/agents/`, `CLAUDE.md`.
 
 Figures (module/test/security-test counts) are approximate and drift as the
-pipeline ships — re-check them against the repo before presenting.
+pipeline ships — re-check them against the repo before presenting. **Last
+verified against `main` on 2026-07-30.** The one-liners to re-run:
+
+```bash
+find src -name '*.ts' | wc -l                       # source modules
+find src -name '*.ts' | xargs wc -l | tail -1       # lines of TypeScript
+find tests -name '*.test.ts' | wc -l                # test files
+node -e "const m=require('./tests/security-floor.json');const k=Object.keys(m).filter(x=>x[0]!=='\$');\
+console.log(k.length,'files',k.reduce((a,x)=>a+(m[x].count??m[x]),0),'SECURITY: tests')"
+grep -c '^## ' CHANGELOG.md                         # changelog sections
+```
 
 ---
 
@@ -35,13 +45,27 @@ pipeline ships — re-check them against the repo before presenting.
 - **Memory**: every interaction embedded and stored (Postgres + pgvector);
   relevant history recalled each turn; an offline context builder distils
   recurring topics into durable digests.
+- **Peer discovery** (the member→member half): members publish projects and
+  interests; `who_is_into` / `/whois` matches "members like me" from your own
+  published interests with no query at all, `list_projects` flags projects
+  **seeking collaborators**, and `find_helper` DMs a member who opted into the
+  helper pool.
 - **Admin tools**: moderation (timeout/kick/warn/delete, opt-in
   auto-moderation with strikes), announcements, polls, events, threads, roles.
-- **Feedback loops**: members rate answers, file reports and suggestions;
-  digests surface what the community is asking.
+- **Multimodal & zero-cost paths**: opt-in voice-note transcription (local
+  Whisper) and image attachments on all three surfaces — Discord, WhatsApp
+  Baileys, WhatsApp Cloud API; Discord slash commands (`/kb`, `/whois`,
+  `/projects`, `/guidelines`, `/digest`) and their WhatsApp `!`-prefixed
+  counterparts answer the commonest lookups with **no model call at all**.
+- **Feedback loops**: members rate answers, file reports, suggestions and
+  knowledge tips (and can withdraw their own); digests surface what the
+  community is asking.
 
 > **Talk track:** "not just an answer service" — the VISION doc explicitly
-> targets member→member and member→community value, not only bot→member.
+> targets member→member and member→community value, not only bot→member, and
+> the peer-discovery bullet is that goal made concrete. The zero-cost
+> shortcuts matter too: every one is a question answered without spending an
+> agent turn.
 
 ---
 
@@ -63,7 +87,7 @@ Discord ─► DiscordAdapter ─┐                 ┌─ BaileysAdapter ◄�
   Meta Cloud API) are swappable adapters over a platform-agnostic core.
 - TypeScript on Node 22+, discord.js v14, local embeddings via
   transformers.js, systemd on Ubuntu.
-- ~72 source modules, ~32k lines of TypeScript.
+- ~100 source modules, ~36k lines of TypeScript.
 
 > **Talk track:** the router decides *whether* to reply; storage is decoupled
 > from response (opt-in ambient archiving), so recall works even for messages
@@ -75,7 +99,9 @@ Discord ─► DiscordAdapter ─┐                 ┌─ BaileysAdapter ◄�
 
 - **Three-tier RBAC** (super admin / admin / member) — roles come from env +
   the database, **never from message content**; tool surface is tier-derived
-  and privileged tools re-assert the tier.
+  and privileged tools re-assert the tier. ~105 tools in all: **31 member,
+  54 admin, 20 super-admin**, further filtered by platform and feature flag —
+  only ever subtractively.
 - Built-in Claude Code tools **disabled every turn** (`tools: []`); only
   admin+ turns get `WebSearch`; `WebFetch` for no one.
 - **Destructive actions are CONFIRM-gated** and executed by the router, not
@@ -96,11 +122,12 @@ Discord ─► DiscordAdapter ─┐                 ┌─ BaileysAdapter ◄�
   refreshed weekly by content diff; opt-in daily refresh for fast-moving
   topics.
 - Admins curate the KB (`save_knowledge`, candidate review queue).
-- **Agent Skills** (opt-in, off by default): procedural playbooks — walking a
-  member through Claude Code setup, picking a model/plan, reviewing an agent
-  architecture — deliberately kept **separate from the knowledge base, which
-  holds facts**. The enabled set is a hand-written allowlist in code, never
-  `'all'`, so a new skill folder needs a second deliberate edit to go live.
+- **Agent Skills** (opt-in, off by default): six procedural playbooks —
+  getting started, Claude Code setup, picking a model/plan, prompt review,
+  agent-architecture review, project showcase — deliberately kept **separate
+  from the knowledge base, which holds facts**. The enabled set is a
+  hand-written allowlist in code, never `'all'`, so a new skill folder needs a
+  second deliberate edit to go live.
 - **Retrieval quality is regression-tested**: a golden-query eval
   (`tests/knowledgeEval.test.ts`) measures precision@K against paraphrased
   queries with distractors — new knowledge entries must ship with matching
@@ -130,8 +157,12 @@ auto-merge ──merges fully-vetted bot PRs──► main   (humans merge the r
 - `needs-human` is a lane, not a flag: escalated items leave the automated
   queue entirely and wait for a person.
 
-> **Talk track:** 15 GitHub Actions workflows implement this; ownership rule —
-> only the build loop writes code, everything else touches issues or comments.
+> **Talk track:** ten GitHub Actions workflows implement the code-touching and
+> support loops (plus five repo-hygiene ones); the two time-driven discovery
+> loops — research and adversarial — run as scheduled Claude Routines instead,
+> since Actions cost nothing when idle but need an event to fire. Ownership
+> rule: only the build loop writes code, everything else touches issues or
+> comments.
 
 ---
 
@@ -149,6 +180,10 @@ auto-merge ──merges fully-vetted bot PRs──► main   (humans merge the r
   `status:building` issues.
 - **auto-merge** — deterministic, no-LLM loop that merges only fully-vetted
   build-worker PRs; governance/CI/config paths **always require a human**.
+  Ships **inert**: a repo variable (`AUTOMERGE_MODE`) has to be set to
+  `dry-run`, then `live`, so the first loop allowed to write to `main` gets an
+  observation window before it ever merges. *(Presenter: check the repo
+  variable before claiming it's merging live in this deployment.)*
 - **outcomes** — weekly, read-only, no-LLM: reconstructs each loop's record
   (engaged / checkpoint-recovered / escalated) from marker comments the loops
   already post, to answer *"is each loop earning its tokens?"*
@@ -165,12 +200,14 @@ auto-merge ──merges fully-vetted bot PRs──► main   (humans merge the r
   format, migrate, tests against a real pgvector Postgres container, build,
   security suite, context-pack freshness) *before* opening a PR — "green
   locally" is defined as matching CI.
-- **Security floor**: ~1,000 `SECURITY:`-prefixed tests across ~125 files,
+- **Security floor**: ~1,170 `SECURITY:`-prefixed tests across ~149 files,
   enforced by a per-file manifest (`tests/security-floor.json`) — exact
   counts, so a deleted security test can't slip through silently; per-file
   entries so concurrent PRs don't conflict.
-- ~167 test files overall; DB-touching tests skip cleanly without a local
-  Postgres so contributors aren't blocked.
+- ~196 test files overall; DB-touching tests skip cleanly without a local
+  Postgres so contributors aren't blocked. `tests/` is also being brought
+  under the typechecker on an **incremental ratchet** — an allowlist of files
+  clean today, never shrunk to turn a build green.
 - **Branch protection on `main`** is the enforceable backstop for every loop.
 
 > **Talk track:** the security floor design (exact match + sorted manifest +
@@ -200,6 +237,13 @@ auto-merge ──merges fully-vetted bot PRs──► main   (humans merge the r
   work-item context is handed forward build → review as a bounded note that
   the reviewer is told is **untrusted data which may only add scrutiny, never
   remove it** (#767).
+- **An unchecked seam hides a whole bug class** → `tsc` covered `src/**` only
+  and `tsx` strips test types without checking them, so `tests/` went entirely
+  untypechecked. Under that gap, an injected `deps` object missing a field
+  fell through to the *real* repository function — a "unit" test quietly
+  querying live Postgres, and since test files run in parallel those stray
+  reads landed on tables other files were counting. That is where a chunk of
+  the cross-file flakiness reddening unrelated PRs came from (#896).
 - **A test can assert the right thing about the wrong value** → the first live
   handoff run broke twice: the consumer matched an API field using a value
   that field never emits (so the test passed and production failed), and the
@@ -214,17 +258,21 @@ auto-merge ──merges fully-vetted bot PRs──► main   (humans merge the r
 
 ## Slide 10 — Status, caveats, and where next
 
-- **Live and self-developing**: 26 changelog sections and counting; a human
-  remains the merge gate for anything touching governance, CI, or its own
-  guardrails.
+- **Live and self-developing**: 29 dated changelog sections covering ~4 weeks
+  (2026-07-02 → today) and ~300 referenced PRs; **12 of the last 15 merges to
+  `main` were authored by the build loop**. A human remains the merge gate for
+  anything touching governance, CI, or its own guardrails.
 - **Known caveats, documented not hidden**: Baileys WhatsApp violates WhatsApp
-  ToS (official Cloud API adapter is the upgrade path); subscription auth is a
-  grey area (auth layer isolated for easy switch to API key); all interactions
-  are logged — community notice + NZ Privacy Act 2020 retention policy
-  required.
+  ToS — the official Meta Cloud API adapter has shipped as the supported
+  production path (`WHATSAPP_PROVIDER=cloud`) and now reaches feature parity
+  down to image input; subscription auth is a grey area (auth layer isolated
+  for easy switch to API key); all interactions are logged — community notice
+  + NZ Privacy Act 2020 retention policy required.
 - **Where next**: `docs/VISION.md` (north-star metrics: answer quality,
   knowledge leverage) and `docs/CAPABILITY-IDEAS.md` (curated backlog) steer
-  the research loop.
+  the research loop — and the loop has started closing on the vision itself:
+  VISION's "time-to-first-answer" metric had no measurement behind it until
+  the pipeline shipped the `response_latency` admin tool that measures it.
 - **Takeaway**: a working template for agent-built software with humans at
   the guardrails — coordination through labels, bounded loops, deterministic
   backstops.
@@ -248,7 +296,7 @@ agentic design patterns and Anthropic's five workflow patterns (e.g. the
 - **Evaluator-Optimizer with stopping rules** — build → review → revise is
   the classic generate/evaluate loop; every loop has an attempt cap (2/2/1/3)
   and escalates `needs-human` — the prescribed "escalate rather than retry a
-  third time." Deterministic checks (CI, ~1,000 security tests) always run
+  third time." Deterministic checks (CI, ~1,170 security tests) always run
   before subjective LLM review.
 - **Explicit, immutable rubric** — `VISION.md` is the shared scoring rubric;
   quality is tuned by editing it, not the loop prompts.
