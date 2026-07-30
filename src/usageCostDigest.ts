@@ -9,6 +9,7 @@ import {
   usageStats,
   wasUsageCostDigestSentRecently,
 } from './storage/repository.js';
+import { WindowClosedError } from './platforms/whatsapp/cloudAdapter.js';
 import type { PlatformAdapter } from './platforms/types.js';
 
 /** Same weekly window as `adminDigest.ts`'s `FRESHNESS_DAYS` — this signal targets the same ~7-day cadence. */
@@ -157,9 +158,17 @@ async function alertSuperAdmins(adapters: readonly PlatformAdapter[], message: s
   for (const adapter of adapters) {
     if (!adapter.isConnected()) continue; // can't send through a dead connection
     for (const id of superAdminIds(adapter.platform)) {
-      adapter
-        .sendDirectMessage(id, message)
-        .catch((err) => logger.warn({ err, platform: adapter.platform, id }, 'Cost-trend digest DM failed'));
+      adapter.sendDirectMessage(id, message).catch((err) => {
+        if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+          adapter.queueForWindowReopen(id, message, 'system');
+          logger.warn(
+            { platform: adapter.platform, id },
+            'Cost-trend digest: recipient window closed, queued for reopen',
+          );
+          return;
+        }
+        logger.warn({ err, platform: adapter.platform, id }, 'Cost-trend digest DM failed');
+      });
     }
   }
 }

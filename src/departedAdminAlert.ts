@@ -5,6 +5,7 @@ import { listAdminRoster, type AdminRosterEntry } from './storage/repository.js'
 import { startTrackedJob } from './backgroundJobs.js';
 import { initialUsageAlertTracker, stepUsageAlertTracker } from './usageAlert.js';
 import { queuePendingAlert } from './pendingAlertQueue.js';
+import { WindowClosedError } from './platforms/whatsapp/cloudAdapter.js';
 import type { PlatformAdapter } from './platforms/types.js';
 
 /**
@@ -91,11 +92,17 @@ export async function alertSuperAdmins(adapters: readonly PlatformAdapter[], mes
   }
   for (const adapter of connected) {
     for (const id of superAdminIds(adapter.platform)) {
-      adapter
-        .sendDirectMessage(id, message)
-        .catch((err) =>
-          logger.warn({ err, platform: adapter.platform, id }, 'Departed-admin alert DM failed'),
-        );
+      adapter.sendDirectMessage(id, message).catch((err) => {
+        if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+          adapter.queueForWindowReopen(id, message, 'system');
+          logger.warn(
+            { platform: adapter.platform, id },
+            'Departed-admin alert: recipient window closed, queued for reopen',
+          );
+          return;
+        }
+        logger.warn({ err, platform: adapter.platform, id }, 'Departed-admin alert DM failed');
+      });
     }
   }
 }

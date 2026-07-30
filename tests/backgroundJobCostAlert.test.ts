@@ -25,6 +25,7 @@ process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS = 'super-1';
+process.env.SUPER_ADMIN_WHATSAPP_NUMBERS ??= 'admin-open,admin-closed';
 
 const {
   initialBackgroundJobCostAlertTracker,
@@ -36,6 +37,7 @@ const {
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { sumBackgroundJobCosts } = await import('../src/storage/repository.js');
 const { config } = await import('../src/config.js');
+const { WindowClosedError } = await import('../src/platforms/whatsapp/cloudAdapter.js');
 type BackgroundJob = 'moderation_llm' | 'context_builder' | 'knowledge_refresh';
 
 after(async () => {
@@ -71,6 +73,50 @@ function makeAdapter(): { adapter: PlatformAdapter; dms: Array<{ userId: string;
 function flush(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
+
+/**
+ * A fake Cloud-like adapter (mirrors `tests/notifyAdminsWindowReopenQueue.test.ts`'s
+ * `makeFakeCloudAdapter`): `sendDirectMessage` rejects with whatever
+ * `rejections[userId]` names, and `queueForWindowReopen` records what was
+ * queued, per-recipient, for assertion (issue #888).
+ */
+function makeCloudAdapter(rejections: Record<string, unknown>): {
+  adapter: PlatformAdapter;
+  dms: Array<{ userId: string; text: string }>;
+  queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }>;
+} {
+  const dms: Array<{ userId: string; text: string }> = [];
+  const queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }> = [];
+  const adapter: PlatformAdapter = {
+    platform: 'whatsapp',
+    adminCapabilities: new Set(),
+    async start() {},
+    async stop() {},
+    isConnected: () => true,
+    onMessage() {},
+    async sendMessage(_out: OutgoingMessage) {},
+    async sendDirectMessage(userId: string, text: string) {
+      if (userId in rejections) throw rejections[userId];
+      dms.push({ userId, text });
+    },
+    queueForWindowReopen(userId: string, message: string, priority: 'system' | 'low') {
+      queued.push({ userId, message, priority });
+    },
+    async conversationsForUser() {
+      return [];
+    },
+    async performAdminAction() {
+      return '';
+    },
+  };
+  return { adapter, dms, queued };
+}
+
+/** A spike guaranteed to clear both the floor and multiplier conditions for `context_builder`. */
+const SPIKE_SUM_COSTS = async (days: number) => {
+  if (days === 1) return { total: 10, byJob: [{ job: 'context_builder', costUsd: 10 }] };
+  return { total: 7, byJob: [{ job: 'context_builder', costUsd: 7 }] }; // baselineAvg = 1
+};
 
 // --- Config defaults (issue #610 acceptance criterion 1) --------------------
 
@@ -266,6 +312,64 @@ test('makeDefaultBackgroundJobCostAlertRun: each tracked job keeps an independen
   await runOnce();
   await flush();
   assert.equal(dms.length, 2, 'dropping back under sends no alert and re-arms both latches');
+});
+
+// --- Per-recipient window-reopen queue extension (issue #888) ---
+
+test("makeDefaultBackgroundJobCostAlertRun: a WindowClosedError rejection queues via queueForWindowReopen at 'system' priority instead of only logging (issue #888 acceptance criterion 1/2)", async () => {
+  const { adapter, dms, queued } = makeCloudAdapter({
+    'admin-closed': new WindowClosedError('admin-closed'),
+  });
+  const runOnce = makeDefaultBackgroundJobCostAlertRun([adapter], { sumCosts: SPIKE_SUM_COSTS });
+
+  await runOnce();
+  await flush();
+
+  assert.deepEqual(
+    dms.map((d) => d.userId),
+    ['admin-open'],
+    'the open-window recipient is still delivered live',
+  );
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0]?.userId, 'admin-closed');
+  assert.equal(
+    queued[0]?.priority,
+    'system',
+    "the cost-spike alert has no existing queuePendingAlert('system') branch to inherit from — 'system' is a new, deliberate choice here (adversarial review correction)",
+  );
+});
+
+test('SECURITY: makeDefaultBackgroundJobCostAlertRun — a rejection that is NOT a WindowClosedError is never queued via queueForWindowReopen; it stays logged-and-dropped (issue #888 acceptance criterion 4)', async () => {
+  const { adapter, dms, queued } = makeCloudAdapter({
+    'admin-closed': new Error('502 from Graph API'),
+  });
+  const runOnce = makeDefaultBackgroundJobCostAlertRun([adapter], { sumCosts: SPIKE_SUM_COSTS });
+
+  await runOnce();
+  await flush();
+
+  assert.deepEqual(
+    dms.map((d) => d.userId),
+    ['admin-open'],
+  );
+  assert.deepEqual(
+    queued,
+    [],
+    'a non-WindowClosedError rejection must never populate the window-reopen queue',
+  );
+});
+
+test('makeDefaultBackgroundJobCostAlertRun: an adapter with no queueForWindowReopen (Discord/Baileys shape) falls through to log-and-drop for a WindowClosedError rejection — no crash, byte-identical to today (issue #888 acceptance criterion 5)', async () => {
+  const { adapter } = makeAdapter();
+  adapter.sendDirectMessage = async () => {
+    throw new WindowClosedError('super-1');
+  };
+  const runOnce = makeDefaultBackgroundJobCostAlertRun([adapter], { sumCosts: SPIKE_SUM_COSTS });
+
+  await assert.doesNotReject(async () => {
+    await runOnce();
+    await flush();
+  });
 });
 
 test('startBackgroundJobCostAlert: BACKGROUND_JOB_COST_ALERT_ENABLED unset (default) creates no timer', () => {

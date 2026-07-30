@@ -2974,6 +2974,33 @@ dead" (e.g. a banned WhatsApp number stuck in Baileys' reconnect loop).
   rejection is unaffected — byte-identical logged-and-dropped. No new queue,
   no new mechanism: the same capped-at-3-per-recipient, priority-aware queue
   above now has 5 producers instead of 2.
+- **Window-reopen recovery extended to the six standalone periodic-job
+  alert senders** (issue #888) — #602/#644 above deliberately scoped the
+  `WindowClosedError` → `queueForWindowReopen` recovery to `agent/tools.ts`'s
+  fan-outs; six standalone modules each implementing their own near-identical
+  `alertSuperAdmins(adapters, message)` helper — `departedAdminAlert.ts`
+  (also reused by `engagementAlert.ts` and `adminLeverageAlert.ts`),
+  `backgroundJobs.ts` (shared by the job-failure alert, the status-incident
+  alert, and the dev-team-watch alert), `health.ts`, `usageAlert.ts`,
+  `usageCostDigest.ts`, and `backgroundJobCostAlert.ts` — still only logged
+  and dropped on any rejection. Each now catches `WindowClosedError`
+  specifically and queues via `queueForWindowReopen(id, message, 'system')` —
+  `'system'` because every one of these six alerts is super-admin-only and
+  must never be evicted by a member-reachable `'low'` alert (#545); for
+  `usageCostDigest.ts` and `backgroundJobCostAlert.ts`, which have no existing
+  all-disconnected `queuePendingAlert('system')` branch to inherit the tier
+  from, this is a new but consistent choice. Any other rejection is
+  unaffected — byte-identical logged-and-dropped, and Discord/Baileys (no
+  `queueForWindowReopen`) are byte-identical to today. No new queue, no new
+  mechanism, and the existing all-disconnected `queuePendingAlert` branch
+  (where present) is untouched — this only adds the connected-but-
+  window-closed sibling case. Still-open growth path (deliberately excluded
+  from #888's scope): `router.ts`'s `notifyAccessRequest` and
+  `alertSuperAdminsBudgetCheckFailed`, `agent/core.ts`'s usage-limit alert,
+  `adminDigest.ts`'s per-admin digest send (a single `await`/`try`/`catch`,
+  not a per-recipient loop), and `health.ts`'s `flushPendingAlerts` itself
+  (queuing a flush-failure back into the window-reopen queue needs its own
+  analysis to avoid a resend loop).
 - **`/healthz`** (opt-in via `HEALTH_PORT`) — unauthenticated `GET` returning
   `{status: "ok"|"degraded", db: boolean, adapters: {discord: boolean,
   whatsapp: boolean}}`. No message content or user ids in the response.

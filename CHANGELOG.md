@@ -118,6 +118,17 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   Rate-limited and cooldown-gated per conversation so it can't scale query
   volume with message volume; off by default like its two siblings.
 
+### Fixed
+- **Six more background alerts to super admins now survive a closed WhatsApp
+  window instead of silently vanishing** (#888): the departed-admin alert,
+  background-job-failure/status-incident/dev-team-watch alerts, the
+  disconnect alert, the usage-threshold alert, the weekly cost digest, and
+  the background-job cost-spike alert are now covered by the same
+  queue-and-resend-on-reopen mechanism the escalation and report/appeal
+  alerts already had — so a super admin reachable only via WhatsApp Cloud
+  who hasn't messaged the bot in the last day no longer misses these signals
+  outright; each one now arrives the moment they next message the bot.
+
 ## 2026-07-29
 
 ### Fixed
