@@ -97,6 +97,20 @@ unset is a silent breaking change for the running deployment.
 Run `npm run migrate` before `npm test` locally, or the DB tests fail with
 `relation does not exist` rather than skipping.
 
+**Widening an enum `CHECK` (a new `kind`, `status`, …):** edit the existing
+`DROP CONSTRAINT IF EXISTS` / `ADD CONSTRAINT` pair's value list **in place**.
+Never append a second pair for the same constraint name. `migrate()` replays the
+entire file as one multi-statement query, so both pairs run in order on every
+future migration; the earlier, narrower one is validated against live rows, and
+a single row using a value only the later pair allows aborts it — rolling back
+the whole migration. This is not theoretical: stacked
+`shortcut_hits_kind_check` pairs meant one WhatsApp `!`-command hit blocked
+every subsequent migration. **CI cannot catch it** (it always starts from an
+empty database), so `tests/schemaConstraintIdempotency.test.ts` guards it
+statically. Note `ADD CONSTRAINT` has no `IF NOT EXISTS` form — the preceding
+`DROP ... IF EXISTS` is what makes it re-runnable, and that test checks each
+one has it.
+
 ---
 
 ## Add a background job

@@ -924,24 +924,29 @@ CREATE TABLE IF NOT EXISTS shortcut_hits (
 CREATE INDEX IF NOT EXISTS shortcut_hits_created_at_idx
   ON shortcut_hits (created_at DESC);
 
--- Widens the kind enum to also cover the Discord slash commands (issue #744)
--- as a fifth, aggregate cost-avoidance kind — they are an equally real
--- zero-`query()`-call shortcut that #744 itself deferred tracking (issue
--- #863). Same idempotent DROP CONSTRAINT IF EXISTS / re-add convention as
--- member_projects above, safe to re-run against a table that already holds
--- rows for the original four kinds.
-ALTER TABLE shortcut_hits DROP CONSTRAINT IF EXISTS shortcut_hits_kind_check;
-ALTER TABLE shortcut_hits ADD CONSTRAINT shortcut_hits_kind_check
-  CHECK (kind IN ('ack', 'knowledge', 'repeat_question', 'repeat_max_turns', 'slash_command'));
-
--- Widens the kind enum again to cover WhatsApp's `!`-prefixed text commands
--- (issue #859) as a sixth kind — the WhatsApp counterpart to Discord's
--- slash_command above, and the same class of gap #863 closed for Discord
--- (issue #874). A distinct kind rather than reusing `slash_command`: that
--- value is documented as Discord-specific, so folding WhatsApp hits into it
--- would misname the mechanism and corrupt any per-kind analysis. Same
--- idempotent DROP CONSTRAINT IF EXISTS / re-add convention, safe to re-run
--- against a table that already holds rows for the original five kinds.
+-- Widens the kind enum beyond the four the CREATE TABLE above pins:
+--  - 'slash_command'         Discord slash commands (issues #744, #863) — an
+--                            equally real zero-`query()`-call shortcut.
+--  - 'whatsapp_text_command' WhatsApp's `!`-prefixed text commands (issues
+--                            #859, #874) — the WhatsApp counterpart. A
+--                            distinct kind rather than reusing
+--                            'slash_command': that value is documented as
+--                            Discord-specific, so folding WhatsApp hits into
+--                            it would misname the mechanism and corrupt any
+--                            per-kind analysis.
+--
+-- ONE drop/re-add pair, listing every kind. When you add a kind, EDIT the list
+-- below — never append a second DROP/ADD pair for this same constraint name.
+-- migrate() replays this whole file as a single multi-statement query on every
+-- run, so two pairs execute in order: the earlier, NARROWER one runs against
+-- live data and `ALTER TABLE ... ADD CONSTRAINT` validates existing rows, so a
+-- single row holding a kind that only the LATER pair allows aborts the
+-- statement — and because it is one query, the entire migration rolls back.
+-- That is not hypothetical: stacking these two pairs meant one
+-- 'whatsapp_text_command' row blocked every subsequent migration, with CI blind
+-- to it because CI always starts from an empty database. See
+-- tests/schemaConstraintIdempotency.test.ts, which fails if a constraint name
+-- is re-added more than once anywhere in this file.
 ALTER TABLE shortcut_hits DROP CONSTRAINT IF EXISTS shortcut_hits_kind_check;
 ALTER TABLE shortcut_hits ADD CONSTRAINT shortcut_hits_kind_check
   CHECK (kind IN ('ack', 'knowledge', 'repeat_question', 'repeat_max_turns', 'slash_command', 'whatsapp_text_command'));
@@ -1005,9 +1010,12 @@ ALTER TABLE knowledge_candidates ADD COLUMN IF NOT EXISTS knowledge_id BIGINT RE
 -- 'withdrawn' status already gives report filers. Non-destructive (the row
 -- is kept, never deleted) and distinct from an admin-initiated 'declined',
 -- same rationale as content_reports' own 'withdrawn' vs. 'dismissed' split.
--- Same idempotent DROP CONSTRAINT IF EXISTS / re-add convention as
--- shortcut_hits.kind above, safe to re-run against a table that already
--- holds rows in the original three statuses.
+-- Same single-pair DROP CONSTRAINT IF EXISTS / re-add convention as
+-- shortcut_hits.kind above, safe to re-run against a table already holding
+-- rows in any listed status. As there: to add a status, EDIT the list below
+-- rather than appending a second pair for this constraint name — a narrower
+-- earlier pair would abort the whole replayed migration once a row uses a
+-- status only the later pair allows.
 ALTER TABLE knowledge_candidates DROP CONSTRAINT IF EXISTS knowledge_candidates_status_check;
 ALTER TABLE knowledge_candidates ADD CONSTRAINT knowledge_candidates_status_check
   CHECK (status IN ('pending', 'accepted', 'declined', 'withdrawn'));
