@@ -13,6 +13,7 @@ process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS = 'super-1';
+process.env.SUPER_ADMIN_WHATSAPP_NUMBERS ??= 'admin-open,admin-closed';
 process.env.STATUS_CHECK_ENABLED = 'true';
 process.env.STATUS_CHECK_POLL_MINUTES = '5';
 
@@ -25,6 +26,7 @@ const {
 const { getJobHealthSnapshot, resetJobHealthRegistryForTests } =
   await import('../src/backgroundJobHealth.js');
 const { pollAnthropicStatus, resetStatusCacheForTests } = await import('../src/status/anthropicStatus.js');
+const { WindowClosedError } = await import('../src/platforms/whatsapp/cloudAdapter.js');
 
 const POLL_MS = 5 * 60_000;
 const THRESHOLD = statusCheckAlertThreshold(5);
@@ -57,6 +59,44 @@ function makeAdapter(): { adapter: PlatformAdapter; dms: Array<{ userId: string;
 // asserting — same technique as tests/backgroundJobs.test.ts.
 function flush(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
+}
+
+/**
+ * A fake Cloud-like adapter (mirrors `tests/notifyAdminsWindowReopenQueue.test.ts`'s
+ * `makeFakeCloudAdapter`): `sendDirectMessage` rejects with whatever
+ * `rejections[userId]` names, and `queueForWindowReopen` records what was
+ * queued, per-recipient, for assertion (issue #888).
+ */
+function makeCloudAdapter(rejections: Record<string, unknown>): {
+  adapter: PlatformAdapter;
+  dms: Array<{ userId: string; text: string }>;
+  queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }>;
+} {
+  const dms: Array<{ userId: string; text: string }> = [];
+  const queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }> = [];
+  const adapter: PlatformAdapter = {
+    platform: 'whatsapp',
+    adminCapabilities: new Set(),
+    async start() {},
+    async stop() {},
+    isConnected: () => true,
+    onMessage() {},
+    async sendMessage(_out: OutgoingMessage) {},
+    async sendDirectMessage(userId: string, text: string) {
+      if (userId in rejections) throw rejections[userId];
+      dms.push({ userId, text });
+    },
+    queueForWindowReopen(userId: string, message: string, priority: 'system' | 'low') {
+      queued.push({ userId, message, priority });
+    },
+    async conversationsForUser() {
+      return [];
+    },
+    async performAdminAction() {
+      return '';
+    },
+  };
+  return { adapter, dms, queued };
 }
 
 test('statusCheckAlertThreshold: ~1h of consecutive failures before alerting, floored at 3 regardless of the configured poll interval', () => {
@@ -299,6 +339,48 @@ test(
       await flush();
       assert.equal(dms.length, 2, 'a later, separate incident after re-arming alerts again');
       assert.match(dms[1].text, /Total outage on the Messages API/);
+    } finally {
+      clearInterval(timer!);
+    }
+  },
+);
+
+// --- Per-recipient window-reopen queue extension (issue #888) ---
+//
+// The status-incident DM above shares backgroundJobs.ts's single
+// module-private `alertSuperAdmins` with the failure-threshold alert
+// (tests/backgroundJobs.test.ts pins the fix there) — this test proves that
+// shared function's window-reopen fix reaches the status-incident producer
+// too, with zero code change of its own (acceptance criterion 3).
+test(
+  "startStatusCheck: the status-incident DM inherits backgroundJobs.ts's shared alertSuperAdmins " +
+    "window-reopen fix — a WindowClosedError rejection queues via queueForWindowReopen at 'system' " +
+    'priority instead of only logging, with no code change in this producer (issue #888 acceptance criterion 3)',
+  async (t) => {
+    resetStatusCacheForTests();
+    const { adapter, dms, queued } = makeCloudAdapter({
+      'admin-closed': new WindowClosedError('admin-closed'),
+    });
+    let body = ALL_OPERATIONAL_BODY;
+    const runOnce = () => pollAnthropicStatus(async () => body);
+
+    t.mock.timers.enable({ apis: ['setInterval'] });
+    const timer = startStatusCheck([adapter], runOnce);
+    try {
+      await flush(); // initial run: operational
+      body = INCIDENT_BODY;
+      t.mock.timers.tick(POLL_MS);
+      await flush(); // none -> incident transition, one DM
+
+      assert.deepEqual(
+        dms.map((d) => d.userId),
+        ['admin-open'],
+        'the open-window recipient is still delivered live',
+      );
+      assert.equal(queued.length, 1);
+      assert.equal(queued[0]?.userId, 'admin-closed');
+      assert.equal(queued[0]?.priority, 'system');
+      assert.match(queued[0]?.message ?? '', /Elevated errors on the Messages API/);
     } finally {
       clearInterval(timer!);
     }

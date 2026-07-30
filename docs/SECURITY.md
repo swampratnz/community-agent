@@ -89,6 +89,19 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   browse/curation) is the one deliberate exception: it keeps browsing by
   explicit scope, unrestricted by the caller's own conversation — it's an
   admin-tier curation view, not member-facing recall.
+- **`merge_knowledge`** (issue #886) consolidates a `list_duplicate_knowledge`/
+  `list_knowledge_conflicts` pair into one entry — same admin-tier +
+  **CONFIRM-gated** + `audited()` treatment as `update_knowledge`/
+  `delete_knowledge`, since it both overwrites (when `title`/`content` is
+  supplied) and deletes a row. `keepId`/`mergeId` are ids the admin already
+  holds from prior tool output, the same "ids sourced from prior tool
+  output, never free text" discipline `accept_knowledge_candidate`/
+  `decline_knowledge_candidate` already rely on — no new untrusted-input
+  path. `keepId === mergeId`, or either id not existing, is rejected with
+  zero mutation before either row is touched. The audit row records both
+  ids plus the pre-merge title/content of the deleted `mergeId` entry (the
+  same recoverability precedent `update_knowledge`'s own audit trail set),
+  so an injected admin turn's merge still leaves a recoverable trail.
 - **Guest FAQ shortcut is global-scope only** (`GUEST_KNOWLEDGE_SHORTCUT_ENABLED`,
   off by default, issue #165): a gated guest's first message may be answered
   from `knowledge` before the static "ask an admin" pointer, but the lookup
@@ -2936,6 +2949,35 @@ that will still arrive; the other three return `void` and were already
 fire-and-forget. No new mechanism, no schema change, no new privileged data
 access — the same already-reviewed per-recipient queue, now fed by 5
 producers instead of 2.
+
+Issue #888 extended the same recovery to six standalone periodic-job alert
+senders that each implement their own near-identical
+`alertSuperAdmins(adapters, message)` helper and, until now, only logged and
+dropped on any rejection: `departedAdminAlert.ts` (also reused by
+`engagementAlert.ts` and `adminLeverageAlert.ts`), `backgroundJobs.ts`
+(shared by the job-failure alert, the status-incident alert, and the
+dev-team-watch alert), `health.ts`, `usageAlert.ts`, `usageCostDigest.ts`,
+and `backgroundJobCostAlert.ts`. Each now catches `WindowClosedError`
+specifically and calls `queueForWindowReopen(id, message, 'system')` —
+`'system'`, since every one of these six alerts is super-admin-only and must
+never be evicted by a member-reachable `'low'` alert (#545); `SECURITY:`
+tests pin the priority for all six, including `usageCostDigest.ts` and
+`backgroundJobCostAlert.ts`, which have no pre-existing all-disconnected
+`queuePendingAlert('system')` branch to inherit the tier from. A rejection
+that is NOT a `WindowClosedError` (a generic Graph API failure, missing
+config) is unaffected — still logged-and-dropped exactly as before, pinned
+by a dedicated `SECURITY:` test per touched test file, so an unrelated or
+transient failure can never accumulate state in this queue. Discord/Baileys
+(no `queueForWindowReopen`) fall through to the same log-and-drop, byte-
+identical to today. No new mechanism, no new queue, and the existing
+all-disconnected `queuePendingAlert` branch (where present) is unchanged —
+this only adds the connected-but-window-closed sibling case for these six
+producers. Deliberately still out of scope (named growth path, not bundled
+here): `router.ts`'s `notifyAccessRequest`/`alertSuperAdminsBudgetCheckFailed`,
+`agent/core.ts`'s usage-limit alert, `adminDigest.ts`'s per-admin digest send
+(a single `await`/`try`/`catch`, not a per-recipient loop), and `health.ts`'s
+`flushPendingAlerts` itself (queuing a flush-failure back into this same
+queue needs its own analysis to avoid a resend loop).
 
 ### `/healthz` endpoint
 Opt-in (`HEALTH_PORT` unset = no listening port at all — matches this

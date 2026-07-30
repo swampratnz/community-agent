@@ -3,6 +3,7 @@ import { logger } from './logger.js';
 import { superAdminIds } from './auth/roles.js';
 import { startTrackedJob } from './backgroundJobs.js';
 import { sumBackgroundJobCosts, type BackgroundJob } from './storage/repository.js';
+import { WindowClosedError } from './platforms/whatsapp/cloudAdapter.js';
 import type { PlatformAdapter } from './platforms/types.js';
 
 /** The three background jobs that write `background_job_costs` rows (issue #401) — a fixed enum, never derived from anything dynamic. */
@@ -72,13 +73,21 @@ export function formatBackgroundJobCostAlertMessage(
  * migration. A job absent from either window (no cost recorded) is treated
  * as 0, not skipped.
  */
+/**
+ * {@link makeDefaultBackgroundJobCostAlertRun}'s deps. Required, not optional
+ * (issue #868): `sumCosts` defaults to a real `background_job_costs` read, so
+ * an omitted stub is a live Postgres query from a test, not a no-op. Pass
+ * nothing at all (production) for the repository default.
+ */
+export type BackgroundJobCostAlertRunDeps = {
+  sumCosts: (days: number) => Promise<{ total: number; byJob: Array<{ job: string; costUsd: number }> }>;
+};
+
 export function makeDefaultBackgroundJobCostAlertRun(
   adapters: readonly PlatformAdapter[],
-  deps: {
-    sumCosts?: (days: number) => Promise<{ total: number; byJob: Array<{ job: string; costUsd: number }> }>;
-  } = {},
+  deps?: BackgroundJobCostAlertRunDeps,
 ): () => Promise<void> {
-  const sumCosts = deps.sumCosts ?? sumBackgroundJobCosts;
+  const sumCosts = deps?.sumCosts ?? sumBackgroundJobCosts;
   const trackers = new Map<BackgroundJob, BackgroundJobCostAlertTracker>();
 
   return async () => {
@@ -134,9 +143,17 @@ async function alertSuperAdmins(adapters: readonly PlatformAdapter[], message: s
   for (const adapter of adapters) {
     if (!adapter.isConnected()) continue; // can't send through a dead connection
     for (const id of superAdminIds(adapter.platform)) {
-      adapter
-        .sendDirectMessage(id, message)
-        .catch((err) => logger.warn({ err, platform: adapter.platform, id }, 'Cost-spike alert DM failed'));
+      adapter.sendDirectMessage(id, message).catch((err) => {
+        if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+          adapter.queueForWindowReopen(id, message, 'system');
+          logger.warn(
+            { platform: adapter.platform, id },
+            'Cost-spike alert: recipient window closed, queued for reopen',
+          );
+          return;
+        }
+        logger.warn({ err, platform: adapter.platform, id }, 'Cost-spike alert DM failed');
+      });
     }
   }
 }

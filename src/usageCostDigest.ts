@@ -9,6 +9,7 @@ import {
   usageStats,
   wasUsageCostDigestSentRecently,
 } from './storage/repository.js';
+import { WindowClosedError } from './platforms/whatsapp/cloudAdapter.js';
 import type { PlatformAdapter } from './platforms/types.js';
 
 /** Same weekly window as `adminDigest.ts`'s `FRESHNESS_DAYS` — this signal targets the same ~7-day cadence. */
@@ -79,6 +80,27 @@ export function formatCacheHitRateTrendLine(currentHitRate: number, previousHitR
 }
 
 /**
+ * {@link makeDefaultUsageCostDigestRun}'s deps. **Every field is required on
+ * purpose** (issue #868): each one defaults to a real repository read, so a
+ * *partial* deps object silently leaves the rest pointing at live Postgres.
+ * `node:test` runs files in parallel, so those stray reads made global
+ * count/delta assertions in other files flaky — `usageStats`' own aggregates
+ * being a repeat offender. Requiring every field turns a forgotten stub into a
+ * compile error; pass nothing at all (production) for the repository defaults.
+ */
+export type UsageCostDigestRunDeps = {
+  wasSentRecently: (days: number) => Promise<boolean>;
+  getLastTotal: () => Promise<number | null>;
+  getLastCacheHitRate: () => Promise<number | null>;
+  recordSent: (totalCostUsd: number, cacheHitRate: number | null) => Promise<void>;
+  getStats: (days: number) => Promise<{
+    costUsd: number;
+    backgroundCostUsd: number;
+    cacheUsage: { readTokens: number; creationTokens: number };
+  }>;
+};
+
+/**
  * Builds the default weekly `runOnce`, closing the freshness guard +
  * `usageStats(7)` read + persisted-total delta over one tick. Every
  * dependency is injectable (tests only) so the cadence/delta logic can be
@@ -87,23 +109,13 @@ export function formatCacheHitRateTrendLine(currentHitRate: number, previousHitR
  */
 export function makeDefaultUsageCostDigestRun(
   adapters: readonly PlatformAdapter[],
-  deps: {
-    wasSentRecently?: (days: number) => Promise<boolean>;
-    getLastTotal?: () => Promise<number | null>;
-    getLastCacheHitRate?: () => Promise<number | null>;
-    recordSent?: (totalCostUsd: number, cacheHitRate: number | null) => Promise<void>;
-    getStats?: (days: number) => Promise<{
-      costUsd: number;
-      backgroundCostUsd: number;
-      cacheUsage: { readTokens: number; creationTokens: number };
-    }>;
-  } = {},
+  deps?: UsageCostDigestRunDeps,
 ): () => Promise<void> {
-  const wasSentRecently = deps.wasSentRecently ?? wasUsageCostDigestSentRecently;
-  const getLastTotal = deps.getLastTotal ?? getLastUsageCostDigestTotal;
-  const getLastCacheHitRate = deps.getLastCacheHitRate ?? getLastUsageCostDigestCacheHitRate;
-  const recordSent = deps.recordSent ?? recordUsageCostDigestSent;
-  const getStats = deps.getStats ?? usageStats;
+  const wasSentRecently = deps?.wasSentRecently ?? wasUsageCostDigestSentRecently;
+  const getLastTotal = deps?.getLastTotal ?? getLastUsageCostDigestTotal;
+  const getLastCacheHitRate = deps?.getLastCacheHitRate ?? getLastUsageCostDigestCacheHitRate;
+  const recordSent = deps?.recordSent ?? recordUsageCostDigestSent;
+  const getStats = deps?.getStats ?? usageStats;
 
   return async () => {
     if (await wasSentRecently(FRESHNESS_DAYS)) return; // still inside this week's freshness window
@@ -157,9 +169,17 @@ async function alertSuperAdmins(adapters: readonly PlatformAdapter[], message: s
   for (const adapter of adapters) {
     if (!adapter.isConnected()) continue; // can't send through a dead connection
     for (const id of superAdminIds(adapter.platform)) {
-      adapter
-        .sendDirectMessage(id, message)
-        .catch((err) => logger.warn({ err, platform: adapter.platform, id }, 'Cost-trend digest DM failed'));
+      adapter.sendDirectMessage(id, message).catch((err) => {
+        if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+          adapter.queueForWindowReopen(id, message, 'system');
+          logger.warn(
+            { platform: adapter.platform, id },
+            'Cost-trend digest: recipient window closed, queued for reopen',
+          );
+          return;
+        }
+        logger.warn({ err, platform: adapter.platform, id }, 'Cost-trend digest DM failed');
+      });
     }
   }
 }

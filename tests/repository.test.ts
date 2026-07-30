@@ -36,6 +36,7 @@ const {
   KNOWLEDGE_TRIGRAM_THRESHOLD,
   updateKnowledge,
   deleteKnowledge,
+  mergeKnowledgeEntries,
   listKnowledge,
   isKnowledgeStale,
   recordKnowledgeRetrieval,
@@ -894,6 +895,217 @@ test(
 
     const deletedAgain = await deleteKnowledge(id);
     assert.equal(deletedAgain, false, 'deleting a nonexistent id returns false, not an error');
+  },
+);
+
+test(
+  'repository: mergeKnowledgeEntries with no title/content/scope folds retrieval_count/last_retrieved_at onto keepId, leaves it byte-identical otherwise, and deletes mergeId (issue #886, acceptance criterion 1)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-merge-scope`;
+    const { id: keepId } = await saveKnowledge({
+      title: 'Meetup schedule (keep)',
+      content: 'We meet monthly on the first Tuesday.',
+      scope,
+    });
+    const { id: mergeId } = await saveKnowledge({
+      title: 'Meetup schedule (dup)',
+      content: 'Meetups happen once a month on Tuesdays.',
+      scope,
+    });
+
+    // Give each row a distinct, non-null retrieval history so the fold is
+    // observable in both fields.
+    await recordKnowledgeRetrieval([keepId]);
+    await recordKnowledgeRetrieval([keepId, mergeId]);
+    await recordKnowledgeRetrieval([mergeId]);
+    await recordKnowledgeRetrieval([mergeId]);
+
+    const before = await pool.query(
+      `SELECT id, title, content, scope, retrieval_count, last_retrieved_at, updated_at FROM knowledge WHERE id = ANY($1::bigint[])`,
+      [[keepId, mergeId]],
+    );
+    const keepBefore = before.rows.find((r) => Number(r.id) === keepId);
+    const mergeBefore = before.rows.find((r) => Number(r.id) === mergeId);
+    assert.ok(keepBefore && mergeBefore, 'precondition: both rows exist before the merge');
+    assert.ok(
+      Number(mergeBefore.retrieval_count) > Number(keepBefore.retrieval_count),
+      'precondition: the two rows have distinct retrieval_count values',
+    );
+
+    const outcome = await mergeKnowledgeEntries(keepId, mergeId);
+    assert.equal(outcome.merged, true);
+
+    const after = await pool.query(
+      `SELECT title, content, scope, retrieval_count, last_retrieved_at, updated_at FROM knowledge WHERE id = $1`,
+      [keepId],
+    );
+    assert.equal(after.rows.length, 1, 'exactly one row remains for keepId');
+    assert.equal(
+      after.rows[0].title,
+      keepBefore.title,
+      'title is byte-identical to keepId pre-merge (no re-embed)',
+    );
+    assert.equal(after.rows[0].content, keepBefore.content, 'content is byte-identical to keepId pre-merge');
+    assert.equal(after.rows[0].scope, keepBefore.scope, 'scope is byte-identical to keepId pre-merge');
+    assert.equal(
+      Number(after.rows[0].retrieval_count),
+      Number(keepBefore.retrieval_count) + Number(mergeBefore.retrieval_count),
+      'retrieval_count is the sum of both pre-merge counts',
+    );
+    assert.equal(
+      new Date(after.rows[0].last_retrieved_at).getTime(),
+      Math.max(
+        new Date(keepBefore.last_retrieved_at).getTime(),
+        new Date(mergeBefore.last_retrieved_at).getTime(),
+      ),
+      'last_retrieved_at is the later of the two pre-merge timestamps',
+    );
+    assert.equal(
+      new Date(after.rows[0].updated_at).getTime(),
+      new Date(keepBefore.updated_at).getTime(),
+      'updated_at is untouched by a no-override merge — the knowledge_set_updated_at trigger fires on ' +
+        'any UPDATE that targets title/content/scope/embedding regardless of whether the value actually ' +
+        'changes, so a content-unchanged merge must never assign those columns (issue #886 review)',
+    );
+
+    const goneRow = await pool.query(`SELECT 1 FROM knowledge WHERE id = $1`, [mergeId]);
+    assert.equal(
+      goneRow.rows.length,
+      0,
+      'mergeId row no longer exists (getKnowledgeContentById would return null)',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [keepId]);
+  },
+);
+
+test(
+  'repository: mergeKnowledgeEntries NULL-safely takes the non-null last_retrieved_at when only one side has ever been retrieved, and stays NULL when neither has (issue #886, acceptance criterion 1)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-merge-null-scope`;
+    const { id: keepId } = await saveKnowledge({
+      title: 'Keep',
+      content: 'Never retrieved keep entry.',
+      scope,
+    });
+    const { id: mergeId } = await saveKnowledge({ title: 'Merge', content: 'Retrieved merge entry.', scope });
+    await recordKnowledgeRetrieval([mergeId]);
+
+    const outcome = await mergeKnowledgeEntries(keepId, mergeId);
+    assert.equal(outcome.merged, true);
+
+    const row = await pool.query(`SELECT last_retrieved_at FROM knowledge WHERE id = $1`, [keepId]);
+    assert.ok(
+      row.rows[0].last_retrieved_at,
+      'the non-null side (mergeId) wins when keepId was never retrieved',
+    );
+
+    // Both-null case, a fresh pair.
+    const { id: keepId2 } = await saveKnowledge({
+      title: 'Keep2',
+      content: 'Never retrieved keep entry 2.',
+      scope,
+    });
+    const { id: mergeId2 } = await saveKnowledge({
+      title: 'Merge2',
+      content: 'Never retrieved merge entry 2.',
+      scope,
+    });
+    const outcome2 = await mergeKnowledgeEntries(keepId2, mergeId2);
+    assert.equal(outcome2.merged, true);
+    const row2 = await pool.query(`SELECT last_retrieved_at FROM knowledge WHERE id = $1`, [keepId2]);
+    assert.equal(
+      row2.rows[0].last_retrieved_at,
+      null,
+      'both-null stays NULL, never coerced to a fabricated time',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1::bigint[])`, [[keepId, keepId2]]);
+  },
+);
+
+test(
+  'repository: mergeKnowledgeEntries re-embeds the survivor when title/content is supplied, in addition to folding retrieval_count (issue #886, acceptance criterion 2)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-merge-override-scope`;
+    const caller = { platform: 'discord' as const, conversationId: scope };
+    const { id: keepId } = await saveKnowledge({
+      title: 'Old title',
+      content: 'Old content nobody searches for.',
+      scope,
+    });
+    const { id: mergeId } = await saveKnowledge({
+      title: 'Other title',
+      content: 'Other content, also not searched for.',
+      scope,
+    });
+    await recordKnowledgeRetrieval([keepId]);
+
+    const uniqueContent = `${RUN} merged survivor content about zephyrfax caching setup`;
+    const outcome = await mergeKnowledgeEntries(keepId, mergeId, {
+      title: 'New survivor title',
+      content: uniqueContent,
+    });
+    assert.equal(outcome.merged, true);
+
+    const row = await pool.query(`SELECT title, content, retrieval_count FROM knowledge WHERE id = $1`, [
+      keepId,
+    ]);
+    assert.equal(row.rows[0].title, 'New survivor title');
+    assert.equal(row.rows[0].content, uniqueContent);
+    assert.equal(
+      Number(row.rows[0].retrieval_count),
+      1,
+      'retrieval_count still folds even with a content override',
+    );
+
+    const hits = await searchKnowledge('zephyrfax caching setup', caller, 20);
+    assert.ok(
+      hits.some((h) => h.id === keepId),
+      're-embedding means search finds the new content',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [keepId]);
+  },
+);
+
+test(
+  'repository: mergeKnowledgeEntries rejects keepId === mergeId and nonexistent ids with zero mutation (issue #886, acceptance criterion 3)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-merge-guard-scope`;
+    const { id } = await saveKnowledge({ title: 'Guarded entry', content: 'Do not touch me.', scope });
+    const beforeRow = await pool.query(
+      `SELECT title, content, scope, retrieval_count, last_retrieved_at FROM knowledge WHERE id = $1`,
+      [id],
+    );
+
+    const sameId = await mergeKnowledgeEntries(id, id);
+    assert.equal(sameId.merged, false);
+    assert.ok(sameId.error, 'a clear error is returned for keepId === mergeId');
+
+    const missingKeep = await mergeKnowledgeEntries(-1, id);
+    assert.equal(missingKeep.merged, false);
+    assert.ok(missingKeep.error, 'a clear error is returned for a nonexistent keepId');
+
+    const missingMerge = await mergeKnowledgeEntries(id, -1);
+    assert.equal(missingMerge.merged, false);
+    assert.ok(missingMerge.error, 'a clear error is returned for a nonexistent mergeId');
+
+    const afterRow = await pool.query(
+      `SELECT title, content, scope, retrieval_count, last_retrieved_at FROM knowledge WHERE id = $1`,
+      [id],
+    );
+    assert.deepEqual(
+      afterRow.rows[0],
+      beforeRow.rows[0],
+      'none of the three rejected calls mutated the surviving row',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
   },
 );
 

@@ -40,6 +40,7 @@ import {
   type JobFailureTracker,
 } from './backgroundJobHealth.js';
 import { queuePendingAlert } from './pendingAlertQueue.js';
+import { WindowClosedError } from './platforms/whatsapp/cloudAdapter.js';
 import type { PlatformAdapter } from './platforms/types.js';
 
 const TICK_INTERVAL_MS = 6 * 3_600_000;
@@ -133,11 +134,17 @@ async function alertSuperAdmins(adapters: readonly PlatformAdapter[], message: s
   for (const adapter of adapters) {
     if (!adapter.isConnected()) continue; // can't send through a dead connection
     for (const id of superAdminIds(adapter.platform)) {
-      adapter
-        .sendDirectMessage(id, message)
-        .catch((err) =>
-          logger.warn({ err, platform: adapter.platform, id }, 'Background job failure alert DM failed'),
-        );
+      adapter.sendDirectMessage(id, message).catch((err) => {
+        if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+          adapter.queueForWindowReopen(id, message, 'system');
+          logger.warn(
+            { platform: adapter.platform, id },
+            'Background job failure alert: recipient window closed, queued for reopen',
+          );
+          return;
+        }
+        logger.warn({ err, platform: adapter.platform, id }, 'Background job failure alert DM failed');
+      });
     }
   }
 }

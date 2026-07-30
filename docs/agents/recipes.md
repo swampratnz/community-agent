@@ -22,6 +22,16 @@ npm run typecheck && npm run lint && npm run format:check \
   && npm run test:security && npm run context:check
 ```
 
+`npm run typecheck` also typechecks the **allowlisted** test files
+(`tsconfig.tests.json`, an incremental ratchet — `tests/` has a backlog of
+pre-existing errors, so only clean files are listed). If it fails on a test file,
+fix the test — do **not** remove its entry to go green. If you make another test
+file type-clean, add it to the list; that's the intended unit of progress. The
+most likely thing it catches: a `deps` object missing a field. Those deps types
+are all-required on purpose, because an omitted field falls through to a real
+repository read and makes a "unit" test query live Postgres
+(`docs/STANDARDS.md` → "Injected deps must be all-or-nothing").
+
 Then:
 
 - **`CHANGELOG.md`** — a member-legible entry under today's **Pacific/Auckland**

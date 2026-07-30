@@ -744,6 +744,104 @@ export async function deleteKnowledge(id: number): Promise<boolean> {
   return (rowCount ?? 0) > 0;
 }
 
+/**
+ * Consolidate a detected duplicate/conflict pair (issue #886) — the rung
+ * `list_duplicate_knowledge`/`list_knowledge_conflicts` both name in their own
+ * descriptions ("merge (update_knowledge) or retire (delete_knowledge)") but
+ * that this codebase never implemented, leaving the two calls unlinked and
+ * silently dropping the retired entry's retrieval_count/last_retrieved_at
+ * history (issue #134's signal).
+ *
+ * Keeps `keepId`, folds `mergeId`'s usage history onto it, then deletes
+ * `mergeId`. `title`/`content`/`scope` follow `updateKnowledge`'s own
+ * "undefined = leave unchanged" convention — omitting all three re-embeds
+ * nothing and leaves the survivor's wording byte-identical.
+ *
+ * When none of `title`/`content`/`scope` is supplied, the fold-only `UPDATE`
+ * deliberately touches only `retrieval_count`/`last_retrieved_at` — same
+ * split `recordKnowledgeRetrieval` uses, and for the same reason: the
+ * `knowledge_set_updated_at` trigger fires on any `UPDATE` that *targets*
+ * `scope`/`title`/`content`/`embedding`, even when the assigned value is
+ * unchanged. Re-assigning those columns to their own values on a pure
+ * no-override merge would silently bump `updated_at`, defeating
+ * `isKnowledgeStale`/`countStaleKnowledge`'s staleness detection and
+ * reshuffling `listKnowledge`'s recency ordering for an entry whose wording
+ * never actually changed.
+ *
+ * Guards against a single bad id silently deleting the wrong entry with no
+ * recovery path: `keepId === mergeId`, or either id not existing, fails with
+ * no mutation. Runs as sequential queries, matching this file's existing
+ * convention (no other function here wraps queries in an explicit
+ * transaction) — a `mergeId` delete failing after the `keepId` count-fold is
+ * a known, accepted (non-transactional) risk for this infrequent,
+ * admin-invoked, non-security path.
+ */
+export async function mergeKnowledgeEntries(
+  keepId: number,
+  mergeId: number,
+  input: { title?: string; content?: string; scope?: string } = {},
+): Promise<{ merged: boolean; error?: string }> {
+  if (keepId === mergeId) {
+    return { merged: false, error: `keepId and mergeId must differ (both were #${keepId}).` };
+  }
+
+  const { rows } = await pool.query(
+    `SELECT id, title, content, scope, retrieval_count, last_retrieved_at FROM knowledge WHERE id = ANY($1::bigint[])`,
+    [[keepId, mergeId]],
+  );
+  const keep = rows.find((r) => Number(r.id) === keepId);
+  const merge = rows.find((r) => Number(r.id) === mergeId);
+  if (!keep) return { merged: false, error: `No knowledge entry with id ${keepId}.` };
+  if (!merge) return { merged: false, error: `No knowledge entry with id ${mergeId}.` };
+
+  const hasOverride = input.title !== undefined || input.content !== undefined || input.scope !== undefined;
+
+  const title = input.title !== undefined ? input.title : keep.title;
+  const content = input.content !== undefined ? input.content : keep.content;
+  const scope = input.scope !== undefined ? input.scope : keep.scope;
+
+  let embedding: number[] | null = null;
+  if (input.title !== undefined || input.content !== undefined) {
+    try {
+      embedding = await embed(title ? `${title}\n${content}` : content);
+    } catch (err) {
+      logger.warn({ err }, 'Embedding failed for knowledge merge');
+    }
+  }
+
+  const retrievalCount = Number(keep.retrieval_count) + Number(merge.retrieval_count);
+
+  if (hasOverride) {
+    await pool.query(
+      `UPDATE knowledge
+          SET title = $2, content = $3, scope = $4, embedding = COALESCE($5, embedding),
+              retrieval_count = $6, last_retrieved_at = GREATEST($7::timestamptz, $8::timestamptz)
+        WHERE id = $1`,
+      [
+        keepId,
+        title ?? null,
+        content,
+        scope,
+        embedding ? pgvector.toSql(embedding) : null,
+        retrievalCount,
+        keep.last_retrieved_at,
+        merge.last_retrieved_at,
+      ],
+    );
+  } else {
+    await pool.query(
+      `UPDATE knowledge
+          SET retrieval_count = $2, last_retrieved_at = GREATEST($3::timestamptz, $4::timestamptz)
+        WHERE id = $1`,
+      [keepId, retrievalCount, keep.last_retrieved_at, merge.last_retrieved_at],
+    );
+  }
+
+  await pool.query(`DELETE FROM knowledge WHERE id = $1`, [mergeId]);
+
+  return { merged: true };
+}
+
 export interface KnowledgeDuplicatePair {
   aId: number;
   aTitle: string | null;

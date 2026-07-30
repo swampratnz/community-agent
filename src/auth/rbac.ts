@@ -250,6 +250,11 @@ export const ADMIN_TOOLS = [
   'mcp__community__list_knowledge',
   'mcp__community__update_knowledge',
   'mcp__community__delete_knowledge',
+  // Consolidates a detected duplicate/conflict pair into one entry (issue
+  // #886) — same admin-tier + CONFIRM + audited shape as update_knowledge/
+  // delete_knowledge, the two write tools it replaces the unlinked manual
+  // two-call workaround with.
+  'mcp__community__merge_knowledge',
   // Retroactive read-only audit (issue #316) for near-duplicate pairs that
   // save_knowledge's write-time nudge never caught — same tier as its
   // siblings, no CONFIRM (read-only, no mutation).
