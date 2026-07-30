@@ -118,6 +118,8 @@
   "rbac.test.ts": 46,
   "redeploy.test.ts": 2,
   "repeatMaxTurnsShortcutRouter.test.ts": 3,
+  "repeatQuestionAlert.router.test.ts": 3,
+  "repeatQuestionAlertDisabled.router.test.ts": 1,
   "repeatQuestionShortcutRouter.test.ts": 4,
   "replyRetractionDisabled.test.ts": 2,
   "replyRetractionRouter.test.ts": 1,

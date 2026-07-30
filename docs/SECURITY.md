@@ -1347,6 +1347,48 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   check runs exactly as it did before #701 (the member-facing caveat is
   unaffected) — no extra query, no write, no DM, pinned by a `SECURITY:`
   test.
+- **Real-time repeat-question-cluster alert** (`REPEAT_QUESTION_ALERT_ENABLED`,
+  off by default, issue #887): the last of the three signals #650 explicitly
+  named as future work — the plain "members keep asking near-identical
+  things" signal, promoted from weekly-digest/`question_digest`-only to an
+  instant, rate-limited admin DM. **No new tool, no new privileged data
+  access, no broadened recipient set**: reuses `recentQuestionClusters`
+  verbatim (the same function the weekly digest and admin-tier
+  `question_digest` already call) and delivers only to `listAdmins()`, the
+  identical guild-wide recipient set #479/#480/#650/#701 already use, via
+  the existing `notifyAdmins` queue. **Narrower scope than the tool it
+  borrows from**: `question_digest` scopes to every conversation the calling
+  admin is in (`callerScope()`); this real-time check is scoped to the
+  single conversation the triggering turn happened in
+  (`[msg.conversationId]`) only — strictly narrower, so a cluster from a
+  conversation the eventual DM recipients aren't already members of can
+  never surface via this path, pinned by a `SECURITY:` test. **Bounded
+  untrusted-content path**: the DM body is a strict subset of what
+  `question_digest` already returns for the same single-conversation scope
+  — the cluster's `representative` text (`truncateForEcho`-capped, the
+  identical bound the knowledge-gap/stale-knowledge alerts above already
+  apply) and its `count`, never a conversation id, platform id, or user id,
+  pinned by a `SECURITY:` test. **New cost-bounding mechanism, since this
+  signal's trigger isn't a cheap pre-bounded event like its two siblings'**:
+  `recentQuestionClusters` scans and clusters every `addressed_to_bot`
+  inbound message in its window, so `router.ts`'s `respond()` gates the call
+  itself (not just the resulting DM) behind a new per-conversation cooldown,
+  `REPEAT_QUESTION_ALERT_COOLDOWN_MINUTES` (default 15) — asserted directly
+  against the repository call count, pinned by a `SECURITY:` test. Because
+  `interactions` rows carry no stable per-cluster identity to stamp an
+  `alerted_at`-style column against (unlike `knowledge_gaps`/`knowledge`),
+  there is no persisted per-cluster dedup; the cooldown itself is the only
+  anti-repeat mechanism — a deliberate v1 simplification, named as such in
+  the approved proposal. **Guild-wide rolling-hour cap**,
+  `REPEAT_QUESTION_ALERT_RATE_LIMIT_PER_HOUR` (default 5, identical
+  sliding-window shape to `reserveKnowledgeGapAlertSlot`), bounds worst-case
+  admin DM volume; once exhausted within the trailing hour, a further
+  crossed cluster still does not notify, but the underlying weekly-digest/
+  `question_digest` signal for the same data is unaffected — the cap only
+  ever drops the extra DM, never data, pinned by a `SECURITY:` test. With
+  the flag unset/false, `respond()` performs zero `recentQuestionClusters`
+  calls and zero DMs attributable to this feature — byte-identical to
+  today, pinned by a `SECURITY:` test.
 - **Returning-guest wait clause** (`appendWaitClause`/`waitDaysSince`,
   `src/gatedNotice.ts`, issue #591): surfaces the same `first_requested_at`
   age the admin-facing digest/`list_access_requests` (issue #515, above)
