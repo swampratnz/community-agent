@@ -41,7 +41,8 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   `project_remove_member`), binds or unbinds the
   conversations it may be discussed in (`project_bind_here` /
   `project_unbind_here`), and archives it when the team is done
-  (`project_archive`); members then
+  (`project_archive`), with `project_info` to review who has access; members
+  then
   record decisions and notes with `project_note` and find them later with
   `project_recall`, from either platform, on whichever surface the project is
   bound to. Built for running an Impact Lab, where the team spans a Discord

@@ -2711,7 +2711,7 @@ test('community_info: admin-tier reply stays byte-identical, never gains SUPER_A
     '- Set the community guidelines or the welcome message shown to new members\n' +
     '- Assign a Discord role, remove a Discord role, or list which roles are available to assign\n' +
     "- Set up team projects: create one, give a member access, take a member's access away, allow or " +
-    'stop it being discussed here, or archive a finished project\n' +
+    'stop it being discussed here, review who has access, or archive a finished project\n' +
     '- Generate an image, or check recent changes to the bot and community (the changelog)';
 
   const memberReply = (await communityInfoHandler('member')).content[0]?.text ?? '';
@@ -2877,6 +2877,7 @@ const ADMIN_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__project_bind_here', /allow or\s+stop it being discussed here/i],
   ['mcp__community__project_unbind_here', /allow or\s+stop it being discussed here/i],
   ['mcp__community__project_archive', /archive a finished project/i],
+  ['mcp__community__project_info', /review who has access/i],
   ['mcp__community__whats_new', /the changelog/i],
   ['mcp__community__generate_image', /generate an image/i],
   ['mcp__community__user_history', /history across conversations/i],
@@ -13194,6 +13195,96 @@ function projectToolHandler(
     }
   )._registeredTools[name];
 }
+
+/** Pull one ADMIN project tool's handler out of a server built for `caller`. */
+function adminProjectToolHandler(
+  name:
+    | 'project_create'
+    | 'project_add_member'
+    | 'project_remove_member'
+    | 'project_bind_here'
+    | 'project_unbind_here'
+    | 'project_archive'
+    | 'project_info',
+  role: 'member' | 'guest' | 'admin' | 'super_admin',
+) {
+  const adapter = stubAdapter(async () => {});
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId: 'project-admin-probe',
+      userName: 'Probe',
+      role,
+      conversationId: 'convo-project-admin',
+    },
+    adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: Record<string, unknown>) => Promise<{
+            content: Array<{ type: string; text: string }>;
+            isError?: boolean;
+          }>;
+        }
+      >;
+    }
+  )._registeredTools[name];
+}
+
+test('SECURITY: every project-management tool refuses a below-admin caller before any DB write (issue #927 / PR #929 review)', async () => {
+  // The repo pins this handler-level check for every other privileged tool
+  // (grant_admin, link_member, remove_member, ...). These six manage a brand
+  // new authorization axis, so the tier assert is exactly what a later
+  // refactor could drop silently.
+  const args: Record<string, Record<string, unknown>> = {
+    project_create: { slug: 'impact-lab', name: 'Impact Lab' },
+    project_add_member: { project: 'impact-lab', userId: '1234567890123456789' },
+    project_remove_member: { project: 'impact-lab', userId: '1234567890123456789' },
+    project_bind_here: { project: 'impact-lab' },
+    project_unbind_here: { project: 'impact-lab' },
+    project_archive: { project: 'impact-lab' },
+    project_info: { project: 'impact-lab' },
+  };
+  for (const name of Object.keys(args) as Parameters<typeof adminProjectToolHandler>[0][]) {
+    for (const role of ['guest', 'member'] as const) {
+      await assert.rejects(
+        () => adminProjectToolHandler(name, role).handler(args[name]),
+        /Permission denied/,
+        `${name} must refuse a ${role}-tier caller`,
+      );
+    }
+  }
+});
+
+test(
+  'SECURITY: project_add_member refuses a target who is not already a community member (docs/SECURITY.md layer 3 — without it a membership row exists for an identity that never passed add_member, which open mode reaches at guest tier)',
+  { skip },
+  async () => {
+    const { createProject, upsertMember } = await import('../src/storage/repository.js');
+    const slug = `${RUN}-addmember-guard`;
+    await createProject({ slug, name: 'Guard Lab', createdBy: 'test' });
+
+    // Digits only: normalizeMemberId enforces the Discord snowflake shape, and
+    // RUN carries a leading 't'. Slice it off and pad to snowflake length.
+    const stranger = `${RUN.slice(1)}999`.slice(0, 19);
+    const addTool = adminProjectToolHandler('project_add_member', 'admin');
+    const refused = await addTool.handler({ project: slug, userId: stranger });
+    assert.match(
+      refused.content[0].text,
+      /not a community member yet/i,
+      'an identity with no community_users row must be refused, pointing at add_member',
+    );
+
+    // Positive control: the same call succeeds once they ARE a member, so the
+    // refusal above is the guard firing and not an unrelated failure.
+    await upsertMember({ platform: 'discord', userId: stranger, role: 'member', addedBy: 'test' });
+    const accepted = await addTool.handler({ project: slug, userId: stranger });
+    assert.match(accepted.content[0].text, /Added to Guard Lab/i, 'a known member must be addable');
+  },
+);
 
 test('SECURITY: project_recall/project_note/project_list refuse a guest-tier caller before any DB read/write (assertAtLeast re-check, issue #927 / PR #929 review)', async () => {
   // MEMBER_TOOLS is also a GUEST's surface in open mode, and visibleProjectIds

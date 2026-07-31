@@ -2327,6 +2327,7 @@ project_add_member ──▶ project_members (platform, user_id)   ← WHO may r
 project_remove_member ──▶ revokes access; notes stay with the project
 project_bind_here  ──▶ project_surfaces (platform, convo id) ← WHERE it renders
 project_unbind_here / project_archive ──▶ reverse a binding / revoke everything
+project_info ──▶ admin read-only: projects, their members, their bound surfaces
 project_note   ──▶ project_notes (content, reference_url, embedding)
 project_recall ──▶ searchProjectNotes ──▶ visibleProjectIds (both checks, in SQL)
 ```

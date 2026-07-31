@@ -170,6 +170,9 @@ import {
   bindProjectSurface,
   unbindProjectSurface,
   archiveProject,
+  listAllProjects,
+  listProjectMembers,
+  listProjectSurfaces,
   type KnowledgeSearchHit,
   searchMemory,
   searchProjects,
@@ -1788,7 +1791,7 @@ const ADMIN_CAPABILITIES_TEXT =
   '- Set the community guidelines or the welcome message shown to new members\n' +
   '- Assign a Discord role, remove a Discord role, or list which roles are available to assign\n' +
   "- Set up team projects: create one, give a member access, take a member's access away, allow or " +
-  'stop it being discussed here, or archive a finished project\n' +
+  'stop it being discussed here, review who has access, or archive a finished project\n' +
   '- Generate an image, or check recent changes to the bot and community (the changelog)';
 
 /**
@@ -7517,6 +7520,42 @@ export function buildToolServer(
     { annotations: { readOnlyHint: false } },
   );
 
+  const projectInfo = tool(
+    'project_info',
+    'Review projects as an admin: with no argument, list every active project; with a slug, show who ' +
+      'has access to it and which conversations it is bound to. Read-only. Admin only.',
+    {
+      project: z.string().optional().describe('Project slug. Omit to list all active projects instead.'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'project_info');
+      if (!args.project) {
+        const projects = await listAllProjects();
+        if (projects.length === 0) return text('No projects yet.');
+        return text(projects.map((p) => `- ${p.name} [${p.slug}]`).join('\n'));
+      }
+      const project = await getProjectBySlug(args.project);
+      if (!project) return text(`No project "${args.project}".`, true);
+      const [members, surfaces] = await Promise.all([
+        listProjectMembers(project.id),
+        listProjectSurfaces(project.id),
+      ]);
+      const lines = [
+        `${project.name} [${project.slug}]${project.archivedAt ? ' — ARCHIVED' : ''}`,
+        members.length > 0
+          ? `Members (${members.length}): ${members.map((m) => `${m.platform}:${m.userId}`).join(', ')}`
+          : 'Members: none yet.',
+        surfaces.length > 0
+          ? `Bound conversations (${surfaces.length}): ${surfaces
+              .map((s) => `${s.platform}:${s.conversationId}`)
+              .join(', ')}`
+          : 'Bound conversations: none — members can only reach it by DM.',
+      ];
+      return text(lines.join('\n'));
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
   const projectUnbindHere = tool(
     'project_unbind_here',
     "Stop a project's content being discussed in THIS conversation, undoing project_bind_here. " +
@@ -8381,6 +8420,7 @@ export function buildToolServer(
       projectRemoveMember,
       projectBindHere,
       projectUnbindHere,
+      projectInfo,
       projectArchive,
       listKnowledgeTopicsTool,
       rememberSearch,
