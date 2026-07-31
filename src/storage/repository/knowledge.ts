@@ -1050,6 +1050,37 @@ export async function hasConflictAmongIds(ids: number[]): Promise<boolean> {
 }
 
 /**
+ * Live-path conflict check (issue #918) for a single served id — the
+ * structural sibling `hasConflictAmongIds` above cannot serve, since that
+ * function short-circuits to `false` for any array shorter than 2 elements
+ * (there is nothing to compare a single id against). This exists for
+ * `sendKnowledgeShortcut` in router.ts, which serves exactly one hit per
+ * reply, unlike `knowledge_search`/`/kb`'s multi-hit lists.
+ *
+ * Same technique, band, NULL-embedding exclusion, and same-scope join
+ * predicate as `hasConflictAmongIds`/`listKnowledgeConflictCandidates` (same
+ * `[KNOWLEDGE_CONFLICT_SIMILARITY_MIN, KNOWLEDGE_CONFLICT_SIMILARITY_MAX)`
+ * half-open band, `1 - (a.embedding <=> b.embedding)` measure, `a.id < b.id
+ * AND a.scope = b.scope` pairing), but restricted to `a.id = $1 OR b.id =
+ * $1` and `LIMIT 1` since the caller only needs a boolean for one specific
+ * id, not the full pair list.
+ */
+export async function hasKnowledgeConflictForId(id: number): Promise<boolean> {
+  const { rows } = await pool.query(
+    `SELECT 1
+       FROM knowledge a
+       JOIN knowledge b ON a.id < b.id AND a.scope = b.scope
+      WHERE (a.id = $1 OR b.id = $1)
+        AND a.embedding IS NOT NULL AND b.embedding IS NOT NULL
+        AND 1 - (a.embedding <=> b.embedding) >= $2
+        AND 1 - (a.embedding <=> b.embedding) < $3
+      LIMIT 1`,
+    [id, KNOWLEDGE_CONFLICT_SIMILARITY_MIN, KNOWLEDGE_CONFLICT_SIMILARITY_MAX],
+  );
+  return rows.length > 0;
+}
+
+/**
  * Upsert a `global`-scoped knowledge entry keyed by exact title. Used by the
  * daily knowledge refresh (src/context/knowledgeRefresh.ts): each fixed topic
  * has a stable title, so this refreshes the SAME row every run rather than
