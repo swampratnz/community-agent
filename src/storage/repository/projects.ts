@@ -51,13 +51,18 @@ export const TEAM_PROJECT_NAME_MAX_CHARS = 80;
 export const TEAM_PROJECT_BRIEF_MAX_CHARS = 1000;
 
 /**
- * Per-member cap on new project notes in a rolling 24h window, enforced
+ * Per-identity cap on new project notes in a rolling 24h window, enforced
  * DB-side inside the INSERT (the restart-proof COUNT(*)-in-the-statement shape
  * `createKnowledgeTip`/`createSuggestion` use, never an in-memory counter).
  *
  * NOT race-proof — see the comment on the INSERT in saveProjectNote. This is an
  * abuse ceiling, never an authorization check; don't build anything on it
  * holding exactly.
+ *
+ * Also keyed on the RAW (platform, user_id), not the linked person, unlike
+ * every access check in this module: a human with linked Discord and WhatsApp
+ * identities gets two budgets, not one (PR #929 review). Fine for a ceiling;
+ * don't describe it as per-person.
  *
  * Deliberately far larger than the 3/day those two carry. Every existing cap
  * in this repo guards an action that costs a HUMAN something — an entry in an

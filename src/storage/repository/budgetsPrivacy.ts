@@ -229,9 +229,10 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
     //
     // DOCUMENTED RESIDUAL: nulling authorship removes the LINK, not personal
     // information the note's own text may contain ("Chris is hosting"). The
-    // erasure is therefore partial by design; docs/SECURITY.md says so and
-    // forget_me's own reply tells the member, so nobody is told their data is
-    // gone when some of it is retained.
+    // erasure is therefore partial by design. docs/SECURITY.md §25 says so;
+    // forget_me's own reply does NOT yet — it still promises unqualified
+    // deletion, which is issue #930. Until that lands, a member in a project
+    // is told more was erased than actually was.
     //
     // This exception is scoped to project content ONLY — the
     // `DELETE FROM knowledge` above is untouched, so ordinary knowledge the
@@ -247,6 +248,17 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
     );
     // Same rule for the project's own creator breadcrumb: the project outlives
     // its creator's erasure, unowned rather than deleted.
+    //
+    // These three match on the bare user id with NO platform qualifier, unlike
+    // the membership/authorship deletes above, because the columns store a bare
+    // `caller.userId` with no companion platform column — the repo-wide
+    // convention for breadcrumb-only columns (`knowledge.created_by`,
+    // `member_notes.created_by`, …). So a Discord and a WhatsApp id that happen
+    // to be byte-identical would null each other's breadcrumb (PR #929 review).
+    // Tolerable ONLY because these are audit breadcrumbs that grant nothing:
+    // access is `project_members`, which IS platform-qualified above. Fixing it
+    // properly needs a platform column on all three, which is a repo-wide
+    // change, not a project-local one.
     await client.query(`UPDATE projects SET created_by = NULL WHERE created_by = $1`, [userId]);
     await client.query(`UPDATE project_members SET added_by = NULL WHERE added_by = $1`, [userId]);
     await client.query(`UPDATE project_surfaces SET bound_by = NULL WHERE bound_by = $1`, [userId]);

@@ -3156,7 +3156,7 @@ inside `embed()`'s own 4000-char truncation (pinned by a test): a note whose
 stored text outran its embedding would be silently unfindable by its own tail,
 which is worse than refusing the write.
 
-On top of that, `saveProjectNote` enforces a **rolling-24h per-member write
+On top of that, `saveProjectNote` enforces a **rolling-24h per-identity write
 cap**, counted inside the `INSERT` statement itself — the shape
 `createKnowledgeTip` and `createSuggestion` use, never an in-memory counter, so
 it is restart-proof and cannot be reset by bouncing the process.
@@ -3178,9 +3178,20 @@ the 3/day those two carry: every other cap in this repo guards an action that
 costs a *human* something (an admin review-queue entry, a DM to another member),
 whereas a project note costs only storage inside a team the member has already
 been trusted into, and a team minuting a meeting legitimately records many in
-one sitting. So it is an abuse ceiling, not a usage budget. It is per-member,
-not per-project — pinned by a test, because a per-project cap would let one
-abuser deny service to their whole team. `project_create`'s `name` and `brief`
+one sitting. So it is an abuse ceiling, not a usage budget. It is per-project-independent — pinned by a
+test, because a per-project cap would let one abuser deny service to their whole
+team.
+
+**Precisely: the count is keyed on the raw `(platform, user_id)` the note was
+authored under, NOT on the linked person** (PR #929 review). Everything else in
+this section expands through `persons`, so "per-member" would read as a stronger
+guarantee than the code gives: a human whose Discord and WhatsApp identities are
+linked by `link_member` gets two independent budgets, not one shared one. That
+is acceptable for an abuse ceiling — the ceiling still exists per identity, and
+identities are admin-created, not self-minted — but it must not be restated as a
+per-person guarantee. Counting across `CALLER_IDENTITIES_CTE` would make it one
+budget per human; that is a deliberate follow-up, not an oversight, because it
+would also *shrink* the budget of anyone who links identities. `project_create`'s `name` and `brief`
 are capped on the same principle, at lower severity since it is admin-only.
 
 **Admin edits to an archived project say so.** `getProjectBySlug` deliberately
