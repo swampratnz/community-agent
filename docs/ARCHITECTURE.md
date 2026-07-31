@@ -2324,6 +2324,7 @@ row (name, description, link) with no content and no access control.
 ```
 project_create ──▶ projects (slug, name, brief)
 project_add_member ──▶ project_members (platform, user_id)   ← WHO may read
+project_remove_member ──▶ revokes access; notes stay with the project
 project_bind_here  ──▶ project_surfaces (platform, convo id) ← WHERE it renders
 project_note   ──▶ project_notes (content, reference_url, embedding)
 project_recall ──▶ searchProjectNotes ──▶ visibleProjectIds (both checks, in SQL)

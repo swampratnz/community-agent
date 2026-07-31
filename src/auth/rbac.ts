@@ -209,6 +209,7 @@ export const ADMIN_TOOLS = [
   // Granting project access NEVER changes the target's tier.
   'mcp__community__project_create',
   'mcp__community__project_add_member',
+  'mcp__community__project_remove_member',
   'mcp__community__project_bind_here',
   'mcp__community__whats_new',
   'mcp__community__generate_image',

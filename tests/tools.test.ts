@@ -2710,7 +2710,8 @@ test('community_info: admin-tier reply stays byte-identical, never gains SUPER_A
     "- Add a note about a member, review notes on a member, delete a note, or look up a member's history across conversations\n" +
     '- Set the community guidelines or the welcome message shown to new members\n' +
     '- Assign a Discord role, remove a Discord role, or list which roles are available to assign\n' +
-    '- Set up team projects: create one, give a member access, or allow it to be discussed here\n' +
+    "- Set up team projects: create one, give a member access, take a member's access away, or allow " +
+    'it to be discussed here\n' +
     '- Generate an image, or check recent changes to the bot and community (the changelog)';
 
   const memberReply = (await communityInfoHandler('member')).content[0]?.text ?? '';
@@ -2872,6 +2873,7 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
 const ADMIN_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__project_create', /Set up team projects/i],
   ['mcp__community__project_add_member', /give a member access/i],
+  ['mcp__community__project_remove_member', /take a member's access away/i],
   ['mcp__community__project_bind_here', /allow it to be discussed here/i],
   ['mcp__community__whats_new', /the changelog/i],
   ['mcp__community__generate_image', /generate an image/i],
@@ -3131,9 +3133,10 @@ test('community_info: super_admin reply stays under a hard char cap, not a wall 
   // request_project_connection line, and again alongside the member cap for
   // issue #895's withdraw_knowledge_tip clause, and again alongside the
   // admin cap for issue #924's list_blocked_members clause, and again
-  // alongside the member/admin caps for issue #927's project lines.
+  // alongside the member/admin caps for issue #927's project lines, and
+  // again for #927's project_remove_member clause added in PR review.
   assert.ok(
-    superAdminReply.length < 4760,
+    superAdminReply.length < 4810,
     `super_admin reply should stay short; was ${superAdminReply.length} chars`,
   );
 });

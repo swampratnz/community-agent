@@ -3032,6 +3032,26 @@ same rule as roles. `project_bind_here` deliberately takes **no conversation
 id**: it binds the conversation the admin is actually in, so neither the model
 nor a crafted message can bind a channel the admin is not present in.
 
+**Access grants are reversible and deliberately not CONFIRM-gated.**
+`project_remove_member` revokes access in one call, immediately, for reads and
+writes alike (pinned by a `SECURITY:` test with a positive control). The CONFIRM
+gate in this codebase is for **destructive or irreversible** actions —
+`delete_knowledge`, `remove_member`, `unlink_member`, `grant_admin`.
+`link_member` is gated for exactly that reason, stated in its own description:
+linking permanently expands what a single `forget_me` **erases**, across both
+identities. Granting project access destroys nothing and is undone in one call,
+so it follows `add_member`'s precedent instead — admin tier, audited, no
+confirm. `add_member` grants access to the entire bot, a strictly larger grant
+than one project's notes; gating this one and not that would make a subset
+stricter than its superset. (Raised in PR #929's automated review, which read
+the analogy as `link_member`'s.)
+
+**Revoking access is not erasure.** `project_remove_member` deletes only the
+membership row; notes the member already contributed stay with the project,
+authorship intact. That is the opposite of the `forget_me` rule below, which
+keeps the note but nulls the author — the two are deliberately different
+operations, and both are pinned.
+
 **Content is stored in `project_notes`, not in `knowledge`.** Scoping project
 content as a `knowledge.scope` value was the original design and was rejected
 during implementation: `knowledge` has ~20 readers that are unrestricted by

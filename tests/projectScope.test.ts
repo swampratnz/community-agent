@@ -250,6 +250,50 @@ test(
 );
 
 test(
+  'SECURITY: projects: removing a member revokes their access immediately, but KEEPS the notes they contributed — revoke is not erasure (PR #929 review)',
+  { skip },
+  async (t) => {
+    const r = await repo(t);
+    const { project, member, noteId } = await fixture(r, 'revoke');
+
+    // Positive control first: they can reach it before removal, so the
+    // post-removal assertion below cannot pass vacuously.
+    const before = await r.searchProjectNotes(NOTE_CONTENT, {
+      platform: 'discord',
+      userId: member,
+      conversationId: BOUND_CONVO,
+      isDirect: false,
+    });
+    assert.equal(before.length, 1, 'fixture member must have access before removal');
+
+    const removed = await r.removeProjectMember(project.id, 'discord', member);
+    assert.equal(removed, true, 'removal must report that it removed a row');
+
+    const after = await r.searchProjectNotes(NOTE_CONTENT, {
+      platform: 'discord',
+      userId: member,
+      conversationId: BOUND_CONVO,
+      isDirect: false,
+    });
+    assert.deepEqual(after, [], 'a removed member must immediately lose read access');
+
+    const writeAfter = await r.saveProjectNote(
+      { platform: 'discord', userId: member, conversationId: BOUND_CONVO, isDirect: false },
+      { slug: `${RUN}-revoke`, content: OTHER_NOTE },
+    );
+    assert.equal(writeAfter, null, 'a removed member must immediately lose write access');
+
+    // Revoking access is NOT erasure: what they already contributed stays
+    // with the team, authorship intact (unlike forget_me, which nulls it).
+    const { rows } = await pool.query(`SELECT content, author_user_id FROM project_notes WHERE id = $1`, [
+      noteId,
+    ]);
+    assert.equal(rows.length, 1, "removing a member must not delete the project's notes");
+    assert.equal(rows[0].author_user_id, member, 'revoking access leaves authorship untouched');
+  },
+);
+
+test(
   'SECURITY: projects: an ARCHIVED project is invisible to its own members (archive is a revocation, not just a label)',
   { skip },
   async (t) => {

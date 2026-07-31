@@ -166,6 +166,7 @@ import {
   createProject,
   getProjectBySlug,
   addProjectMember,
+  removeProjectMember,
   bindProjectSurface,
   type KnowledgeSearchHit,
   searchMemory,
@@ -1784,7 +1785,8 @@ const ADMIN_CAPABILITIES_TEXT =
   "- Add a note about a member, review notes on a member, delete a note, or look up a member's history across conversations\n" +
   '- Set the community guidelines or the welcome message shown to new members\n' +
   '- Assign a Discord role, remove a Discord role, or list which roles are available to assign\n' +
-  '- Set up team projects: create one, give a member access, or allow it to be discussed here\n' +
+  "- Set up team projects: create one, give a member access, take a member's access away, or allow " +
+  'it to be discussed here\n' +
   '- Generate an image, or check recent changes to the bot and community (the changelog)';
 
 /**
@@ -7412,6 +7414,18 @@ export function buildToolServer(
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'project_add_member');
       const target = resolveMemberTarget(args.userId, args.platform);
+      // Deliberately NOT requireConfirm-gated, and the precedent is
+      // `add_member`, not `link_member` (PR #929 review). This repo's CONFIRM
+      // gate is for DESTRUCTIVE or irreversible actions — delete_knowledge,
+      // remove_member, unlink_member, grant_admin. `link_member` is gated for
+      // exactly that reason, stated in its own description: linking expands
+      // what a single forget_me ERASES, permanently and across both
+      // identities. Granting project access destroys nothing, and
+      // `project_remove_member` below reverses it in one call. `add_member`
+      // — which grants access to the whole bot, a strictly larger grant than
+      // one project's notes — is likewise admin-tier + audited with no
+      // confirm. Adding one here would make this stricter than the tool it
+      // is a subset of.
       const { result } = await audited({
         actionKind: 'project_add_member',
         targetUserId: target.userId,
@@ -7423,6 +7437,37 @@ export function buildToolServer(
           return added
             ? `Added to ${project.name}. Their tier is unchanged.`
             : `Already a member of ${project.name}.`;
+        },
+      });
+      return text(result);
+    },
+    { annotations: { readOnlyHint: false } },
+  );
+
+  const projectRemoveMember = tool(
+    'project_remove_member',
+    "Take away a member's access to a project's shared memory. They immediately stop being able to " +
+      'read or add to it. Notes they already recorded stay with the project — this revokes access, it ' +
+      "does not erase their contributions. Never changes anyone's tier. Admin only.",
+    {
+      project: z.string().describe('The project slug'),
+      userId: z.string().min(1).describe('Platform user id of the member to remove'),
+      platform: platformArg,
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'project_remove_member');
+      const target = resolveMemberTarget(args.userId, args.platform);
+      const { result } = await audited({
+        actionKind: 'project_remove_member',
+        targetUserId: target.userId,
+        params: { project: args.project },
+        run: async () => {
+          const project = await getProjectBySlug(args.project);
+          if (!project) return `No project "${args.project}".`;
+          const removed = await removeProjectMember(project.id, target.platform, target.userId);
+          return removed
+            ? `Removed from ${project.name}. Their notes remain with the project.`
+            : `Not a member of ${project.name}.`;
         },
       });
       return text(result);
@@ -8242,6 +8287,7 @@ export function buildToolServer(
       projectList,
       projectCreate,
       projectAddMember,
+      projectRemoveMember,
       projectBindHere,
       listKnowledgeTopicsTool,
       rememberSearch,

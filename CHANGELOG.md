@@ -37,7 +37,8 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   <query>`.
 - **Projects: a standing team can now have shared memory that follows the team
   across Discord and WhatsApp** (#927). An admin creates a project
-  (`project_create`), adds members (`project_add_member`), and binds the
+  (`project_create`), adds or removes members (`project_add_member` /
+  `project_remove_member`), and binds the
   conversations it may be discussed in (`project_bind_here`); members then
   record decisions and notes with `project_note` and find them later with
   `project_recall`, from either platform, on whichever surface the project is

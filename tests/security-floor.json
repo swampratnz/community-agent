@@ -115,7 +115,7 @@
   "pendingAlertQueue.test.ts": 3,
   "personas.test.ts": 1,
   "pipelineOutcomes.test.ts": 2,
-  "projectScope.test.ts": 10,
+  "projectScope.test.ts": 11,
   "rateLimitNotice.router.test.ts": 2,
   "rbac.test.ts": 47,
   "redeploy.test.ts": 2,
