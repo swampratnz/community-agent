@@ -85,6 +85,7 @@ import {
   listOwnProjects,
   listOwnReports,
   listOwnSuggestions,
+  listRecentInterests,
   listRecentProjects,
   listReports,
   listRoster,
@@ -99,6 +100,7 @@ import {
   type MemberProject,
   type MemberProjectSearchHit,
   MEMBER_INTERESTS_MAX_CHARS,
+  type MemberInterestRow,
   type MemberInterestSearchHit,
   MODERATION_ACTION_KINDS,
   type ModerationAppeal,
@@ -597,8 +599,16 @@ export function formatKnowledgeTopics(titles: string[], totalCount: number): str
  *
  * Exported (issue #744) so the `/whois` slash command can render the exact
  * same output as `who_is_into`'s chat-path handler, which calls this too.
+ *
+ * Issue #920: also accepts a plain `MemberInterestRow` (the browse-all shape,
+ * no `similarity`) alongside a `MemberInterestSearchHit` — the same widened-
+ * union pattern `formatProjectResults` already uses for
+ * `MemberProject | MemberProjectSearchHit`. The `NN% match` segment renders
+ * only when `similarity` is present on the hit.
  */
-export async function formatInterestResults(hits: ReadonlyArray<MemberInterestSearchHit>): Promise<string> {
+export async function formatInterestResults(
+  hits: ReadonlyArray<MemberInterestSearchHit | MemberInterestRow>,
+): Promise<string> {
   const projectNamesByOwner = await getActiveProjectNamesForOwners(
     hits.map((h) => ({ platform: h.platform, userId: h.userId })),
   );
@@ -610,7 +620,8 @@ export async function formatInterestResults(hits: ReadonlyArray<MemberInterestSe
       const sharedProjects = projects?.length
         ? `\n   Shared projects: ${projects.map((p) => `"${untrustedEntryContent(p)}"`).join(', ')}`
         : '';
-      return `${i + 1}. ${owner} (${Math.round(h.similarity * 100)}% match): ${interests}${sharedProjects}`;
+      const match = 'similarity' in h ? ` (${Math.round(h.similarity * 100)}% match)` : '';
+      return `${i + 1}. ${owner}${match}: ${interests}${sharedProjects}`;
     }),
   );
   return [
@@ -1330,6 +1341,12 @@ export const FEATURE_FLAG_MAP: readonly FeatureFlagEntry[] = [
     envVar: 'WHATSAPP_CLOUD_IMAGE_INPUT_ENABLED',
     configPath: 'whatsapp.cloud.image.enabled',
     label: 'WhatsApp image-attachment input (Cloud API)',
+    category: 'WhatsApp',
+  },
+  {
+    envVar: 'WHATSAPP_CLOUD_VOICE_ENABLED',
+    configPath: 'whatsapp.cloud.voice.enabled',
+    label: 'WhatsApp voice-note transcription (Cloud API)',
     category: 'WhatsApp',
   },
   // Cost/Model
@@ -4404,10 +4421,16 @@ export function buildToolServer(
       }
       const selfMatch = await searchMemberInterestsForSelf(caller.platform, caller.userId, WHO_IS_INTO_LIMIT);
       if (!selfMatch.hasProfile) {
-        return text(
+        // Issue #920: a caller with no published row of their own can no
+        // longer only be told to publish first — fall back to browsing the
+        // most recently published/updated interests (mirroring
+        // list_projects' no-query listRecentProjects default), still
+        // appending the same set_my_interests hint after the list.
+        const hint =
           "You haven't published interests yet — call set_my_interests first, then who_is_into with no " +
-            'topic will search using your own published interests.',
-        );
+          'topic will search using your own published interests.';
+        const recent = await listRecentInterests(WHO_IS_INTO_LIMIT);
+        return text(recent.length === 0 ? hint : `${await formatInterestResults(recent)}\n\n${hint}`);
       }
       if (selfMatch.hits.length === 0) {
         return text('No other members have published interests matching yours yet.');

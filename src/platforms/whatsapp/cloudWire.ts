@@ -98,6 +98,20 @@ export interface CloudInboundMessage {
    * image already produces today.
    */
   image?: { mediaId: string; mimeType: string; caption?: string };
+  /**
+   * Present only for an inbound `audio` message (issue #910, the WhatsApp
+   * Cloud API counterpart to Baileys' #507 / Discord's #732 voice
+   * transcription). Carries exactly Meta's own webhook metadata — media id
+   * and declared MIME type — extracted regardless of
+   * `WHATSAPP_CLOUD_VOICE_ENABLED`, since this is a pure wire helper with no
+   * config access (see the file doc comment); the CALLER (`onCloudMessage`)
+   * is the single gate that decides whether to fetch and transcribe the
+   * bytes. Unlike Baileys' `audio.seconds`, Meta's Cloud webhook `audio`
+   * object carries no duration, so there is no length field here — the
+   * adapter enforces its cap on byte size instead, from the media-URL
+   * resolve call's `file_size`, exactly as it already does for `image`.
+   */
+  voice?: { mediaId: string; mimeType: string };
 }
 
 interface MetaContact {
@@ -109,6 +123,10 @@ interface MetaImage {
   mime_type?: string;
   caption?: string;
 }
+interface MetaAudio {
+  id?: string;
+  mime_type?: string;
+}
 interface MetaMessage {
   from?: string;
   id?: string;
@@ -116,6 +134,7 @@ interface MetaMessage {
   type?: string;
   text?: { body?: string };
   image?: MetaImage;
+  audio?: MetaAudio;
 }
 interface MetaValue {
   contacts?: MetaContact[];
@@ -133,12 +152,12 @@ interface MetaPayload {
 }
 
 /**
- * Normalise a Meta `messages` webhook payload into inbound messages. Text and
- * (issue #891) well-formed image messages are extracted; every other type
- * (audio/document/sticker/video/status/etc.) and malformed entries are
- * silently skipped, unchanged from before #891 — an image entry missing its
- * own `image.id` (Meta's media id) is treated as malformed too, since there
- * is nothing to ever fetch.
+ * Normalise a Meta `messages` webhook payload into inbound messages. Text,
+ * (issue #891) well-formed image messages, and (issue #910) well-formed
+ * audio messages are extracted; every other type (document/sticker/video/
+ * status/etc.) and malformed entries are silently skipped — an image or
+ * audio entry missing its own media id (`image.id`/`audio.id`) is treated as
+ * malformed too, since there is nothing to ever fetch.
  */
 export function extractMessages(payload: unknown): CloudInboundMessage[] {
   const out: CloudInboundMessage[] = [];
@@ -176,6 +195,20 @@ export function extractMessages(payload: unknown): CloudInboundMessage[] {
             text: '',
             name,
             image: { mediaId, mimeType: msg.image?.mime_type ?? '', caption: msg.image?.caption },
+          });
+          continue;
+        }
+
+        if (msg.type === 'audio') {
+          const mediaId = msg.audio?.id;
+          if (!mediaId) continue;
+          out.push({
+            from: msg.from,
+            id: msg.id,
+            timestampMs,
+            text: '',
+            name,
+            voice: { mediaId, mimeType: msg.audio?.mime_type ?? '' },
           });
         }
       }

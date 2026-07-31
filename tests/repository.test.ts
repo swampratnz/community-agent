@@ -178,6 +178,7 @@ const {
   PROJECT_DESCRIPTION_MAX_CHARS,
   setMemberInterests,
   searchMemberInterests,
+  listRecentInterests,
   MEMBER_INTERESTS_MAX_CHARS,
   WHO_IS_INTO_LIMIT,
   getActiveProjectNamesForOwners,
@@ -7276,6 +7277,84 @@ test(
 
     await pool.query(`DELETE FROM member_interests WHERE platform = 'discord' AND user_id = $1`, [publisher]);
     await pool.query(`DELETE FROM interactions WHERE user_id = $1`, [nonPublisher]);
+  },
+);
+
+test(
+  'repository: listRecentInterests returns most-recently-published/updated interests across every member, newest first (issue #920 AC #1)',
+  { skip },
+  async () => {
+    const older = `${RUN}-recent-interests-older`;
+    const newer = `${RUN}-recent-interests-newer`;
+
+    await setMemberInterests('discord', older, 'older published interests');
+    await setMemberInterests('discord', newer, 'newer published interests');
+
+    const recent = await listRecentInterests(200);
+    const olderIdx = recent.findIndex((r) => r.userId === older);
+    const newerIdx = recent.findIndex((r) => r.userId === newer);
+    assert.ok(olderIdx !== -1 && newerIdx !== -1, 'both published rows are returned');
+    assert.ok(newerIdx < olderIdx, 'the more recently published/updated row sorts first');
+
+    await pool.query(`DELETE FROM member_interests WHERE platform = 'discord' AND user_id = ANY($1)`, [
+      [older, newer],
+    ]);
+  },
+);
+
+test(
+  'SECURITY: repository: listRecentInterests derives exclusively from member_interests — its query never references `interactions` (issue #920 AC #7, preserves #634 AC #4)',
+  { skip },
+  async (t) => {
+    const calls: unknown[] = [];
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', (...args: unknown[]) => {
+      calls.push(args);
+      return (realQuery as (...a: unknown[]) => unknown)(...args);
+    });
+
+    await listRecentInterests(5);
+
+    assert.equal(calls.length, 1, 'listRecentInterests issues exactly one query');
+    const sql = (calls[0] as [string])[0];
+    assert.match(sql, /FROM member_interests/);
+    assert.doesNotMatch(
+      sql,
+      /interactions/,
+      'SECURITY: listRecentInterests must never read from `interactions` — interests are self-declared only',
+    );
+  },
+);
+
+test(
+  "SECURITY: repository: listRecentInterests never returns a member who never published, or who cleared their interests via set_my_interests('clear') (issue #920 AC #8)",
+  { skip },
+  async () => {
+    const cleared = `${RUN}-recent-interests-cleared`;
+    const neverPublished = `${RUN}-recent-interests-never-published`;
+    const stillPublished = `${RUN}-recent-interests-still-published`;
+
+    await setMemberInterests('discord', cleared, 'about to be cleared');
+    await setMemberInterests('discord', cleared, 'clear');
+    await setMemberInterests('discord', stillPublished, 'still published interests');
+
+    const recent = await listRecentInterests(200);
+    assert.ok(
+      recent.every((r) => r.userId !== cleared),
+      'SECURITY: a cleared row must never appear in listRecentInterests',
+    );
+    assert.ok(
+      recent.every((r) => r.userId !== neverPublished),
+      'SECURITY: a member who never published must never appear in listRecentInterests',
+    );
+    assert.ok(
+      recent.some((r) => r.userId === stillPublished),
+      'a still-published row is returned',
+    );
+
+    await pool.query(`DELETE FROM member_interests WHERE platform = 'discord' AND user_id = $1`, [
+      stillPublished,
+    ]);
   },
 );
 

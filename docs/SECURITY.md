@@ -128,6 +128,22 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   applies the same pattern: both identities must already be known community
   members (a `community_users` row exists) — it cannot conjure membership,
   only associate two identities that already have it.
+- **Tone calibration for off-limits declines and playful probes** (issue
+  #913, the un-shipped residue of #756's rejected on-demand skill): a fixed,
+  always-on `TONE_CALIBRATION_CLAUSE` in `systemPrompt.ts`'s `GUIDELINES`
+  tells the model to decline a genuinely off-limits ask (real people's
+  private data, illegal/harmful content, revealing internals) in one short,
+  non-moralising sentence, and to answer a harmless/playful probe (e.g. "are
+  you a weasel?") in character rather than with suspicion. This is pure tone
+  guidance layered on top of, not a substitute for, #753/#754's
+  `AUTHORIZATION_NOTE` (also in `GUIDELINES`, immediately above it) — that
+  clause still decides WHO is authorized to do what, from the verified tier
+  alone, never from message tone. The playful-probe half is deliberately
+  scoped ("aren't actually trying to extract anything real") so a genuine
+  extraction attempt dressed as a joke cannot be laundered into a relaxed
+  refusal, and is pinned by a `SECURITY:` test alongside one asserting the
+  clause still precedes the persona block (the existing security-before-
+  persona ordering invariant).
 - `settingSources: []` prevents loading the host's `~/.claude` config.
 
 ### 2. Secret exposure
@@ -834,12 +850,35 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   query is built solely from that stored row, never from `interactions`
   (SECURITY-pinned, same #634 AC #4 invariant), and the caller's own row is
   always excluded from its own results (SECURITY-pinned; both correctness —
-  a caller must never see themselves as a "100% match" — and privacy). A
-  caller with no published row (or one whose embedding failed at publish
-  time) gets a guidance reply directing them to `set_my_interests`; no search
-  runs against other members' data in that case. Same `member`-tier
-  re-assertion, no new tool, no new RBAC surface; `/whois`'s Discord option
-  mirrors the same optional-argument/self-match/guidance shape.
+  a caller must never see themselves as a "100% match" — and privacy). Same
+  `member`-tier re-assertion, no new tool, no new RBAC surface; `/whois`'s
+  Discord option mirrors the same optional-argument/self-match/guidance
+  shape. **No-profile browse fallback (issue #920):** a caller with no
+  published row (or one whose embedding failed at publish time) previously
+  got only a guidance reply directing them to `set_my_interests`, with no
+  search of any kind — the one no-query path `list_projects` had a browse-all
+  counterpart for (`listRecentProjects`) and `who_is_into` didn't. That
+  caller now instead sees `listRecentInterests` — the most recently
+  published/updated rows across every member, a plain `ORDER BY updated_at
+  DESC` with no `embed()` call, mirroring `listRecentProjects` exactly — with
+  the same `set_my_interests` guidance still appended after the list. This
+  adds no new data access or exposure: it is the identical `member_interests`
+  table every `who_is_into` query already reads (SECURITY-pinned: the query
+  references only `member_interests`, never `interactions`, preserving the
+  same #634 AC #4 invariant), a row is published specifically to be
+  discoverable via `who_is_into` so a browse view is within the consent the
+  data was published under, and a member who never published (or who
+  cleared their row) simply has no row here and never appears
+  (SECURITY-pinned, same non-existence exclusion every other read of this
+  table relies on). Wired at all three call sites independently
+  (`agent/tools.ts`'s `who_is_into` handler, `/whois`'s Discord handler,
+  `!whois`'s bare-argument branch in `router.ts` via a new injected
+  `listRecentInterestsFn` field) since there is no shared handler between
+  them — only the render helper (`formatInterestResults`, now widened to
+  accept a plain `MemberInterestRow` alongside a similarity-scored
+  `MemberInterestSearchHit`) is shared. A caller **with** an existing
+  profile is unaffected: the self-match path above still takes priority and
+  its output is unchanged.
 - **Peer help handoff** (`set_helper_availability`/`find_helper`, issue #729):
   the active-side consumer of `member_interests` above — the first
   **proactive, bot-initiated member→member DM** in the system. An adversarial
@@ -2121,6 +2160,54 @@ reporting `duration_secs`, distinct from a regular file upload), reusing
   `super_admin` for wider guild rollout. Pinned by a `SECURITY:` test that
   fires a guild (not DM) voice message and asserts the scan call's `text`
   equals the transcript, not the empty native content.
+
+**WhatsApp Cloud API counterpart (`WHATSAPP_CLOUD_VOICE_ENABLED`, off by
+default, issue #910).** Mirrors the #891 image-parity shape onto audio,
+closing the last silent-drop gap on the docs' own recommended production
+WhatsApp path — voice was the one input type that worked on Baileys and
+Discord but produced total silence on the Cloud API adapter:
+
+- **Same gate order as Cloud image input, adapted to voice.**
+  `maybeTranscribeVoiceNote` (`src/platforms/whatsapp/cloudAdapter.ts`)
+  mirrors `maybeFetchImageAttachment`'s order: flag →
+  `WHATSAPP_CLOUD_VOICE_MIN_ROLE` (default `'super_admin'`, the pure
+  `isSuperAdmin('whatsapp', senderId)` env check with no DB call at that
+  default, else `resolveRole`/`atLeast`) → `WHATSAPP_CLOUD_VOICE_RATE_LIMIT_PER_HOUR`
+  (checked before any Graph API call, once non-zero) → resolve the media URL
+  (`resolveMediaUrl`, JSON metadata only) → `WHATSAPP_CLOUD_VOICE_MAX_BYTES`
+  checked against the resolved `file_size`, strictly before the byte-download
+  call → download and transcribe via the same `transcribeVoiceNote` pipeline
+  Baileys/Discord use. Pinned by `SECURITY:` tests at every refusal point.
+- **A byte cap, not a duration cap — unlike Baileys.** Meta's Cloud webhook
+  `audio` object carries no duration at all (the same gap #891 hit for
+  image `file_size`), so there is no pre-download `audio.seconds` equivalent
+  to check. `WHATSAPP_CLOUD_VOICE_MAX_BYTES` is the enforceable substitute,
+  checked against `resolveMediaUrl`'s `file_size` — the resolve call itself
+  transfers only JSON metadata, never audio bytes, so an over-cap note is
+  still refused before a single byte is fetched, mirroring the exact same
+  fix `WHATSAPP_CLOUD_IMAGE_INPUT_MAX_BYTES` applied for image `file_size`.
+- **Fully independent flag.** `WHATSAPP_CLOUD_VOICE_*` is its own config
+  block — separate from `WHATSAPP_VOICE_*` (Baileys), `DISCORD_VOICE_*`, and
+  `WHATSAPP_CLOUD_IMAGE_INPUT_*` (the other Cloud-adapter opt-in). Enabling
+  any one flag never enables another; pinned by `SECURITY:` tests.
+- **No new `IncomingMessage` field, so nothing new to leak.** Unlike image
+  input, a transcribed voice note becomes ordinary `text` — there is no
+  `IncomingMessage.audio`/`voice` field at all. Audio bytes are held only for
+  the one `transcribeVoiceNote` call inside `cloudAdapter.ts` and are never
+  attached to the message the router/handler sees, so they structurally
+  cannot reach `recordInteraction`/the `interactions` table. Pinned by a
+  `SECURITY:` test asserting the `IncomingMessage` handed to the handler
+  carries no audio-shaped field.
+- **Same caveat DM, reused verbatim.** A successful transcription sends the
+  identical `VOICE_LANGUAGE_CAVEAT_TEXT_MI` DM (per the sender's stored
+  `language_prefs`), debounced identically to the Baileys/Discord paths — no
+  Cloud-specific copy. Unlike Baileys, every Cloud API sender id is already a
+  bare phone number, so there is no `lid:`-fallback case to skip.
+- **No new authority, no new egress, no new table.** Same local, offline
+  transformers.js Whisper pipeline as Baileys/Discord; the transcript
+  populates `text` and flows through the identical RBAC/tool-gating/CONFIRM
+  pipeline a typed message would — never more than the caller's own tier
+  already grants.
 
 ### 14. Real-time admin escalation after a max-turns failure (`ESCALATION_TO_ADMIN_ENABLED`, off by default, issue #479)
 

@@ -35,6 +35,13 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   of several) without guessing. Same empty-state message and rendering as
   the other two surfaces; no change to plain `!projects` or `!projects
   <query>`.
+- **WhatsApp voice notes now work on the Cloud API adapter, not just
+  Baileys/Discord** (#910) — the docs' own recommended production WhatsApp
+  path was the one place a voice note produced total silence. Opt-in via
+  `WHATSAPP_CLOUD_VOICE_ENABLED` (off by default, `super_admin`-only by
+  default), reusing the same local, offline transcription already used for
+  Baileys/Discord — audio never leaves the host. No change for existing
+  deployments until an operator turns it on.
 - **`my_submissions` now includes a receipt for your sent `request_project_connection`
   calls** (#908): a new "Your connection requests:" section lists the id,
   the requested project's name, and when you sent each one, so you can check
@@ -44,6 +51,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   a plain receipt, not a tracker. A connection request whose project has
   since been removed still shows up, with a graceful placeholder in place of
   the (now-gone) project name.
+- **`who_is_into` (and `/whois`/`!whois`) now has a browse-all mode for members
+  who haven't published interests of their own yet** (#920): asking "who's
+  into RAG?" with no topic used to only work if you'd already published your
+  own interests via `set_my_interests` — anyone without a profile got told to
+  publish first and nothing else. Now that same no-topic call instead shows
+  the most recently published interests across the community (mirroring
+  `list_projects`' existing no-query behaviour), still followed by the same
+  `set_my_interests` prompt so newcomers know how to join in themselves.
+  Members who already have a published profile see no change — their own
+  "members like me" match still takes priority.
 
 ### Fixed
 - **`response_latency` now correctly counts and pairs auto-answer replies**
@@ -53,6 +70,13 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   reply's ambient trigger never is. Admins can also now pass an optional
   `scope` (`'auto_answer'` or `'mention'`) to see auto-answer-channel
   latency on its own, the specific figure VISION names as a north star.
+- **The access-request and budget-check-failed admin/super-admin alerts no
+  longer go silent for a WhatsApp Cloud recipient whose 24h window happens to
+  be closed** (#922): both now queue for delivery on that recipient's next
+  message instead of just logging and dropping, closing the last two gaps
+  #888 left named as a deliberate remainder. No change for Discord/Baileys,
+  and an unrelated send failure is still logged-and-dropped exactly as
+  before.
 
 ## 2026-07-30
 

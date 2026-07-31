@@ -8822,8 +8822,8 @@ test('feature_flags: FEATURE_FLAG_MAP covers every *_ENABLED env var in config.t
   const envVars = extractEnabledEnvVars(configSource);
   assert.equal(
     envVars.length,
-    47,
-    "the pinned count is the proposal's own evidence — a change here is itself signal worth noticing (28 at #559; +3 for ENGAGEMENT_ALERT/USAGE_COST_DIGEST/AUTO_RETRACT_REPLY landing alongside #582; +1 for MEMBER_DIGEST_ENABLED landing with #645; +1 for BACKGROUND_JOB_COST_ALERT_ENABLED landing with #610; +1 for KNOWLEDGE_GAP_ALERT_ENABLED landing with #650; +1 for KNOWLEDGE_STALE_ALERT_ENABLED landing with #701; +1 for FIND_HELPER_ENABLED landing with #729; +1 for RELEASE_WATCH_ENABLED landing with #733; +1 for KNOWLEDGE_ANSWER_CANDIDATE_ENABLED landing with #726; +1 for DISCORD_VOICE_ENABLED landing with #732; +1 for AGENT_SKILLS_ENABLED landing with #741; +1 for DISCORD_SLASH_COMMANDS_ENABLED landing with #744; +1 for IMAGE_INPUT_ENABLED landing with #783; +1 for ADMIN_LEVERAGE_ALERT_ENABLED landing with #785; +1 for WHATSAPP_TEXT_COMMANDS_ENABLED landing with #859; +1 for WHATSAPP_IMAGE_INPUT_ENABLED landing with #879; +1 for REPEAT_QUESTION_ALERT_ENABLED landing with #887; +1 for WHATSAPP_CLOUD_IMAGE_INPUT_ENABLED landing with #891)",
+    48,
+    "the pinned count is the proposal's own evidence — a change here is itself signal worth noticing (28 at #559; +3 for ENGAGEMENT_ALERT/USAGE_COST_DIGEST/AUTO_RETRACT_REPLY landing alongside #582; +1 for MEMBER_DIGEST_ENABLED landing with #645; +1 for BACKGROUND_JOB_COST_ALERT_ENABLED landing with #610; +1 for KNOWLEDGE_GAP_ALERT_ENABLED landing with #650; +1 for KNOWLEDGE_STALE_ALERT_ENABLED landing with #701; +1 for FIND_HELPER_ENABLED landing with #729; +1 for RELEASE_WATCH_ENABLED landing with #733; +1 for KNOWLEDGE_ANSWER_CANDIDATE_ENABLED landing with #726; +1 for DISCORD_VOICE_ENABLED landing with #732; +1 for AGENT_SKILLS_ENABLED landing with #741; +1 for DISCORD_SLASH_COMMANDS_ENABLED landing with #744; +1 for IMAGE_INPUT_ENABLED landing with #783; +1 for ADMIN_LEVERAGE_ALERT_ENABLED landing with #785; +1 for WHATSAPP_TEXT_COMMANDS_ENABLED landing with #859; +1 for WHATSAPP_IMAGE_INPUT_ENABLED landing with #879; +1 for REPEAT_QUESTION_ALERT_ENABLED landing with #887; +1 for WHATSAPP_CLOUD_IMAGE_INPUT_ENABLED landing with #891; +1 for WHATSAPP_CLOUD_VOICE_ENABLED landing with #910)",
   );
   assertFeatureFlagEnvVarsCovered(envVars, FEATURE_FLAG_MAP);
   assert.equal(
@@ -13197,7 +13197,7 @@ test(
 );
 
 test(
-  'who_is_into() with no query and no published row for the caller returns guidance directing them to set_my_interests, without running any search (issue #882 AC #3)',
+  'who_is_into() with no query and no published row for the caller now browses the most recently published interests, still appending the set_my_interests hint (issue #920 AC #1, #2 — supersedes issue #882 AC #3\'s "no search" behaviour)',
   { skip },
   async () => {
     const caller = `${RUN}-who-is-into-self-no-profile`;
@@ -13210,10 +13210,10 @@ test(
     const result = await whoTool.handler({});
     assert.equal(result.isError, false);
     assert.match(result.content[0]?.text ?? '', /set_my_interests/);
-    assert.doesNotMatch(
+    assert.match(
       result.content[0]?.text ?? '',
       /some other member entirely/,
-      'no search may run against other members when the caller has no published row',
+      'a caller with no published row now browses the most recently published interests (issue #920)',
     );
 
     await pool.query(`DELETE FROM member_interests WHERE platform = 'discord' AND user_id = $1`, [

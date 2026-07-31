@@ -4,6 +4,7 @@ import { isPureAcknowledgement } from './ackClassifier.js';
 import { atLeast, type CallerContext, type Tier } from './auth/rbac.js';
 import { resolveRole, superAdminIds } from './auth/roles.js';
 import type { IncomingMessage, Platform, PlatformAdapter } from './platforms/types.js';
+import { WindowClosedError } from './platforms/whatsapp/cloudAdapter.js';
 import { sanitizeName } from './agent/systemPrompt.js';
 import {
   INTERNAL_ERROR_REPLY,
@@ -44,6 +45,7 @@ import {
   isUserBlocked,
   listAdmins,
   listOwnProjects,
+  listRecentInterests,
   listRecentProjects,
   markKnowledgeGapsAlerted,
   markStaleKnowledgeAlerted,
@@ -275,9 +277,17 @@ export async function notifyAccessRequest(
   for (const admin of admins) {
     const target = adapterFor(admin.platform);
     if (!target || !target.isConnected()) continue;
-    target
-      .sendDirectMessage(admin.platformUserId, message)
-      .catch((err) => logger.warn({ err, platform: admin.platform }, 'Access-request alert failed'));
+    target.sendDirectMessage(admin.platformUserId, message).catch((err) => {
+      if (err instanceof WindowClosedError && target.queueForWindowReopen) {
+        target.queueForWindowReopen(admin.platformUserId, message, 'low');
+        logger.warn(
+          { platform: admin.platform, id: admin.platformUserId },
+          'Access-request alert: recipient window closed, queued for reopen',
+        );
+        return;
+      }
+      logger.warn({ err, platform: admin.platform }, 'Access-request alert failed');
+    });
   }
 }
 
@@ -530,6 +540,12 @@ export class Router {
    * `msg.platform`/`msg.userId` only — mirroring
    * `list_projects({ mine: true })`/`/projects mine:true`'s own
    * self-scoping, the third and last of the three `mine` surfaces.
+   * `listRecentInterestsFn` defaults to the real `listRecentInterests`
+   * (issue #920), a further trailing field for the same call-site-stability
+   * reason as `searchMemberInterestsForSelfFn`/`checkKnowledgeConflict`
+   * above; consulted only from `tryWhatsAppTextCommand`'s bare-`!whois`
+   * branch when `searchMemberInterestsForSelfFn` reports `hasProfile: false`
+   * — the same no-profile browse fallback who_is_into/`/whois` gained.
    */
   constructor(
     private readonly runTurn: typeof runAgentTurn = runAgentTurn,
@@ -559,6 +575,7 @@ export class Router {
     private readonly searchMemberInterestsForSelfFn: typeof searchMemberInterestsForSelf = searchMemberInterestsForSelf,
     private readonly checkKnowledgeConflict: typeof hasKnowledgeConflictForId = hasKnowledgeConflictForId,
     private readonly listOwnProjectsFn: typeof listOwnProjects = listOwnProjects,
+    private readonly listRecentInterestsFn: typeof listRecentInterests = listRecentInterests,
   ) {
     setInterval(() => this.sweep(), this.RATE_WINDOW_MS * 5).unref();
   }
@@ -991,11 +1008,17 @@ export class Router {
     }
     for (const adapter of connected) {
       for (const id of superAdminIds(adapter.platform)) {
-        adapter
-          .sendDirectMessage(id, message)
-          .catch((err) =>
-            logger.warn({ err, platform: adapter.platform, id }, 'Budget check failure alert DM failed'),
-          );
+        adapter.sendDirectMessage(id, message).catch((err) => {
+          if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+            adapter.queueForWindowReopen(id, message, 'system');
+            logger.warn(
+              { platform: adapter.platform, id },
+              'Budget check failure alert: recipient window closed, queued for reopen',
+            );
+            return;
+          }
+          logger.warn({ err, platform: adapter.platform, id }, 'Budget check failure alert DM failed');
+        });
       }
     }
   }
@@ -1866,10 +1889,14 @@ export class Router {
       // #882's "never inferred from chat content" invariant).
       const selfMatch = await this.searchMemberInterestsForSelfFn(msg.platform, msg.userId);
       if (!selfMatch.hasProfile) {
-        return (
+        // Issue #920: same no-profile browse fallback as who_is_into's chat
+        // path and /whois — a separate call site, wired independently via
+        // the injected listRecentInterestsFn.
+        const hint =
           "You haven't published interests yet — call set_my_interests first, then who_is_into with no " +
-          'topic will search using your own published interests.'
-        );
+          'topic will search using your own published interests.';
+        const recent = await this.listRecentInterestsFn();
+        return recent.length === 0 ? hint : `${await formatInterestResults(recent)}\n\n${hint}`;
       }
       return selfMatch.hits.length === 0
         ? 'No members have published interests matching that yet.'
