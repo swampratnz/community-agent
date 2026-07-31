@@ -167,6 +167,7 @@ const {
   blockUser,
   unblockUser,
   isUserBlocked,
+  listBlockedUsers,
   shareProject,
   removeMemberProject,
   listRecentProjects,
@@ -10627,6 +10628,55 @@ test(
     );
 
     await unblockUser('whatsapp', externalId);
+  },
+);
+
+test(
+  'repository: listBlockedUsers orders newest-blocked-first and respects limit (issue #924)',
+  { skip },
+  async () => {
+    // Run-scoped fake platform so this test's row set can never collide with
+    // another parallel test file's 'whatsapp' block/unblock fixtures on the
+    // same guild-wide (no conversation_id) table, matching the LIST_PLATFORM
+    // convention in tests/moderationRepo.test.ts/tests/tools.test.ts.
+    const platform = `${RUN}-list-blocked`;
+    const oldest = `${RUN}-list-blocked-oldest`;
+    const middle = `${RUN}-list-blocked-middle`;
+    const newest = `${RUN}-list-blocked-newest`;
+    try {
+      await blockUser(platform, oldest, 'admin-1', 'harassment');
+      await blockUser(platform, middle, 'admin-1', null);
+      await blockUser(platform, newest, 'admin-2', 'spam');
+      await pool.query(
+        `UPDATE blocked_users SET blocked_at = now() - interval '2 days' WHERE platform = $1 AND external_id = $2`,
+        [platform, oldest],
+      );
+      await pool.query(
+        `UPDATE blocked_users SET blocked_at = now() - interval '1 days' WHERE platform = $1 AND external_id = $2`,
+        [platform, middle],
+      );
+
+      const rows = await listBlockedUsers(platform);
+      assert.deepEqual(
+        rows.map((r) => r.externalId),
+        [newest, middle, oldest],
+        'newest blocked_at first',
+      );
+      assert.equal(rows[0].blockedBy, 'admin-2');
+      assert.equal(rows[0].reason, 'spam');
+      assert.equal(rows[1].reason, null, 'a block with no reason reports null, not an empty string');
+
+      const limited = await listBlockedUsers(platform, 2);
+      assert.equal(limited.length, 2, 'limit is respected');
+      assert.deepEqual(
+        limited.map((r) => r.externalId),
+        [newest, middle],
+      );
+    } finally {
+      await unblockUser(platform, oldest);
+      await unblockUser(platform, middle);
+      await unblockUser(platform, newest);
+    }
   },
 );
 

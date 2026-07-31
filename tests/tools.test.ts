@@ -136,6 +136,7 @@ const {
   isUserBlocked,
   blockUser,
   unblockUser,
+  listBlockedUsers,
   shareProject,
   removeMemberProject,
   setMemberInterests,
@@ -2698,7 +2699,7 @@ test('community_info: admin-tier reply stays byte-identical, never gains SUPER_A
 
   const expectedAdminCapabilitiesText =
     'As an admin, you also have:\n' +
-    "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread, review the moderation history log, pull one member's full warning history, list everyone who's currently muted, or review and resolve filed appeals\n" +
+    "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread, review the moderation history log, pull one member's full warning history, list everyone who's currently muted, list who's currently blocked on WhatsApp, or review and resolve filed appeals\n" +
     "- Manage membership: add a new member, remove a member, link a member's cross-platform identity, or unlink a member's cross-platform identity\n" +
     '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, check which knowledge entries are rated poorly, and review recurring unhelpful-answer themes across all answers\n' +
     '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
@@ -2869,6 +2870,7 @@ const ADMIN_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__clear_warnings', /clear a member's warnings/i],
   ['mcp__community__list_member_warnings', /full warning history/i],
   ['mcp__community__list_muted_members', /list everyone who's currently muted/i],
+  ['mcp__community__list_blocked_members', /currently blocked on WhatsApp/i],
   ['mcp__community__list_appeals', /review .*filed appeals/i],
   ['mcp__community__resolve_appeal', /resolve filed appeals/i],
   ['mcp__community__announce', /make an announcement/i],
@@ -3115,9 +3117,10 @@ test('community_info: super_admin reply stays under a hard char cap, not a wall 
   // alongside the member/admin caps for issue #808's request_human_help line,
   // and again alongside the member/admin caps for issue #840's
   // request_project_connection line, and again alongside the member cap for
-  // issue #895's withdraw_knowledge_tip clause.
+  // issue #895's withdraw_knowledge_tip clause, and again alongside the
+  // admin cap for issue #924's list_blocked_members clause.
   assert.ok(
-    superAdminReply.length < 4530,
+    superAdminReply.length < 4560,
     `super_admin reply should stay short; was ${superAdminReply.length} chars`,
   );
 });
@@ -5918,6 +5921,118 @@ test(
       assert.equal(result.content[0]?.text, 'No members are currently muted.');
     } finally {
       config.moderation.strikeLimit = originalLimit;
+    }
+  },
+);
+
+// list_blocked_members (issue #924): enumerates the WhatsApp bot-side block
+// list. Uses a run-scoped fake platform per handler call (never a shared
+// 'whatsapp' fixture) so it never collides with any other test file's
+// blockUser/unblockUser fixtures on the shared guild-wide (no
+// conversation_id) blocked_users table, matching the LIST_MUTED_PLATFORM
+// convention above.
+function listBlockedMembersHandler(role: 'member' | 'admin', platform: Platform) {
+  const server = buildToolServer(
+    {
+      platform,
+      userId: 'admin-list-blocked-members',
+      userName: 'Admin',
+      role,
+      conversationId: 'convo-list-blocked-members',
+    },
+    stubAdapter(async () => {}),
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: () => Promise<{
+            content: Array<{ type: string; text: string }>;
+            isError?: boolean;
+          }>;
+        }
+      >;
+    }
+  )._registeredTools['list_blocked_members'];
+}
+
+test(
+  'list_blocked_members renders external id, blocked-by, reason, and blocked-at for each row, newest first ' +
+    '(issue #924 acceptance criterion #3)',
+  { skip },
+  async () => {
+    const platform = `${RUN}-list-blocked-tool`;
+    const withReason = `${RUN}-blocked-with-reason`;
+    const withoutReason = `${RUN}-blocked-without-reason`;
+    await blockUser(platform, withReason, 'admin-1', 'harassment');
+    await blockUser(platform, withoutReason, 'admin-2', null);
+    try {
+      const result = await listBlockedMembersHandler('admin', platform as unknown as Platform).handler();
+      assert.notEqual(result.isError, true);
+      // untrusted() strips '\n' from the rendered body (issue #227
+      // quarantine-escape fix), so rows are space-joined, not newline-joined
+      // — assert against the whole text with regex, matching the
+      // list_appeals handler test's convention, never a line split.
+      const text = result.content[0]?.text ?? '';
+
+      assert.match(text, new RegExp(withReason));
+      assert.match(text, new RegExp(withoutReason));
+      assert.match(text, new RegExp(`${withReason}.*admin-1.*harassment`));
+      assert.doesNotMatch(
+        text,
+        new RegExp(`${withoutReason}[^—]*: null`),
+        'a null reason is omitted, not rendered literally',
+      );
+    } finally {
+      await unblockUser(platform, withReason);
+      await unblockUser(platform, withoutReason);
+    }
+  },
+);
+
+test('SECURITY: list_blocked_members rejects a caller below admin tier (issue #924)', async () => {
+  const registeredTool = listBlockedMembersHandler('member', 'discord');
+  await assert.rejects(() => registeredTool.handler(), /Permission denied/);
+});
+
+test(
+  'list_blocked_members reports "No blocked users." when nothing is blocked on that platform (issue #924)',
+  { skip },
+  async () => {
+    const result = await listBlockedMembersHandler(
+      'admin',
+      `${RUN}-list-blocked-empty` as unknown as Platform,
+    ).handler();
+    assert.equal(result.content[0]?.text, 'No blocked users.');
+  },
+);
+
+test(
+  "SECURITY: list_blocked_members enumerates only the caller's own resolved platform — it takes no " +
+    "platform/identity argument, so a caller on one platform cannot enumerate another platform's block " +
+    'list (issue #924 acceptance criteria #2/#6)',
+  { skip },
+  async () => {
+    const platformA = `${RUN}-list-blocked-scope-a`;
+    const platformB = `${RUN}-list-blocked-scope-b`;
+    const userA = `${RUN}-scope-a-user`;
+    const userB = `${RUN}-scope-b-user`;
+    await blockUser(platformA, userA, 'admin-1', 'harassment');
+    await blockUser(platformB, userB, 'admin-1', 'spam');
+    try {
+      const resultA = await listBlockedMembersHandler('admin', platformA as unknown as Platform).handler();
+      const textA = resultA.content[0]?.text ?? '';
+      assert.match(textA, new RegExp(userA), "platform A's caller sees platform A's block");
+      assert.doesNotMatch(textA, new RegExp(userB), "platform A's caller must never see platform B's block");
+
+      const resultB = await listBlockedMembersHandler('admin', platformB as unknown as Platform).handler();
+      const textB = resultB.content[0]?.text ?? '';
+      assert.match(textB, new RegExp(userB), "platform B's caller sees platform B's block");
+      assert.doesNotMatch(textB, new RegExp(userA), "platform B's caller must never see platform A's block");
+    } finally {
+      await unblockUser(platformA, userA);
+      await unblockUser(platformB, userB);
     }
   },
 );

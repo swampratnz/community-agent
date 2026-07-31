@@ -2529,6 +2529,28 @@ serving that sender again. Security posture:
   endpoint), so they add no ToS-risk surface and work while WhatsApp is
   disconnected.
 
+**`list_blocked_members` read (issue #924).** Until #924, `blocked_users` was
+the one moderation state with no `list_*` counterpart — an admin could block/
+unblock but never enumerate who was currently blocked without diffing
+`moderation_history` rows by hand. `list_blocked_members` closes that gap,
+mirroring `list_muted_members` (#487):
+
+- **Admin tier only** (`assertAtLeast(caller.role, 'admin', ...)`), read-only
+  (`annotations: { readOnlyHint: true }`), no CONFIRM — it surfaces no new
+  data, only state `block_user`/`unblock_user` already write and
+  `admin_audit` already logs per-action.
+- **Argument-less.** The enumerated `platform` is always the caller's own
+  resolved platform (`caller.platform`), never a tool-argument or
+  message-supplied value — an admin on one platform cannot enumerate another
+  platform's block list by passing a `platform` argument, because the tool
+  accepts none. Pinned by a `SECURITY:` test.
+- **Guild-wide, not conversation-scoped** — `blocked_users` has no
+  `conversation_id` (`PRIMARY KEY (platform, external_id)`), matching the
+  write path's own scope.
+- **Same minimal-footprint fields already exposed elsewhere**: external id,
+  blocking admin, optional reason, timestamp — no message content. Capped at
+  50 rows, newest-block-first.
+
 ### 20. Discord slash commands (`/kb`, `/whois`, `/projects`, `/guidelines`, `/digest`, `DISCORD_SLASH_COMMANDS_ENABLED`, off by default, issues #744, #841)
 
 Five read-only, zero-model-call Discord application commands, registered
