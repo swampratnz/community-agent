@@ -3157,9 +3157,23 @@ stored text outran its embedding would be silently unfindable by its own tail,
 which is worse than refusing the write.
 
 On top of that, `saveProjectNote` enforces a **rolling-24h per-member write
-cap**, counted inside the `INSERT` statement itself so it cannot be raced by two
-concurrent turns and survives a restart — the shape `createKnowledgeTip` and
-`createSuggestion` use, never an in-memory counter. It is set far higher than
+cap**, counted inside the `INSERT` statement itself — the shape
+`createKnowledgeTip` and `createSuggestion` use, never an in-memory counter, so
+it is restart-proof and cannot be reset by bouncing the process.
+
+**It is deliberately not race-proof, and must not be described as such.** Under
+Postgres' default READ COMMITTED isolation each statement takes its own
+snapshot, so concurrent writes from one member can all observe the same
+pre-insert count and all land: measured, 8 simultaneous statements against a cap
+of 3 inserted all 8. The overshoot is bounded by the size of the concurrent
+burst, not by the cap. This is a known property of the pattern, shared with
+`createKnowledgeTip`/`createSuggestion`, and it is tolerable *here* only because
+the cap is an abuse ceiling on storage inside a team the member is already
+trusted in — not a correctness boundary and not an authorization check. Nothing
+security-relevant may be built on it holding exactly. If a hard bound is ever
+needed, the fix is a per-member `pg_advisory_xact_lock` around the count and
+insert (or `SERIALIZABLE`); that would diverge from the repo-wide pattern, so it
+is an owner call rather than something to change in passing. It is set far higher than
 the 3/day those two carry: every other cap in this repo guards an action that
 costs a *human* something (an admin review-queue entry, a DM to another member),
 whereas a project note costs only storage inside a team the member has already

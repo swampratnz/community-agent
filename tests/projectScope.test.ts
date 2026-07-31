@@ -420,6 +420,13 @@ test(
       assert.ok(ok && 'id' in ok, `write ${i + 1} must land while under the cap`);
     }
 
+    // NOTE: this pins the SEQUENTIAL guarantee only, which is the honest scope
+    // of the check. The COUNT(*)-in-the-INSERT shape is not atomic under READ
+    // COMMITTED — concurrent writes from one member can all read the same
+    // pre-insert count and all land — so there is deliberately no concurrent
+    // assertion here that would be flaky by construction. See saveProjectNote's
+    // comment and docs/SECURITY.md: this is an abuse ceiling, not an
+    // authorization check.
     const overCap = await r.saveProjectNote(caller, { slug, content: NOTE_CONTENT });
     assert.deepEqual(
       overCap,

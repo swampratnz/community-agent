@@ -55,6 +55,10 @@ export const TEAM_PROJECT_BRIEF_MAX_CHARS = 1000;
  * DB-side inside the INSERT (the restart-proof COUNT(*)-in-the-statement shape
  * `createKnowledgeTip`/`createSuggestion` use, never an in-memory counter).
  *
+ * NOT race-proof — see the comment on the INSERT in saveProjectNote. This is an
+ * abuse ceiling, never an authorization check; don't build anything on it
+ * holding exactly.
+ *
  * Deliberately far larger than the 3/day those two carry. Every existing cap
  * in this repo guards an action that costs a HUMAN something — an entry in an
  * admin review queue, a DM to another member — so 3 is a courtesy budget.
@@ -262,8 +266,17 @@ export async function saveProjectNote(
     logger.warn({ err }, 'Embedding failed for project note');
   }
 
-  // The rate check lives INSIDE the insert so it can't be raced by two
-  // concurrent turns, and survives a restart — same shape as createKnowledgeTip.
+  // The rate check lives INSIDE the insert, so it survives a restart and can't
+  // be reset by bouncing the process — same shape as createKnowledgeTip.
+  //
+  // It is NOT atomic, and the PR #929 review was right to say so. Under READ
+  // COMMITTED each statement takes its own snapshot, so concurrent writes from
+  // one member can all read the same pre-insert count and all land (measured: 8
+  // simultaneous statements against a cap of 3 inserted all 8). That is
+  // acceptable only because this is an abuse ceiling on storage inside a team
+  // the member is already trusted in — it is not an authorization check, and
+  // visibleProjectIds above is what actually gates access. A hard bound would
+  // need a per-member pg_advisory_xact_lock around the count and the insert.
   const { rows } = await pool.query(
     `WITH recent AS (
        SELECT count(*) AS n FROM project_notes
