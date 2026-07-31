@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import type { AgentReply } from '../src/agent/core.js';
 import type { IncomingMessage, OutgoingMessage, Platform, PlatformAdapter } from '../src/platforms/types.js';
 import type {
+  MemberInterestRow,
   MemberInterestSearchHit,
   SelfInterestMatchResult,
 } from '../src/storage/repository/memberDiscovery.js';
@@ -130,6 +131,7 @@ interface RouterOpts {
   getCommunityGuidelinesMiFn?: () => Promise<string | null>;
   getLangPref?: () => Promise<'auto' | 'en' | 'mi'>;
   recordShortcutHitFn?: (kind: ShortcutKind) => Promise<void>;
+  listRecentInterestsFn?: (limit?: number) => Promise<MemberInterestRow[]>;
 }
 
 /**
@@ -137,7 +139,8 @@ interface RouterOpts {
  * about either stubbed out (countReplies, checkPaused — deterministic,
  * DB-free) or overridable (the four issue #859 search/digest/guidelines
  * functions, plus `searchMemberInterestsForSelfFn` for issue #889's bare
- * `!whois`), so a `!whois`/`!projects`/`!digest`/`!guidelines` test never
+ * `!whois` and `listRecentInterestsFn` for issue #920's no-profile browse
+ * fallback), so a `!whois`/`!projects`/`!digest`/`!guidelines` test never
  * needs a live Postgres or the real (slow, model-download-on-first-use)
  * `embed()` pipeline — mirroring `knowledgeShortcutRouter.test.ts`'s
  * `searchKnowledgeForShortcut` injection for the exact same reason.
@@ -174,6 +177,8 @@ function makeRouter(opts: RouterOpts = {}): Router {
     opts.buildMemberDigestContentFn, // 23
     undefined, // 24 recentQuestionClustersFn
     opts.searchMemberInterestsForSelfFn, // 25
+    undefined, // 26 checkKnowledgeConflict
+    opts.listRecentInterestsFn, // 27
   );
 }
 
@@ -320,11 +325,12 @@ test('acceptance criterion 3: bare !whois from a member with a published profile
   assert.equal(sent[0].text, 'No members have published interests matching that yet.');
 });
 
-test('acceptance criterion 4: bare !whois from a member with no published profile returns the who_is_into first-time-caller guidance, with no search result rendered', async (t) => {
+test('acceptance criterion 4: bare !whois from a member with no published profile and nothing to browse returns only the who_is_into first-time-caller guidance', async (t) => {
   mockPoolRole(t, 'member');
   const router = makeRouter({
     runTurn: throwingRunTurn,
     searchMemberInterestsForSelfFn: async () => ({ hasProfile: false }),
+    listRecentInterestsFn: async () => [],
   });
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -333,6 +339,60 @@ test('acceptance criterion 4: bare !whois from a member with no published profil
 
   assert.match(sent[0].text, /haven't published interests yet/);
   assert.match(sent[0].text, /set_my_interests/);
+});
+
+// --- bare !whois no-profile browse fallback (issue #920) --------------------
+
+test('issue #920 AC #4/#5: bare !whois from a member with no published profile browses listRecentInterestsFn and still appends the set_my_interests hint', async (t) => {
+  mockPoolRole(t, 'member');
+  const recent: MemberInterestRow[] = [
+    { platform: 'whatsapp', userId: 'browsed-1', interests: 'recently published interests' },
+  ];
+  let callCount = 0;
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    searchMemberInterestsFn: async () => {
+      throw new Error('searchMemberInterestsFn (the query-search path) must never be called for bare !whois');
+    },
+    searchMemberInterestsForSelfFn: async () => ({ hasProfile: false }),
+    listRecentInterestsFn: async () => {
+      callCount += 1;
+      return recent;
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!whois', userId: 'member-1' }));
+
+  assert.equal(callCount, 1, 'listRecentInterestsFn must be invoked exactly once');
+  assert.match(sent[0].text, /<member-interests/);
+  assert.match(sent[0].text, /recently published interests/);
+  assert.match(
+    sent[0].text,
+    /haven't published interests yet/,
+    'the set_my_interests hint still appends after the browsed list',
+  );
+});
+
+test('issue #920: a member WITH an existing profile never reaches listRecentInterestsFn — the self-match path is unaffected', async (t) => {
+  mockPoolRole(t, 'member');
+  const hits: MemberInterestSearchHit[] = [
+    { platform: 'whatsapp', userId: 'target-1', interests: 'rust and distributed systems', similarity: 0.77 },
+  ];
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    searchMemberInterestsForSelfFn: async () => ({ hasProfile: true, hits }),
+    listRecentInterestsFn: async () => {
+      throw new Error('listRecentInterestsFn must never be invoked when the caller already has a profile');
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!whois', userId: 'member-1' }));
+
+  assert.match(sent[0].text, /rust and distributed systems/);
 });
 
 test('a bare "!whois" with only trailing whitespace still takes the no-argument self-match branch', async (t) => {
@@ -596,6 +656,9 @@ async function assertGuestFallsThroughSilently(
     },
     listRecentProjectsFn: async () => {
       throw new Error('listRecentProjectsFn must never be invoked for a rejected caller');
+    },
+    listRecentInterestsFn: async () => {
+      throw new Error('listRecentInterestsFn must never be invoked for a rejected caller');
     },
     buildMemberDigestContentFn: async () => {
       throw new Error('buildMemberDigestContentFn must never be invoked for a rejected caller');

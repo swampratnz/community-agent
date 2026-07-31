@@ -43,6 +43,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   a plain receipt, not a tracker. A connection request whose project has
   since been removed still shows up, with a graceful placeholder in place of
   the (now-gone) project name.
+- **`who_is_into` (and `/whois`/`!whois`) now has a browse-all mode for members
+  who haven't published interests of their own yet** (#920): asking "who's
+  into RAG?" with no topic used to only work if you'd already published your
+  own interests via `set_my_interests` — anyone without a profile got told to
+  publish first and nothing else. Now that same no-topic call instead shows
+  the most recently published interests across the community (mirroring
+  `list_projects`' existing no-query behaviour), still followed by the same
+  `set_my_interests` prompt so newcomers know how to join in themselves.
+  Members who already have a published profile see no change — their own
+  "members like me" match still takes priority.
 
 ### Fixed
 - **`response_latency` now correctly counts and pairs auto-answer replies**
