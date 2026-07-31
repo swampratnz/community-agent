@@ -511,13 +511,25 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
         return '';
       }
       const buffer = await this.downloadMediaBytes(url, accessToken);
-      const transcript = await transcribeVoiceNote(buffer, config.whatsapp.cloud.voice.model);
+      const transcript = await this.transcribeAudioBytes(buffer);
       logger.info({ chars: transcript.length }, 'Transcribed WhatsApp Cloud voice note');
       return transcript;
     } catch (err) {
       logger.warn({ err }, 'WhatsApp Cloud voice-note transcription failed — dropping the note');
       return '';
     }
+  }
+
+  /**
+   * Final step of `maybeTranscribeVoiceNote`: run the already-downloaded
+   * bytes through the platform-agnostic `transcribeVoiceNote` (issue #910).
+   * Split out as its own seam — like `resolveMediaUrl`/`downloadMediaBytes`
+   * above it — so tests can exercise the gate order without the real Whisper
+   * model or ffmpeg (mirrors `BaileysAdapter.transcribeAudioMessage`'s same
+   * purpose for the Baileys path).
+   */
+  private async transcribeAudioBytes(buffer: Buffer): Promise<string> {
+    return transcribeVoiceNote(buffer, config.whatsapp.cloud.voice.model);
   }
 
   /**

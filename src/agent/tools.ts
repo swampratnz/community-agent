@@ -1331,6 +1331,12 @@ export const FEATURE_FLAG_MAP: readonly FeatureFlagEntry[] = [
     label: 'WhatsApp image-attachment input (Cloud API)',
     category: 'WhatsApp',
   },
+  {
+    envVar: 'WHATSAPP_CLOUD_VOICE_ENABLED',
+    configPath: 'whatsapp.cloud.voice.enabled',
+    label: 'WhatsApp voice-note transcription (Cloud API)',
+    category: 'WhatsApp',
+  },
   // Cost/Model
   {
     envVar: 'ACK_SHORTCUT_ENABLED',
