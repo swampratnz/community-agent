@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
-import type { searchKnowledge } from '../src/storage/repository.js';
+import type { hasKnowledgeConflictForId, searchKnowledge } from '../src/storage/repository.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -22,12 +22,13 @@ process.env.GUEST_KNOWLEDGE_SHORTCUT_ENABLED = 'true';
 
 const { config } = await import('../src/config.js');
 const { Router } = await import('../src/router.js');
-const { KNOWLEDGE_STALE_NOTE_MI } = await import('../src/agent/tools.js');
+const { KNOWLEDGE_CONFLICT_CAVEAT_TEXT, KNOWLEDGE_STALE_NOTE_MI } = await import('../src/agent/tools.js');
 const { embed } = await import('../src/storage/embeddings.js');
 
 await embed('warmup').catch(() => {});
 
 type SearchKnowledgeFn = typeof searchKnowledge;
+type CheckConflictFn = typeof hasKnowledgeConflictForId;
 
 function makeAdapter(overrides: Partial<PlatformAdapter> = {}): {
   adapter: PlatformAdapter;
@@ -560,4 +561,76 @@ test('router (guest knowledge shortcut): a member (non-guest) is completely unaf
 
   assert.equal(sent.length, 1);
   assert.equal(sent[0].text, 'real answer', 'the member-tier turn must run untouched by the guest-only flag');
+});
+
+// --- V1 scope boundary: the conflict caveat (issue #918) stays member-only ---
+//
+// Mirrors #337's own deliberate exclusion of the low-rated caveat from this
+// path ("the gated-guest shortcut still never passes it") — a gated guest
+// isn't yet a member, and this proposal changes nothing about that existing
+// posture. `sendGuestKnowledgeShortcut` has no `checkKnowledgeConflict` call
+// site at all, so this pins the boundary rather than exercising a branch.
+
+test('SECURITY: router (guest knowledge shortcut): sendGuestKnowledgeShortcut never consults checkKnowledgeConflict — reply is byte-identical whether it would resolve true or false (issue #918)', async () => {
+  const buildRouter = (checkKnowledgeConflict: CheckConflictFn) =>
+    new Router(
+      async () => {
+        throw new Error('runTurn must not be called for a gated guest');
+      },
+      20,
+      undefined, // checkPaused
+      fixedHitSearch(0.95),
+      async () => {}, // recordShortcutRetrieval
+      undefined, // countReplies
+      undefined, // getLangPref
+      undefined, // checkLowRatedKnowledge
+      undefined, // getGatedNotice
+      undefined, // getRespStyle
+      undefined, // recordShortcutHit
+      undefined, // recordAccessRequestFn
+      undefined, // notifyAccessRequestFn
+      undefined, // notifyAdminsFn
+      undefined, // recordEscalatedGapFn
+      undefined, // markKnowledgeGapsAlertedFn
+      undefined, // markStaleKnowledgeAlertedFn
+      undefined, // getCommunityGuidelinesFn
+      undefined, // getCommunityGuidelinesMiFn
+      undefined, // searchMemberInterestsFn
+      undefined, // searchProjectsFn
+      undefined, // listRecentProjectsFn
+      undefined, // buildMemberDigestContentFn
+      undefined, // recentQuestionClustersFn
+      undefined, // searchMemberInterestsForSelfFn
+      checkKnowledgeConflict,
+    );
+
+  let calledWithTrue = false;
+  const { adapter: adapterTrue, sent: sentTrue, trigger: triggerTrue } = makeAdapter();
+  buildRouter(async () => {
+    calledWithTrue = true;
+    return true;
+  }).register(adapterTrue);
+  await triggerTrue(makeMessage());
+
+  let calledWithFalse = false;
+  const { adapter: adapterFalse, sent: sentFalse, trigger: triggerFalse } = makeAdapter();
+  buildRouter(async () => {
+    calledWithFalse = true;
+    return false;
+  }).register(adapterFalse);
+  await triggerFalse(makeMessage());
+
+  assert.equal(sentTrue.length, 1);
+  assert.equal(sentFalse.length, 1);
+  assert.equal(
+    sentTrue[0].text,
+    sentFalse[0].text,
+    'the guest reply must be byte-identical regardless of what checkKnowledgeConflict would resolve to',
+  );
+  assert.doesNotMatch(
+    sentTrue[0].text,
+    new RegExp(KNOWLEDGE_CONFLICT_CAVEAT_TEXT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+  );
+  assert.equal(calledWithTrue, false, 'the guest shortcut path must never consult checkKnowledgeConflict');
+  assert.equal(calledWithFalse, false, 'the guest shortcut path must never consult checkKnowledgeConflict');
 });

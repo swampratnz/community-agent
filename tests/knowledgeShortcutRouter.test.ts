@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
-import type { searchKnowledge } from '../src/storage/repository.js';
+import type { hasKnowledgeConflictForId, searchKnowledge } from '../src/storage/repository.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -19,11 +19,13 @@ process.env.KNOWLEDGE_SHORTCUT_ENABLED = 'true';
 
 const { config } = await import('../src/config.js');
 const { Router } = await import('../src/router.js');
+const { KNOWLEDGE_CONFLICT_CAVEAT_TEXT } = await import('../src/agent/tools.js');
 const { embed } = await import('../src/storage/embeddings.js');
 
 await embed('warmup').catch(() => {});
 
 type SearchKnowledgeFn = typeof searchKnowledge;
+type CheckConflictFn = typeof hasKnowledgeConflictForId;
 
 function makeAdapter(overrides: Partial<PlatformAdapter> = {}): {
   adapter: PlatformAdapter;
@@ -519,4 +521,122 @@ test('router (knowledge shortcut): with the low-rated caveat left at its default
     "Be kind and follow the code of conduct.\n\n— From our knowledge base; ask me to explain if this doesn't quite answer it.",
   );
   assert.doesNotMatch(sent[0].text, /rate_answer/);
+});
+
+// --- Unreconciled-conflict caveat on the member shortcut (issue #918) ---
+//
+// `hasConflictAmongIds` (issue #389) can't answer this: it short-circuits to
+// `false` for any array shorter than 2 elements, and the shortcut only ever
+// serves one hit. `hasKnowledgeConflictForId` is the single-id sibling this
+// path needed. Unlike the low-rated caveat above, this lookup is
+// unconditional (no config gate) — matching knowledge_search/`/kb`'s own
+// unconditional conflict check — so every test in this file that leaves
+// `checkKnowledgeConflict` at its real default resolves it against the
+// unreachable dummy DATABASE_URL and fails safe to `false`.
+
+/** Builds a full Router so `checkKnowledgeConflict` (a late positional ctor param) can be injected/spied without listing every field in between. */
+function makeRouterForConflictCaveat(opts: {
+  runTurn?: ConstructorParameters<typeof Router>[0];
+  searchKnowledgeForShortcut: SearchKnowledgeFn;
+  recordShortcutRetrieval?: ConstructorParameters<typeof Router>[4];
+  checkKnowledgeConflict: CheckConflictFn;
+}): InstanceType<typeof Router> {
+  return new Router(
+    opts.runTurn ??
+      (async () => {
+        throw new Error('runTurn must not be called for a near-exact knowledge-shortcut match');
+      }),
+    20,
+    undefined, // checkPaused
+    opts.searchKnowledgeForShortcut,
+    opts.recordShortcutRetrieval ?? (async () => {}),
+    undefined, // countReplies
+    undefined, // getLangPref
+    undefined, // checkLowRatedKnowledge
+    undefined, // getGatedNotice
+    undefined, // getRespStyle
+    undefined, // recordShortcutHit
+    undefined, // recordAccessRequestFn
+    undefined, // notifyAccessRequestFn
+    undefined, // notifyAdminsFn
+    undefined, // recordEscalatedGapFn
+    undefined, // markKnowledgeGapsAlertedFn
+    undefined, // markStaleKnowledgeAlertedFn
+    undefined, // getCommunityGuidelinesFn
+    undefined, // getCommunityGuidelinesMiFn
+    undefined, // searchMemberInterestsFn
+    undefined, // searchProjectsFn
+    undefined, // listRecentProjectsFn
+    undefined, // buildMemberDigestContentFn
+    undefined, // recentQuestionClustersFn
+    undefined, // searchMemberInterestsForSelfFn
+    opts.checkKnowledgeConflict,
+  );
+}
+
+test('SECURITY: router (knowledge shortcut): a served entry with an unreconciled conflict gets KNOWLEDGE_CONFLICT_CAVEAT_TEXT appended (issue #918)', async () => {
+  const calls: number[] = [];
+  const router = makeRouterForConflictCaveat({
+    searchKnowledgeForShortcut: fixedHitSearch(0.95),
+    checkKnowledgeConflict: async (id) => {
+      calls.push(id);
+      return true;
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage());
+
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /Be kind and follow the code of conduct\./);
+  assert.match(
+    sent[0].text,
+    new RegExp(`\\(${KNOWLEDGE_CONFLICT_CAVEAT_TEXT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\)`),
+  );
+  assert.deepEqual(
+    calls,
+    [1],
+    'SECURITY: the check is keyed on the served hit id, never a full-conversation batch',
+  );
+});
+
+test('router (knowledge shortcut): a served entry with no conflict omits KNOWLEDGE_CONFLICT_CAVEAT_TEXT, byte-identical to the pre-#918 shortcut reply', async () => {
+  let called = false;
+  const router = makeRouterForConflictCaveat({
+    searchKnowledgeForShortcut: fixedHitSearch(0.95),
+    checkKnowledgeConflict: async () => {
+      called = true;
+      return false;
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage());
+
+  assert.equal(sent.length, 1);
+  assert.ok(called, 'the lookup still fires (unconditional) — it just resolves no-conflict');
+  assert.equal(
+    sent[0].text,
+    "Be kind and follow the code of conduct.\n\n— From our knowledge base; ask me to explain if this doesn't quite answer it.",
+  );
+  assert.doesNotMatch(sent[0].text, /disagree with each other/);
+});
+
+test('SECURITY: router (knowledge shortcut): a conflict-lookup failure falls back to omitting the caveat rather than blocking or erroring the reply', async () => {
+  const router = makeRouterForConflictCaveat({
+    searchKnowledgeForShortcut: fixedHitSearch(0.95),
+    checkKnowledgeConflict: async () => {
+      throw new Error('DB unreachable');
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await assert.doesNotReject(trigger(makeMessage()));
+
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /Be kind and follow the code of conduct\./);
+  assert.doesNotMatch(sent[0].text, /disagree with each other/);
 });
