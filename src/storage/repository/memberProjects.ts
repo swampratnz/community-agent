@@ -403,6 +403,53 @@ export async function countProjectConnectionsSince(since: Date): Promise<number>
   return Number(rows[0].n);
 }
 
+/** A caller's own recorded connection request — a receipt (what was asked, when), never a status: the table has no status column (issue #908). */
+export interface ProjectConnectionRequestReceipt {
+  id: number;
+  projectId: number;
+  /** The requested project's name, or null if that `member_projects` row is gone (owner purged/left/forgot themselves) since the request was recorded. */
+  projectName: string | null;
+  createdAt: Date;
+}
+
+/**
+ * Self-scoped read of a member's OWN sent connection requests (issue #908) —
+ * the `my_submissions` receipt for `request_project_connection`, matching
+ * `listOwnKnowledgeCandidates`'s exact shape/clamp. Scoped to
+ * `requester_platform`/`requester_user_id` ONLY — `project_connection_requests`
+ * is two-sided-keyed (the same identity can appear as `owner_*` on a
+ * different row, for a request THEY received), and this must never surface
+ * those; a request the caller merely owns is not one they filed.
+ *
+ * LEFT JOINs `member_projects` for the project name rather than requiring the
+ * row still exist: the owner may have since removed, purged, or left with
+ * that project, and (unlike `getActiveProjectById`) the receipt must still
+ * render for a since-gone project — `projectName` reads back `null` rather
+ * than throwing or silently dropping the row.
+ */
+export async function listOwnProjectConnectionRequests(
+  platform: Platform,
+  userId: string,
+  limit = 10,
+): Promise<ProjectConnectionRequestReceipt[]> {
+  const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 10, 1), 50);
+  const { rows } = await pool.query(
+    `SELECT pcr.id, pcr.project_id, mp.name AS project_name, pcr.created_at
+       FROM project_connection_requests pcr
+       LEFT JOIN member_projects mp ON mp.id = pcr.project_id
+      WHERE pcr.requester_platform = $1 AND pcr.requester_user_id = $2
+      ORDER BY pcr.created_at DESC
+      LIMIT $3`,
+    [platform, userId, clampedLimit],
+  );
+  return rows.map((r) => ({
+    id: Number(r.id),
+    projectId: Number(r.project_id),
+    projectName: (r.project_name as string | null) ?? null,
+    createdAt: r.created_at as Date,
+  }));
+}
+
 function mapMemberProjectRow(r: {
   id: number | string;
   platform: string;

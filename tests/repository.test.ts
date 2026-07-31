@@ -191,6 +191,7 @@ const {
   getActiveProjectById,
   recordProjectConnectionIfUnderCap,
   isProjectConnectionRequesterAtDailyCap,
+  listOwnProjectConnectionRequests,
   PROJECT_CONNECTION_OWNER_WEEKLY_LIMIT,
   PROJECT_CONNECTION_REQUESTER_DAILY_LIMIT,
   responseLatencyStats,
@@ -7768,6 +7769,119 @@ test(
     await pool.query(`DELETE FROM project_connection_requests WHERE owner_user_id = $1`, [
       `${RUN}-leave-pc-other-owner`,
     ]);
+  },
+);
+
+test(
+  "repository: listOwnProjectConnectionRequests returns the caller's own SENT connection requests newest-first with the requested project's name and a null name for a since-gone project row, honouring the 1–50 limit clamp (issue #908)",
+  { skip },
+  async () => {
+    const requester = `${RUN}-my-connreq-user`;
+    const owner1 = `${RUN}-my-connreq-owner-1`;
+    const owner2 = `${RUN}-my-connreq-owner-2`;
+
+    const shared1 = await shareProject({
+      platform: 'discord',
+      userId: owner1,
+      name: 'Receipt Project One',
+      description: 'first project',
+      seekingCollaborators: true,
+    });
+    const shared2 = await shareProject({
+      platform: 'discord',
+      userId: owner2,
+      name: 'Receipt Project Two',
+      description: 'second project',
+      seekingCollaborators: true,
+    });
+    assert.ok(shared1.ok && shared2.ok, 'fixtures recorded');
+
+    const insertReq = async (ownerUserId: string, projectId: number) => {
+      const { rows } = await pool.query(
+        `INSERT INTO project_connection_requests
+           (owner_platform, owner_user_id, requester_platform, requester_user_id, project_id)
+         VALUES ('discord', $1, 'discord', $2, $3) RETURNING id`,
+        [ownerUserId, requester, projectId],
+      );
+      return Number(rows[0].id);
+    };
+
+    const req1Id = await insertReq(owner1, shared1.id);
+    const req2Id = await insertReq(owner2, shared2.id);
+    // No FK on project_id (see recordProjectConnectionIfUnderCap's own
+    // fixtures using arbitrary ids) — a nonexistent id mirrors a project row
+    // that's since been removed (owner purged/left) after the request was
+    // recorded, which is a real, reachable state.
+    const reqGoneId = await insertReq(`${RUN}-my-connreq-owner-gone`, shared1.id + 5_000_000);
+
+    const own = await listOwnProjectConnectionRequests('discord', requester);
+    assert.deepEqual(
+      own.map((r) => r.id),
+      [reqGoneId, req2Id, req1Id],
+      'own requests are returned newest-first',
+    );
+    assert.deepEqual(
+      own.map((r) => r.projectName),
+      [null, 'Receipt Project Two', 'Receipt Project One'],
+      "a since-gone project's row reads back a null name rather than throwing or being dropped",
+    );
+
+    assert.equal(
+      (await listOwnProjectConnectionRequests('discord', requester, -5)).length,
+      1,
+      'a non-positive limit is clamped to a floor of 1, mirroring listOwnKnowledgeCandidates',
+    );
+    assert.equal(
+      (await listOwnProjectConnectionRequests('discord', requester, 999)).length,
+      3,
+      'an over-large limit is clamped to a ceiling of 50, not passed straight through',
+    );
+
+    await pool.query(`DELETE FROM project_connection_requests WHERE requester_user_id = $1`, [requester]);
+    await pool.query(`DELETE FROM member_projects WHERE id = ANY($1)`, [[shared1.id, shared2.id]]);
+  },
+);
+
+test(
+  "SECURITY: repository: listOwnProjectConnectionRequests only ever returns the caller's OWN requester-role rows — never a row where the caller is merely the project OWNER who received a request, and never another member's requester rows (issue #908 acceptance criterion 3)",
+  { skip },
+  async () => {
+    const callerA = `${RUN}-my-connreq-security-A`;
+    const callerB = `${RUN}-my-connreq-security-B`;
+    const ownerForA = `${RUN}-my-connreq-security-owner-for-A`;
+    const requesterToA = `${RUN}-my-connreq-security-requester-to-A`;
+    const ownerForB = `${RUN}-my-connreq-security-owner-for-B`;
+
+    const insertReq = async (ownerUserId: string, requesterUserId: string, projectId: number) => {
+      const { rows } = await pool.query(
+        `INSERT INTO project_connection_requests
+           (owner_platform, owner_user_id, requester_platform, requester_user_id, project_id)
+         VALUES ('discord', $1, 'discord', $2, $3) RETURNING id`,
+        [ownerUserId, requesterUserId, projectId],
+      );
+      return Number(rows[0].id);
+    };
+
+    // The one row that SHOULD appear for A: A is the requester.
+    const aAsRequesterId = await insertReq(ownerForA, callerA, 1);
+    // A is the OWNER of a project someone else requested to connect on —
+    // must never appear in A's OWN "requests I sent" list.
+    await insertReq(callerA, requesterToA, 2);
+    // B's own filed request — a different member's row, must never appear for A.
+    await insertReq(ownerForB, callerB, 3);
+
+    const ownA = await listOwnProjectConnectionRequests('discord', callerA);
+    assert.deepEqual(
+      ownA.map((r) => r.id),
+      [aAsRequesterId],
+      'only the row where A is the requester is returned',
+    );
+
+    await pool.query(
+      `DELETE FROM project_connection_requests
+        WHERE requester_user_id = ANY($1) OR owner_user_id = ANY($1)`,
+      [[callerA, callerB, ownerForA, requesterToA, ownerForB]],
+    );
   },
 );
 

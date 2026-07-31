@@ -139,6 +139,7 @@ const {
   shareProject,
   setMemberInterests,
   purgeUserData,
+  recordProjectConnectionIfUnderCap,
 } = await import('../src/storage/repository.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { embed } = await import('../src/storage/embeddings.js');
@@ -18482,6 +18483,180 @@ test(
       new RegExp(resolverAdminId),
       "SECURITY: resolvedBy (the reviewing admin's identity) must never appear in the caller's own view",
     );
+  },
+);
+
+test(
+  'my_submissions lists the caller\'s own sent connection request(s) in a "Your connection requests:" section — id, project name, relative age — with no status (there is none to show, issue #908)',
+  { skip },
+  async () => {
+    const userId = `${MY_SUBMISSIONS_HANDLER_USER}-connreq`;
+    const ownerId = `${MY_SUBMISSIONS_HANDLER_USER}-connreq-owner`;
+
+    const shared = await shareProject({
+      platform: 'whatsapp',
+      userId: ownerId,
+      name: 'Community Dashboard',
+      description: 'a dashboard project',
+      seekingCollaborators: true,
+    });
+    assert.ok(shared.ok, 'fixture project recorded');
+    const claimed = await recordProjectConnectionIfUnderCap(
+      'whatsapp',
+      ownerId,
+      'whatsapp',
+      userId,
+      shared.id,
+    );
+    assert.ok(claimed, 'fixture connection request recorded');
+
+    const result = await mySubmissionsHandler(userId).handler();
+    const output = result.content[0]?.text ?? '';
+
+    assert.equal(result.isError, false);
+    assert.match(output, /Your connection requests:/);
+    assert.match(
+      output,
+      /- #\d+ — Community Dashboard — filed [^\n]+$/m,
+      'the row shows id, project name, and relative age, with no bracketed status',
+    );
+
+    await pool.query(`DELETE FROM project_connection_requests WHERE requester_user_id = $1`, [userId]);
+    await pool.query(`DELETE FROM member_projects WHERE id = $1`, [shared.id]);
+  },
+);
+
+test(
+  'my_submissions omits the "Your connection requests:" block when the caller has sent none, leaving the rest of the rendering unchanged (issue #908)',
+  { skip },
+  async () => {
+    const userId = `${MY_SUBMISSIONS_HANDLER_USER}-no-connreq`;
+    const suggestion = await createSuggestion({
+      platform: 'whatsapp',
+      userId,
+      content: 'add dark mode five',
+    });
+    assert.ok(suggestion, 'fixture recorded');
+
+    const result = await mySubmissionsHandler(userId).handler();
+    const output = result.content[0]?.text ?? '';
+
+    assert.equal(result.isError, false);
+    assert.match(output, new RegExp(`#${suggestion.id}.*\\[new\\].*add dark mode five`));
+    assert.doesNotMatch(
+      output,
+      /Your connection requests:/,
+      'no connection requests sent, so no section header at all',
+    );
+  },
+);
+
+test(
+  'my_submissions renders a graceful placeholder, not a crash, for a connection request whose project has since been removed (issue #908)',
+  { skip },
+  async () => {
+    const userId = `${MY_SUBMISSIONS_HANDLER_USER}-connreq-gone-project`;
+    const ownerId = `${MY_SUBMISSIONS_HANDLER_USER}-connreq-gone-project-owner`;
+
+    const shared = await shareProject({
+      platform: 'whatsapp',
+      userId: ownerId,
+      name: 'Soon Gone Project',
+      description: 'will be deleted',
+      seekingCollaborators: true,
+    });
+    assert.ok(shared.ok);
+    const claimed = await recordProjectConnectionIfUnderCap(
+      'whatsapp',
+      ownerId,
+      'whatsapp',
+      userId,
+      shared.id,
+    );
+    assert.ok(claimed);
+    // Hard-delete the project row directly — the real-world equivalent is the
+    // owner's forget_me/purge or roster-leave cascade, which (per
+    // memberProjects.ts) always deletes the connection-request rows for that
+    // identity too; a direct delete here isolates JUST the join's null-name
+    // fallback without also erasing the row under test.
+    await pool.query(`DELETE FROM member_projects WHERE id = $1`, [shared.id]);
+
+    const result = await mySubmissionsHandler(userId).handler();
+    const output = result.content[0]?.text ?? '';
+
+    assert.equal(result.isError, false);
+    assert.match(output, /Your connection requests:/);
+    assert.doesNotMatch(output, /Soon Gone Project/, 'the removed project name is gone, not stale-cached');
+    assert.match(
+      output,
+      /- #\d+ — a project that is no longer listed — filed/,
+      'a graceful placeholder renders instead of a blank field or a thrown error',
+    );
+
+    await pool.query(`DELETE FROM project_connection_requests WHERE requester_user_id = $1`, [userId]);
+  },
+);
+
+test(
+  "SECURITY: my_submissions never lists a connection request the caller merely OWNS (received, not sent), and never another member's sent connection request (issue #908 acceptance criterion 3)",
+  { skip },
+  async () => {
+    const userId = `${MY_SUBMISSIONS_HANDLER_USER}-connreq-security`;
+    const otherUser = `${MY_SUBMISSIONS_HANDLER_USER}-connreq-security-other`;
+    const someoneElseOwner = `${MY_SUBMISSIONS_HANDLER_USER}-connreq-security-owner`;
+
+    const ownProject = await shareProject({
+      platform: 'whatsapp',
+      userId,
+      name: "Caller's Own Project",
+      description: 'owned by the caller',
+      seekingCollaborators: true,
+    });
+    const otherProject = await shareProject({
+      platform: 'whatsapp',
+      userId: someoneElseOwner,
+      name: "Another Member's Project",
+      description: 'owned by someone else',
+      seekingCollaborators: true,
+    });
+    assert.ok(ownProject.ok && otherProject.ok);
+
+    // A request the caller RECEIVED (they're the owner, not the requester) —
+    // must never appear as one of the caller's own "sent" requests.
+    const received = await recordProjectConnectionIfUnderCap(
+      'whatsapp',
+      userId,
+      'whatsapp',
+      otherUser,
+      ownProject.id,
+    );
+    // Another member's own sent request, unrelated to the caller entirely.
+    const theirs = await recordProjectConnectionIfUnderCap(
+      'whatsapp',
+      someoneElseOwner,
+      'whatsapp',
+      otherUser,
+      otherProject.id,
+    );
+    assert.ok(received && theirs, 'fixtures recorded');
+
+    const result = await mySubmissionsHandler(userId).handler();
+    const output = result.content[0]?.text ?? '';
+
+    assert.equal(result.isError, true, 'the caller sent no connection requests of their own');
+    assert.doesNotMatch(
+      output,
+      /Your connection requests:/,
+      'SECURITY: a received-but-not-sent request must never render a connection-requests section',
+    );
+    assert.doesNotMatch(
+      output,
+      /Another Member's Project/,
+      "SECURITY: another member's sent connection request must never leak into this caller's view",
+    );
+
+    await pool.query(`DELETE FROM project_connection_requests WHERE requester_user_id = $1`, [otherUser]);
+    await pool.query(`DELETE FROM member_projects WHERE id = ANY($1)`, [[ownProject.id, otherProject.id]]);
   },
 );
 
