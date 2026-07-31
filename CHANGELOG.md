@@ -61,6 +61,13 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   `set_my_interests` prompt so newcomers know how to join in themselves.
   Members who already have a published profile see no change — their own
   "members like me" match still takes priority.
+- **Admins can now list who's currently blocked on WhatsApp** (#924) — a new
+  `list_blocked_members` tool enumerates the bot-side block list
+  (`block_user`/`unblock_user`, #572) by identity: external id, blocking
+  admin, reason, and when, newest first. Until now the block list was the one
+  moderation state with no read path, mirroring the gap `list_muted_members`
+  (#487) closed for mutes. Admin-tier, read-only, no new data — it only
+  aggregates state the block flow already writes and audits.
 
 ### Fixed
 - **`response_latency` now correctly counts and pairs auto-answer replies**

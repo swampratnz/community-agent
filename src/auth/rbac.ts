@@ -212,6 +212,10 @@ export const ADMIN_TOOLS = [
   // conversation-scoped boundary as clear_warnings/list_member_warnings;
   // never includes reason/excerpt.
   'mcp__community__list_muted_members',
+  // Enumerates the WhatsApp bot-side block list (issue #924) — the read
+  // block_user/unblock_user (#572) never got. Same admin-tier, guild-wide
+  // (blocked_users has no conversation_id) boundary as list_muted_members.
+  'mcp__community__list_blocked_members',
   // Durable queue for appeal_moderation (issue #554): a member appealing
   // their own active warning(s)/mute is a self-scoped MEMBER_TOOLS write
   // (appeal_moderation); reviewing/resolving the filed appeal is admin-tier,

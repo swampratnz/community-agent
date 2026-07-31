@@ -306,6 +306,40 @@ export async function isUserBlocked(platform: string, externalId: string): Promi
   return rows.length > 0;
 }
 
+export interface BlockedUserRow {
+  externalId: string;
+  blockedBy: string;
+  reason: string | null;
+  blockedAt: Date;
+}
+
+/**
+ * Enumerate the bot-side block list (issue #924) — the read
+ * `block_user`/`unblock_user` (#572) never got, the same "a bare count/log
+ * is not a 'who' answer" gap `listMutedMembers` (#487) closed for auto-
+ * moderation mutes. `blocked_users` has no `conversation_id`
+ * (`PRIMARY KEY (platform, external_id)`), so this is guild-wide by
+ * construction, same as `listMutedMembers`. Newest-block-first, capped at
+ * `limit`, bound parameters only, same injection posture as every other
+ * query in this file.
+ */
+export async function listBlockedUsers(platform: string, limit = 50): Promise<BlockedUserRow[]> {
+  const { rows } = await pool.query(
+    `SELECT external_id, blocked_by, reason, blocked_at
+       FROM blocked_users
+      WHERE platform = $1
+      ORDER BY blocked_at DESC
+      LIMIT $2`,
+    [platform, limit],
+  );
+  return rows.map((r) => ({
+    externalId: r.external_id,
+    blockedBy: r.blocked_by,
+    reason: r.reason,
+    blockedAt: r.blocked_at,
+  }));
+}
+
 // --- Moderation appeals (durable record of appeal_moderation, issue #554) --
 
 export type ModerationAppealStatus = 'open' | 'resolved' | 'dismissed';

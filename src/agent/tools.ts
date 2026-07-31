@@ -61,6 +61,7 @@ import {
   listKnowledgeConflictCandidates,
   listKnowledgeCandidates,
   listKnowledgeTopics,
+  listBlockedUsers,
   listMemberNotes,
   listMemberWarnings,
   listMutedMembers,
@@ -1763,7 +1764,7 @@ const WHATSAPP_TEXT_COMMANDS_TEXT =
  */
 const ADMIN_CAPABILITIES_TEXT =
   'As an admin, you also have:\n' +
-  "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread, review the moderation history log, pull one member's full warning history, list everyone who's currently muted, or review and resolve filed appeals\n" +
+  "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread, review the moderation history log, pull one member's full warning history, list everyone who's currently muted, list who's currently blocked on WhatsApp, or review and resolve filed appeals\n" +
   "- Manage membership: add a new member, remove a member, link a member's cross-platform identity, or unlink a member's cross-platform identity\n" +
   '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, check which knowledge entries are rated poorly, and review recurring unhelpful-answer themes across all answers\n' +
   '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
@@ -5183,6 +5184,34 @@ export function buildToolServer(
     { annotations: { readOnlyHint: true } },
   );
 
+  const listBlockedMembersTool = tool(
+    'list_blocked_members',
+    "Enumerate WhatsApp's bot-side block list (issue #924) — the read `block_user`/`unblock_user` " +
+      "(#572) never got, the same 'a bare count/log is not a who answer' gap list_muted_members (#487) " +
+      'closed for auto-moderation mutes. Each row is external id, who blocked them, reason (if any), and ' +
+      'blocked-at timestamp — the same fields moderation_history already shows per-action, just not ' +
+      'aggregated into one current-state view. Admin only, guild-wide (blocked_users has no ' +
+      'conversation_id), capped at 50 rows, newest block first.',
+    {},
+    async () => {
+      assertAtLeast(caller.role, 'admin', 'list_blocked_members');
+      const rows = await listBlockedUsers(caller.platform);
+      if (rows.length === 0) return text('No blocked users.');
+      return text(
+        untrusted(
+          'Blocked users',
+          rows
+            .map((r) => {
+              const reasonText = r.reason ? `: ${r.reason}` : '';
+              return `${r.externalId} — blocked by ${r.blockedBy} at ${r.blockedAt.toISOString()}${reasonText}`;
+            })
+            .join('\n'),
+        ),
+      );
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
   const listAppealsTool = tool(
     'list_appeals',
     "List members' filed appeals of their own auto-moderation warning(s)/mute (issue #554) — the durable " +
@@ -8010,6 +8039,7 @@ export function buildToolServer(
       clearWarningsTool,
       listMemberWarningsTool,
       listMutedMembersTool,
+      listBlockedMembersTool,
       listAppealsTool,
       resolveAppealTool,
       announce,
