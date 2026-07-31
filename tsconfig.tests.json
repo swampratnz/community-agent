@@ -30,6 +30,7 @@
     "tests/memberDigest.test.ts",
     "tests/projectScope.test.ts",
     "tests/schemaConstraintIdempotency.test.ts",
-    "tests/usageCostDigest.test.ts"
+    "tests/usageCostDigest.test.ts",
+    "tests/whoIsIntoBrowseEmbedCount.test.ts"
   ]
 }

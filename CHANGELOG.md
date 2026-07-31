@@ -27,6 +27,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-07-31
 
 ### Added
+- **WhatsApp's `!projects` shortcut now has a `mine` recall filter** (#916):
+  `!projects mine` lists your own shared projects, matching the `mine`
+  filter `list_projects` and Discord's `/projects` already had (#867/#869).
+  Since `share_project`'s edit/remove flow is upsert-by-name, this makes it
+  easy to recall the exact name of a project you shared a while ago (or one
+  of several) without guessing. Same empty-state message and rendering as
+  the other two surfaces; no change to plain `!projects` or `!projects
+  <query>`.
 - **Projects: a standing team can now have shared memory that follows the team
   across Discord and WhatsApp** (#927). An admin creates a project
   (`project_create`), adds members (`project_add_member`), and binds the
@@ -61,6 +69,23 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   a plain receipt, not a tracker. A connection request whose project has
   since been removed still shows up, with a graceful placeholder in place of
   the (now-gone) project name.
+- **`who_is_into` (and `/whois`/`!whois`) now has a browse-all mode for members
+  who haven't published interests of their own yet** (#920): asking "who's
+  into RAG?" with no topic used to only work if you'd already published your
+  own interests via `set_my_interests` — anyone without a profile got told to
+  publish first and nothing else. Now that same no-topic call instead shows
+  the most recently published interests across the community (mirroring
+  `list_projects`' existing no-query behaviour), still followed by the same
+  `set_my_interests` prompt so newcomers know how to join in themselves.
+  Members who already have a published profile see no change — their own
+  "members like me" match still takes priority.
+- **Admins can now list who's currently blocked on WhatsApp** (#924) — a new
+  `list_blocked_members` tool enumerates the bot-side block list
+  (`block_user`/`unblock_user`, #572) by identity: external id, blocking
+  admin, reason, and when, newest first. Until now the block list was the one
+  moderation state with no read path, mirroring the gap `list_muted_members`
+  (#487) closed for mutes. Admin-tier, read-only, no new data — it only
+  aggregates state the block flow already writes and audits.
 
 ### Fixed
 - **`response_latency` now correctly counts and pairs auto-answer replies**

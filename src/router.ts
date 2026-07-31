@@ -44,6 +44,8 @@ import {
   isKnowledgeStale,
   isUserBlocked,
   listAdmins,
+  listOwnProjects,
+  listRecentInterests,
   listRecentProjects,
   markKnowledgeGapsAlerted,
   markStaleKnowledgeAlerted,
@@ -531,6 +533,19 @@ export class Router {
    * — and `.catch()`-guarded to `false` like every other caveat lookup on
    * this path, so a lookup failure degrades to no caveat rather than a
    * blocked reply.
+   * `listOwnProjectsFn` defaults to the real `listOwnProjects` (issue #916),
+   * another trailing defaulted field added after `checkKnowledgeConflict`
+   * for the same call-site-stability reason; consulted only from
+   * `tryWhatsAppTextCommand`'s `!projects mine` branch, keyed on
+   * `msg.platform`/`msg.userId` only — mirroring
+   * `list_projects({ mine: true })`/`/projects mine:true`'s own
+   * self-scoping, the third and last of the three `mine` surfaces.
+   * `listRecentInterestsFn` defaults to the real `listRecentInterests`
+   * (issue #920), a further trailing field for the same call-site-stability
+   * reason as `searchMemberInterestsForSelfFn`/`checkKnowledgeConflict`
+   * above; consulted only from `tryWhatsAppTextCommand`'s bare-`!whois`
+   * branch when `searchMemberInterestsForSelfFn` reports `hasProfile: false`
+   * — the same no-profile browse fallback who_is_into/`/whois` gained.
    */
   constructor(
     private readonly runTurn: typeof runAgentTurn = runAgentTurn,
@@ -559,6 +574,8 @@ export class Router {
     private readonly recentQuestionClustersFn: typeof recentQuestionClusters = recentQuestionClusters,
     private readonly searchMemberInterestsForSelfFn: typeof searchMemberInterestsForSelf = searchMemberInterestsForSelf,
     private readonly checkKnowledgeConflict: typeof hasKnowledgeConflictForId = hasKnowledgeConflictForId,
+    private readonly listOwnProjectsFn: typeof listOwnProjects = listOwnProjects,
+    private readonly listRecentInterestsFn: typeof listRecentInterests = listRecentInterests,
   ) {
     setInterval(() => this.sweep(), this.RATE_WINDOW_MS * 5).unref();
   }
@@ -1836,7 +1853,7 @@ export class Router {
    * same knowledge read would be redundant scope.
    *
    * Returns `null` on any of: the platform isn't WhatsApp, the trimmed text
-   * matches none of the four prefixes, or the caller doesn't clear the
+   * matches none of the five prefixes, or the caller doesn't clear the
    * command's tier floor — every one of those causes the caller in
    * `handle()` to fall through to a normal turn, never a distinguishing
    * reply (see the call site's comment for why silent fallthrough, not a
@@ -1872,14 +1889,30 @@ export class Router {
       // #882's "never inferred from chat content" invariant).
       const selfMatch = await this.searchMemberInterestsForSelfFn(msg.platform, msg.userId);
       if (!selfMatch.hasProfile) {
-        return (
+        // Issue #920: same no-profile browse fallback as who_is_into's chat
+        // path and /whois — a separate call site, wired independently via
+        // the injected listRecentInterestsFn.
+        const hint =
           "You haven't published interests yet — call set_my_interests first, then who_is_into with no " +
-          'topic will search using your own published interests.'
-        );
+          'topic will search using your own published interests.';
+        const recent = await this.listRecentInterestsFn();
+        return recent.length === 0 ? hint : `${await formatInterestResults(recent)}\n\n${hint}`;
       }
       return selfMatch.hits.length === 0
         ? 'No members have published interests matching that yet.'
         : await formatInterestResults(selfMatch.hits);
+    }
+
+    // Checked BEFORE the general `!projects [query]` branch below so the
+    // literal word "mine" is never swallowed as a `searchProjectsFn` query
+    // (issue #916) — mirrors `list_projects({ mine: true })`'s own ignore-
+    // query-when-mine behaviour rather than blending the two.
+    if (/^!projects\s+mine$/i.test(text)) {
+      if (!atLeast(role, 'member')) return null;
+      const projects = await this.listOwnProjectsFn(msg.platform, msg.userId);
+      return projects.length === 0
+        ? "You haven't shared any projects yet."
+        : await formatProjectResults(projects);
     }
 
     const projectsMatch = /^!projects(?:\s+(.+))?$/i.exec(text);
@@ -1921,8 +1954,9 @@ export class Router {
    * precedent (issue #162 point 4, reused for issue #859). Also records a
    * `whatsapp_text_command` shortcut hit (issue #874) — the WhatsApp
    * counterpart to `slashCommands.ts`'s `recordShortcutHit('slash_command')`
-   * call sites — from this one shared send path, so all four `!` commands
-   * are covered without a per-command call site.
+   * call sites — from this one shared send path, so every `!` command
+   * (including the `!projects mine` sub-command, issue #916) is covered
+   * without a per-command call site.
    */
   private async sendWhatsAppTextCommand(
     msg: IncomingMessage,

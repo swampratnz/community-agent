@@ -104,6 +104,39 @@ export async function searchMemberInterests(
   }));
 }
 
+/** A published interests row with no similarity score — the browse-all shape (issue #920), vs. `MemberInterestSearchHit`'s query-matched shape. */
+export interface MemberInterestRow {
+  platform: Platform;
+  userId: string;
+  interests: string;
+}
+
+/**
+ * Most-recently-published/updated `member_interests` rows — the no-query,
+ * no-profile browse fallback for `who_is_into` (issue #920), mirroring
+ * `listRecentProjects` exactly. A plain `ORDER BY`, never an `embed()` call —
+ * this is a browse, not a similarity search. SECURITY: reads only
+ * `member_interests`, never `interactions` (same #634 AC #4 invariant
+ * `searchMemberInterests` preserves) — a member who never published, or who
+ * cleared their row via `set_my_interests('clear')`, simply has no row here
+ * and never appears.
+ */
+export async function listRecentInterests(limit = WHO_IS_INTO_LIMIT): Promise<MemberInterestRow[]> {
+  const clampedLimit = Math.min(Math.max(Math.trunc(limit) || WHO_IS_INTO_LIMIT, 1), 50);
+  const { rows } = await pool.query(
+    `SELECT platform, user_id, interests, updated_at
+       FROM member_interests
+      ORDER BY updated_at DESC
+      LIMIT $1`,
+    [clampedLimit],
+  );
+  return rows.map((r) => ({
+    platform: r.platform as Platform,
+    userId: r.user_id,
+    interests: r.interests as string,
+  }));
+}
+
 export type SelfInterestMatchResult =
   { hasProfile: false } | { hasProfile: true; hits: MemberInterestSearchHit[] };
 

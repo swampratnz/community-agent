@@ -850,12 +850,35 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   query is built solely from that stored row, never from `interactions`
   (SECURITY-pinned, same #634 AC #4 invariant), and the caller's own row is
   always excluded from its own results (SECURITY-pinned; both correctness —
-  a caller must never see themselves as a "100% match" — and privacy). A
-  caller with no published row (or one whose embedding failed at publish
-  time) gets a guidance reply directing them to `set_my_interests`; no search
-  runs against other members' data in that case. Same `member`-tier
-  re-assertion, no new tool, no new RBAC surface; `/whois`'s Discord option
-  mirrors the same optional-argument/self-match/guidance shape.
+  a caller must never see themselves as a "100% match" — and privacy). Same
+  `member`-tier re-assertion, no new tool, no new RBAC surface; `/whois`'s
+  Discord option mirrors the same optional-argument/self-match/guidance
+  shape. **No-profile browse fallback (issue #920):** a caller with no
+  published row (or one whose embedding failed at publish time) previously
+  got only a guidance reply directing them to `set_my_interests`, with no
+  search of any kind — the one no-query path `list_projects` had a browse-all
+  counterpart for (`listRecentProjects`) and `who_is_into` didn't. That
+  caller now instead sees `listRecentInterests` — the most recently
+  published/updated rows across every member, a plain `ORDER BY updated_at
+  DESC` with no `embed()` call, mirroring `listRecentProjects` exactly — with
+  the same `set_my_interests` guidance still appended after the list. This
+  adds no new data access or exposure: it is the identical `member_interests`
+  table every `who_is_into` query already reads (SECURITY-pinned: the query
+  references only `member_interests`, never `interactions`, preserving the
+  same #634 AC #4 invariant), a row is published specifically to be
+  discoverable via `who_is_into` so a browse view is within the consent the
+  data was published under, and a member who never published (or who
+  cleared their row) simply has no row here and never appears
+  (SECURITY-pinned, same non-existence exclusion every other read of this
+  table relies on). Wired at all three call sites independently
+  (`agent/tools.ts`'s `who_is_into` handler, `/whois`'s Discord handler,
+  `!whois`'s bare-argument branch in `router.ts` via a new injected
+  `listRecentInterestsFn` field) since there is no shared handler between
+  them — only the render helper (`formatInterestResults`, now widened to
+  accept a plain `MemberInterestRow` alongside a similarity-scored
+  `MemberInterestSearchHit`) is shared. A caller **with** an existing
+  profile is unaffected: the self-match path above still takes priority and
+  its output is unchanged.
 - **Peer help handoff** (`set_helper_availability`/`find_helper`, issue #729):
   the active-side consumer of `member_interests` above — the first
   **proactive, bot-initiated member→member DM** in the system. An adversarial
@@ -2506,6 +2529,28 @@ serving that sender again. Security posture:
   endpoint), so they add no ToS-risk surface and work while WhatsApp is
   disconnected.
 
+**`list_blocked_members` read (issue #924).** Until #924, `blocked_users` was
+the one moderation state with no `list_*` counterpart — an admin could block/
+unblock but never enumerate who was currently blocked without diffing
+`moderation_history` rows by hand. `list_blocked_members` closes that gap,
+mirroring `list_muted_members` (#487):
+
+- **Admin tier only** (`assertAtLeast(caller.role, 'admin', ...)`), read-only
+  (`annotations: { readOnlyHint: true }`), no CONFIRM — it surfaces no new
+  data, only state `block_user`/`unblock_user` already write and
+  `admin_audit` already logs per-action.
+- **Argument-less.** The enumerated `platform` is always the caller's own
+  resolved platform (`caller.platform`), never a tool-argument or
+  message-supplied value — an admin on one platform cannot enumerate another
+  platform's block list by passing a `platform` argument, because the tool
+  accepts none. Pinned by a `SECURITY:` test.
+- **Guild-wide, not conversation-scoped** — `blocked_users` has no
+  `conversation_id` (`PRIMARY KEY (platform, external_id)`), matching the
+  write path's own scope.
+- **Same minimal-footprint fields already exposed elsewhere**: external id,
+  blocking admin, optional reason, timestamp — no message content. Capped at
+  50 rows, newest-block-first.
+
 ### 20. Discord slash commands (`/kb`, `/whois`, `/projects`, `/guidelines`, `/digest`, `DISCORD_SLASH_COMMANDS_ENABLED`, off by default, issues #744, #841)
 
 Five read-only, zero-model-call Discord application commands, registered
@@ -2855,8 +2900,9 @@ tool, tier, table, or repository function — checked in `Router.handle()`
   path) exactly as if the `!`-prefixed text weren't recognised. The
   underlying repository function is never invoked on a rejected caller,
   pinned by a `SECURITY:` test asserting each of `searchMemberInterests`/
-  `searchProjects`/`listRecentProjects`/`buildMemberDigestContent` is never
-  called for a guest's `!whois`/`!projects`/`!digest` message.
+  `searchProjects`/`listRecentProjects`/`listOwnProjects`/
+  `buildMemberDigestContent` is never called for a guest's
+  `!whois`/`!projects`/`!projects mine`/`!digest` message.
 - **Every reply routes through `this.send()` → `adapter.sendMessage()`**, the
   same outbound-filtered send path every other router reply uses — never a
   new, unfiltered send primitive.
@@ -2885,6 +2931,19 @@ tool, tier, table, or repository function — checked in `Router.handle()`
   gate and silent-fallthrough-on-denial convention above apply unchanged; a
   guest sending bare `!whois` falls through with `searchMemberInterestsForSelfFn`
   never invoked. `!whois <query>` behaviour is unchanged.
+- **`!projects mine` recall sub-command (issue #916).** A literal,
+  regex-anchored (`/^!projects\s+mine$/i`) branch checked **before** the
+  general `!projects [query]` branch, so the word "mine" is never routed to
+  `searchProjects`'s embedding-similarity match. It calls
+  `listOwnProjects(msg.platform, msg.userId)` — the same self-scoped read
+  `list_projects({ mine: true })` and `/projects mine:true` already use
+  (§20/#867/#869) — never a message-supplied identifier. **SECURITY:** the
+  same `member`-tier gate and silent-fallthrough-on-denial convention above
+  apply unchanged; a sub-`member` caller sending `!projects mine` falls
+  through with `listOwnProjectsFn` never invoked, and a caller's own resolved
+  identity is proven to isolate one caller's projects from another's, pinned
+  by `SECURITY:` tests. This is the third and last of the three `mine`
+  surfaces (`list_projects`, `/projects`, `!projects`) to gain the filter.
 
 No new write path, no `shortcut_hits` tracking. See docs/ARCHITECTURE.md's
 "WhatsApp text commands" section for the mechanism.

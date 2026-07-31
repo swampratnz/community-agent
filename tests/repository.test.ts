@@ -167,6 +167,7 @@ const {
   blockUser,
   unblockUser,
   isUserBlocked,
+  listBlockedUsers,
   shareProject,
   removeMemberProject,
   listRecentProjects,
@@ -178,6 +179,7 @@ const {
   PROJECT_DESCRIPTION_MAX_CHARS,
   setMemberInterests,
   searchMemberInterests,
+  listRecentInterests,
   MEMBER_INTERESTS_MAX_CHARS,
   WHO_IS_INTO_LIMIT,
   getActiveProjectNamesForOwners,
@@ -7280,6 +7282,84 @@ test(
 );
 
 test(
+  'repository: listRecentInterests returns most-recently-published/updated interests across every member, newest first (issue #920 AC #1)',
+  { skip },
+  async () => {
+    const older = `${RUN}-recent-interests-older`;
+    const newer = `${RUN}-recent-interests-newer`;
+
+    await setMemberInterests('discord', older, 'older published interests');
+    await setMemberInterests('discord', newer, 'newer published interests');
+
+    const recent = await listRecentInterests(200);
+    const olderIdx = recent.findIndex((r) => r.userId === older);
+    const newerIdx = recent.findIndex((r) => r.userId === newer);
+    assert.ok(olderIdx !== -1 && newerIdx !== -1, 'both published rows are returned');
+    assert.ok(newerIdx < olderIdx, 'the more recently published/updated row sorts first');
+
+    await pool.query(`DELETE FROM member_interests WHERE platform = 'discord' AND user_id = ANY($1)`, [
+      [older, newer],
+    ]);
+  },
+);
+
+test(
+  'SECURITY: repository: listRecentInterests derives exclusively from member_interests — its query never references `interactions` (issue #920 AC #7, preserves #634 AC #4)',
+  { skip },
+  async (t) => {
+    const calls: unknown[] = [];
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', (...args: unknown[]) => {
+      calls.push(args);
+      return (realQuery as (...a: unknown[]) => unknown)(...args);
+    });
+
+    await listRecentInterests(5);
+
+    assert.equal(calls.length, 1, 'listRecentInterests issues exactly one query');
+    const sql = (calls[0] as [string])[0];
+    assert.match(sql, /FROM member_interests/);
+    assert.doesNotMatch(
+      sql,
+      /interactions/,
+      'SECURITY: listRecentInterests must never read from `interactions` — interests are self-declared only',
+    );
+  },
+);
+
+test(
+  "SECURITY: repository: listRecentInterests never returns a member who never published, or who cleared their interests via set_my_interests('clear') (issue #920 AC #8)",
+  { skip },
+  async () => {
+    const cleared = `${RUN}-recent-interests-cleared`;
+    const neverPublished = `${RUN}-recent-interests-never-published`;
+    const stillPublished = `${RUN}-recent-interests-still-published`;
+
+    await setMemberInterests('discord', cleared, 'about to be cleared');
+    await setMemberInterests('discord', cleared, 'clear');
+    await setMemberInterests('discord', stillPublished, 'still published interests');
+
+    const recent = await listRecentInterests(200);
+    assert.ok(
+      recent.every((r) => r.userId !== cleared),
+      'SECURITY: a cleared row must never appear in listRecentInterests',
+    );
+    assert.ok(
+      recent.every((r) => r.userId !== neverPublished),
+      'SECURITY: a member who never published must never appear in listRecentInterests',
+    );
+    assert.ok(
+      recent.some((r) => r.userId === stillPublished),
+      'a still-published row is returned',
+    );
+
+    await pool.query(`DELETE FROM member_interests WHERE platform = 'discord' AND user_id = $1`, [
+      stillPublished,
+    ]);
+  },
+);
+
+test(
   "SECURITY: repository: purgeUserData/purgeSingleIdentity deletes the caller's member_interests row (issue #634)",
   { skip },
   async () => {
@@ -10548,6 +10628,55 @@ test(
     );
 
     await unblockUser('whatsapp', externalId);
+  },
+);
+
+test(
+  'repository: listBlockedUsers orders newest-blocked-first and respects limit (issue #924)',
+  { skip },
+  async () => {
+    // Run-scoped fake platform so this test's row set can never collide with
+    // another parallel test file's 'whatsapp' block/unblock fixtures on the
+    // same guild-wide (no conversation_id) table, matching the LIST_PLATFORM
+    // convention in tests/moderationRepo.test.ts/tests/tools.test.ts.
+    const platform = `${RUN}-list-blocked`;
+    const oldest = `${RUN}-list-blocked-oldest`;
+    const middle = `${RUN}-list-blocked-middle`;
+    const newest = `${RUN}-list-blocked-newest`;
+    try {
+      await blockUser(platform, oldest, 'admin-1', 'harassment');
+      await blockUser(platform, middle, 'admin-1', null);
+      await blockUser(platform, newest, 'admin-2', 'spam');
+      await pool.query(
+        `UPDATE blocked_users SET blocked_at = now() - interval '2 days' WHERE platform = $1 AND external_id = $2`,
+        [platform, oldest],
+      );
+      await pool.query(
+        `UPDATE blocked_users SET blocked_at = now() - interval '1 days' WHERE platform = $1 AND external_id = $2`,
+        [platform, middle],
+      );
+
+      const rows = await listBlockedUsers(platform);
+      assert.deepEqual(
+        rows.map((r) => r.externalId),
+        [newest, middle, oldest],
+        'newest blocked_at first',
+      );
+      assert.equal(rows[0].blockedBy, 'admin-2');
+      assert.equal(rows[0].reason, 'spam');
+      assert.equal(rows[1].reason, null, 'a block with no reason reports null, not an empty string');
+
+      const limited = await listBlockedUsers(platform, 2);
+      assert.equal(limited.length, 2, 'limit is respected');
+      assert.deepEqual(
+        limited.map((r) => r.externalId),
+        [newest, middle],
+      );
+    } finally {
+      await unblockUser(platform, oldest);
+      await unblockUser(platform, middle);
+      await unblockUser(platform, newest);
+    }
   },
 );
 

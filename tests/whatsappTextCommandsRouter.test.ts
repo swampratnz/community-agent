@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import type { AgentReply } from '../src/agent/core.js';
 import type { IncomingMessage, OutgoingMessage, Platform, PlatformAdapter } from '../src/platforms/types.js';
 import type {
+  MemberInterestRow,
   MemberInterestSearchHit,
   SelfInterestMatchResult,
 } from '../src/storage/repository/memberDiscovery.js';
@@ -125,11 +126,13 @@ interface RouterOpts {
   ) => Promise<SelfInterestMatchResult>;
   searchProjectsFn?: (query: string, limit?: number) => Promise<MemberProjectSearchHit[]>;
   listRecentProjectsFn?: (limit?: number) => Promise<MemberProject[]>;
+  listOwnProjectsFn?: (platform: Platform, userId: string) => Promise<MemberProject[]>;
   buildMemberDigestContentFn?: () => Promise<string | null>;
   getCommunityGuidelinesFn?: () => Promise<string | null>;
   getCommunityGuidelinesMiFn?: () => Promise<string | null>;
   getLangPref?: () => Promise<'auto' | 'en' | 'mi'>;
   recordShortcutHitFn?: (kind: ShortcutKind) => Promise<void>;
+  listRecentInterestsFn?: (limit?: number) => Promise<MemberInterestRow[]>;
 }
 
 /**
@@ -137,7 +140,8 @@ interface RouterOpts {
  * about either stubbed out (countReplies, checkPaused — deterministic,
  * DB-free) or overridable (the four issue #859 search/digest/guidelines
  * functions, plus `searchMemberInterestsForSelfFn` for issue #889's bare
- * `!whois`), so a `!whois`/`!projects`/`!digest`/`!guidelines` test never
+ * `!whois` and `listRecentInterestsFn` for issue #920's no-profile browse
+ * fallback), so a `!whois`/`!projects`/`!digest`/`!guidelines` test never
  * needs a live Postgres or the real (slow, model-download-on-first-use)
  * `embed()` pipeline — mirroring `knowledgeShortcutRouter.test.ts`'s
  * `searchKnowledgeForShortcut` injection for the exact same reason.
@@ -174,6 +178,9 @@ function makeRouter(opts: RouterOpts = {}): Router {
     opts.buildMemberDigestContentFn, // 23
     undefined, // 24 recentQuestionClustersFn
     opts.searchMemberInterestsForSelfFn, // 25
+    undefined, // 26 checkKnowledgeConflict
+    opts.listOwnProjectsFn, // 27
+    opts.listRecentInterestsFn, // 28
   );
 }
 
@@ -320,11 +327,12 @@ test('acceptance criterion 3: bare !whois from a member with a published profile
   assert.equal(sent[0].text, 'No members have published interests matching that yet.');
 });
 
-test('acceptance criterion 4: bare !whois from a member with no published profile returns the who_is_into first-time-caller guidance, with no search result rendered', async (t) => {
+test('acceptance criterion 4: bare !whois from a member with no published profile and nothing to browse returns only the who_is_into first-time-caller guidance', async (t) => {
   mockPoolRole(t, 'member');
   const router = makeRouter({
     runTurn: throwingRunTurn,
     searchMemberInterestsForSelfFn: async () => ({ hasProfile: false }),
+    listRecentInterestsFn: async () => [],
   });
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -333,6 +341,60 @@ test('acceptance criterion 4: bare !whois from a member with no published profil
 
   assert.match(sent[0].text, /haven't published interests yet/);
   assert.match(sent[0].text, /set_my_interests/);
+});
+
+// --- bare !whois no-profile browse fallback (issue #920) --------------------
+
+test('issue #920 AC #4/#5: bare !whois from a member with no published profile browses listRecentInterestsFn and still appends the set_my_interests hint', async (t) => {
+  mockPoolRole(t, 'member');
+  const recent: MemberInterestRow[] = [
+    { platform: 'whatsapp', userId: 'browsed-1', interests: 'recently published interests' },
+  ];
+  let callCount = 0;
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    searchMemberInterestsFn: async () => {
+      throw new Error('searchMemberInterestsFn (the query-search path) must never be called for bare !whois');
+    },
+    searchMemberInterestsForSelfFn: async () => ({ hasProfile: false }),
+    listRecentInterestsFn: async () => {
+      callCount += 1;
+      return recent;
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!whois', userId: 'member-1' }));
+
+  assert.equal(callCount, 1, 'listRecentInterestsFn must be invoked exactly once');
+  assert.match(sent[0].text, /<member-interests/);
+  assert.match(sent[0].text, /recently published interests/);
+  assert.match(
+    sent[0].text,
+    /haven't published interests yet/,
+    'the set_my_interests hint still appends after the browsed list',
+  );
+});
+
+test('issue #920: a member WITH an existing profile never reaches listRecentInterestsFn — the self-match path is unaffected', async (t) => {
+  mockPoolRole(t, 'member');
+  const hits: MemberInterestSearchHit[] = [
+    { platform: 'whatsapp', userId: 'target-1', interests: 'rust and distributed systems', similarity: 0.77 },
+  ];
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    searchMemberInterestsForSelfFn: async () => ({ hasProfile: true, hits }),
+    listRecentInterestsFn: async () => {
+      throw new Error('listRecentInterestsFn must never be invoked when the caller already has a profile');
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!whois', userId: 'member-1' }));
+
+  assert.match(sent[0].text, /rust and distributed systems/);
 });
 
 test('a bare "!whois" with only trailing whitespace still takes the no-argument self-match branch', async (t) => {
@@ -424,6 +486,93 @@ test('a bare "!projectsomething" (no space) is not recognised as the /projects c
   await trigger(makeMessage({ text: '!projectsomething', userId: 'member-1' }));
 
   assert.equal(sent[0].text, REAL_TURN_REPLY);
+});
+
+// --- !projects mine (issue #916) --------------------------------------------
+
+test('acceptance criteria 1-2: "!projects mine" (case-insensitive) from a member uses listOwnProjectsFn(msg.platform, msg.userId), rendered through formatProjectResults, never searchProjectsFn/listRecentProjectsFn', async (t) => {
+  mockPoolRole(t, 'member');
+  const projects: MemberProject[] = [
+    {
+      id: 1,
+      platform: 'whatsapp',
+      userId: 'member-1',
+      name: 'My Own Project',
+      description: 'built by me',
+      link: null,
+      seekingCollaborators: false,
+      createdAt: new Date(),
+    },
+  ];
+  let calledWith: [Platform, string] | undefined;
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    listOwnProjectsFn: async (platform, userId) => {
+      calledWith = [platform, userId];
+      return projects;
+    },
+    searchProjectsFn: async () => {
+      throw new Error('searchProjectsFn must never be called for "!projects mine"');
+    },
+    listRecentProjectsFn: async () => {
+      throw new Error('listRecentProjectsFn must never be called for "!projects mine"');
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!Projects Mine', userId: 'member-1' }));
+
+  assert.deepEqual(calledWith, ['whatsapp', 'member-1']);
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /My Own Project/);
+});
+
+test('acceptance criterion 3: "!projects mine" from a member with zero shared projects gets the same empty-state string as list_projects({ mine: true }) / /projects mine:true', async (t) => {
+  mockPoolRole(t, 'member');
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    listOwnProjectsFn: async () => [],
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!projects mine', userId: 'member-1' }));
+
+  assert.equal(sent[0].text, "You haven't shared any projects yet.");
+});
+
+test('"!projects mine" is checked before the general !projects [query] branch — "mine" as a literal project search term still requires the sub-command shape', async (t) => {
+  mockPoolRole(t, 'member');
+  let searchCalledWith: string | undefined;
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    searchProjectsFn: async (query) => {
+      searchCalledWith = query;
+      return [];
+    },
+    listOwnProjectsFn: async () => {
+      throw new Error('listOwnProjectsFn must never be called for a query that merely contains "mine"');
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!projects mine field', userId: 'member-1' }));
+
+  assert.equal(searchCalledWith, 'mine field');
+  assert.equal(sent[0].text, 'No shared projects match that.');
+});
+
+test('acceptance criterion 4: a bare `new Router()` with no listOwnProjectsFn override still constructs, and an unrelated existing command (!guidelines) behaves unchanged (trailing defaulted field)', async (t) => {
+  mockPoolRole(t, null);
+  const router = new Router();
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!guidelines', userId: 'guest-1' }));
+
+  assert.equal(sent[0].text, 'No community guidelines have been set yet — ask an admin.');
 });
 
 // --- !guidelines (no tier gate) -----------------------------------------------
@@ -597,6 +746,12 @@ async function assertGuestFallsThroughSilently(
     listRecentProjectsFn: async () => {
       throw new Error('listRecentProjectsFn must never be invoked for a rejected caller');
     },
+    listOwnProjectsFn: async () => {
+      throw new Error('listOwnProjectsFn must never be invoked for a rejected caller');
+    },
+    listRecentInterestsFn: async () => {
+      throw new Error('listRecentInterestsFn must never be invoked for a rejected caller');
+    },
     buildMemberDigestContentFn: async () => {
       throw new Error('buildMemberDigestContentFn must never be invoked for a rejected caller');
     },
@@ -629,6 +784,49 @@ test('SECURITY: a guest caller\'s "!projects" falls through to the normal turn �
 
 test('SECURITY: a guest caller\'s "!digest" falls through to the normal turn — no distinguishing denial reply (acceptance criteria 3, 6)', async (t) => {
   await assertGuestFallsThroughSilently(t, '!digest');
+});
+
+test('SECURITY: a sub-member caller\'s "!projects mine" falls through to the normal turn — listOwnProjectsFn is never invoked (issue #916 binding acceptance criterion 6)', async (t) => {
+  await assertGuestFallsThroughSilently(t, '!projects mine');
+});
+
+test('SECURITY: "!projects mine" for caller A never returns caller B\'s projects — only the caller\'s own resolved msg.platform/msg.userId is wired into listOwnProjectsFn (issue #916 binding acceptance criterion 7)', async (t) => {
+  mockPoolRole(t, 'member');
+  let calledArgs: [Platform, string] | undefined;
+  const ownProjects: MemberProject[] = [
+    {
+      id: 2,
+      platform: 'whatsapp',
+      userId: 'caller-a',
+      name: "A's Project",
+      description: 'owned by caller A',
+      link: null,
+      seekingCollaborators: false,
+      createdAt: new Date(),
+    },
+  ];
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    listOwnProjectsFn: async (platform, userId) => {
+      calledArgs = [platform, userId];
+      // Self-scoped stub: only ever returns caller A's own projects,
+      // regardless of what identifier the surrounding message carries.
+      return userId === 'caller-a' ? ownProjects : [];
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  // userName spoofs caller B's identity — the implicit "mine" scope must
+  // come only from msg.platform/msg.userId, never from any other message field.
+  await trigger(
+    makeMessage({ text: '!projects mine', userId: 'caller-a', userName: 'caller-b-impersonation' }),
+  );
+
+  assert.deepEqual(calledArgs, ['whatsapp', 'caller-a']);
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /A's Project/);
+  assert.doesNotMatch(sent[0].text, /caller-b/i);
 });
 
 test("SECURITY: bare !whois's implicit query is built only from the caller's platform/userId, never from any other message field (issue #634 AC #4 / #889 acceptance criterion 6)", async (t) => {

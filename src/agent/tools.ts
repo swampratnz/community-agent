@@ -61,6 +61,7 @@ import {
   listKnowledgeConflictCandidates,
   listKnowledgeCandidates,
   listKnowledgeTopics,
+  listBlockedUsers,
   listMemberNotes,
   listMemberWarnings,
   listMutedMembers,
@@ -85,6 +86,7 @@ import {
   listOwnProjects,
   listOwnReports,
   listOwnSuggestions,
+  listRecentInterests,
   listRecentProjects,
   listReports,
   listRoster,
@@ -99,6 +101,7 @@ import {
   type MemberProject,
   type MemberProjectSearchHit,
   MEMBER_INTERESTS_MAX_CHARS,
+  type MemberInterestRow,
   type MemberInterestSearchHit,
   MODERATION_ACTION_KINDS,
   type ModerationAppeal,
@@ -605,8 +608,16 @@ export function formatKnowledgeTopics(titles: string[], totalCount: number): str
  *
  * Exported (issue #744) so the `/whois` slash command can render the exact
  * same output as `who_is_into`'s chat-path handler, which calls this too.
+ *
+ * Issue #920: also accepts a plain `MemberInterestRow` (the browse-all shape,
+ * no `similarity`) alongside a `MemberInterestSearchHit` — the same widened-
+ * union pattern `formatProjectResults` already uses for
+ * `MemberProject | MemberProjectSearchHit`. The `NN% match` segment renders
+ * only when `similarity` is present on the hit.
  */
-export async function formatInterestResults(hits: ReadonlyArray<MemberInterestSearchHit>): Promise<string> {
+export async function formatInterestResults(
+  hits: ReadonlyArray<MemberInterestSearchHit | MemberInterestRow>,
+): Promise<string> {
   const projectNamesByOwner = await getActiveProjectNamesForOwners(
     hits.map((h) => ({ platform: h.platform, userId: h.userId })),
   );
@@ -618,7 +629,8 @@ export async function formatInterestResults(hits: ReadonlyArray<MemberInterestSe
       const sharedProjects = projects?.length
         ? `\n   Shared projects: ${projects.map((p) => `"${untrustedEntryContent(p)}"`).join(', ')}`
         : '';
-      return `${i + 1}. ${owner} (${Math.round(h.similarity * 100)}% match): ${interests}${sharedProjects}`;
+      const match = 'similarity' in h ? ` (${Math.round(h.similarity * 100)}% match)` : '';
+      return `${i + 1}. ${owner}${match}: ${interests}${sharedProjects}`;
     }),
   );
   return [
@@ -1762,7 +1774,7 @@ const WHATSAPP_TEXT_COMMANDS_TEXT =
  */
 const ADMIN_CAPABILITIES_TEXT =
   'As an admin, you also have:\n' +
-  "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread, review the moderation history log, pull one member's full warning history, list everyone who's currently muted, or review and resolve filed appeals\n" +
+  "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread, review the moderation history log, pull one member's full warning history, list everyone who's currently muted, list who's currently blocked on WhatsApp, or review and resolve filed appeals\n" +
   "- Manage membership: add a new member, remove a member, link a member's cross-platform identity, or unlink a member's cross-platform identity\n" +
   '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, check which knowledge entries are rated poorly, and review recurring unhelpful-answer themes across all answers\n' +
   '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
@@ -4421,10 +4433,16 @@ export function buildToolServer(
       }
       const selfMatch = await searchMemberInterestsForSelf(caller.platform, caller.userId, WHO_IS_INTO_LIMIT);
       if (!selfMatch.hasProfile) {
-        return text(
+        // Issue #920: a caller with no published row of their own can no
+        // longer only be told to publish first — fall back to browsing the
+        // most recently published/updated interests (mirroring
+        // list_projects' no-query listRecentProjects default), still
+        // appending the same set_my_interests hint after the list.
+        const hint =
           "You haven't published interests yet — call set_my_interests first, then who_is_into with no " +
-            'topic will search using your own published interests.',
-        );
+          'topic will search using your own published interests.';
+        const recent = await listRecentInterests(WHO_IS_INTO_LIMIT);
+        return text(recent.length === 0 ? hint : `${await formatInterestResults(recent)}\n\n${hint}`);
       }
       if (selfMatch.hits.length === 0) {
         return text('No other members have published interests matching yours yet.');
@@ -5281,6 +5299,34 @@ export function buildToolServer(
             );
           })
           .join('\n'),
+      );
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
+  const listBlockedMembersTool = tool(
+    'list_blocked_members',
+    "Enumerate WhatsApp's bot-side block list (issue #924) — the read `block_user`/`unblock_user` " +
+      "(#572) never got, the same 'a bare count/log is not a who answer' gap list_muted_members (#487) " +
+      'closed for auto-moderation mutes. Each row is external id, who blocked them, reason (if any), and ' +
+      'blocked-at timestamp — the same fields moderation_history already shows per-action, just not ' +
+      'aggregated into one current-state view. Admin only, guild-wide (blocked_users has no ' +
+      'conversation_id), capped at 50 rows, newest block first.',
+    {},
+    async () => {
+      assertAtLeast(caller.role, 'admin', 'list_blocked_members');
+      const rows = await listBlockedUsers(caller.platform);
+      if (rows.length === 0) return text('No blocked users.');
+      return text(
+        untrusted(
+          'Blocked users',
+          rows
+            .map((r) => {
+              const reasonText = r.reason ? `: ${r.reason}` : '';
+              return `${r.externalId} — blocked by ${r.blockedBy} at ${r.blockedAt.toISOString()}${reasonText}`;
+            })
+            .join('\n'),
+        ),
       );
     },
     { annotations: { readOnlyHint: true } },
@@ -8229,6 +8275,7 @@ export function buildToolServer(
       clearWarningsTool,
       listMemberWarningsTool,
       listMutedMembersTool,
+      listBlockedMembersTool,
       listAppealsTool,
       resolveAppealTool,
       announce,
