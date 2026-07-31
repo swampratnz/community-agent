@@ -128,6 +128,22 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   applies the same pattern: both identities must already be known community
   members (a `community_users` row exists) — it cannot conjure membership,
   only associate two identities that already have it.
+- **Tone calibration for off-limits declines and playful probes** (issue
+  #913, the un-shipped residue of #756's rejected on-demand skill): a fixed,
+  always-on `TONE_CALIBRATION_CLAUSE` in `systemPrompt.ts`'s `GUIDELINES`
+  tells the model to decline a genuinely off-limits ask (real people's
+  private data, illegal/harmful content, revealing internals) in one short,
+  non-moralising sentence, and to answer a harmless/playful probe (e.g. "are
+  you a weasel?") in character rather than with suspicion. This is pure tone
+  guidance layered on top of, not a substitute for, #753/#754's
+  `AUTHORIZATION_NOTE` (also in `GUIDELINES`, immediately above it) — that
+  clause still decides WHO is authorized to do what, from the verified tier
+  alone, never from message tone. The playful-probe half is deliberately
+  scoped ("aren't actually trying to extract anything real") so a genuine
+  extraction attempt dressed as a joke cannot be laundered into a relaxed
+  refusal, and is pinned by a `SECURITY:` test alongside one asserting the
+  clause still precedes the persona block (the existing security-before-
+  persona ordering invariant).
 - `settingSources: []` prevents loading the host's `~/.claude` config.
 
 ### 2. Secret exposure
