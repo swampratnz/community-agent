@@ -81,6 +81,7 @@ import {
   listKnowledgeFeedbackSummary,
   listOwnAppeals,
   listOwnKnowledgeCandidates,
+  listOwnProjectConnectionRequests,
   listOwnProjects,
   listOwnReports,
   listOwnSuggestions,
@@ -3671,26 +3672,31 @@ export function buildToolServer(
 
   const mySubmissions = tool(
     'my_submissions',
-    "List the caller's OWN previously-filed suggestions, content reports, moderation appeals, and " +
-      'knowledge tips — id, a short content preview, current status, and when each was filed. Use this ' +
-      'when a member asks what happened to something they submitted earlier (e.g. "what happened to my ' +
-      "report?\"). Never returns another member's content or the reviewing admin's identity — only the " +
-      'shared admin queue (list_suggestions/list_reports/list_appeals/list_knowledge_candidates) exposes ' +
-      'that, and this tool never reaches it.',
+    "List the caller's OWN previously-filed suggestions, content reports, moderation appeals, knowledge " +
+      'tips, and sent project-connection requests — id, a short content preview, current status, and when ' +
+      'each was filed. Use this when a member asks what happened to something they submitted earlier (e.g. ' +
+      '"what happened to my report?"). The connection-requests section is a plain RECEIPT (what you asked, ' +
+      "when) — request_project_connection has no accept/decline state, so there's no status to show, and a " +
+      'capped/refused attempt is never recorded so it never appears here either. Never returns another ' +
+      "member's content or the reviewing admin's identity — only the shared admin queue " +
+      '(list_suggestions/list_reports/list_appeals/list_knowledge_candidates) exposes that, and this tool ' +
+      'never reaches it.',
     {},
     async () => {
-      const [suggestions, reports, appeals, knowledgeTips] = await Promise.all([
+      const [suggestions, reports, appeals, knowledgeTips, connectionRequests] = await Promise.all([
         listOwnSuggestions(caller.platform, caller.userId, 10),
         listOwnReports(caller.platform, caller.userId, 10),
         listOwnAppeals(caller.platform, caller.userId, 10),
         listOwnKnowledgeCandidates(caller.platform, caller.userId, 10),
+        listOwnProjectConnectionRequests(caller.platform, caller.userId, 10),
       ]);
 
       if (
         suggestions.length === 0 &&
         reports.length === 0 &&
         appeals.length === 0 &&
-        knowledgeTips.length === 0
+        knowledgeTips.length === 0 &&
+        connectionRequests.length === 0
       ) {
         return text("You haven't filed any suggestions or reports yet.", true);
       }
@@ -3735,6 +3741,17 @@ export function buildToolServer(
           lines.push(
             `- #${k.id} [${k.status}] ${truncateForEcho(k.title)} — filed ${formatRelativeAge(k.createdAt)}${impact}`,
           );
+        }
+      }
+      if (connectionRequests.length > 0) {
+        if (lines.length > 0) lines.push('');
+        lines.push('Your connection requests:');
+        for (const c of connectionRequests) {
+          // No status column exists (issue #908) — this is a receipt, not a
+          // tracker. A since-removed/purged project reads back null; say so
+          // rather than rendering a blank or throwing.
+          const projectLabel = c.projectName ?? 'a project that is no longer listed';
+          lines.push(`- #${c.id} — ${projectLabel} — filed ${formatRelativeAge(c.createdAt)}`);
         }
       }
       return text(lines.join('\n'));
