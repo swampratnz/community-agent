@@ -2314,6 +2314,51 @@ platforms.
   what a single `forget_me` call erases) and the tests that pin both
   invariants.
 
+## Projects — shared team memory (issue #927)
+
+A **project** is a standing team's shared memory — an Impact Lab, a working
+group — that follows the team across platforms instead of living in one
+channel. It is distinct from `member_projects`, which is a public *showcase*
+row (name, description, link) with no content and no access control.
+
+```
+project_create ──▶ projects (slug, name, brief)
+project_add_member ──▶ project_members (platform, user_id)   ← WHO may read
+project_bind_here  ──▶ project_surfaces (platform, convo id) ← WHERE it renders
+project_note   ──▶ project_notes (content, reference_url, embedding)
+project_recall ──▶ searchProjectNotes ──▶ visibleProjectIds (both checks, in SQL)
+```
+
+**Two checks, one place.** `visibleProjectIds`
+(`src/storage/repository/projects.ts`) resolves membership *and* surface in a
+single statement, and every read and write in the module goes through it:
+
+- *Membership* expands through `persons`: the caller's own identity, plus any
+  identity sharing their `person_id`. So once `link_member` has linked a
+  member's Discord and WhatsApp identities, adding either one gives them the
+  project from both. Membership rows are keyed on the **platform identity**,
+  not `person_id`, precisely because `linkMembers` merges person rows (keeps
+  the lower id, drops the other) — a person-keyed row would need repointing on
+  every link, whereas expanding at read time has no such coupling.
+- *Surface* is satisfied by an explicit `project_surfaces` binding for this
+  platform + conversation, or by the turn being a DM (always allowed for a
+  member; a DM has no stable conversation id to bind).
+
+Membership alone is deliberately not enough — see SECURITY.md for why, and for
+the tier-independence and `forget_me` rules.
+
+**Storage.** Notes live in their own `project_notes` table with their own
+embedding, rather than as scoped `knowledge` rows. `knowledge` has ~20
+unrestricted-by-default readers, so private project content there would have
+been one un-audited caller away from an admin-facing view. The cost is that
+project recall is a separate call from `knowledge_search` rather than merged
+into it; the benefit is that every reader of project content is project-aware
+by construction.
+
+**Not in this slice:** project-scoped *tool* access, external egress (Google
+Docs/Drive), file storage or text extraction, and email as a surface.
+Documents are referenced by URL only — stored verbatim, never fetched.
+
 ## Auto-answer mode (Discord, opt-in)
 
 `AUTO_ANSWER_CHANNEL_IDS` (issue #477) lets an operator allowlist specific

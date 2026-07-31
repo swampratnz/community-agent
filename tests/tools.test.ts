@@ -2644,8 +2644,9 @@ test('community_info reply stays concise, not a wall of text (issue #92)', async
   // #808's request_human_help line, and again for issue #840's
   // request_project_connection line, and again for issue #895's
   // withdraw_knowledge_tip clause (folded into the existing suggest_knowledge
-  // line, not a new one).
-  assert.ok(replyText.length < 2010, `reply should stay short; was ${replyText.length} chars`);
+  // line, not a new one), and again for issue #927's project line (one line
+  // covering all three project member tools, not three).
+  assert.ok(replyText.length < 2130, `reply should stay short; was ${replyText.length} chars`);
 });
 
 test('community_info appends the full ADMIN_CAPABILITIES_TEXT rundown for admin/super_admin callers, on top of the member content (issue #367)', async () => {
@@ -2708,6 +2709,7 @@ test('community_info: admin-tier reply stays byte-identical, never gains SUPER_A
     "- Add a note about a member, review notes on a member, delete a note, or look up a member's history across conversations\n" +
     '- Set the community guidelines or the welcome message shown to new members\n' +
     '- Assign a Discord role, remove a Discord role, or list which roles are available to assign\n' +
+    '- Set up team projects: create one, give a member access, or allow it to be discussed here\n' +
     '- Generate an image, or check recent changes to the bot and community (the changelog)';
 
   const memberReply = (await communityInfoHandler('member')).content[0]?.text ?? '';
@@ -2730,6 +2732,9 @@ test('community_info: admin-tier reply stays byte-identical, never gains SUPER_A
 // text line must contain, so a future member tool with no line fails loudly
 // here instead of drifting silently again.
 const MEMBER_CAPABILITY_COVERAGE = new Map<string, RegExp>([
+  ['mcp__community__project_recall', /shared memory/i],
+  ['mcp__community__project_note', /Record decisions in a project/i],
+  ['mcp__community__project_list', /list your projects/i],
   ['mcp__community__community_guidelines', /guideline|rule/i],
   ['mcp__community__check_status', /known Anthropic outage/i],
   ['mcp__community__knowledge_search', /knowledge/i],
@@ -2838,6 +2843,8 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
     '- Ask if someone in the community can help with something you\'re stuck on ("can someone help with ' +
     'X?"), or opt in/out of being notified for other members\' requests\n' +
     '- Pull the community digest on demand\n' +
+    "- Record decisions in a project you're part of and search that project's shared memory later, or " +
+    'list your projects\n' +
     '- Erase all your stored data any time ("forget me")';
 
   assert.equal(
@@ -2849,7 +2856,7 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
       'set_my_interests/who_is_into line, issue #729 added the set_helper_availability/find_helper line, ' +
       'issue #808 added the request_human_help line, issue #840 added the request_project_connection line, ' +
       'issue #841 added the community_digest line, issue #895 added the withdraw_knowledge_tip clause to ' +
-      'the suggest_knowledge line; ' +
+      'the suggest_knowledge line, issue #927 added the project_note/project_recall/project_list line; ' +
       'otherwise unchanged since #367)',
   );
 });
@@ -2862,6 +2869,9 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
 // loudly here instead of drifting silently, the same way #311 caught the
 // member-side gap.
 const ADMIN_CAPABILITY_COVERAGE = new Map<string, RegExp>([
+  ['mcp__community__project_create', /Set up team projects/i],
+  ['mcp__community__project_add_member', /give a member access/i],
+  ['mcp__community__project_bind_here', /allow it to be discussed here/i],
   ['mcp__community__whats_new', /the changelog/i],
   ['mcp__community__generate_image', /generate an image/i],
   ['mcp__community__user_history', /history across conversations/i],
@@ -2982,8 +2992,9 @@ test('community_info: admin reply stays under a hard char cap, not a wall of tex
   // request_human_help line, and again alongside the member cap for issue
   // #840's request_project_connection line; bumped again for issue #886's
   // merge_knowledge clause (consolidated into the existing knowledge-base
-  // curation bullet, not a new one).
-  assert.ok(adminReply.length < 3900, `admin reply should stay short; was ${adminReply.length} chars`);
+  // curation bullet, not a new one), and again for issue #927's project lines
+  // (one member line + one admin line, each covering three tools).
+  assert.ok(adminReply.length < 4080, `admin reply should stay short; was ${adminReply.length} chars`);
 });
 
 test('SECURITY: community_info member-tier and guest-tier replies never name an admin/super_admin-only tool or contain any ADMIN_CAPABILITIES_TEXT-unique line (issue #367, issue #311)', async () => {
@@ -3115,9 +3126,10 @@ test('community_info: super_admin reply stays under a hard char cap, not a wall 
   // alongside the member/admin caps for issue #808's request_human_help line,
   // and again alongside the member/admin caps for issue #840's
   // request_project_connection line, and again alongside the member cap for
-  // issue #895's withdraw_knowledge_tip clause.
+  // issue #895's withdraw_knowledge_tip clause, and again alongside the
+  // member/admin caps for issue #927's project lines.
   assert.ok(
-    superAdminReply.length < 4530,
+    superAdminReply.length < 4730,
     `super_admin reply should stay short; was ${superAdminReply.length} chars`,
   );
 });

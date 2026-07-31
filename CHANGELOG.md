@@ -27,6 +27,24 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-07-31
 
 ### Added
+- **Projects: a standing team can now have shared memory that follows the team
+  across Discord and WhatsApp** (#927). An admin creates a project
+  (`project_create`), adds members (`project_add_member`), and binds the
+  conversations it may be discussed in (`project_bind_here`); members then
+  record decisions and notes with `project_note` and find them later with
+  `project_recall`, from either platform, on whichever surface the project is
+  bound to. Built for running an Impact Lab, where the team spans a Discord
+  channel and a WhatsApp group and only that team should see the content.
+  Two things it deliberately does **not** do: project access grants **data
+  scope only and never a tier** (adding someone to a project changes nothing
+  about which tools they can call), and project content is only ever rendered
+  where the project is bound — membership alone will not recite private notes
+  into a public channel. Document links can be recorded as references, stored
+  verbatim and never fetched; no file storage and no external egress. One
+  privacy note: if a member later runs `forget_me`, their project membership
+  is deleted outright but the team's notes are kept with authorship removed,
+  so an erasure request doesn't silently gut a project's history — see
+  docs/SECURITY.md for the full rule and its documented limit.
 - **WhatsApp voice notes now work on the Cloud API adapter, not just
   Baileys/Discord** (#910) — the docs' own recommended production WhatsApp
   path was the one place a voice note produced total silence. Opt-in via

@@ -216,9 +216,45 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
       [platform, userId],
     );
 
+    // Projects (issue #927) are the ONE place erasure is deliberately partial,
+    // and the asymmetry is the point:
+    //
+    //  - `project_members` HARD-DELETEs. It is pure identity; nothing shared is
+    //    lost with it, and the person stops being able to reach the project.
+    //  - `project_notes` keeps the row and NULLs the authorship. A departing
+    //    member's forget_me must not silently gut a standing team's decisions
+    //    — that is an unrelated side effect of a privacy action, and the whole
+    //    reason the team's memory exists. Precedent: knowledge_candidates
+    //    nulls its link for reviewed rows rather than deleting them.
+    //
+    // DOCUMENTED RESIDUAL: nulling authorship removes the LINK, not personal
+    // information the note's own text may contain ("Chris is hosting"). The
+    // erasure is therefore partial by design; docs/SECURITY.md says so and
+    // forget_me's own reply tells the member, so nobody is told their data is
+    // gone when some of it is retained.
+    //
+    // This exception is scoped to project content ONLY — the
+    // `DELETE FROM knowledge` above is untouched, so ordinary knowledge the
+    // member authored still disappears exactly as before.
+    const { rowCount: projectMemberships } = await client.query(
+      `DELETE FROM project_members WHERE platform = $1 AND user_id = $2`,
+      [platform, userId],
+    );
+    await client.query(
+      `UPDATE project_notes SET author_platform = NULL, author_user_id = NULL
+        WHERE author_platform = $1 AND author_user_id = $2`,
+      [platform, userId],
+    );
+    // Same rule for the project's own creator breadcrumb: the project outlives
+    // its creator's erasure, unowned rather than deleted.
+    await client.query(`UPDATE projects SET created_by = NULL WHERE created_by = $1`, [userId]);
+    await client.query(`UPDATE project_members SET added_by = NULL WHERE added_by = $1`, [userId]);
+    await client.query(`UPDATE project_surfaces SET bound_by = NULL WHERE bound_by = $1`, [userId]);
+
     await client.query('COMMIT');
     return (
       (messages ?? 0) +
+      (projectMemberships ?? 0) +
       (knowledge ?? 0) +
       (reports ?? 0) +
       (roster ?? 0) +

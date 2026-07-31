@@ -46,6 +46,7 @@ export * from './repository/shortcutHits.js';
 export * from './repository/digestAlerts.js';
 export * from './repository/moderation.js';
 export * from './repository/memberProjects.js';
+export * from './repository/projects.js';
 export * from './repository/members.js';
 export * from './repository/knowledge.js';
 export * from './repository/knowledgeCandidates.js';

@@ -2934,6 +2934,89 @@ call.
 No new tool, table, RBAC change, or data collection. See
 docs/ARCHITECTURE.md's `community_info` write-up for the mechanism.
 
+### 25. Projects — shared team memory (`project_*`, issue #927)
+
+A project is a standing team's shared memory (e.g. an Impact Lab) that follows
+the **team** across Discord and WhatsApp rather than living in one channel.
+This is a new authorization axis, so it is worth being precise about what it
+does and does not grant.
+
+**Two checks, both in SQL, never re-derived by callers.** `visibleProjectIds`
+(`src/storage/repository/projects.ts`) is the single source of truth:
+
+- **Membership** — the caller's own platform identity is in `project_members`,
+  *or* an identity sharing their `person_id` is (so one human reaches the
+  project from either platform once `link_member` has linked them).
+- **Surface** — the current conversation is bound in `project_surfaces`, *or*
+  the turn is a DM (always an allowed surface for a member; there is no stable
+  conversation id to bind).
+
+Both must hold. Membership alone is deliberately **not** sufficient: a member
+asking in a public channel would otherwise have private project content recited
+in front of everyone — issue #106's failure mode with a team's notes instead of
+one conversation's. Reads and writes go through the same pair, so a non-member
+cannot write into a project either, and a member cannot write from an unbound
+conversation.
+
+**A project grants DATA SCOPE ONLY — never a tier.** Nothing in
+`toolsForRole()` consults project membership; `project_recall` / `project_note`
+/ `project_list` sit in `MEMBER_TOOLS` for *every* member and are simply inert
+for a caller with no visible project. This keeps the per-turn tool surface
+tier-derived and **only ever subtractively filtered**, so a bug in project
+logic can never conjure a tool a caller did not already nominally have. It is
+the same rule `persons` already states for identity linking ("never touches
+`role`"), and it is pinned by a `SECURITY:` test comparing `toolsForRole`
+output before and after a membership grant.
+
+**Membership and bindings are set by admins, never from message content** —
+same rule as roles. `project_bind_here` deliberately takes **no conversation
+id**: it binds the conversation the admin is actually in, so neither the model
+nor a crafted message can bind a channel the admin is not present in.
+
+**Content is stored in `project_notes`, not in `knowledge`.** Scoping project
+content as a `knowledge.scope` value was the original design and was rejected
+during implementation: `knowledge` has ~20 readers that are unrestricted by
+default (`listKnowledge`, the duplicate/conflict pair-finders, the link-rot
+checker, the staleness readers, every get-entry-by-id path), so private project
+content would have been one un-audited caller away from an admin-facing view —
+and every future reader would be a new leak site. A separate table means every
+reader of project content is project-aware by construction.
+
+Notes are member-authored free text that re-enters the model's context on
+recall, so `project_recall` quarantines its result with `untrusted()`, exactly
+as `community_digest` and `admin_digest` do. A project's `brief` is context,
+never authority — it can no more override the system prompt's security section
+than `personas.ts` can. `reference_url` is stored verbatim and **never
+fetched**, the same rule as `member_projects.link`; this service does not
+become a document fetcher or a file store.
+
+**`forget_me` / `purge_user_data` is deliberately PARTIAL here — the one such
+exception in this codebase.** On erasure:
+
+- `project_members` is **hard-deleted** (pure identity; the person immediately
+  loses access, pinned by a test).
+- `project_notes` rows are **kept**, with `author_platform`/`author_user_id`
+  **nulled**. `projects.created_by`, `project_members.added_by` and
+  `project_surfaces.bound_by` are nulled the same way.
+
+The reasoning: a departing member's `forget_me` must not silently gut a
+standing team's decisions as a side effect of an unrelated privacy action.
+Precedent: `knowledge_candidates` nulls its link for reviewed rows rather than
+deleting them.
+
+**Documented residual (NZ Privacy Act 2020).** Nulling authorship removes the
+*link*, not personal information the note's own text may contain ("Chris is
+hosting at his place"). The erasure is therefore partial by design. This is
+stated here and must be reflected in what `forget_me` tells the member, so
+nobody is told their data is gone when some of it is retained. The exception is
+scoped to project content **only** — the `DELETE FROM knowledge WHERE
+source_user_id = $1` in `purgeSingleIdentity` is untouched and ordinary
+member-authored knowledge still disappears entirely, pinned by its own
+`SECURITY:` test.
+
+Archiving a project is a revocation, not a label: `visibleProjectIds` excludes
+archived projects, so content stops being served to its own members.
+
 ## Platform-specific notes
 
 ### WhatsApp / Baileys ToS risk

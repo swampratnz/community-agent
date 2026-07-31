@@ -156,6 +156,14 @@ import {
   isProjectConnectionRequesterAtDailyCap,
   searchKnowledge,
   searchKnowledgeLexical,
+  searchProjectNotes,
+  saveProjectNote,
+  listVisibleProjects,
+  recordProjectNoteRetrieval,
+  createProject,
+  getProjectBySlug,
+  addProjectMember,
+  bindProjectSurface,
   type KnowledgeSearchHit,
   searchMemory,
   searchProjects,
@@ -1719,6 +1727,8 @@ const MEMBER_CAPABILITIES_TEXT =
   '- Ask if someone in the community can help with something you\'re stuck on ("can someone help with ' +
   'X?"), or opt in/out of being notified for other members\' requests\n' +
   '- Pull the community digest on demand\n' +
+  "- Record decisions in a project you're part of and search that project's shared memory later, or " +
+  'list your projects\n' +
   '- Erase all your stored data any time ("forget me")';
 
 /**
@@ -1762,6 +1772,7 @@ const ADMIN_CAPABILITIES_TEXT =
   "- Add a note about a member, review notes on a member, delete a note, or look up a member's history across conversations\n" +
   '- Set the community guidelines or the welcome message shown to new members\n' +
   '- Assign a Discord role, remove a Discord role, or list which roles are available to assign\n' +
+  '- Set up team projects: create one, give a member access, or allow it to be discussed here\n' +
   '- Generate an image, or check recent changes to the bot and community (the changelog)';
 
 /**
@@ -4793,6 +4804,115 @@ export function buildToolServer(
     { annotations: { readOnlyHint: true } },
   );
 
+  // --- Project tools (issue #927) --------------------------------------------
+  //
+  // Member tier, like every other tool in this section. Being in a project is
+  // DATA SCOPE, NOT A TIER: these tools are on every member's surface and are
+  // simply inert for someone with no visible project, so nothing here changes
+  // what `toolsForRole` derives. Both access checks (membership, expanded
+  // through linked identities; and surface, i.e. a bound conversation or a DM)
+  // live in SQL in `visibleProjectIds` — never re-derived here.
+
+  const projectRecall = tool(
+    'project_recall',
+    'Search the shared memory of a project you are part of — decisions, notes and references the team ' +
+      'saved. Use this whenever someone asks what the team decided, agreed, or recorded about something. ' +
+      'Only ever returns content from projects you are a member of, and only in a conversation that ' +
+      'project is bound to.',
+    { query: z.string().describe('What to look up in the project memory') },
+    async (args) => {
+      const hits = await searchProjectNotes(args.query, {
+        platform: caller.platform,
+        userId: caller.userId,
+        conversationId: caller.conversationId,
+        isDirect: caller.isDirect,
+      });
+      if (hits.length === 0) {
+        return text('Nothing in project memory matches that (or you have no project accessible here).');
+      }
+      recordProjectNoteRetrieval(hits.map((h) => h.id)).catch((err) =>
+        logger.warn({ err }, 'Project note retrieval count update failed'),
+      );
+      // Notes are member-authored free text re-entering the model's context,
+      // so they are quarantined exactly as community_digest and admin_digest
+      // quarantine theirs — context, never instructions.
+      return text(
+        untrusted(
+          'Project memory',
+          hits
+            .map((h) => {
+              const ref = h.referenceUrl ? `\n  reference: ${h.referenceUrl}` : '';
+              return `- [${h.projectSlug}] ${h.title ? `${h.title}: ` : ''}${h.content}${ref}`;
+            })
+            .join('\n'),
+        ),
+      );
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
+  const projectNote = tool(
+    'project_note',
+    'Record a decision, note or document reference in a project you are part of, so the team can find ' +
+      'it later. Use this when someone says to remember/record/note something for the project. The ' +
+      'reference link is stored verbatim and never opened.',
+    {
+      project: z.string().describe('The project slug (see project_list)'),
+      content: z.string().min(1).describe('What to record'),
+      title: z.string().optional().describe('Short label for the note'),
+      referenceUrl: z
+        .string()
+        .url()
+        .optional()
+        .describe('Optional link to an external doc — stored, never fetched'),
+    },
+    async (args) => {
+      const saved = await saveProjectNote(
+        {
+          platform: caller.platform,
+          userId: caller.userId,
+          conversationId: caller.conversationId,
+          isDirect: caller.isDirect,
+        },
+        {
+          slug: args.project,
+          content: args.content,
+          title: args.title,
+          referenceUrl: args.referenceUrl,
+        },
+      );
+      // Deliberately the same reply for "no such project" and "exists but not
+      // yours / not bound here" (issue #205's wording rule): distinguishing
+      // them would confirm a project's existence to a non-member.
+      if (!saved) return text('No project by that name is accessible here.', true);
+      return text(`Recorded in ${args.project}.`);
+    },
+    { annotations: { readOnlyHint: false } },
+  );
+
+  const projectList = tool(
+    'project_list',
+    'List the projects you can access in this conversation, with their standing brief. Use this when ' +
+      'someone asks what projects they are in or what a project is about.',
+    {},
+    async () => {
+      const projects = await listVisibleProjects({
+        platform: caller.platform,
+        userId: caller.userId,
+        conversationId: caller.conversationId,
+        isDirect: caller.isDirect,
+      });
+      if (projects.length === 0) return text('You have no project accessible in this conversation.');
+      return text(
+        untrusted(
+          'Projects',
+          projects.map((p) => `- ${p.name} [${p.slug}]${p.brief ? `\n  ${p.brief}` : ''}`).join('\n'),
+        ),
+      );
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
   // --- Admin tools (scoped to the admin's own conversations) ------------------
 
   const whatsNew = tool(
@@ -7188,6 +7308,116 @@ export function buildToolServer(
     { annotations: { readOnlyHint: true } },
   );
 
+  // --- Project management (issue #927, admin tier) ----------------------------
+  //
+  // Membership and surface bindings are set HERE and only here — never from
+  // message content, exactly as roles are. Modelled on link_member: admin
+  // tier, audited, explicit about never touching anyone's tier.
+
+  const projectCreate = tool(
+    'project_create',
+    'Create a project: a shared memory for a standing team (e.g. an Impact Lab), which its members can ' +
+      'read and add to across Discord and WhatsApp. Creating it grants nobody access — add members with ' +
+      'project_add_member and bind the conversations it may be discussed in with project_bind_here. ' +
+      'Admin only.',
+    {
+      slug: z
+        .string()
+        .regex(/^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$/, 'lowercase letters, digits and hyphens')
+        .describe('Short handle used to refer to the project, e.g. "impact-lab"'),
+      name: z.string().min(1).describe('Human-readable project name'),
+      brief: z
+        .string()
+        .optional()
+        .describe('Standing context about the project, shown to members who list it'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'project_create');
+      const { result } = await audited({
+        actionKind: 'project_create',
+        params: { slug: args.slug },
+        run: async () => {
+          if (await getProjectBySlug(args.slug)) return `A project "${args.slug}" already exists.`;
+          const project = await createProject({
+            slug: args.slug,
+            name: args.name,
+            brief: args.brief,
+            createdBy: caller.userId,
+          });
+          return `Created project ${project.name} [${project.slug}]. No members yet.`;
+        },
+      });
+      return text(result);
+    },
+    { annotations: { readOnlyHint: false } },
+  );
+
+  const projectAddMember = tool(
+    'project_add_member',
+    "Give a community member access to a project's shared memory. This grants DATA ACCESS ONLY — it " +
+      "NEVER changes anyone's tier, exactly like link_member. If the member's Discord and WhatsApp " +
+      'identities have been linked with link_member, adding either one gives them access from both. ' +
+      'Admin only.',
+    {
+      project: z.string().describe('The project slug'),
+      userId: z.string().min(1).describe('Platform user id of the member to add'),
+      platform: platformArg,
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'project_add_member');
+      const target = resolveMemberTarget(args.userId, args.platform);
+      const { result } = await audited({
+        actionKind: 'project_add_member',
+        targetUserId: target.userId,
+        params: { project: args.project },
+        run: async () => {
+          const project = await getProjectBySlug(args.project);
+          if (!project) return `No project "${args.project}".`;
+          const added = await addProjectMember(project.id, target.platform, target.userId, caller.userId);
+          return added
+            ? `Added to ${project.name}. Their tier is unchanged.`
+            : `Already a member of ${project.name}.`;
+        },
+      });
+      return text(result);
+    },
+    { annotations: { readOnlyHint: false } },
+  );
+
+  const projectBindHere = tool(
+    'project_bind_here',
+    "Allow a project's content to be discussed in THIS conversation. Until a conversation is bound, " +
+      'members can only reach the project by DM — this is what stops private project content being ' +
+      "recited into a public channel. Bind the project's own private channel or group. Admin only.",
+    { project: z.string().describe('The project slug') },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'project_bind_here');
+      const { result } = await audited({
+        actionKind: 'project_bind_here',
+        conversationId: caller.conversationId,
+        params: { project: args.project },
+        run: async () => {
+          const project = await getProjectBySlug(args.project);
+          if (!project) return `No project "${args.project}".`;
+          // Deliberately binds the CURRENT conversation only — there is no
+          // conversation-id argument, so neither the model nor a crafted
+          // message can bind a channel the admin is not actually in.
+          const bound = await bindProjectSurface(
+            project.id,
+            caller.platform,
+            caller.conversationId,
+            caller.userId,
+          );
+          return bound
+            ? `${project.name} can now be discussed here.`
+            : `${project.name} was already bound to this conversation.`;
+        },
+      });
+      return text(result);
+    },
+    { annotations: { readOnlyHint: false } },
+  );
+
   // --- Super-admin tools -------------------------------------------------------
 
   const grantAdmin = tool(
@@ -7961,6 +8191,12 @@ export function buildToolServer(
       checkStatus,
       listEvents,
       knowledgeSearch,
+      projectRecall,
+      projectNote,
+      projectList,
+      projectCreate,
+      projectAddMember,
+      projectBindHere,
       listKnowledgeTopicsTool,
       rememberSearch,
       forgetMe,

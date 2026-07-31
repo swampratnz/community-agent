@@ -1,0 +1,351 @@
+import { test, after, type TestContext } from 'node:test';
+import assert from 'node:assert/strict';
+
+// config.ts validates env at import time — provide a dummy environment before
+// importing anything that (transitively) loads it, matching the convention in
+// tests/knowledgeScope.test.ts.
+const hasDb = Boolean(process.env.DATABASE_URL);
+
+process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
+process.env.DISCORD_BOT_TOKEN ??= 'test-token';
+process.env.DISCORD_GUILD_ID ??= '1';
+process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
+process.env.WHATSAPP_PROVIDER ??= 'disabled';
+
+const skip = hasDb
+  ? false
+  : 'DATABASE_URL not set — skipping DB-integration tests (CLAUDE.md: exercise against a local Postgres 16 + pgvector)';
+
+const { pool, closeDb } = await import('../src/storage/db.js');
+const { config } = await import('../src/config.js');
+
+/**
+ * Projects (issue #927) enforce TWO checks, both in SQL in `visibleProjectIds`:
+ * membership (expanded through linked identities) says WHO may read, and the
+ * surface binding says WHERE it may be rendered. Almost every test here pins
+ * one half of that, because dropping either one is a private-content leak:
+ * membership alone would recite a team's notes into a public channel, and
+ * surface alone would serve them to anyone who happens to be in the channel.
+ *
+ * The positive-control tests are load-bearing. Without them every negative
+ * assertion below would also pass against a `searchProjectNotes` that simply
+ * returned [] unconditionally.
+ */
+
+// Unique per test-run tag so fixtures never collide across runs and can be
+// cleaned up precisely (RUN-tag convention from tests/repository.test.ts).
+// node:test runs test FILES in parallel, so unscoped fixtures would land on
+// rows other files are counting.
+const RUN = `t${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+const DISCORD_USER = `${RUN}1111111111111111`;
+const WHATSAPP_USER = `${RUN}64211111111`;
+const OUTSIDER = `${RUN}2222222222222222`;
+const BOUND_CONVO = `${RUN}-bound-convo`;
+const UNBOUND_CONVO = `${RUN}-unbound-convo`;
+
+after(async () => {
+  if (hasDb) {
+    // projects cascade to members/surfaces/notes; community_users rows are
+    // this run's own and are removed explicitly.
+    await pool.query(`DELETE FROM projects WHERE slug LIKE $1`, [`${RUN}%`]);
+    await pool.query(`DELETE FROM community_users WHERE platform_user_id LIKE $1`, [`${RUN}%`]);
+  }
+  await closeDb();
+});
+
+/**
+ * Hand-crafted, deterministic embeddings (no model download) — the same
+ * technique tests/knowledgeScope.test.ts uses. Each fixture string maps to its
+ * own orthogonal unit vector, so similarity is exactly 1 for an identical
+ * string and ~0 for any other, independent of the real model's semantics.
+ * Mocked once at module scope because `embed` is a static import inside
+ * repository.js: once that module is cached, a later t.mock.module call does
+ * not retarget the binding it already closed over.
+ */
+const NOTE_CONTENT = `${RUN} decision: the lab meets on the first Tuesday`;
+const OTHER_NOTE = `${RUN} decision: catering is confirmed`;
+
+const DIM = config.db.embeddingDim;
+function oneHot(i: number): number[] {
+  const v = new Array(DIM).fill(0);
+  v[((i % DIM) + DIM) % DIM] = 1;
+  return v;
+}
+const EMBED_FIXTURES: Record<string, number[]> = {
+  [NOTE_CONTENT]: oneHot(11),
+  [OTHER_NOTE]: oneHot(12),
+};
+
+let repoPromise: Promise<typeof import('../src/storage/repository.js')> | null = null;
+function repo(t: TestContext) {
+  if (!repoPromise) {
+    t.mock.module('../src/storage/embeddings.js', {
+      namedExports: {
+        embed: async (text: string) => {
+          const vec = EMBED_FIXTURES[text];
+          if (!vec) throw new Error(`projectScope test fixture: no hand-crafted vector for "${text}"`);
+          return vec;
+        },
+      },
+    });
+    repoPromise = import('../src/storage/repository.js');
+  }
+  return repoPromise;
+}
+
+type Repo = typeof import('../src/storage/repository.js');
+
+/**
+ * One project with a Discord member, bound to BOUND_CONVO, holding one note.
+ * Each caller gets its own slug so the parallel-safe cleanup above can find it
+ * and so tests never observe each other's bindings.
+ */
+async function fixture(r: Repo, suffix: string) {
+  const slug = `${RUN}-${suffix}`;
+  // A distinct member per fixture. Sharing one identity across fixtures made a
+  // DM query (an allowed surface for EVERY project that identity is in) return
+  // all of them, so a per-project assertion silently measured the whole set.
+  const member = `${DISCORD_USER}${suffix}`;
+  await r.upsertMember({
+    platform: 'discord',
+    userId: member,
+    role: 'member',
+    addedBy: 'test',
+  });
+  const project = await r.createProject({ slug, name: `Lab ${suffix}`, createdBy: 'test' });
+  await r.addProjectMember(project.id, 'discord', member, 'test');
+  await r.bindProjectSurface(project.id, 'discord', BOUND_CONVO, 'test');
+  const saved = await r.saveProjectNote(
+    { platform: 'discord', userId: member, conversationId: BOUND_CONVO, isDirect: false },
+    { slug, content: NOTE_CONTENT },
+  );
+  assert.ok(saved, 'fixture setup: the member must be able to save in a bound conversation');
+  return { project, slug, member, noteId: saved.id };
+}
+
+test(
+  'SECURITY: projects: a member reaches project notes in a BOUND conversation (positive control — without this every negative below would pass vacuously)',
+  { skip },
+  async (t) => {
+    const r = await repo(t);
+    const { slug, member } = await fixture(r, 'pos');
+    const hits = await r.searchProjectNotes(NOTE_CONTENT, {
+      platform: 'discord',
+      userId: member,
+      conversationId: BOUND_CONVO,
+      isDirect: false,
+    });
+    assert.equal(hits.length, 1, 'the member must see their project note in a bound conversation');
+    assert.equal(hits[0].content, NOTE_CONTENT);
+    assert.equal(hits[0].projectSlug, slug);
+  },
+);
+
+test(
+  "SECURITY: projects: a NON-member gets nothing, even in the project's own bound conversation (membership check)",
+  { skip },
+  async (t) => {
+    const r = await repo(t);
+    await fixture(r, 'nonmember');
+    await r.upsertMember({ platform: 'discord', userId: OUTSIDER, role: 'member', addedBy: 'test' });
+    const hits = await r.searchProjectNotes(NOTE_CONTENT, {
+      platform: 'discord',
+      userId: OUTSIDER,
+      conversationId: BOUND_CONVO,
+      isDirect: false,
+    });
+    assert.deepEqual(hits, [], 'being in the bound channel must not confer project access');
+  },
+);
+
+test(
+  'SECURITY: projects: a MEMBER gets nothing in an UNBOUND conversation — the second check, which stops private notes being recited into a public channel',
+  { skip },
+  async (t) => {
+    const r = await repo(t);
+    const { member } = await fixture(r, 'unbound');
+    const hits = await r.searchProjectNotes(NOTE_CONTENT, {
+      platform: 'discord',
+      userId: member,
+      conversationId: UNBOUND_CONVO,
+      isDirect: false,
+    });
+    assert.deepEqual(
+      hits,
+      [],
+      'membership alone must not render project content anywhere the member happens to be',
+    );
+  },
+);
+
+test(
+  'SECURITY: projects: a member reaches their project by DM without any binding (a DM is always an allowed surface, and has no stable conversation id to bind)',
+  { skip },
+  async (t) => {
+    const r = await repo(t);
+    const { slug, member } = await fixture(r, 'dm');
+    const hits = await r.searchProjectNotes(NOTE_CONTENT, {
+      platform: 'discord',
+      userId: member,
+      conversationId: `${RUN}-some-dm-channel`,
+      isDirect: true,
+    });
+    assert.deepEqual(
+      hits.map((h) => h.projectSlug),
+      [slug],
+      'a DM to a member is an allowed surface, and shows exactly their own project',
+    );
+  },
+);
+
+test(
+  'SECURITY: projects: a linked WhatsApp identity reaches a project its Discord identity was added to, and does NOT before linking (visibility expands through `persons`, never through message content)',
+  { skip },
+  async (t) => {
+    const r = await repo(t);
+    const { project, member } = await fixture(r, 'linked');
+    await r.upsertMember({ platform: 'whatsapp', userId: WHATSAPP_USER, role: 'member', addedBy: 'test' });
+    await r.bindProjectSurface(project.id, 'whatsapp', BOUND_CONVO, 'test');
+
+    const before = await r.searchProjectNotes(NOTE_CONTENT, {
+      platform: 'whatsapp',
+      userId: WHATSAPP_USER,
+      conversationId: BOUND_CONVO,
+      isDirect: false,
+    });
+    assert.deepEqual(before, [], 'an unlinked second identity is a different person and must see nothing');
+
+    await r.linkMembers('discord', member, 'whatsapp', WHATSAPP_USER);
+
+    const after = await r.searchProjectNotes(NOTE_CONTENT, {
+      platform: 'whatsapp',
+      userId: WHATSAPP_USER,
+      conversationId: BOUND_CONVO,
+      isDirect: false,
+    });
+    assert.equal(after.length, 1, 'once linked, the same human reaches the project from either platform');
+  },
+);
+
+test(
+  'SECURITY: projects: saveProjectNote refuses a non-member and refuses a member in an unbound conversation — writes are gated by the same two checks as reads',
+  { skip },
+  async (t) => {
+    const r = await repo(t);
+    const { slug, member } = await fixture(r, 'write');
+    await r.upsertMember({ platform: 'discord', userId: OUTSIDER, role: 'member', addedBy: 'test' });
+
+    const byOutsider = await r.saveProjectNote(
+      { platform: 'discord', userId: OUTSIDER, conversationId: BOUND_CONVO, isDirect: false },
+      { slug, content: OTHER_NOTE },
+    );
+    assert.equal(byOutsider, null, 'a non-member must not be able to write into a project');
+
+    const fromUnbound = await r.saveProjectNote(
+      { platform: 'discord', userId: member, conversationId: UNBOUND_CONVO, isDirect: false },
+      { slug, content: OTHER_NOTE },
+    );
+    assert.equal(fromUnbound, null, 'a member must not write project content from an unbound conversation');
+  },
+);
+
+test(
+  'SECURITY: projects: an ARCHIVED project is invisible to its own members (archive is a revocation, not just a label)',
+  { skip },
+  async (t) => {
+    const r = await repo(t);
+    const { slug, member } = await fixture(r, 'archived');
+    await r.archiveProject(slug);
+    const hits = await r.searchProjectNotes(NOTE_CONTENT, {
+      platform: 'discord',
+      userId: member,
+      conversationId: BOUND_CONVO,
+      isDirect: false,
+    });
+    assert.deepEqual(hits, [], 'archiving must stop content being served');
+  },
+);
+
+test(
+  "SECURITY: projects: forget_me hard-deletes project MEMBERSHIP but KEEPS the notes with authorship nulled — a departing member must not silently gut the team's shared decisions (issue #927 owner decision)",
+  { skip },
+  async (t) => {
+    const r = await repo(t);
+    const { project, member, noteId } = await fixture(r, 'purge');
+
+    await r.purgeUserData('discord', member);
+
+    const { rows: noteRows } = await pool.query(
+      `SELECT content, author_platform, author_user_id FROM project_notes WHERE id = $1`,
+      [noteId],
+    );
+    assert.equal(noteRows.length, 1, 'the project note must survive its author being erased');
+    assert.equal(noteRows[0].content, NOTE_CONTENT, 'the decision text itself is retained');
+    assert.equal(noteRows[0].author_user_id, null, 'authorship must be unlinked');
+    assert.equal(noteRows[0].author_platform, null, 'authorship must be unlinked');
+
+    const { rows: memberRows } = await pool.query(
+      `SELECT 1 FROM project_members WHERE project_id = $1 AND platform = 'discord' AND user_id = $2`,
+      [project.id, member],
+    );
+    assert.equal(memberRows.length, 0, 'membership is pure identity and must be hard-deleted');
+
+    // And the erased identity can no longer reach the project it was in.
+    const hits = await r.searchProjectNotes(NOTE_CONTENT, {
+      platform: 'discord',
+      userId: member,
+      conversationId: BOUND_CONVO,
+      isDirect: false,
+    });
+    assert.deepEqual(hits, [], 'erasure removes access even though the note survives');
+  },
+);
+
+test(
+  'SECURITY: projects: ordinary (non-project) knowledge authored by the member is still HARD-DELETED by forget_me — the keep-the-row exception is scoped to project content only',
+  { skip },
+  async (t) => {
+    const r = await repo(t);
+    const purgeUser = `${RUN}3333333333333333`;
+    await r.upsertMember({ platform: 'discord', userId: purgeUser, role: 'member', addedBy: 'test' });
+    const { rows } = await pool.query(
+      `INSERT INTO knowledge (scope, content, source_user_id, created_by_role) VALUES ('global', $1, $2, 'member') RETURNING id`,
+      [`${RUN} ordinary knowledge entry`, purgeUser],
+    );
+    const knowledgeId = Number(rows[0].id);
+
+    await r.purgeUserData('discord', purgeUser);
+
+    const { rows: after } = await pool.query(`SELECT 1 FROM knowledge WHERE id = $1`, [knowledgeId]);
+    assert.equal(after.length, 0, 'the project exception must not weaken erasure for ordinary knowledge');
+  },
+);
+
+test(
+  'SECURITY: projects: project membership grants DATA SCOPE ONLY — it never changes the tool surface, exactly as `persons` never touches role',
+  { skip },
+  async (t) => {
+    const { toolsForRole } = await import('../src/auth/rbac.js');
+    const r = await repo(t);
+    const { project } = await fixture(r, 'tiersurface');
+
+    const before = toolsForRole('member', 'discord');
+    await r.addProjectMember(project.id, 'discord', OUTSIDER, 'test');
+    const after = toolsForRole('member', 'discord');
+
+    assert.deepEqual(
+      [...after],
+      [...before],
+      'the per-turn tool surface is derived from tier alone; project membership must never widen it',
+    );
+    // And the project tools are on every member's surface regardless, which is
+    // what lets them be gated inside the tool body instead of in the surface.
+    for (const t of [
+      'mcp__community__project_recall',
+      'mcp__community__project_note',
+      'mcp__community__project_list',
+    ]) {
+      assert.ok(before.includes(t), `${t} must be a plain member-tier tool`);
+    }
+  },
+);
