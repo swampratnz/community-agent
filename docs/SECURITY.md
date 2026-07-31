@@ -3032,6 +3032,29 @@ same rule as roles. `project_bind_here` deliberately takes **no conversation
 id**: it binds the conversation the admin is actually in, so neither the model
 nor a crafted message can bind a channel the admin is not present in.
 
+**Project access is gated at three layers, because `visibleProjectIds`
+deliberately checks only `project_members` — never tier.** That is the right
+shape for a data scope, but it means tier enforcement has to happen around it:
+
+1. **The handlers re-check member tier.** `project_recall` / `project_note` /
+   `project_list` each call `assertAtLeast(caller.role, 'member', …)`, the same
+   discipline `share_project` / `set_my_interests` / `who_is_into` /
+   `find_helper` / `community_digest` use. `MEMBER_TOOLS` is also a **guest's**
+   surface in open mode, so without this an open-mode guest holding a stale
+   membership row would read a team's private notes.
+2. **`remove_member` cascades to `project_members`.** Project membership must
+   not outlive community membership. `project_members` has no FK to
+   `community_users` (it is keyed on the platform identity so visibility
+   survives person-row merges), so nothing cascades on its own — the delete is
+   explicit, and mirrors what `purgeSingleIdentity` already does.
+3. **`project_add_member` requires an existing community member**, exactly as
+   `link_member` does. Otherwise a membership row could exist for an identity
+   that never passed `add_member`, which in open mode reaches project content
+   at guest tier.
+
+All three were found by PR #929's automated review; layer 2 was a real leak on
+open-mode deployments, and each is pinned by a `SECURITY:` test.
+
 **Access grants are reversible and deliberately not CONFIRM-gated.**
 `project_remove_member` revokes access in one call, immediately, for reads and
 writes alike (pinned by a `SECURITY:` test with a positive control). The CONFIRM
@@ -3093,8 +3116,10 @@ source_user_id = $1` in `purgeSingleIdentity` is untouched and ordinary
 member-authored knowledge still disappears entirely, pinned by its own
 `SECURITY:` test.
 
-Archiving a project is a revocation, not a label: `visibleProjectIds` excludes
-archived projects, so content stops being served to its own members.
+Archiving a project (`project_archive`, admin tier) is a revocation, not a
+label: `visibleProjectIds` excludes archived projects, so content stops being
+served to its own members while nothing is deleted. `project_unbind_here`
+reverses a surface binding without touching membership.
 
 ## Platform-specific notes
 

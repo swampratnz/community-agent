@@ -168,6 +168,8 @@ import {
   addProjectMember,
   removeProjectMember,
   bindProjectSurface,
+  unbindProjectSurface,
+  archiveProject,
   type KnowledgeSearchHit,
   searchMemory,
   searchProjects,
@@ -1785,8 +1787,8 @@ const ADMIN_CAPABILITIES_TEXT =
   "- Add a note about a member, review notes on a member, delete a note, or look up a member's history across conversations\n" +
   '- Set the community guidelines or the welcome message shown to new members\n' +
   '- Assign a Discord role, remove a Discord role, or list which roles are available to assign\n' +
-  "- Set up team projects: create one, give a member access, take a member's access away, or allow " +
-  'it to be discussed here\n' +
+  "- Set up team projects: create one, give a member access, take a member's access away, allow or " +
+  'stop it being discussed here, or archive a finished project\n' +
   '- Generate an image, or check recent changes to the bot and community (the changelog)';
 
 /**
@@ -4841,6 +4843,16 @@ export function buildToolServer(
       'project is bound to.',
     { query: z.string().describe('What to look up in the project memory') },
     async (args) => {
+      // SECURITY: re-check member tier in the handler, the same discipline
+      // share_project/set_my_interests/who_is_into/find_helper/community_digest
+      // already use (see rbac.ts). MEMBER_TOOLS is also a GUEST's surface in
+      // open mode ("Guests only ever reach the agent in open mode; same
+      // surface as member"), and visibleProjectIds intentionally checks only
+      // project_members — never tier — so without this an open-mode guest who
+      // still has a membership row reads a team's private notes. That is the
+      // mechanism behind the removed-member leak fixed in removeMember too
+      // (PR #929 review).
+      assertAtLeast(caller.role, 'member', 'project_recall');
       const hits = await searchProjectNotes(args.query, {
         platform: caller.platform,
         userId: caller.userId,
@@ -4887,6 +4899,16 @@ export function buildToolServer(
         .describe('Optional link to an external doc — stored, never fetched'),
     },
     async (args) => {
+      // SECURITY: re-check member tier in the handler, the same discipline
+      // share_project/set_my_interests/who_is_into/find_helper/community_digest
+      // already use (see rbac.ts). MEMBER_TOOLS is also a GUEST's surface in
+      // open mode ("Guests only ever reach the agent in open mode; same
+      // surface as member"), and visibleProjectIds intentionally checks only
+      // project_members — never tier — so without this an open-mode guest who
+      // still has a membership row reads a team's private notes. That is the
+      // mechanism behind the removed-member leak fixed in removeMember too
+      // (PR #929 review).
+      assertAtLeast(caller.role, 'member', 'project_note');
       const saved = await saveProjectNote(
         {
           platform: caller.platform,
@@ -4916,6 +4938,16 @@ export function buildToolServer(
       'someone asks what projects they are in or what a project is about.',
     {},
     async () => {
+      // SECURITY: re-check member tier in the handler, the same discipline
+      // share_project/set_my_interests/who_is_into/find_helper/community_digest
+      // already use (see rbac.ts). MEMBER_TOOLS is also a GUEST's surface in
+      // open mode ("Guests only ever reach the agent in open mode; same
+      // surface as member"), and visibleProjectIds intentionally checks only
+      // project_members — never tier — so without this an open-mode guest who
+      // still has a membership row reads a team's private notes. That is the
+      // mechanism behind the removed-member leak fixed in removeMember too
+      // (PR #929 review).
+      assertAtLeast(caller.role, 'member', 'project_list');
       const projects = await listVisibleProjects({
         platform: caller.platform,
         userId: caller.userId,
@@ -7433,6 +7465,16 @@ export function buildToolServer(
         run: async () => {
           const project = await getProjectBySlug(args.project);
           if (!project) return `No project "${args.project}".`;
+          // SECURITY (PR #929 review): the target must already be a known
+          // community member, exactly as link_member requires. Granting
+          // project access to an arbitrary (platform, userId) would create a
+          // membership row for an identity that never passed add_member —
+          // and since visibleProjectIds checks only that row, never tier, in
+          // an open-mode deployment that identity would read the team's notes
+          // while sitting at guest tier.
+          if (!(await getMemberRole(target.platform, target.userId))) {
+            return `${target.userId} is not a community member yet — run add_member first.`;
+          }
           const added = await addProjectMember(project.id, target.platform, target.userId, caller.userId);
           return added
             ? `Added to ${project.name}. Their tier is unchanged.`
@@ -7468,6 +7510,55 @@ export function buildToolServer(
           return removed
             ? `Removed from ${project.name}. Their notes remain with the project.`
             : `Not a member of ${project.name}.`;
+        },
+      });
+      return text(result);
+    },
+    { annotations: { readOnlyHint: false } },
+  );
+
+  const projectUnbindHere = tool(
+    'project_unbind_here',
+    "Stop a project's content being discussed in THIS conversation, undoing project_bind_here. " +
+      'Members keep their access and can still reach the project by DM or in its other bound ' +
+      'conversations. Admin only.',
+    { project: z.string().describe('The project slug') },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'project_unbind_here');
+      const { result } = await audited({
+        actionKind: 'project_unbind_here',
+        conversationId: caller.conversationId,
+        params: { project: args.project },
+        run: async () => {
+          const project = await getProjectBySlug(args.project);
+          if (!project) return `No project "${args.project}".`;
+          const unbound = await unbindProjectSurface(project.id, caller.platform, caller.conversationId);
+          return unbound
+            ? `${project.name} can no longer be discussed here.`
+            : `${project.name} was not bound to this conversation.`;
+        },
+      });
+      return text(result);
+    },
+    { annotations: { readOnlyHint: false } },
+  );
+
+  const projectArchive = tool(
+    'project_archive',
+    'Archive a project when a team is finished. This is a revocation, not a label: its shared memory ' +
+      'immediately stops being readable by anyone, including its own members. Nothing is deleted, so ' +
+      'the record is kept. Admin only.',
+    { project: z.string().describe('The project slug') },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'project_archive');
+      const { result } = await audited({
+        actionKind: 'project_archive',
+        params: { project: args.project },
+        run: async () => {
+          const archived = await archiveProject(args.project);
+          return archived
+            ? `Archived ${args.project}. Its notes are retained but no longer readable.`
+            : `No active project "${args.project}".`;
         },
       });
       return text(result);
@@ -8289,6 +8380,8 @@ export function buildToolServer(
       projectAddMember,
       projectRemoveMember,
       projectBindHere,
+      projectUnbindHere,
+      projectArchive,
       listKnowledgeTopicsTool,
       rememberSearch,
       forgetMe,

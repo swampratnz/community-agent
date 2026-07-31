@@ -2710,8 +2710,8 @@ test('community_info: admin-tier reply stays byte-identical, never gains SUPER_A
     "- Add a note about a member, review notes on a member, delete a note, or look up a member's history across conversations\n" +
     '- Set the community guidelines or the welcome message shown to new members\n' +
     '- Assign a Discord role, remove a Discord role, or list which roles are available to assign\n' +
-    "- Set up team projects: create one, give a member access, take a member's access away, or allow " +
-    'it to be discussed here\n' +
+    "- Set up team projects: create one, give a member access, take a member's access away, allow or " +
+    'stop it being discussed here, or archive a finished project\n' +
     '- Generate an image, or check recent changes to the bot and community (the changelog)';
 
   const memberReply = (await communityInfoHandler('member')).content[0]?.text ?? '';
@@ -2874,7 +2874,9 @@ const ADMIN_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__project_create', /Set up team projects/i],
   ['mcp__community__project_add_member', /give a member access/i],
   ['mcp__community__project_remove_member', /take a member's access away/i],
-  ['mcp__community__project_bind_here', /allow it to be discussed here/i],
+  ['mcp__community__project_bind_here', /allow or\s+stop it being discussed here/i],
+  ['mcp__community__project_unbind_here', /allow or\s+stop it being discussed here/i],
+  ['mcp__community__project_archive', /archive a finished project/i],
   ['mcp__community__whats_new', /the changelog/i],
   ['mcp__community__generate_image', /generate an image/i],
   ['mcp__community__user_history', /history across conversations/i],
@@ -2998,8 +3000,10 @@ test('community_info: admin reply stays under a hard char cap, not a wall of tex
   // merge_knowledge clause (consolidated into the existing knowledge-base
   // curation bullet, not a new one), and again for issue #924's
   // list_blocked_members clause, and again for issue #927's project lines
-  // (one member line + one admin line, each covering three tools).
-  assert.ok(adminReply.length < 4130, `admin reply should stay short; was ${adminReply.length} chars`);
+  // (one member line + one admin line), widened once more when PR #929's
+  // review added project_remove_member/project_unbind_here/project_archive
+  // to the same admin line.
+  assert.ok(adminReply.length < 4200, `admin reply should stay short; was ${adminReply.length} chars`);
 });
 
 test('SECURITY: community_info member-tier and guest-tier replies never name an admin/super_admin-only tool or contain any ADMIN_CAPABILITIES_TEXT-unique line (issue #367, issue #311)', async () => {
@@ -3134,9 +3138,10 @@ test('community_info: super_admin reply stays under a hard char cap, not a wall 
   // issue #895's withdraw_knowledge_tip clause, and again alongside the
   // admin cap for issue #924's list_blocked_members clause, and again
   // alongside the member/admin caps for issue #927's project lines, and
-  // again for #927's project_remove_member clause added in PR review.
+  // again for #927's project_remove_member/project_unbind_here/
+  // project_archive clauses added in PR review.
   assert.ok(
-    superAdminReply.length < 4810,
+    superAdminReply.length < 4860,
     `super_admin reply should stay short; was ${superAdminReply.length} chars`,
   );
 });
@@ -13158,6 +13163,63 @@ function whoIsIntoHandler(caller: {
     }
   )._registeredTools['who_is_into'];
 }
+
+/** Pull one project tool's handler out of a server built for `caller`. */
+function projectToolHandler(
+  name: 'project_recall' | 'project_note' | 'project_list',
+  caller: { role?: 'member' | 'guest' | 'admin' | 'super_admin'; userId?: string },
+) {
+  const adapter = stubAdapter(async () => {});
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId: caller.userId ?? 'project-guest-1',
+      userName: 'Probe',
+      role: caller.role ?? 'guest',
+      conversationId: 'convo-project-guest',
+    },
+    adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: Record<string, unknown>) => Promise<{
+            content: Array<{ type: string; text: string }>;
+            isError?: boolean;
+          }>;
+        }
+      >;
+    }
+  )._registeredTools[name];
+}
+
+test('SECURITY: project_recall/project_note/project_list refuse a guest-tier caller before any DB read/write (assertAtLeast re-check, issue #927 / PR #929 review)', async () => {
+  // MEMBER_TOOLS is also a GUEST's surface in open mode, and visibleProjectIds
+  // checks only project_members — never tier. Without this handler re-check an
+  // open-mode guest holding a stale membership row reads a team's private
+  // notes. Same discipline share_project/who_is_into/community_digest use.
+  await assert.rejects(
+    () => projectToolHandler('project_recall', { role: 'guest' }).handler({ query: 'the venue' }),
+    /Permission denied/,
+    'project_recall must refuse an open-mode guest even though it is in MEMBER_TOOLS',
+  );
+  await assert.rejects(
+    () =>
+      projectToolHandler('project_note', { role: 'guest' }).handler({
+        project: 'impact-lab',
+        content: 'a note',
+      }),
+    /Permission denied/,
+    'project_note must refuse an open-mode guest even though it is in MEMBER_TOOLS',
+  );
+  await assert.rejects(
+    () => projectToolHandler('project_list', { role: 'guest' }).handler({}),
+    /Permission denied/,
+    'project_list must refuse an open-mode guest even though it is in MEMBER_TOOLS',
+  );
+});
 
 test('SECURITY: set_my_interests and who_is_into refuse a guest-tier caller before any DB write/read (assertAtLeast re-check, issue #634)', async () => {
   const setTool = setMyInterestsHandler({ platform: 'discord', userId: 'guest-1', role: 'guest' });

@@ -52,6 +52,11 @@ export const MEMBER_TOOLS = [
   // a project is data scope, not a tier, so these must not be derived from
   // project membership. They are simply inert for a caller with no visible
   // project — both access checks live in SQL in visibleProjectIds.
+  // Each of the three re-checks 'member' explicitly in the handler to exclude
+  // open-mode guests, same discipline share_project/set_my_interests/
+  // who_is_into/find_helper/community_digest use: these expose and publish a
+  // team's private notes, and visibleProjectIds checks only project_members,
+  // never tier (PR #929 review).
   'mcp__community__project_recall',
   'mcp__community__project_note',
   'mcp__community__project_list',
@@ -211,6 +216,8 @@ export const ADMIN_TOOLS = [
   'mcp__community__project_add_member',
   'mcp__community__project_remove_member',
   'mcp__community__project_bind_here',
+  'mcp__community__project_unbind_here',
+  'mcp__community__project_archive',
   'mcp__community__whats_new',
   'mcp__community__generate_image',
   'mcp__community__user_history',

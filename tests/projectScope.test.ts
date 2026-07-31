@@ -294,6 +294,45 @@ test(
 );
 
 test(
+  "SECURITY: projects: remove_member revokes project access as a matter of STORAGE, not just tool gating — otherwise a removed member keeps reading a team's notes on an open-mode deployment (PR #929 review)",
+  { skip },
+  async (t) => {
+    const r = await repo(t);
+    const { member } = await fixture(r, 'removemember');
+
+    const before = await r.searchProjectNotes(NOTE_CONTENT, {
+      platform: 'discord',
+      userId: member,
+      conversationId: BOUND_CONVO,
+      isDirect: false,
+    });
+    assert.equal(before.length, 1, 'positive control: access exists before removal');
+
+    // removeMember only ever deleted the community_users row. project_members
+    // has no FK to it (it is keyed on the platform identity so visibility
+    // survives person-row merges), and visibleProjectIds checks only that
+    // table, never tier — so without an explicit cascade the membership row
+    // outlives community membership.
+    const removed = await r.removeMember('discord', member);
+    assert.equal(removed, true, 'the member must actually have been removed');
+
+    const after = await r.searchProjectNotes(NOTE_CONTENT, {
+      platform: 'discord',
+      userId: member,
+      conversationId: BOUND_CONVO,
+      isDirect: false,
+    });
+    assert.deepEqual(after, [], 'removing someone from the community must revoke their project access');
+
+    const { rows } = await pool.query(
+      `SELECT 1 FROM project_members WHERE platform = 'discord' AND user_id = $1`,
+      [member],
+    );
+    assert.equal(rows.length, 0, 'the project_members row itself must be gone, not merely unreachable');
+  },
+);
+
+test(
   'SECURITY: projects: an ARCHIVED project is invisible to its own members (archive is a revocation, not just a label)',
   { skip },
   async (t) => {
