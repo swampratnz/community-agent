@@ -1,7 +1,7 @@
 {
   "abuseClassifierStructuredOutput.test.ts": 4,
   "accessRequestAlert.router.test.ts": 3,
-  "accessRequestAlert.test.ts": 2,
+  "accessRequestAlert.test.ts": 4,
   "ackShortcutRouter.test.ts": 3,
   "adminDigest.test.ts": 57,
   "adminLeverageAlert.test.ts": 3,
@@ -48,6 +48,7 @@
   "baileysArchiving.test.ts": 2,
   "baileysImageInput.test.ts": 7,
   "baileysReconnectLoggedOut.test.ts": 1,
+  "budgetCheckFailedWindowReopenQueue.test.ts": 2,
   "budgetCheckFailureRouter.test.ts": 4,
   "classifierModelTieringSet.test.ts": 1,
   "config.test.ts": 19,
