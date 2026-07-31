@@ -95,7 +95,7 @@ function flush(): Promise<void> {
 }
 
 test(
-  "SECURITY: alertSuperAdminsBudgetCheckFailed — a WindowClosedError rejection queues via queueForWindowReopen at " +
+  'SECURITY: alertSuperAdminsBudgetCheckFailed — a WindowClosedError rejection queues via queueForWindowReopen at ' +
     "'system' priority instead of only logging, matching this function's existing all-disconnected " +
     "queuePendingAlert(message, 'system') branch (issue #922 acceptance criterion 2)",
   async () => {

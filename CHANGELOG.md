@@ -52,6 +52,13 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   reply's ambient trigger never is. Admins can also now pass an optional
   `scope` (`'auto_answer'` or `'mention'`) to see auto-answer-channel
   latency on its own, the specific figure VISION names as a north star.
+- **The access-request and budget-check-failed admin/super-admin alerts no
+  longer go silent for a WhatsApp Cloud recipient whose 24h window happens to
+  be closed** (#922): both now queue for delivery on that recipient's next
+  message instead of just logging and dropping, closing the last two gaps
+  #888 left named as a deliberate remainder. No change for Discord/Baileys,
+  and an unrelated send failure is still logged-and-dropped exactly as
+  before.
 
 ## 2026-07-30
 
