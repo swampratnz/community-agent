@@ -34,6 +34,15 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   default), reusing the same local, offline transcription already used for
   Baileys/Discord — audio never leaves the host. No change for existing
   deployments until an operator turns it on.
+- **`my_submissions` now includes a receipt for your sent `request_project_connection`
+  calls** (#908): a new "Your connection requests:" section lists the id,
+  the requested project's name, and when you sent each one, so you can check
+  "did that even go through" without guessing or retrying into the daily-cap
+  refusal. There's no accept/decline status to show — the table has none, and
+  a capped/refused attempt was never recorded in the first place — so this is
+  a plain receipt, not a tracker. A connection request whose project has
+  since been removed still shows up, with a graceful placeholder in place of
+  the (now-gone) project name.
 
 ## 2026-07-30
 
