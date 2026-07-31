@@ -564,28 +564,41 @@ issue #787, the age), matching `list_appeals`. Access requests, suggestions,
 and knowledge candidates stay guild-wide, matching their own `list_*` tools'
 existing scope.
 
-`response_latency` (admin-tier, `days` optional, default 7/max 30, read-only,
-no CONFIRM; issue #877) answers the one north-star metric `docs/VISION.md`
-names — "time-to-first-answer in auto-answer channels down" — that had no
-implementation: how quickly the bot actually answers members, derived
-entirely from `interactions` timestamps and `meta` already written on every
-turn, no new column or tracking. `responseLatencyStats`
-(`src/storage/repository/responseLatency.ts`) pairs each qualifying OUTBOUND
-row — `direction = 'outbound'` with `meta.replyToUserId` set, i.e. a real
-reply to a member, never a proactive digest/alert push (those never set that
-key) — with the most recent prior INBOUND row in the SAME
-`(platform, conversation_id)` from that member with `addressed_to_bot = true`
-at or before the outbound's own `created_at`, via a `LATERAL` join (the same
+`response_latency` (admin-tier, `days` optional default 7/max 30, `scope`
+optional `'all' | 'auto_answer' | 'mention'` default `'all'`, read-only,
+no CONFIRM; issue #877, pairing/scope fix issue #911) answers the one
+north-star metric `docs/VISION.md` names — "time-to-first-answer in
+auto-answer channels down" — derived entirely from `interactions` timestamps
+and `meta` already written on every turn, no new column or tracking.
+`responseLatencyStats` (`src/storage/repository/responseLatency.ts`) pairs
+each qualifying OUTBOUND row — `direction = 'outbound'` with
+`meta.replyToUserId` set, i.e. a real reply to a member, never a proactive
+digest/alert push (those never set that key) — with the most recent prior
+INBOUND row in the SAME `(platform, conversation_id)` from that member at or
+before the outbound's own `created_at`, via a `LATERAL` join (the same
 pairing shape `answerFeedbackGrounding` already uses for a different
-purpose). Only the outbound row's `created_at` has to fall inside the
+purpose). The paired inbound row must have `addressed_to_bot = true` —
+**unless** the outbound row carries `meta.autoAnswer` (an auto-answer reply,
+issue #477), whose triggering post is by definition an ambient,
+non-addressed message; without that carve-out the join either drops the
+auto-answer reply entirely or mispairs it with an unrelated older addressed
+message from the same member, which is exactly what issue #911 found and
+fixed. Only the outbound row's `created_at` has to fall inside the
 window — the question it answers may be older, since what VISION's metric
-cares about is when replies happen, not when questions arrive. The deltas
-(seconds) aggregate to `count`/`percentile_cont(0.5)`/`percentile_cont(0.9)`;
-zero qualifying pairs renders a fixed "not enough data yet" message rather
-than `NaN`/`Infinity`. `callerScope()`-scoped like every sibling admin-insight
-tool, and aggregate-only — the reply is exactly the fixed label plus three
-numbers, never a user id, display name, or message excerpt, matching
-`review_queue`/`question_digest`'s existing exposure envelope.
+cares about is when replies happen, not when questions arrive. The `scope`
+argument adds `meta ? 'autoAnswer'` (`'auto_answer'`) or
+`NOT (meta ? 'autoAnswer')` (`'mention'`, which therefore also covers DMs and
+text-command replies, not just @-mentions) to the aggregate, so an admin can
+pull the auto-answer-channel figure VISION names directly instead of it
+being blended into one overall number; `'auto_answer'` and `'mention'`
+partition `'all'` with no overlap and no gap. The deltas (seconds) aggregate
+to `count`/`percentile_cont(0.5)`/`percentile_cont(0.9)`; zero qualifying
+pairs renders a fixed "not enough data yet" message rather than
+`NaN`/`Infinity`. `callerScope()`-scoped like every sibling admin-insight
+tool under every `scope` value, and aggregate-only — the reply is exactly the
+fixed label plus three numbers, never a user id, display name, or message
+excerpt, matching `review_queue`/`question_digest`'s existing exposure
+envelope.
 
 `feature_flags` (super-admin, no arguments, read-only, no CONFIRM; issue
 #559) answers a different, static question `admin_digest`/`community_info`
@@ -791,7 +804,7 @@ this list — unlike the others it's implemented on both WhatsApp adapters
 | `admin_digest` (on-demand pull of the caller's own weekly admin-digest snapshot; no arguments, no CONFIRM — never affects the weekly push's cadence) | ❌ | ❌ | ✅ *caller only* | ✅ |
 | `review_queue` (single roll-up of the five review queues below — `list_access_requests`/`list_suggestions`/`list_knowledge_candidates`/`list_reports`/`list_appeals` — as bare pending/open counts, no arguments, no CONFIRM, no new query; see below) | ❌ | ❌ | ✅ *(reports scoped to caller's conversations, appeals to caller's platform — see below)* | ✅ |
 | `list_knowledge_gaps` (recurring below-floor knowledge_search misses — the miss-specific complement to `question_digest`) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
-| `response_latency` (VISION's "time-to-first-answer" north-star metric: count/median/p90 seconds pairing each real reply to a member with the message it answered, days-windowed default 7/max 30; no arguments beyond `days`, read-only, no CONFIRM; aggregate-only — never a per-message timestamp, user id, or excerpt; issue #877) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
+| `response_latency` (VISION's "time-to-first-answer" north-star metric: count/median/p90 seconds pairing each real reply to a member with the message it answered, days-windowed default 7/max 30, optional `scope`: `'all' \| 'auto_answer' \| 'mention'` default `'all'`; read-only, no CONFIRM; aggregate-only — never a per-message timestamp, user id, or excerpt; issue #877, pairing/scope fix #911) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `moderation_history` (warn/timeout/kick/delete/announce log, filterable by member/action) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `list_member_warnings` (one member's full `member_warnings` history — auto + admin strikes, with reason/excerpt — the read `moderation_history` can't reach) | ❌ | ❌ | ✅ *(platform/user-scoped, not conversation-scoped — same as `clear_warnings`)* | ✅ |
 | `list_muted_members` (currently-muted members by identity — user id, strike count, `active`/`stale` status, last-warning timestamp; never reason/excerpt; closes the growth path #403 named for the digest's bare `🔇 N` count) | ❌ | ❌ | ✅ *(guild-wide, not conversation-scoped — same as `clear_warnings`)* | ✅ |

@@ -21857,6 +21857,168 @@ test(
   },
 );
 
+// Pairing/scope fix, issue #911 — adds an optional `scope` argument
+// ('all' | 'auto_answer' | 'mention') to response_latency.
+
+test('SECURITY: response_latency rejects a scope value outside the enum at the zod schema boundary, never silently coercing it to \'all\' (acceptance criterion 4)', () => {
+  const adapter = stubAdapter(async () => {});
+  const caller = {
+    platform: 'discord' as const,
+    userId: 'admin-1',
+    userName: 'Admin',
+    role: 'admin' as const,
+    conversationId: 'convo-1',
+  };
+  const server = buildToolServer(caller, adapter);
+  const registeredTool = (
+    server.instance as unknown as {
+      _registeredTools: Record<string, { inputSchema: { safeParse: (v: unknown) => { success: boolean } } }>;
+    }
+  )._registeredTools['response_latency'];
+
+  assert.equal(
+    registeredTool.inputSchema.safeParse({ scope: 'mentions' }).success,
+    false,
+    'a scope value outside the enum must fail validation, never reach responseLatencyStats',
+  );
+  for (const scope of ['all', 'auto_answer', 'mention']) {
+    assert.equal(registeredTool.inputSchema.safeParse({ scope }).success, true, `${scope} is allow-listed`);
+  }
+  assert.equal(registeredTool.inputSchema.safeParse({}).success, true, 'scope stays optional, defaulting to all');
+});
+
+test(
+  "SECURITY: response_latency's scope argument never widens data access — every scope value stays within callerScope() (acceptance criterion 6)",
+  { skip },
+  async () => {
+    const inScopeConvo = `${RUN}-response-latency-scope-widen-in`;
+    const outOfScopeConvo = `${RUN}-response-latency-scope-widen-out`;
+    const inScopeAutoUser = `${RUN}-response-latency-scope-widen-in-auto-user`;
+    const inScopeMentionUser = `${RUN}-response-latency-scope-widen-in-mention-user`;
+    const outOfScopeAutoUser = `${RUN}-response-latency-scope-widen-out-auto-user`;
+    const outOfScopeMentionUser = `${RUN}-response-latency-scope-widen-out-mention-user`;
+    const now = new Date();
+
+    async function seedPair(
+      conversationId: string,
+      autoUser: string,
+      mentionUser: string,
+      autoDeltaMs: number,
+      mentionDeltaMs: number,
+    ) {
+      // Auto-answer pair: ambient (non-addressed) trigger + autoAnswer reply.
+      await pool.query(
+        `INSERT INTO interactions (platform, conversation_id, user_id, role, direction, content, addressed_to_bot, created_at)
+         VALUES ('discord',$1,$2,'member','inbound','ambient post',false,$3)`,
+        [conversationId, autoUser, new Date(now.getTime() - autoDeltaMs)],
+      );
+      await pool.query(
+        `INSERT INTO interactions (platform, conversation_id, user_id, role, direction, content, meta, created_at)
+         VALUES ('discord',$1,'bot','member','outbound','auto-answer reply',$2,$3)`,
+        [conversationId, JSON.stringify({ replyToUserId: autoUser, autoAnswer: true }), now],
+      );
+      // Mention pair: addressed trigger + plain reply.
+      await pool.query(
+        `INSERT INTO interactions (platform, conversation_id, user_id, role, direction, content, addressed_to_bot, created_at)
+         VALUES ('discord',$1,$2,'member','inbound','addressed question',true,$3)`,
+        [conversationId, mentionUser, new Date(now.getTime() - mentionDeltaMs)],
+      );
+      await pool.query(
+        `INSERT INTO interactions (platform, conversation_id, user_id, role, direction, content, meta, created_at)
+         VALUES ('discord',$1,'bot','member','outbound','mention reply',$2,$3)`,
+        [conversationId, JSON.stringify({ replyToUserId: mentionUser }), now],
+      );
+    }
+
+    // Deliberately distinguishable deltas so a leak is unmistakable.
+    await seedPair(inScopeConvo, inScopeAutoUser, inScopeMentionUser, 5_000, 7_000);
+    await seedPair(outOfScopeConvo, outOfScopeAutoUser, outOfScopeMentionUser, 500_000, 700_000);
+
+    try {
+      const expectedByScope = { all: [2, 6], auto_answer: [1, 5], mention: [1, 7] } as const;
+      for (const scope of ['all', 'auto_answer', 'mention'] as const) {
+        const server = buildToolServer(
+          {
+            platform: 'discord' as const,
+            userId: `${RUN}-response-latency-scope-widen-admin`,
+            userName: 'Admin',
+            role: 'admin' as const,
+            conversationId: inScopeConvo,
+          },
+          stubAdapter(async () => {}),
+        );
+        const out = (await responseLatencyToolFrom(server.instance).handler({ scope })).content[0]?.text ?? '';
+        const [expectedCount, expectedMedian] = expectedByScope[scope];
+        assert.match(
+          out,
+          new RegExp(`^⏱️ Response latency \\(last 7d\\): ${expectedCount} replies, median ${expectedMedian}s, p90 \\d+s$`),
+          `SECURITY: scope=${scope} must reflect only the in-scope conversation's pairs`,
+        );
+        assert.ok(
+          !out.includes('500') && !out.includes('700'),
+          `SECURITY: scope=${scope} must never surface the out-of-scope conversation's delta`,
+        );
+      }
+    } finally {
+      await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [
+        [inScopeConvo, outOfScopeConvo],
+      ]);
+    }
+  },
+);
+
+test(
+  "SECURITY: response_latency's reply stays exactly the fixed label plus count/median/p90 (or the fixed empty message) under every scope value — never a user id, display name, or message excerpt (acceptance criterion 7)",
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-response-latency-content-scope-convo`;
+    const secretUserId = `${RUN}-response-latency-content-scope-SECRET-USER-ID`;
+    const secretContent = 'SECRET-QUESTION-CONTENT-NEVER-SHOWN-response-latency-scope';
+    const now = new Date();
+
+    // A single auto-answer pair: visible under 'all'/'auto_answer', absent under 'mention'.
+    await pool.query(
+      `INSERT INTO interactions
+         (platform, conversation_id, user_id, role, direction, content, addressed_to_bot, created_at)
+       VALUES ('discord',$1,$2,'member','inbound',$3,false,$4)`,
+      [conversationId, secretUserId, secretContent, new Date(now.getTime() - 12_000)],
+    );
+    await pool.query(
+      `INSERT INTO interactions
+         (platform, conversation_id, user_id, role, direction, content, meta, created_at)
+       VALUES ('discord',$1,'bot','member','outbound','the reply text itself',$2,$3)`,
+      [conversationId, JSON.stringify({ replyToUserId: secretUserId, autoAnswer: true }), now],
+    );
+
+    try {
+      for (const scope of ['all', 'auto_answer', 'mention'] as const) {
+        const server = buildToolServer(
+          {
+            platform: 'discord' as const,
+            userId: `${RUN}-response-latency-content-scope-admin`,
+            userName: 'Admin',
+            role: 'admin' as const,
+            conversationId,
+          },
+          stubAdapter(async () => {}),
+        );
+        const out = (await responseLatencyToolFrom(server.instance).handler({ scope })).content[0]?.text ?? '';
+        assert.match(
+          out,
+          /^⏱️ Response latency \(last 7d\): (\d+ replies, median \d+s, p90 \d+s|not enough data yet\.)$/,
+          `scope=${scope} reply must be exactly the fixed label plus aggregate numbers, or the fixed empty message`,
+        );
+        assert.ok(
+          !out.includes(secretUserId) && !out.includes(secretContent) && !out.includes('the reply text itself'),
+          `SECURITY: scope=${scope} must never render a user id, display name, or message excerpt`,
+        );
+      }
+    } finally {
+      await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    }
+  },
+);
+
 test(
   'admin_activity resolves display names via the community_users->server_roster precedence, falls back to the raw platform user id for an unknown actor, and never renders admin_audit.params content (issue #488)',
   { skip },
