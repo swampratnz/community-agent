@@ -124,7 +124,7 @@
   "repeatQuestionShortcutRouter.test.ts": 4,
   "replyRetractionDisabled.test.ts": 2,
   "replyRetractionRouter.test.ts": 1,
-  "repository.test.ts": 113,
+  "repository.test.ts": 115,
   "reviewVerdict.test.ts": 5,
   "router.test.ts": 9,
   "secrets.test.ts": 5,
@@ -149,5 +149,6 @@
   "whatsappCloudWire.test.ts": 8,
   "whatsappImageInputSystemPromptEnabled.test.ts": 1,
   "whatsappTextCommandsRouter.test.ts": 8,
-  "whatsappWire.test.ts": 1
+  "whatsappWire.test.ts": 1,
+  "whoIsIntoBrowseEmbedCount.test.ts": 1
 }

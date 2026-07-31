@@ -44,6 +44,7 @@ import {
   isKnowledgeStale,
   isUserBlocked,
   listAdmins,
+  listRecentInterests,
   listRecentProjects,
   markKnowledgeGapsAlerted,
   markStaleKnowledgeAlerted,
@@ -531,6 +532,12 @@ export class Router {
    * — and `.catch()`-guarded to `false` like every other caveat lookup on
    * this path, so a lookup failure degrades to no caveat rather than a
    * blocked reply.
+   * `listRecentInterestsFn` defaults to the real `listRecentInterests`
+   * (issue #920), a further trailing field for the same call-site-stability
+   * reason as `searchMemberInterestsForSelfFn`/`checkKnowledgeConflict`
+   * above; consulted only from `tryWhatsAppTextCommand`'s bare-`!whois`
+   * branch when `searchMemberInterestsForSelfFn` reports `hasProfile: false`
+   * — the same no-profile browse fallback who_is_into/`/whois` gained.
    */
   constructor(
     private readonly runTurn: typeof runAgentTurn = runAgentTurn,
@@ -559,6 +566,7 @@ export class Router {
     private readonly recentQuestionClustersFn: typeof recentQuestionClusters = recentQuestionClusters,
     private readonly searchMemberInterestsForSelfFn: typeof searchMemberInterestsForSelf = searchMemberInterestsForSelf,
     private readonly checkKnowledgeConflict: typeof hasKnowledgeConflictForId = hasKnowledgeConflictForId,
+    private readonly listRecentInterestsFn: typeof listRecentInterests = listRecentInterests,
   ) {
     setInterval(() => this.sweep(), this.RATE_WINDOW_MS * 5).unref();
   }
@@ -1872,10 +1880,14 @@ export class Router {
       // #882's "never inferred from chat content" invariant).
       const selfMatch = await this.searchMemberInterestsForSelfFn(msg.platform, msg.userId);
       if (!selfMatch.hasProfile) {
-        return (
+        // Issue #920: same no-profile browse fallback as who_is_into's chat
+        // path and /whois — a separate call site, wired independently via
+        // the injected listRecentInterestsFn.
+        const hint =
           "You haven't published interests yet — call set_my_interests first, then who_is_into with no " +
-          'topic will search using your own published interests.'
-        );
+          'topic will search using your own published interests.';
+        const recent = await this.listRecentInterestsFn();
+        return recent.length === 0 ? hint : `${await formatInterestResults(recent)}\n\n${hint}`;
       }
       return selfMatch.hits.length === 0
         ? 'No members have published interests matching that yet.'

@@ -16,6 +16,7 @@ import {
   getLanguagePreference,
   hasConflictAmongIds,
   listOwnProjects,
+  listRecentInterests,
   listRecentProjects,
   recordShortcutHit,
   searchKnowledge,
@@ -275,12 +276,21 @@ async function handleWhois(interaction: ChatInputCommandInteraction, deps: Slash
         : await formatInterestResults(hits);
   } else {
     const selfMatch = await searchMemberInterestsForSelf('discord', interaction.user.id);
-    reply = !selfMatch.hasProfile
-      ? 'You haven\'t published interests yet — tell the bot your interests (e.g. "set my interests to ' +
-        '...") first, then /whois with no topic will search using your own published interests.'
-      : selfMatch.hits.length === 0
-        ? 'No other members have published interests matching yours yet.'
-        : await formatInterestResults(selfMatch.hits);
+    if (!selfMatch.hasProfile) {
+      // Issue #920: same no-profile browse fallback as who_is_into's chat
+      // path — this is a SEPARATE call site (no shared handler), so the
+      // fallback is wired here independently.
+      const hint =
+        'You haven\'t published interests yet — tell the bot your interests (e.g. "set my interests to ' +
+        '...") first, then /whois with no topic will search using your own published interests.';
+      const recent = await listRecentInterests();
+      reply = recent.length === 0 ? hint : `${await formatInterestResults(recent)}\n\n${hint}`;
+    } else {
+      reply =
+        selfMatch.hits.length === 0
+          ? 'No other members have published interests matching yours yet.'
+          : await formatInterestResults(selfMatch.hits);
+    }
   }
   recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
   await replyEphemeral(interaction, reply, deps);

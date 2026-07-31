@@ -53,6 +53,8 @@ function mockPool(
     memberRole?: 'admin' | 'member' | null;
     knowledgeRows?: PoolRow[];
     interestRows?: PoolRow[];
+    /** listRecentInterests' browse-all rows (issue #920) — distinct from `interestRows` (the search/self-match rows), since both queries hit `member_interests`. */
+    recentInterestRows?: PoolRow[];
     projectRows?: PoolRow[];
     guidelines?: string | null;
     guidelinesMi?: string | null;
@@ -82,6 +84,12 @@ function mockPool(
     }
     if (sql.includes('FROM knowledge')) {
       return { rows: opts.knowledgeRows ?? [], rowCount: 0 };
+    }
+    // listRecentInterests' plain browse query (issue #920) matched FIRST on
+    // its distinguishing `ORDER BY updated_at DESC` — self-match/search
+    // queries order by embedding distance instead, so this never shadows them.
+    if (sql.includes('FROM member_interests') && sql.includes('ORDER BY updated_at DESC')) {
+      return { rows: opts.recentInterestRows ?? [], rowCount: 0 };
     }
     if (sql.includes('FROM member_interests')) {
       return { rows: opts.interestRows ?? [], rowCount: 0 };
@@ -966,6 +974,33 @@ test('/whois with no query option and no published row for the caller returns gu
 
   assert.equal(replies.length, 1);
   assert.match(replies[0].content, /haven't published interests yet/i);
+});
+
+test('/whois with no query option and no published row for the caller browses recently published interests via listRecentInterests, still appending the set_my_interests hint (issue #920 AC #4)', async (t) => {
+  mockPool(t, {
+    memberRole: 'member',
+    interestRows: [],
+    recentInterestRows: [
+      { platform: 'discord', user_id: 'browsed-1', interests: 'recently published interests' },
+    ],
+    projectRows: [],
+  });
+  const adapter = new DiscordAdapter();
+  const { interaction, replies } = fakeInteraction({
+    commandName: 'whois',
+    userId: 'member-1',
+    options: {},
+  });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies.length, 1);
+  assert.match(replies[0].content, /recently published interests/);
+  assert.match(
+    replies[0].content,
+    /haven't published interests yet/i,
+    'the set_my_interests hint still appends after the browsed list',
+  );
 });
 
 test('/whois <query> remains byte-identical to today when a query IS supplied, even though the option is now optional (issue #882 acceptance criterion 5)', async (t) => {

@@ -2446,7 +2446,8 @@ of `reply` — keeps every command correct regardless of embedding/DB latency
 
 Each command reuses the exact repository function and rendering helper its
 chat-path tool calls — `searchKnowledge`/`formatKnowledgeSearchResults`,
-`searchMemberInterests`/`formatInterestResults`,
+`searchMemberInterests`+`searchMemberInterestsForSelf`+`listRecentInterests`/
+`formatInterestResults`,
 `searchProjects`+`listRecentProjects`/`formatProjectResults` (the latter two
 render helpers were hoisted out of `agent/tools.ts`'s tool-factory closure
 into plain exported functions so both the chat path and this module call the
@@ -2538,7 +2539,7 @@ WhatsApp itself with the flag off.
 
 Each command reuses the identical repository/render functions the Discord
 commands and chat-path tools call (`searchMemberInterests`/
-`searchMemberInterestsForSelf`/`formatInterestResults`,
+`searchMemberInterestsForSelf`/`listRecentInterests`/`formatInterestResults`,
 `searchProjects`/`listRecentProjects`/`formatProjectResults`,
 `getCommunityGuidelines`/`getCommunityGuidelinesMi`,
 `buildMemberDigestContent`), injectable on `Router` the same way
@@ -2552,9 +2553,12 @@ no-argument self-match: it looks up the caller's own published
 `member_interests` row via `searchMemberInterestsForSelf(msg.platform,
 msg.userId)` — never re-embedded, never sourced from the surrounding message
 text — and searches for similar members, excluding the caller. No published
-row (or one with no embedding) returns the same first-time-caller guidance
-`who_is_into` gives today, directing the caller to `set_my_interests`;
-`!whois <query>` is unchanged.
+row (or one with no embedding) falls back to `listRecentInterests` (issue
+#920) — the most recently published/updated interests across every member,
+mirroring `!projects`' own no-query `listRecentProjects` default — still
+followed by the same `set_my_interests` guidance `who_is_into` has always
+given, so a newcomer with nothing published yet can still browse rather than
+seeing only a dead end; `!whois <query>` is unchanged.
 
 **Gating behaviour deliberately differs from Discord's.** Discord's ephemeral
 reply lets a denied caller be told "you don't have access" at zero visibility

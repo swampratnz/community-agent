@@ -850,12 +850,35 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   query is built solely from that stored row, never from `interactions`
   (SECURITY-pinned, same #634 AC #4 invariant), and the caller's own row is
   always excluded from its own results (SECURITY-pinned; both correctness —
-  a caller must never see themselves as a "100% match" — and privacy). A
-  caller with no published row (or one whose embedding failed at publish
-  time) gets a guidance reply directing them to `set_my_interests`; no search
-  runs against other members' data in that case. Same `member`-tier
-  re-assertion, no new tool, no new RBAC surface; `/whois`'s Discord option
-  mirrors the same optional-argument/self-match/guidance shape.
+  a caller must never see themselves as a "100% match" — and privacy). Same
+  `member`-tier re-assertion, no new tool, no new RBAC surface; `/whois`'s
+  Discord option mirrors the same optional-argument/self-match/guidance
+  shape. **No-profile browse fallback (issue #920):** a caller with no
+  published row (or one whose embedding failed at publish time) previously
+  got only a guidance reply directing them to `set_my_interests`, with no
+  search of any kind — the one no-query path `list_projects` had a browse-all
+  counterpart for (`listRecentProjects`) and `who_is_into` didn't. That
+  caller now instead sees `listRecentInterests` — the most recently
+  published/updated rows across every member, a plain `ORDER BY updated_at
+  DESC` with no `embed()` call, mirroring `listRecentProjects` exactly — with
+  the same `set_my_interests` guidance still appended after the list. This
+  adds no new data access or exposure: it is the identical `member_interests`
+  table every `who_is_into` query already reads (SECURITY-pinned: the query
+  references only `member_interests`, never `interactions`, preserving the
+  same #634 AC #4 invariant), a row is published specifically to be
+  discoverable via `who_is_into` so a browse view is within the consent the
+  data was published under, and a member who never published (or who
+  cleared their row) simply has no row here and never appears
+  (SECURITY-pinned, same non-existence exclusion every other read of this
+  table relies on). Wired at all three call sites independently
+  (`agent/tools.ts`'s `who_is_into` handler, `/whois`'s Discord handler,
+  `!whois`'s bare-argument branch in `router.ts` via a new injected
+  `listRecentInterestsFn` field) since there is no shared handler between
+  them — only the render helper (`formatInterestResults`, now widened to
+  accept a plain `MemberInterestRow` alongside a similarity-scored
+  `MemberInterestSearchHit`) is shared. A caller **with** an existing
+  profile is unaffected: the self-match path above still takes priority and
+  its output is unchanged.
 - **Peer help handoff** (`set_helper_availability`/`find_helper`, issue #729):
   the active-side consumer of `member_interests` above — the first
   **proactive, bot-initiated member→member DM** in the system. An adversarial

@@ -13197,7 +13197,7 @@ test(
 );
 
 test(
-  'who_is_into() with no query and no published row for the caller returns guidance directing them to set_my_interests, without running any search (issue #882 AC #3)',
+  'who_is_into() with no query and no published row for the caller now browses the most recently published interests, still appending the set_my_interests hint (issue #920 AC #1, #2 — supersedes issue #882 AC #3\'s "no search" behaviour)',
   { skip },
   async () => {
     const caller = `${RUN}-who-is-into-self-no-profile`;
@@ -13210,10 +13210,10 @@ test(
     const result = await whoTool.handler({});
     assert.equal(result.isError, false);
     assert.match(result.content[0]?.text ?? '', /set_my_interests/);
-    assert.doesNotMatch(
+    assert.match(
       result.content[0]?.text ?? '',
       /some other member entirely/,
-      'no search may run against other members when the caller has no published row',
+      'a caller with no published row now browses the most recently published interests (issue #920)',
     );
 
     await pool.query(`DELETE FROM member_interests WHERE platform = 'discord' AND user_id = $1`, [
