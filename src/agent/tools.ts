@@ -3137,6 +3137,24 @@ export interface ToolServerTurnState {
   humanHelpRequested?: boolean;
 }
 
+/**
+ * Shared by `forget_me` and `purge_user_data`'s CONFIRM prompt and
+ * post-confirm reply (issue #930), so the two can't drift the way the
+ * original "delete ALL of X's stored data" wording did once #929 made
+ * project-note retention (docs/SECURITY.md §25) the one partial-erasure
+ * exception in this codebase. States all three facts an erasure claim has to
+ * convey when the target is a project member: membership is deleted and
+ * access ends immediately on every platform; project notes they authored are
+ * KEPT with the authorship link removed; and removing that link does not
+ * scrub personal information the note's own text may contain, so a note that
+ * names them still names them after erasure. Deliberately generic — never
+ * enumerates project names — since the CONFIRM prompt fires at the exact
+ * moment someone is asserting a privacy right and reciting project names into
+ * a possibly-public conversation would itself be a small exposure.
+ */
+export const PROJECT_NOTE_RETENTION_NOTICE =
+  "if they're in a project, membership is deleted immediately on every platform, but any project notes they wrote are kept with the authorship link removed — that removes the link only, not personal information the note's own text may contain, so a note naming them still names them";
+
 export function buildToolServer(
   caller: CallerContext,
   adapter: PlatformAdapter,
@@ -3591,7 +3609,7 @@ export function buildToolServer(
     {},
     async () =>
       requireConfirm(
-        `delete ALL of ${caller.userName}'s stored data on ${caller.platform} (messages, and any knowledge entries, content reports, suggestions, roster entry, or admin notes tied to them — across linked identities)`,
+        `erase ${caller.userName}'s stored data on ${caller.platform} — messages, and any knowledge entries, content reports, suggestions, roster entry, or admin notes tied to them, across linked identities; ${PROJECT_NOTE_RETENTION_NOTICE}`,
         // Self-scoped: whatever tier the caller is, they can only ever purge
         // their OWN data. An open-mode guest (whose content IS stored) can
         // reach this tool, so gating the confirm at 'member' made their
@@ -3600,7 +3618,7 @@ export function buildToolServer(
         'guest',
         async () => {
           const n = await purgeUserData(caller.platform, caller.userId);
-          return `Deleted ${n} stored record(s) for ${caller.userName}.`;
+          return `Deleted ${n} stored record(s) for ${caller.userName}; ${PROJECT_NOTE_RETENTION_NOTICE}.`;
         },
       ),
   );
@@ -7829,7 +7847,7 @@ export function buildToolServer(
         return text(err instanceof Error ? err.message : String(err), true);
       }
       return requireConfirm(
-        `PURGE all stored messages (and knowledge entries/content reports sourced from) ${userId} on ${caller.platform}`,
+        `PURGE all stored messages (and knowledge entries/content reports sourced from) ${userId} on ${caller.platform}; ${PROJECT_NOTE_RETENTION_NOTICE}`,
         'super_admin',
         async () => {
           const { success, result } = await audited({
@@ -7848,7 +7866,7 @@ export function buildToolServer(
           // record(s)" string, so no second purge call is needed.
           return result.startsWith('deleted 0 ')
             ? `No stored data found for ${userId} on ${caller.platform} — double-check the id and platform. (${result}.)`
-            : `Done: ${result}.`;
+            : `Done: ${result}; ${PROJECT_NOTE_RETENTION_NOTICE}.`;
         },
       );
     },

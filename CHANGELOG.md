@@ -24,6 +24,23 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 -->
 
 
+## 2026-08-01
+
+### Changed
+- **`forget_me` and `purge_user_data` no longer claim unqualified deletion for
+  a project member** (#930). #927/#929 made project-note retention (a note a
+  departing member wrote stays with the team, authorship unlinked) this
+  codebase's one deliberate partial-erasure exception, but the CONFIRM prompt
+  and reply members and admins actually see still said "delete ALL of X's
+  stored data" with no mention of it. Both tools' CONFIRM prompt and
+  post-confirm reply now state plainly: project membership is deleted
+  immediately on every platform; project notes the person authored are kept
+  with the authorship link removed; and removing that link does not scrub
+  personal information the note's own text may contain, so a note that names
+  them still names them. The wording stays generic — it never names the
+  affected projects — so a privacy request doesn't recite project names into
+  a possibly-public conversation. See docs/SECURITY.md §25 for the full rule.
+
 ## 2026-07-31
 
 ### Added
