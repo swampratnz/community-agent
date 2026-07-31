@@ -126,6 +126,7 @@ interface RouterOpts {
   ) => Promise<SelfInterestMatchResult>;
   searchProjectsFn?: (query: string, limit?: number) => Promise<MemberProjectSearchHit[]>;
   listRecentProjectsFn?: (limit?: number) => Promise<MemberProject[]>;
+  listOwnProjectsFn?: (platform: Platform, userId: string) => Promise<MemberProject[]>;
   buildMemberDigestContentFn?: () => Promise<string | null>;
   getCommunityGuidelinesFn?: () => Promise<string | null>;
   getCommunityGuidelinesMiFn?: () => Promise<string | null>;
@@ -178,7 +179,8 @@ function makeRouter(opts: RouterOpts = {}): Router {
     undefined, // 24 recentQuestionClustersFn
     opts.searchMemberInterestsForSelfFn, // 25
     undefined, // 26 checkKnowledgeConflict
-    opts.listRecentInterestsFn, // 27
+    opts.listOwnProjectsFn, // 27
+    opts.listRecentInterestsFn, // 28
   );
 }
 
@@ -486,6 +488,93 @@ test('a bare "!projectsomething" (no space) is not recognised as the /projects c
   assert.equal(sent[0].text, REAL_TURN_REPLY);
 });
 
+// --- !projects mine (issue #916) --------------------------------------------
+
+test('acceptance criteria 1-2: "!projects mine" (case-insensitive) from a member uses listOwnProjectsFn(msg.platform, msg.userId), rendered through formatProjectResults, never searchProjectsFn/listRecentProjectsFn', async (t) => {
+  mockPoolRole(t, 'member');
+  const projects: MemberProject[] = [
+    {
+      id: 1,
+      platform: 'whatsapp',
+      userId: 'member-1',
+      name: 'My Own Project',
+      description: 'built by me',
+      link: null,
+      seekingCollaborators: false,
+      createdAt: new Date(),
+    },
+  ];
+  let calledWith: [Platform, string] | undefined;
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    listOwnProjectsFn: async (platform, userId) => {
+      calledWith = [platform, userId];
+      return projects;
+    },
+    searchProjectsFn: async () => {
+      throw new Error('searchProjectsFn must never be called for "!projects mine"');
+    },
+    listRecentProjectsFn: async () => {
+      throw new Error('listRecentProjectsFn must never be called for "!projects mine"');
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!Projects Mine', userId: 'member-1' }));
+
+  assert.deepEqual(calledWith, ['whatsapp', 'member-1']);
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /My Own Project/);
+});
+
+test('acceptance criterion 3: "!projects mine" from a member with zero shared projects gets the same empty-state string as list_projects({ mine: true }) / /projects mine:true', async (t) => {
+  mockPoolRole(t, 'member');
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    listOwnProjectsFn: async () => [],
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!projects mine', userId: 'member-1' }));
+
+  assert.equal(sent[0].text, "You haven't shared any projects yet.");
+});
+
+test('"!projects mine" is checked before the general !projects [query] branch — "mine" as a literal project search term still requires the sub-command shape', async (t) => {
+  mockPoolRole(t, 'member');
+  let searchCalledWith: string | undefined;
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    searchProjectsFn: async (query) => {
+      searchCalledWith = query;
+      return [];
+    },
+    listOwnProjectsFn: async () => {
+      throw new Error('listOwnProjectsFn must never be called for a query that merely contains "mine"');
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!projects mine field', userId: 'member-1' }));
+
+  assert.equal(searchCalledWith, 'mine field');
+  assert.equal(sent[0].text, 'No shared projects match that.');
+});
+
+test('acceptance criterion 4: a bare `new Router()` with no listOwnProjectsFn override still constructs, and an unrelated existing command (!guidelines) behaves unchanged (trailing defaulted field)', async (t) => {
+  mockPoolRole(t, null);
+  const router = new Router();
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!guidelines', userId: 'guest-1' }));
+
+  assert.equal(sent[0].text, 'No community guidelines have been set yet — ask an admin.');
+});
+
 // --- !guidelines (no tier gate) -----------------------------------------------
 
 test('!guidelines has no tier gate — served even for a guest caller', async (t) => {
@@ -657,6 +746,9 @@ async function assertGuestFallsThroughSilently(
     listRecentProjectsFn: async () => {
       throw new Error('listRecentProjectsFn must never be invoked for a rejected caller');
     },
+    listOwnProjectsFn: async () => {
+      throw new Error('listOwnProjectsFn must never be invoked for a rejected caller');
+    },
     listRecentInterestsFn: async () => {
       throw new Error('listRecentInterestsFn must never be invoked for a rejected caller');
     },
@@ -692,6 +784,49 @@ test('SECURITY: a guest caller\'s "!projects" falls through to the normal turn �
 
 test('SECURITY: a guest caller\'s "!digest" falls through to the normal turn — no distinguishing denial reply (acceptance criteria 3, 6)', async (t) => {
   await assertGuestFallsThroughSilently(t, '!digest');
+});
+
+test('SECURITY: a sub-member caller\'s "!projects mine" falls through to the normal turn — listOwnProjectsFn is never invoked (issue #916 binding acceptance criterion 6)', async (t) => {
+  await assertGuestFallsThroughSilently(t, '!projects mine');
+});
+
+test('SECURITY: "!projects mine" for caller A never returns caller B\'s projects — only the caller\'s own resolved msg.platform/msg.userId is wired into listOwnProjectsFn (issue #916 binding acceptance criterion 7)', async (t) => {
+  mockPoolRole(t, 'member');
+  let calledArgs: [Platform, string] | undefined;
+  const ownProjects: MemberProject[] = [
+    {
+      id: 2,
+      platform: 'whatsapp',
+      userId: 'caller-a',
+      name: "A's Project",
+      description: 'owned by caller A',
+      link: null,
+      seekingCollaborators: false,
+      createdAt: new Date(),
+    },
+  ];
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    listOwnProjectsFn: async (platform, userId) => {
+      calledArgs = [platform, userId];
+      // Self-scoped stub: only ever returns caller A's own projects,
+      // regardless of what identifier the surrounding message carries.
+      return userId === 'caller-a' ? ownProjects : [];
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  // userName spoofs caller B's identity — the implicit "mine" scope must
+  // come only from msg.platform/msg.userId, never from any other message field.
+  await trigger(
+    makeMessage({ text: '!projects mine', userId: 'caller-a', userName: 'caller-b-impersonation' }),
+  );
+
+  assert.deepEqual(calledArgs, ['whatsapp', 'caller-a']);
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /A's Project/);
+  assert.doesNotMatch(sent[0].text, /caller-b/i);
 });
 
 test("SECURITY: bare !whois's implicit query is built only from the caller's platform/userId, never from any other message field (issue #634 AC #4 / #889 acceptance criterion 6)", async (t) => {

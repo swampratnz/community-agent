@@ -2560,6 +2560,18 @@ followed by the same `set_my_interests` guidance `who_is_into` has always
 given, so a newcomer with nothing published yet can still browse rather than
 seeing only a dead end; `!whois <query>` is unchanged.
 
+`!projects mine` (issue #916) is a literal, regex-anchored (`/^!projects\s+mine$/i`)
+sub-command checked **before** the general `!projects [query]` branch, so the
+word "mine" is never routed to `searchProjects`'s embedding-similarity match —
+avoiding an ambiguous result for a member who happened to name or describe a
+project "mine". It lists the caller's own active shared projects via
+`listOwnProjects(msg.platform, msg.userId)` — the same self-scoped read
+`list_projects({ mine: true })` and Discord's `/projects mine:true` already
+use (issue #867/#869) — rendered through the unmodified `formatProjectResults`,
+and returns the same empty-state string, `"You haven't shared any projects
+yet."`, on zero results. This closes the last of the three `mine` recall
+surfaces (`list_projects`, `/projects`, `!projects`).
+
 **Gating behaviour deliberately differs from Discord's.** Discord's ephemeral
 reply lets a denied caller be told "you don't have access" at zero visibility
 cost. WhatsApp has no ephemeral concept — a bespoke denial posted in a group
