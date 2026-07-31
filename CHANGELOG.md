@@ -27,6 +27,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-07-31
 
 ### Added
+- **WhatsApp's `!projects` shortcut now has a `mine` recall filter** (#916):
+  `!projects mine` lists your own shared projects, matching the `mine`
+  filter `list_projects` and Discord's `/projects` already had (#867/#869).
+  Since `share_project`'s edit/remove flow is upsert-by-name, this makes it
+  easy to recall the exact name of a project you shared a while ago (or one
+  of several) without guessing. Same empty-state message and rendering as
+  the other two surfaces; no change to plain `!projects` or `!projects
+  <query>`.
 - **`my_submissions` now includes a receipt for your sent `request_project_connection`
   calls** (#908): a new "Your connection requests:" section lists the id,
   the requested project's name, and when you sent each one, so you can check

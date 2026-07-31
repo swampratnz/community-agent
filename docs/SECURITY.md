@@ -2791,8 +2791,9 @@ tool, tier, table, or repository function — checked in `Router.handle()`
   path) exactly as if the `!`-prefixed text weren't recognised. The
   underlying repository function is never invoked on a rejected caller,
   pinned by a `SECURITY:` test asserting each of `searchMemberInterests`/
-  `searchProjects`/`listRecentProjects`/`buildMemberDigestContent` is never
-  called for a guest's `!whois`/`!projects`/`!digest` message.
+  `searchProjects`/`listRecentProjects`/`listOwnProjects`/
+  `buildMemberDigestContent` is never called for a guest's
+  `!whois`/`!projects`/`!projects mine`/`!digest` message.
 - **Every reply routes through `this.send()` → `adapter.sendMessage()`**, the
   same outbound-filtered send path every other router reply uses — never a
   new, unfiltered send primitive.
@@ -2821,6 +2822,19 @@ tool, tier, table, or repository function — checked in `Router.handle()`
   gate and silent-fallthrough-on-denial convention above apply unchanged; a
   guest sending bare `!whois` falls through with `searchMemberInterestsForSelfFn`
   never invoked. `!whois <query>` behaviour is unchanged.
+- **`!projects mine` recall sub-command (issue #916).** A literal,
+  regex-anchored (`/^!projects\s+mine$/i`) branch checked **before** the
+  general `!projects [query]` branch, so the word "mine" is never routed to
+  `searchProjects`'s embedding-similarity match. It calls
+  `listOwnProjects(msg.platform, msg.userId)` — the same self-scoped read
+  `list_projects({ mine: true })` and `/projects mine:true` already use
+  (§20/#867/#869) — never a message-supplied identifier. **SECURITY:** the
+  same `member`-tier gate and silent-fallthrough-on-denial convention above
+  apply unchanged; a sub-`member` caller sending `!projects mine` falls
+  through with `listOwnProjectsFn` never invoked, and a caller's own resolved
+  identity is proven to isolate one caller's projects from another's, pinned
+  by `SECURITY:` tests. This is the third and last of the three `mine`
+  surfaces (`list_projects`, `/projects`, `!projects`) to gain the filter.
 
 No new write path, no `shortcut_hits` tracking. See docs/ARCHITECTURE.md's
 "WhatsApp text commands" section for the mechanism.
