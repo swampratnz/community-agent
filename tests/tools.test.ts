@@ -2645,8 +2645,9 @@ test('community_info reply stays concise, not a wall of text (issue #92)', async
   // #808's request_human_help line, and again for issue #840's
   // request_project_connection line, and again for issue #895's
   // withdraw_knowledge_tip clause (folded into the existing suggest_knowledge
-  // line, not a new one).
-  assert.ok(replyText.length < 2010, `reply should stay short; was ${replyText.length} chars`);
+  // line, not a new one), and again for issue #927's project line (one line
+  // covering all three project member tools, not three).
+  assert.ok(replyText.length < 2130, `reply should stay short; was ${replyText.length} chars`);
 });
 
 test('community_info appends the full ADMIN_CAPABILITIES_TEXT rundown for admin/super_admin callers, on top of the member content (issue #367)', async () => {
@@ -2709,6 +2710,9 @@ test('community_info: admin-tier reply stays byte-identical, never gains SUPER_A
     "- Add a note about a member, review notes on a member, delete a note, or look up a member's history across conversations\n" +
     '- Set the community guidelines or the welcome message shown to new members\n' +
     '- Assign a Discord role, remove a Discord role, or list which roles are available to assign\n' +
+    "- Set up team projects: create one, give a member access, take a member's access away, allow or " +
+    'stop it being discussed here, review who has access, or archive a finished project and bring it ' +
+    'back again\n' +
     '- Generate an image, or check recent changes to the bot and community (the changelog)';
 
   const memberReply = (await communityInfoHandler('member')).content[0]?.text ?? '';
@@ -2731,6 +2735,9 @@ test('community_info: admin-tier reply stays byte-identical, never gains SUPER_A
 // text line must contain, so a future member tool with no line fails loudly
 // here instead of drifting silently again.
 const MEMBER_CAPABILITY_COVERAGE = new Map<string, RegExp>([
+  ['mcp__community__project_recall', /shared memory/i],
+  ['mcp__community__project_note', /Record decisions in a project/i],
+  ['mcp__community__project_list', /list your projects/i],
   ['mcp__community__community_guidelines', /guideline|rule/i],
   ['mcp__community__check_status', /known Anthropic outage/i],
   ['mcp__community__knowledge_search', /knowledge/i],
@@ -2839,6 +2846,8 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
     '- Ask if someone in the community can help with something you\'re stuck on ("can someone help with ' +
     'X?"), or opt in/out of being notified for other members\' requests\n' +
     '- Pull the community digest on demand\n' +
+    "- Record decisions in a project you're part of and search that project's shared memory later, or " +
+    'list your projects\n' +
     '- Erase all your stored data any time ("forget me")';
 
   assert.equal(
@@ -2850,7 +2859,7 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
       'set_my_interests/who_is_into line, issue #729 added the set_helper_availability/find_helper line, ' +
       'issue #808 added the request_human_help line, issue #840 added the request_project_connection line, ' +
       'issue #841 added the community_digest line, issue #895 added the withdraw_knowledge_tip clause to ' +
-      'the suggest_knowledge line; ' +
+      'the suggest_knowledge line, issue #927 added the project_note/project_recall/project_list line; ' +
       'otherwise unchanged since #367)',
   );
 });
@@ -2863,6 +2872,14 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
 // loudly here instead of drifting silently, the same way #311 caught the
 // member-side gap.
 const ADMIN_CAPABILITY_COVERAGE = new Map<string, RegExp>([
+  ['mcp__community__project_create', /Set up team projects/i],
+  ['mcp__community__project_add_member', /give a member access/i],
+  ['mcp__community__project_remove_member', /take a member's access away/i],
+  ['mcp__community__project_bind_here', /allow or\s+stop it being discussed here/i],
+  ['mcp__community__project_unbind_here', /allow or\s+stop it being discussed here/i],
+  ['mcp__community__project_archive', /archive a finished project/i],
+  ['mcp__community__project_unarchive', /archive a finished project and bring it\s+back again/i],
+  ['mcp__community__project_info', /review who has access/i],
   ['mcp__community__whats_new', /the changelog/i],
   ['mcp__community__generate_image', /generate an image/i],
   ['mcp__community__user_history', /history across conversations/i],
@@ -2984,8 +3001,13 @@ test('community_info: admin reply stays under a hard char cap, not a wall of tex
   // request_human_help line, and again alongside the member cap for issue
   // #840's request_project_connection line; bumped again for issue #886's
   // merge_knowledge clause (consolidated into the existing knowledge-base
-  // curation bullet, not a new one).
-  assert.ok(adminReply.length < 3900, `admin reply should stay short; was ${adminReply.length} chars`);
+  // curation bullet, not a new one), and again for issue #924's
+  // list_blocked_members clause, and again for issue #927's project lines
+  // (one member line + one admin line), widened once more when PR #929's
+  // review added project_remove_member/project_unbind_here/project_archive
+  // to the same admin line, and once more for that review's project_unarchive
+  // clause (same line again, not a new bullet).
+  assert.ok(adminReply.length < 4260, `admin reply should stay short; was ${adminReply.length} chars`);
 });
 
 test('SECURITY: community_info member-tier and guest-tier replies never name an admin/super_admin-only tool or contain any ADMIN_CAPABILITIES_TEXT-unique line (issue #367, issue #311)', async () => {
@@ -3118,9 +3140,13 @@ test('community_info: super_admin reply stays under a hard char cap, not a wall 
   // and again alongside the member/admin caps for issue #840's
   // request_project_connection line, and again alongside the member cap for
   // issue #895's withdraw_knowledge_tip clause, and again alongside the
-  // admin cap for issue #924's list_blocked_members clause.
+  // admin cap for issue #924's list_blocked_members clause, and again
+  // alongside the member/admin caps for issue #927's project lines, and
+  // again for #927's project_remove_member/project_unbind_here/
+  // project_archive clauses added in PR review, and once more for that
+  // review's project_unarchive clause.
   assert.ok(
-    superAdminReply.length < 4560,
+    superAdminReply.length < 4920,
     `super_admin reply should stay short; was ${superAdminReply.length} chars`,
   );
 });
@@ -13142,6 +13168,302 @@ function whoIsIntoHandler(caller: {
     }
   )._registeredTools['who_is_into'];
 }
+
+/** Pull one project tool's handler out of a server built for `caller`. */
+function projectToolHandler(
+  name: 'project_recall' | 'project_note' | 'project_list',
+  caller: { role?: 'member' | 'guest' | 'admin' | 'super_admin'; userId?: string },
+) {
+  const adapter = stubAdapter(async () => {});
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId: caller.userId ?? 'project-guest-1',
+      userName: 'Probe',
+      role: caller.role ?? 'guest',
+      conversationId: 'convo-project-guest',
+    },
+    adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: Record<string, unknown>) => Promise<{
+            content: Array<{ type: string; text: string }>;
+            isError?: boolean;
+          }>;
+        }
+      >;
+    }
+  )._registeredTools[name];
+}
+
+/** Pull one ADMIN project tool's handler out of a server built for `caller`. */
+function adminProjectToolHandler(
+  name:
+    | 'project_create'
+    | 'project_add_member'
+    | 'project_remove_member'
+    | 'project_bind_here'
+    | 'project_unbind_here'
+    | 'project_archive'
+    | 'project_unarchive'
+    | 'project_info',
+  role: 'member' | 'guest' | 'admin' | 'super_admin',
+) {
+  const adapter = stubAdapter(async () => {});
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId: 'project-admin-probe',
+      userName: 'Probe',
+      role,
+      conversationId: 'convo-project-admin',
+    },
+    adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: Record<string, unknown>) => Promise<{
+            content: Array<{ type: string; text: string }>;
+            isError?: boolean;
+          }>;
+        }
+      >;
+    }
+  )._registeredTools[name];
+}
+
+test('SECURITY: every project-management tool refuses a below-admin caller before any DB write (issue #927 / PR #929 review)', async () => {
+  // The repo pins this handler-level check for every other privileged tool
+  // (grant_admin, link_member, remove_member, ...). These eight manage a brand
+  // new authorization axis, so the tier assert is exactly what a later
+  // refactor could drop silently.
+  const args: Record<string, Record<string, unknown>> = {
+    project_create: { slug: 'impact-lab', name: 'Impact Lab' },
+    project_add_member: { project: 'impact-lab', userId: '1234567890123456789' },
+    project_remove_member: { project: 'impact-lab', userId: '1234567890123456789' },
+    project_bind_here: { project: 'impact-lab' },
+    project_unbind_here: { project: 'impact-lab' },
+    project_archive: { project: 'impact-lab' },
+    project_unarchive: { project: 'impact-lab' },
+    project_info: { project: 'impact-lab' },
+  };
+  for (const name of Object.keys(args) as Parameters<typeof adminProjectToolHandler>[0][]) {
+    for (const role of ['guest', 'member'] as const) {
+      await assert.rejects(
+        () => adminProjectToolHandler(name, role).handler(args[name]),
+        /Permission denied/,
+        `${name} must refuse a ${role}-tier caller`,
+      );
+    }
+  }
+});
+
+test(
+  'SECURITY: project_add_member refuses a target who is not already a community member (docs/SECURITY.md layer 3 — without it a membership row exists for an identity that never passed add_member, which open mode reaches at guest tier)',
+  { skip },
+  async () => {
+    const { createProject, upsertMember } = await import('../src/storage/repository.js');
+    const slug = `${RUN}-addmember-guard`;
+    await createProject({ slug, name: 'Guard Lab', createdBy: 'test' });
+
+    // Digits only: normalizeMemberId enforces the Discord snowflake shape, and
+    // RUN carries a leading 't'. Slice it off and pad to snowflake length.
+    const stranger = `${RUN.slice(1)}999`.slice(0, 19);
+    const addTool = adminProjectToolHandler('project_add_member', 'admin');
+    const refused = await addTool.handler({ project: slug, userId: stranger });
+    assert.match(
+      refused.content[0].text,
+      /not a community member yet/i,
+      'an identity with no community_users row must be refused, pointing at add_member',
+    );
+
+    // Positive control: the same call succeeds once they ARE a member, so the
+    // refusal above is the guard firing and not an unrelated failure.
+    await upsertMember({ platform: 'discord', userId: stranger, role: 'member', addedBy: 'test' });
+    const accepted = await addTool.handler({ project: slug, userId: stranger });
+    assert.match(accepted.content[0].text, /Added to Guard Lab/i, 'a known member must be addable');
+  },
+);
+
+test(
+  'project_archive/project_unarchive round-trip through the tool surface, and neither reports a change it did not make (PR #929 review)',
+  { skip },
+  async () => {
+    // project_archive is not CONFIRM-gated because project_unarchive undoes
+    // it. That argument only holds if the undo is reachable from the tool
+    // surface, so exercise both handlers, not just the repository functions.
+    const { createProject } = await import('../src/storage/repository.js');
+    const slug = `${RUN}-archive-roundtrip`;
+    await createProject({ slug, name: 'Round Trip Lab', createdBy: 'test' });
+
+    const archive = adminProjectToolHandler('project_archive', 'admin');
+    const unarchive = adminProjectToolHandler('project_unarchive', 'admin');
+
+    assert.match(
+      (await unarchive.handler({ project: slug })).content[0].text,
+      /No archived project/i,
+      'an active project is not "restored" — the reply must not imply a change',
+    );
+    assert.match((await archive.handler({ project: slug })).content[0].text, /Archived/i);
+    assert.match(
+      (await archive.handler({ project: slug })).content[0].text,
+      /No active project/i,
+      'archiving twice must not claim a second revocation',
+    );
+    assert.match(
+      (await unarchive.handler({ project: slug })).content[0].text,
+      /Restored/i,
+      'the undo must be reachable through the tool surface, not only the DB',
+    );
+    assert.match(
+      (await unarchive.handler({ project: slug })).content[0].text,
+      /No archived project/i,
+      'unarchiving twice must not claim a second restore',
+    );
+  },
+);
+
+test(
+  'project_bind_here/project_unbind_here and project_remove_member report their success AND no-op paths through the tool handler (PR #929 review)',
+  { skip },
+  async () => {
+    // These three were only exercised at the repository-function level, unlike
+    // their siblings — so the audited() wiring and reply text went untested.
+    const { createProject, upsertMember } = await import('../src/storage/repository.js');
+    const slug = `${RUN}-handler-paths`;
+    await createProject({ slug, name: 'Handler Lab', createdBy: 'test' });
+    const member = `${RUN.slice(1)}777`.slice(0, 19);
+    await upsertMember({ platform: 'discord', userId: member, role: 'member', addedBy: 'test' });
+
+    const bind = adminProjectToolHandler('project_bind_here', 'admin');
+    const unbind = adminProjectToolHandler('project_unbind_here', 'admin');
+    const add = adminProjectToolHandler('project_add_member', 'admin');
+    const remove = adminProjectToolHandler('project_remove_member', 'admin');
+
+    assert.match((await bind.handler({ project: slug })).content[0].text, /can now be discussed here/i);
+    assert.match(
+      (await bind.handler({ project: slug })).content[0].text,
+      /was already bound/i,
+      'binding twice must not claim a second binding',
+    );
+    assert.match(
+      (await unbind.handler({ project: slug })).content[0].text,
+      /can no longer be discussed here/i,
+    );
+    assert.match(
+      (await unbind.handler({ project: slug })).content[0].text,
+      /was not bound/i,
+      'unbinding twice must not claim a second unbinding',
+    );
+
+    assert.match((await add.handler({ project: slug, userId: member })).content[0].text, /Added to/i);
+    const removed = await remove.handler({ project: slug, userId: member });
+    assert.match(removed.content[0].text, /Removed from/i);
+    assert.match(
+      removed.content[0].text,
+      /notes remain with the project/i,
+      'the reply must say revocation is not erasure',
+    );
+    assert.match(
+      (await remove.handler({ project: slug, userId: member })).content[0].text,
+      /Not a member of/i,
+      'removing twice must not claim a second removal',
+    );
+  },
+);
+
+test(
+  'membership and surface edits on an ARCHIVED project say so, instead of silently reading as a no-op (PR #929 review)',
+  { skip },
+  async () => {
+    // getProjectBySlug deliberately does not exclude archived projects — an
+    // admin must still be able to tidy a team up before an unarchive. But
+    // nothing they change takes effect until then, so the reply has to say it.
+    const { createProject, upsertMember } = await import('../src/storage/repository.js');
+    const slug = `${RUN}-archived-edits`;
+    await createProject({ slug, name: 'Archived Lab', createdBy: 'test' });
+    const member = `${RUN.slice(1)}888`.slice(0, 19);
+    await upsertMember({ platform: 'discord', userId: member, role: 'member', addedBy: 'test' });
+
+    const add = adminProjectToolHandler('project_add_member', 'admin');
+    const bind = adminProjectToolHandler('project_bind_here', 'admin');
+
+    assert.doesNotMatch(
+      (await add.handler({ project: slug, userId: member })).content[0].text,
+      /ARCHIVED/,
+      'an active project must not carry the archived warning',
+    );
+
+    await adminProjectToolHandler('project_archive', 'admin').handler({ project: slug });
+    assert.match(
+      (await bind.handler({ project: slug })).content[0].text,
+      /ARCHIVED.*project_unarchive/i,
+      'binding an archived project must warn that nothing is reachable until it is unarchived',
+    );
+    assert.match(
+      (
+        await adminProjectToolHandler('project_remove_member', 'admin').handler({
+          project: slug,
+          userId: member,
+        })
+      ).content[0].text,
+      /ARCHIVED/,
+      'membership edits on an archived project must warn too',
+    );
+  },
+);
+
+test(
+  'project_create reports the friendly duplicate-slug reply instead of a raw constraint violation (PR #929 review)',
+  { skip },
+  async () => {
+    const slug = `${RUN}-dup-create`;
+    const create = adminProjectToolHandler('project_create', 'admin');
+    assert.match((await create.handler({ slug, name: 'First' })).content[0].text, /Created project/i);
+    // audited() catches and surfaces a throw, so a TOCTOU race would leak
+    // Postgres' own unique-violation text to an admin in chat.
+    const second = await create.handler({ slug, name: 'Second' });
+    assert.match(second.content[0].text, /already exists/i);
+    assert.doesNotMatch(
+      second.content[0].text,
+      /duplicate key|violates unique constraint/i,
+      'the raw Postgres error must never reach the reply',
+    );
+  },
+);
+
+test('SECURITY: project_recall/project_note/project_list refuse a guest-tier caller before any DB read/write (assertAtLeast re-check, issue #927 / PR #929 review)', async () => {
+  // MEMBER_TOOLS is also a GUEST's surface in open mode, and visibleProjectIds
+  // checks only project_members — never tier. Without this handler re-check an
+  // open-mode guest holding a stale membership row reads a team's private
+  // notes. Same discipline share_project/who_is_into/community_digest use.
+  await assert.rejects(
+    () => projectToolHandler('project_recall', { role: 'guest' }).handler({ query: 'the venue' }),
+    /Permission denied/,
+    'project_recall must refuse an open-mode guest even though it is in MEMBER_TOOLS',
+  );
+  await assert.rejects(
+    () =>
+      projectToolHandler('project_note', { role: 'guest' }).handler({
+        project: 'impact-lab',
+        content: 'a note',
+      }),
+    /Permission denied/,
+    'project_note must refuse an open-mode guest even though it is in MEMBER_TOOLS',
+  );
+  await assert.rejects(
+    () => projectToolHandler('project_list', { role: 'guest' }).handler({}),
+    /Permission denied/,
+    'project_list must refuse an open-mode guest even though it is in MEMBER_TOOLS',
+  );
+});
 
 test('SECURITY: set_my_interests and who_is_into refuse a guest-tier caller before any DB write/read (assertAtLeast re-check, issue #634)', async () => {
   const setTool = setMyInterestsHandler({ platform: 'discord', userId: 'guest-1', role: 'guest' });

@@ -48,6 +48,18 @@ export function assertAtLeast(role: Tier, min: Tier, action: string): void {
 
 /** Tools (mcp__community__*) available to members (and guests in open mode). */
 export const MEMBER_TOOLS = [
+  // Project tools (issue #927). On EVERY member's surface by design: being in
+  // a project is data scope, not a tier, so these must not be derived from
+  // project membership. They are simply inert for a caller with no visible
+  // project — both access checks live in SQL in visibleProjectIds.
+  // Each of the three re-checks 'member' explicitly in the handler to exclude
+  // open-mode guests, same discipline share_project/set_my_interests/
+  // who_is_into/find_helper/community_digest use: these expose and publish a
+  // team's private notes, and visibleProjectIds checks only project_members,
+  // never tier (PR #929 review).
+  'mcp__community__project_recall',
+  'mcp__community__project_note',
+  'mcp__community__project_list',
   'mcp__community__community_info',
   // Read-only, no arguments; returns the admin-set guidelines text verbatim,
   // or a clear not-set-yet message (issue #212).
@@ -197,6 +209,17 @@ export const MEMBER_TOOLS = [
 
 /** Additional tools for admins — data access scoped to their conversations. */
 export const ADMIN_TOOLS = [
+  // Project management (issue #927): membership and surface bindings are set
+  // here and only here, never from message content — same rule as roles.
+  // Granting project access NEVER changes the target's tier.
+  'mcp__community__project_create',
+  'mcp__community__project_add_member',
+  'mcp__community__project_remove_member',
+  'mcp__community__project_bind_here',
+  'mcp__community__project_unbind_here',
+  'mcp__community__project_archive',
+  'mcp__community__project_unarchive',
+  'mcp__community__project_info',
   'mcp__community__whats_new',
   'mcp__community__generate_image',
   'mcp__community__user_history',

@@ -2993,6 +2993,225 @@ call.
 No new tool, table, RBAC change, or data collection. See
 docs/ARCHITECTURE.md's `community_info` write-up for the mechanism.
 
+### 25. Projects — shared team memory (`project_*`, issue #927)
+
+A project is a standing team's shared memory (e.g. an Impact Lab) that follows
+the **team** across Discord and WhatsApp rather than living in one channel.
+This is a new authorization axis, so it is worth being precise about what it
+does and does not grant.
+
+**Two checks, both in SQL, never re-derived by callers.** `visibleProjectIds`
+(`src/storage/repository/projects.ts`) is the single source of truth:
+
+- **Membership** — the caller's own platform identity is in `project_members`,
+  *or* an identity sharing their `person_id` is (so one human reaches the
+  project from either platform once `link_member` has linked them).
+- **Surface** — the current conversation is bound in `project_surfaces`, *or*
+  the turn is a DM (always an allowed surface for a member; there is no stable
+  conversation id to bind).
+
+Both must hold. Membership alone is deliberately **not** sufficient: a member
+asking in a public channel would otherwise have private project content recited
+in front of everyone — issue #106's failure mode with a team's notes instead of
+one conversation's. Reads and writes go through the same pair, so a non-member
+cannot write into a project either, and a member cannot write from an unbound
+conversation.
+
+**A project grants DATA SCOPE ONLY — never a tier.** Nothing in
+`toolsForRole()` consults project membership; `project_recall` / `project_note`
+/ `project_list` sit in `MEMBER_TOOLS` for *every* member and are simply inert
+for a caller with no visible project. This keeps the per-turn tool surface
+tier-derived and **only ever subtractively filtered**, so a bug in project
+logic can never conjure a tool a caller did not already nominally have. It is
+the same rule `persons` already states for identity linking ("never touches
+`role`"), and it is pinned by a `SECURITY:` test comparing `toolsForRole`
+output before and after a membership grant.
+
+**Membership and bindings are set by admins, never from message content** —
+same rule as roles. `project_bind_here` deliberately takes **no conversation
+id**: it binds the conversation the admin is actually in, so neither the model
+nor a crafted message can bind a channel the admin is not present in.
+
+**Project access is gated at three layers, because `visibleProjectIds`
+deliberately checks only `project_members` — never tier.** That is the right
+shape for a data scope, but it means tier enforcement has to happen around it:
+
+1. **The handlers re-check member tier.** `project_recall` / `project_note` /
+   `project_list` each call `assertAtLeast(caller.role, 'member', …)`, the same
+   discipline `share_project` / `set_my_interests` / `who_is_into` /
+   `find_helper` / `community_digest` use. `MEMBER_TOOLS` is also a **guest's**
+   surface in open mode, so without this an open-mode guest holding a stale
+   membership row would read a team's private notes.
+2. **`remove_member` cascades to `project_members`.** Project membership must
+   not outlive community membership. `project_members` has no FK to
+   `community_users` (it is keyed on the platform identity so visibility
+   survives person-row merges), so nothing cascades on its own — the delete is
+   explicit, and mirrors what `purgeSingleIdentity` already does.
+3. **`project_add_member` requires an existing community member**, exactly as
+   `link_member` does. Otherwise a membership row could exist for an identity
+   that never passed `add_member`, which in open mode reaches project content
+   at guest tier.
+
+All three were found by PR #929's automated review; layer 2 was a real leak on
+open-mode deployments, and each is pinned by a `SECURITY:` test.
+
+**Access grants are reversible and deliberately not CONFIRM-gated.**
+`project_remove_member` revokes access in one call, immediately, for reads and
+writes alike (pinned by a `SECURITY:` test with a positive control). The CONFIRM
+gate in this codebase is for **destructive or irreversible** actions —
+`delete_knowledge`, `remove_member`, `unlink_member`, `grant_admin`.
+`link_member` is gated for exactly that reason, stated in its own description:
+linking permanently expands what a single `forget_me` **erases**, across both
+identities. Granting project access destroys nothing and is undone in one call,
+so it follows `add_member`'s precedent instead — admin tier, audited, no
+confirm. `add_member` grants access to the entire bot, a strictly larger grant
+than one project's notes; gating this one and not that would make a subset
+stricter than its superset. (Raised in PR #929's automated review, which read
+the analogy as `link_member`'s.)
+
+**Revoking access is not erasure.** `project_remove_member` deletes only the
+membership row; notes the member already contributed stay with the project,
+authorship intact. That is the opposite of the `forget_me` rule below, which
+keeps the note but nulls the author — the two are deliberately different
+operations, and both are pinned.
+
+**Content is stored in `project_notes`, not in `knowledge`.** Scoping project
+content as a `knowledge.scope` value was the original design and was rejected
+during implementation: `knowledge` has ~20 readers that are unrestricted by
+default (`listKnowledge`, the duplicate/conflict pair-finders, the link-rot
+checker, the staleness readers, every get-entry-by-id path), so private project
+content would have been one un-audited caller away from an admin-facing view —
+and every future reader would be a new leak site. A separate table means every
+reader of project content is project-aware by construction.
+
+Notes are member-authored free text that re-enters the model's context on
+recall, so `project_recall` quarantines its result with `untrusted()`, exactly
+as `community_digest` and `admin_digest` do. A project's `brief` is context,
+never authority — it can no more override the system prompt's security section
+than `personas.ts` can. `reference_url` is stored verbatim and **never
+fetched**, the same rule as `member_projects.link`; this service does not
+become a document fetcher or a file store.
+
+**`forget_me` / `purge_user_data` is deliberately PARTIAL here — the one such
+exception in this codebase.** On erasure:
+
+- `project_members` is **hard-deleted** (pure identity; the person immediately
+  loses access, pinned by a test).
+- `project_notes` rows are **kept**, with `author_platform`/`author_user_id`
+  **nulled**. `projects.created_by`, `project_members.added_by` and
+  `project_surfaces.bound_by` are nulled the same way.
+
+The reasoning: a departing member's `forget_me` must not silently gut a
+standing team's decisions as a side effect of an unrelated privacy action.
+Precedent: `knowledge_candidates` nulls its link for reviewed rows rather than
+deleting them.
+
+**Documented residual (NZ Privacy Act 2020).** Nulling authorship removes the
+*link*, not personal information the note's own text may contain ("Chris is
+hosting at his place"). The erasure is therefore partial by design. This is
+stated here. It must ALSO be reflected in what `forget_me` tells the member,
+so nobody is told their data is gone when some of it is retained — and that
+half is **not yet done**: `forget_me`'s confirm prompt and reply still say
+"delete ALL of X's stored data" with no mention of projects. The wording is
+member-facing copy about a privacy guarantee, so it is the repo owner's to
+write rather than a build worker's to guess; tracked in **#930**, filed
+separately because this PR closes #927 and would otherwise close that
+acceptance criterion unmet. Until #930 lands, this document is the only
+place the retention is stated. The exception is
+scoped to project content **only** — the `DELETE FROM knowledge WHERE
+source_user_id = $1` in `purgeSingleIdentity` is untouched and ordinary
+member-authored knowledge still disappears entirely, pinned by its own
+`SECURITY:` test.
+
+Archiving a project (`project_archive`, admin tier) is a revocation, not a
+label: `visibleProjectIds` excludes archived projects, so content stops being
+served to its own members while nothing is deleted. `project_unbind_here`
+reverses a surface binding without touching membership.
+
+**Every project revocation is reversible from the bot's own tool surface**, and
+that is what keeps them off the CONFIRM gate. The gate here is for destructive
+or irreversible actions; each project revocation has a matching restore that
+touches nothing else — `project_remove_member` ↔ `project_add_member`,
+`project_unbind_here` ↔ `project_bind_here`, and `project_archive` ↔
+`project_unarchive` (PR #929 review). `unarchiveProject` only clears
+`archived_at`; membership and surface rows survive archiving untouched, so the
+restore returns exactly the access that existed before and grants nothing new,
+pinned by a `SECURITY:` test asserting both halves (the member reads again, a
+non-member still cannot). Without the unarchive tool, archiving would have been
+a one-way door that no admin could reopen without hand-editing the database —
+the exact property that *would* have obliged a CONFIRM gate. If a future change
+removes a restore path, that revocation must become CONFIRM-gated in the same
+diff.
+
+**Member-writable project content is length- and rate-capped.** `project_note`
+is member-tier, reachable by every member (and by a guest in open mode until
+the handler's tier re-check fires), and writes into a table of its own, so it
+carries the same two bounds every other member-writable free-text field in this
+repo has (PR #929 review): zod `.max()` at the tool layer on `content`, `title`
+and `reference_url`, **plus** a `slice()` in `saveProjectNote` itself, because
+that is an exported repository entry point a later caller could reach without
+going through the tool schema — the same defence-in-depth `createKnowledgeTip`
+uses. The content and title caps are chosen so `title\ncontent` always fits
+inside `embed()`'s own 4000-char truncation (pinned by a test): a note whose
+stored text outran its embedding would be silently unfindable by its own tail,
+which is worse than refusing the write.
+
+On top of that, `saveProjectNote` enforces a **rolling-24h per-identity write
+cap**, counted inside the `INSERT` statement itself — the shape
+`createKnowledgeTip` and `createSuggestion` use, never an in-memory counter, so
+it is restart-proof and cannot be reset by bouncing the process.
+
+**It is deliberately not race-proof, and must not be described as such.** Under
+Postgres' default READ COMMITTED isolation each statement takes its own
+snapshot, so concurrent writes from one member can all observe the same
+pre-insert count and all land: measured, 8 simultaneous statements against a cap
+of 3 inserted all 8. The overshoot is bounded by the size of the concurrent
+burst, not by the cap. This is a known property of the pattern, shared with
+`createKnowledgeTip`/`createSuggestion`, and it is tolerable *here* only because
+the cap is an abuse ceiling on storage inside a team the member is already
+trusted in — not a correctness boundary and not an authorization check. Nothing
+security-relevant may be built on it holding exactly. If a hard bound is ever
+needed, the fix is a per-member `pg_advisory_xact_lock` around the count and
+insert (or `SERIALIZABLE`); that would diverge from the repo-wide pattern, so it
+is an owner call rather than something to change in passing. It is set far higher than
+the 3/day those two carry: every other cap in this repo guards an action that
+costs a *human* something (an admin review-queue entry, a DM to another member),
+whereas a project note costs only storage inside a team the member has already
+been trusted into, and a team minuting a meeting legitimately records many in
+one sitting. So it is an abuse ceiling, not a usage budget. It is per-project-independent — pinned by a
+test, because a per-project cap would let one abuser deny service to their whole
+team.
+
+**Precisely: the count is keyed on the raw `(platform, user_id)` the note was
+authored under, NOT on the linked person** (PR #929 review). Everything else in
+this section expands through `persons`, so "per-member" would read as a stronger
+guarantee than the code gives: a human whose Discord and WhatsApp identities are
+linked by `link_member` gets two independent budgets, not one shared one. That
+is acceptable for an abuse ceiling — the ceiling still exists per identity, and
+identities are admin-created, not self-minted — but it must not be restated as a
+per-person guarantee. Counting across `CALLER_IDENTITIES_CTE` would make it one
+budget per human; that is a deliberate follow-up, not an oversight, because it
+would also *shrink* the budget of anyone who links identities. `project_create`'s `name` and `brief`
+are capped on the same principle, at lower severity since it is admin-only.
+
+**Admin edits to an archived project say so.** `getProjectBySlug` deliberately
+does *not* exclude archived projects, so an admin can still fix membership or
+surfaces before an unarchive. But `visibleProjectIds` excludes archived projects
+from every read and write, so those edits take effect only later — which reads
+as a silent no-op. Every membership and surface reply therefore carries an
+explicit ARCHIVED warning naming `project_unarchive` (PR #929 review).
+
+**`project_info` is deliberately guild-wide, not scoped to the calling admin's
+own projects.** The "admin data access is scoped in SQL to conversations the
+admin is in" rule governs *member content* — messages, notes, things said in
+confidence. `project_info` returns only the administrative register: project
+names and slugs, who holds access, which conversations are bound, and never a
+single project note. An admin who could only administer projects they happened
+to belong to could not audit the grants they are accountable for, and could
+give themselves the same visibility with one `project_add_member` call anyway,
+so the narrower scope would cost the audit trail without buying confidentiality.
+Same precedent as `list_roster` and `blocked_users` (PR #929 review).
+
 ## Platform-specific notes
 
 ### WhatsApp / Baileys ToS risk

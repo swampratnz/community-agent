@@ -772,3 +772,52 @@ test('assertAtLeast enforces the hierarchy', () => {
   assert.doesNotThrow(() => assertAtLeast('admin', 'admin', 'announce'));
   assert.doesNotThrow(() => assertAtLeast('super_admin', 'admin', 'announce'));
 });
+
+test('SECURITY: every project-management tool is admin-tier, never member or guest (issue #927)', () => {
+  // Project membership is a DATA scope, so these eight are the only project
+  // surface that is tier-gated at all — pinning their placement here is what
+  // stops a future edit quietly moving one into MEMBER_TOOLS, where an
+  // open-mode guest would reach it.
+  const adminProjectTools = [
+    'mcp__community__project_create',
+    'mcp__community__project_add_member',
+    'mcp__community__project_remove_member',
+    'mcp__community__project_bind_here',
+    'mcp__community__project_unbind_here',
+    'mcp__community__project_archive',
+    'mcp__community__project_unarchive',
+    'mcp__community__project_info',
+  ];
+  for (const tool of adminProjectTools) {
+    assert.ok(ADMIN_TOOLS.includes(tool), `${tool} must be in ADMIN_TOOLS`);
+    assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(tool), `${tool} must not be in MEMBER_TOOLS`);
+    assert.ok(
+      !(SUPER_ADMIN_TOOLS as readonly string[]).includes(tool),
+      `${tool} must not be duplicated into SUPER_ADMIN_TOOLS`,
+    );
+    for (const role of ['guest', 'member'] as const) {
+      assert.ok(!toolsForRole(role).includes(tool), `${role} must not reach ${tool}`);
+    }
+    for (const role of ['admin', 'super_admin'] as const) {
+      assert.ok(toolsForRole(role).includes(tool), `${role} must reach ${tool}`);
+    }
+  }
+});
+
+test('SECURITY: the three member-tier project tools are on every member surface, and are NOT admin-gated (issue #927 — data scope, not tier)', () => {
+  // The inverse pin: these must stay member-tier so that being added to a
+  // project never has to widen anyone's surface. Their access control is the
+  // handler's assertAtLeast + visibleProjectIds, not their tier list.
+  const memberProjectTools = [
+    'mcp__community__project_recall',
+    'mcp__community__project_note',
+    'mcp__community__project_list',
+  ];
+  for (const tool of memberProjectTools) {
+    assert.ok((MEMBER_TOOLS as readonly string[]).includes(tool), `${tool} must be in MEMBER_TOOLS`);
+    assert.ok(!ADMIN_TOOLS.includes(tool), `${tool} must not be admin-gated`);
+    for (const role of ['member', 'admin', 'super_admin'] as const) {
+      assert.ok(toolsForRole(role).includes(tool), `${role} must reach ${tool}`);
+    }
+  }
+});

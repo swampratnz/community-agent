@@ -35,6 +35,35 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   of several) without guessing. Same empty-state message and rendering as
   the other two surfaces; no change to plain `!projects` or `!projects
   <query>`.
+- **Projects: a standing team can now have shared memory that follows the team
+  across Discord and WhatsApp** (#927). An admin creates a project
+  (`project_create`), adds or removes members (`project_add_member` /
+  `project_remove_member`), binds or unbinds the
+  conversations it may be discussed in (`project_bind_here` /
+  `project_unbind_here`), and archives it when the team is done
+  (`project_archive`) or brings it back if the team picks it up again
+  (`project_unarchive`), with `project_info` to review who has access; members
+  then
+  record decisions and notes with `project_note` and find them later with
+  `project_recall`, from either platform, on whichever surface the project is
+  bound to. Built for running an Impact Lab, where the team spans a Discord
+  channel and a WhatsApp group and only that team should see the content.
+  Two things it deliberately does **not** do: project access grants **data
+  scope only and never a tier** (adding someone to a project changes nothing
+  about which tools they can call), and project content is only ever rendered
+  where the project is bound — membership alone will not recite private notes
+  into a public channel. Document links can be recorded as references, stored
+  verbatim and never fetched, and capped in length like every other thing a
+  member can write here, with a generous daily cap on how many notes one
+  member can add so the shared memory can't be flooded; no file storage and
+  no external egress. Every
+  way an admin can take project access away has a matching way to give it
+  back — remove/add a member, unbind/bind a conversation, archive/unarchive
+  the project — so nothing here is a one-way door that needs a human editing
+  the database to undo. One privacy note: if a member later runs `forget_me`, their project membership
+  is deleted outright but the team's notes are kept with authorship removed,
+  so an erasure request doesn't silently gut a project's history — see
+  docs/SECURITY.md for the full rule and its documented limit.
 - **WhatsApp voice notes now work on the Cloud API adapter, not just
   Baileys/Discord** (#910) — the docs' own recommended production WhatsApp
   path was the one place a voice note produced total silence. Opt-in via
