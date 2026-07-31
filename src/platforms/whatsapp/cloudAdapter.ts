@@ -9,11 +9,21 @@ import { logger, hashId } from '../../logger.js';
 import type { AlertPriority } from '../../pendingAlertQueue.js';
 import { filterOutbound } from '../../agent/outbound.js';
 import { runtimeSecrets } from '../../agent/secrets.js';
-import { reserveImageInputDaily } from '../../agent/tools.js';
+import { reserveImageInputDaily, reserveVoiceTranscriptionSlot } from '../../agent/tools.js';
 import { getCodeAnswersPolicy, getCommunityGuidelines, getWelcomeMessage } from '../../storage/policies.js';
-import { blockUser, isKnownConversation, unblockUser } from '../../storage/repository.js';
+import {
+  blockUser,
+  getLanguagePreference,
+  isKnownConversation,
+  unblockUser,
+} from '../../storage/repository.js';
 import { isSuperAdmin, resolveRole } from '../../auth/roles.js';
 import { atLeast } from '../../auth/rbac.js';
+import { transcribeVoiceNote } from '../../media/voiceTranscribe.js';
+import {
+  shouldNotify as shouldNotifyVoiceLanguageCaveat,
+  VOICE_LANGUAGE_CAVEAT_TEXT_MI,
+} from '../../voiceLanguageCaveatNotice.js';
 import {
   extractMessages,
   isAllowedSender,
@@ -79,6 +89,12 @@ const WINDOW_REOPEN_QUEUE_CAP = 3;
  * webhook handler for an extended period.
  */
 const SEND_RETRY_MAX_BACKOFF_MS = 5_000;
+/**
+ * Debounce window for the te reo Māori voice-transcription caveat DM (issue
+ * #655's mechanism, reused unchanged here — see `maybeSendVoiceLanguageCaveat`).
+ * Same value as `BaileysAdapter`'s copy.
+ */
+const VOICE_LANGUAGE_CAVEAT_WINDOW_MS = 7 * 24 * 60 * 60_000;
 
 // Fixed wrapper prefix for a manual warn_user DM (the admin's `reason` is
 // appended verbatim, untranslated). Byte-for-byte the pre-#618 inline
@@ -176,6 +192,15 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
    * conversation in the DB, so the backstop still prevents a re-welcome).
    */
   private readonly welcomedThisRun = new Map<string, number>();
+
+  /**
+   * Senders already sent the te reo Māori voice-transcription caveat DM
+   * (issue #655's mechanism, reused unchanged for Cloud voice — issue #910),
+   * keyed to last-sent timestamp. Debounced to at most once per
+   * `VOICE_LANGUAGE_CAVEAT_WINDOW_MS`, mirroring `BaileysAdapter`'s own copy.
+   * In-memory only; resets on restart, same tradeoff as every other map here.
+   */
+  private readonly voiceLanguageCaveatNotified = new Map<string, number>();
 
   /**
    * Messages queued per-recipient (issue #602) after a live admin-alert send
@@ -383,7 +408,21 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
     // exactly like today's total silence on an inbound image.
     let text = msg.text;
     let image: IncomingMessage['image'] | undefined;
-    if (msg.image) {
+    if (msg.voice) {
+      // WhatsApp Cloud API voice-note transcription (opt-in,
+      // WHATSAPP_CLOUD_VOICE_ENABLED, issue #910) — mirrors Baileys'
+      // maybeTranscribeVoiceNote flow, adapted to the Cloud webhook shape.
+      // The tier + feature-flag + rate-cap + byte-cap gate lives inside
+      // maybeTranscribeVoiceNote and runs BEFORE any Graph API call, so a
+      // below-tier, rate-capped, or over-cap voice note is dropped exactly
+      // like today's total silence on an inbound audio message.
+      text = await this.maybeTranscribeVoiceNote(msg.voice, msg.from);
+      if (text) {
+        await this.maybeSendVoiceLanguageCaveat(msg.from);
+      } else {
+        return;
+      }
+    } else if (msg.image) {
       image = await this.maybeFetchImageAttachment(msg.image, msg.from);
       text = image ? (msg.image.caption ?? '') : '';
       if (!text) return;
@@ -405,6 +444,112 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
       raw: msg,
     };
     await this.handler(normalised);
+  }
+
+  /**
+   * Transcribe a WhatsApp Cloud voice note to text, or return '' to drop it —
+   * the SINGLE gate for the feature (issue #910), mirroring
+   * `BaileysAdapter.maybeTranscribeVoiceNote` (#507)'s gate order adapted to
+   * the Cloud webhook shape:
+   *   1. WHATSAPP_CLOUD_VOICE_ENABLED must be on (off by default);
+   *   2. the sender's resolved tier must meet WHATSAPP_CLOUD_VOICE_MIN_ROLE
+   *      (default 'super_admin'). At the default this stays a pure
+   *      `isSuperAdmin` env check — no DB call — exactly like the Cloud
+   *      image gate;
+   *   3. once WHATSAPP_CLOUD_VOICE_RATE_LIMIT_PER_HOUR is set (non-zero), a
+   *      sender who already hit the cap within the rolling hour is refused
+   *      WITHOUT any Graph API call. Skipped entirely at the default (0 =
+   *      unlimited). Reserved under its own `whatsapp-cloud:${senderId}` key
+   *      prefix, so it never shares Baileys' hourly quota;
+   *   4. only then is Meta's media-URL resolve call made (`resolveMediaUrl`,
+   *      `GET /{media-id}`). Unlike Baileys' `audio.seconds` (present on the
+   *      message itself, pre-download), Meta's Cloud webhook `audio` object
+   *      carries no duration at all — this lightweight metadata call is the
+   *      earliest point a size becomes available, so the byte cap
+   *      (WHATSAPP_CLOUD_VOICE_MAX_BYTES) is enforced immediately on its
+   *      `file_size`, strictly BEFORE the separate, actual byte-download call
+   *      (`downloadMediaBytes`) below it — the resolve call itself never
+   *      transfers audio bytes;
+   *   5. only past every check above are the bytes themselves downloaded and
+   *      transcribed locally via the platform-agnostic `transcribeVoiceNote`.
+   * Any resolve/download/decode/model failure is logged and swallowed
+   * (returns '') so a bad note is dropped rather than crashing the handler or
+   * leaking internals. The transcript is returned verbatim and becomes the
+   * turn's `text`, identical to the Baileys flow; audio bytes are held only
+   * for the one transcription call and never reach `IncomingMessage` or the
+   * `interactions` table.
+   */
+  private async maybeTranscribeVoiceNote(
+    voice: NonNullable<CloudInboundMessage['voice']>,
+    senderId: string,
+  ): Promise<string> {
+    if (!config.whatsapp.cloud.voice.enabled) return '';
+    const minRole = config.whatsapp.cloud.voice.minRole;
+    if (minRole === 'super_admin') {
+      if (!isSuperAdmin('whatsapp', senderId)) return '';
+    } else {
+      const role = await resolveRole('whatsapp', senderId);
+      if (!atLeast(role, minRole)) return '';
+    }
+    const rateLimit = config.whatsapp.cloud.voice.rateLimitPerHour;
+    if (rateLimit > 0 && !reserveVoiceTranscriptionSlot(`whatsapp-cloud:${senderId}`, rateLimit)) {
+      logger.info(
+        { sender: hashId(senderId), limit: rateLimit },
+        'WhatsApp Cloud voice note refused — sender hit the hourly transcription cap',
+      );
+      return '';
+    }
+    const { phoneNumberId, accessToken } = config.whatsapp.cloud;
+    if (!phoneNumberId || !accessToken) return '';
+    try {
+      const { url, fileSize } = await this.resolveMediaUrl(voice.mediaId, accessToken);
+      if (fileSize > config.whatsapp.cloud.voice.maxBytes) {
+        logger.info(
+          { size: fileSize, cap: config.whatsapp.cloud.voice.maxBytes },
+          'WhatsApp Cloud voice note over the byte cap — ignored without downloading its bytes',
+        );
+        return '';
+      }
+      const buffer = await this.downloadMediaBytes(url, accessToken);
+      const transcript = await transcribeVoiceNote(buffer, config.whatsapp.cloud.voice.model);
+      logger.info({ chars: transcript.length }, 'Transcribed WhatsApp Cloud voice note');
+      return transcript;
+    } catch (err) {
+      logger.warn({ err }, 'WhatsApp Cloud voice-note transcription failed — dropping the note');
+      return '';
+    }
+  }
+
+  /**
+   * After a successful voice-note transcription, DM the sender a fixed
+   * caveat if their stored language preference is 'mi' (issue #655's
+   * mechanism, reused unchanged here — see `BaileysAdapter`'s copy): the
+   * transcription model is English-only, so their transcript may be garbled
+   * with no other signal that anything went wrong. Purely a side notice —
+   * never touches `text` or the downstream pipeline. Debounced to at most
+   * once per sender per `VOICE_LANGUAGE_CAVEAT_WINDOW_MS`. Unlike Baileys,
+   * every Cloud API sender id is already a bare phone number (see
+   * `isAllowedSender`'s doc comment), so there is no LID-fallback case to
+   * skip here.
+   */
+  private async maybeSendVoiceLanguageCaveat(senderId: string): Promise<void> {
+    const language = await getLanguagePreference('whatsapp', senderId);
+    if (language !== 'mi') return;
+    if (
+      !shouldNotifyVoiceLanguageCaveat(
+        this.voiceLanguageCaveatNotified.get(senderId),
+        Date.now(),
+        VOICE_LANGUAGE_CAVEAT_WINDOW_MS,
+      )
+    ) {
+      return;
+    }
+    this.voiceLanguageCaveatNotified.set(senderId, Date.now());
+    try {
+      await this.sendDirectMessage(senderId, VOICE_LANGUAGE_CAVEAT_TEXT_MI);
+    } catch (err) {
+      logger.warn({ err }, 'Failed to send WhatsApp Cloud voice-language caveat notice');
+    }
   }
 
   /**
