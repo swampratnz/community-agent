@@ -2711,7 +2711,8 @@ test('community_info: admin-tier reply stays byte-identical, never gains SUPER_A
     '- Set the community guidelines or the welcome message shown to new members\n' +
     '- Assign a Discord role, remove a Discord role, or list which roles are available to assign\n' +
     "- Set up team projects: create one, give a member access, take a member's access away, allow or " +
-    'stop it being discussed here, review who has access, or archive a finished project\n' +
+    'stop it being discussed here, review who has access, or archive a finished project and bring it ' +
+    'back again\n' +
     '- Generate an image, or check recent changes to the bot and community (the changelog)';
 
   const memberReply = (await communityInfoHandler('member')).content[0]?.text ?? '';
@@ -2877,6 +2878,7 @@ const ADMIN_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__project_bind_here', /allow or\s+stop it being discussed here/i],
   ['mcp__community__project_unbind_here', /allow or\s+stop it being discussed here/i],
   ['mcp__community__project_archive', /archive a finished project/i],
+  ['mcp__community__project_unarchive', /archive a finished project and bring it\s+back again/i],
   ['mcp__community__project_info', /review who has access/i],
   ['mcp__community__whats_new', /the changelog/i],
   ['mcp__community__generate_image', /generate an image/i],
@@ -3003,8 +3005,9 @@ test('community_info: admin reply stays under a hard char cap, not a wall of tex
   // list_blocked_members clause, and again for issue #927's project lines
   // (one member line + one admin line), widened once more when PR #929's
   // review added project_remove_member/project_unbind_here/project_archive
-  // to the same admin line.
-  assert.ok(adminReply.length < 4200, `admin reply should stay short; was ${adminReply.length} chars`);
+  // to the same admin line, and once more for that review's project_unarchive
+  // clause (same line again, not a new bullet).
+  assert.ok(adminReply.length < 4260, `admin reply should stay short; was ${adminReply.length} chars`);
 });
 
 test('SECURITY: community_info member-tier and guest-tier replies never name an admin/super_admin-only tool or contain any ADMIN_CAPABILITIES_TEXT-unique line (issue #367, issue #311)', async () => {
@@ -3140,9 +3143,10 @@ test('community_info: super_admin reply stays under a hard char cap, not a wall 
   // admin cap for issue #924's list_blocked_members clause, and again
   // alongside the member/admin caps for issue #927's project lines, and
   // again for #927's project_remove_member/project_unbind_here/
-  // project_archive clauses added in PR review.
+  // project_archive clauses added in PR review, and once more for that
+  // review's project_unarchive clause.
   assert.ok(
-    superAdminReply.length < 4860,
+    superAdminReply.length < 4920,
     `super_admin reply should stay short; was ${superAdminReply.length} chars`,
   );
 });
@@ -13205,6 +13209,7 @@ function adminProjectToolHandler(
     | 'project_bind_here'
     | 'project_unbind_here'
     | 'project_archive'
+    | 'project_unarchive'
     | 'project_info',
   role: 'member' | 'guest' | 'admin' | 'super_admin',
 ) {
@@ -13236,7 +13241,7 @@ function adminProjectToolHandler(
 
 test('SECURITY: every project-management tool refuses a below-admin caller before any DB write (issue #927 / PR #929 review)', async () => {
   // The repo pins this handler-level check for every other privileged tool
-  // (grant_admin, link_member, remove_member, ...). These six manage a brand
+  // (grant_admin, link_member, remove_member, ...). These eight manage a brand
   // new authorization axis, so the tier assert is exactly what a later
   // refactor could drop silently.
   const args: Record<string, Record<string, unknown>> = {
@@ -13246,6 +13251,7 @@ test('SECURITY: every project-management tool refuses a below-admin caller befor
     project_bind_here: { project: 'impact-lab' },
     project_unbind_here: { project: 'impact-lab' },
     project_archive: { project: 'impact-lab' },
+    project_unarchive: { project: 'impact-lab' },
     project_info: { project: 'impact-lab' },
   };
   for (const name of Object.keys(args) as Parameters<typeof adminProjectToolHandler>[0][]) {
@@ -13283,6 +13289,63 @@ test(
     await upsertMember({ platform: 'discord', userId: stranger, role: 'member', addedBy: 'test' });
     const accepted = await addTool.handler({ project: slug, userId: stranger });
     assert.match(accepted.content[0].text, /Added to Guard Lab/i, 'a known member must be addable');
+  },
+);
+
+test(
+  'project_archive/project_unarchive round-trip through the tool surface, and neither reports a change it did not make (PR #929 review)',
+  { skip },
+  async () => {
+    // project_archive is not CONFIRM-gated because project_unarchive undoes
+    // it. That argument only holds if the undo is reachable from the tool
+    // surface, so exercise both handlers, not just the repository functions.
+    const { createProject } = await import('../src/storage/repository.js');
+    const slug = `${RUN}-archive-roundtrip`;
+    await createProject({ slug, name: 'Round Trip Lab', createdBy: 'test' });
+
+    const archive = adminProjectToolHandler('project_archive', 'admin');
+    const unarchive = adminProjectToolHandler('project_unarchive', 'admin');
+
+    assert.match(
+      (await unarchive.handler({ project: slug })).content[0].text,
+      /No archived project/i,
+      'an active project is not "restored" — the reply must not imply a change',
+    );
+    assert.match((await archive.handler({ project: slug })).content[0].text, /Archived/i);
+    assert.match(
+      (await archive.handler({ project: slug })).content[0].text,
+      /No active project/i,
+      'archiving twice must not claim a second revocation',
+    );
+    assert.match(
+      (await unarchive.handler({ project: slug })).content[0].text,
+      /Restored/i,
+      'the undo must be reachable through the tool surface, not only the DB',
+    );
+    assert.match(
+      (await unarchive.handler({ project: slug })).content[0].text,
+      /No archived project/i,
+      'unarchiving twice must not claim a second restore',
+    );
+  },
+);
+
+test(
+  'project_create reports the friendly duplicate-slug reply instead of a raw constraint violation (PR #929 review)',
+  { skip },
+  async () => {
+    const slug = `${RUN}-dup-create`;
+    const create = adminProjectToolHandler('project_create', 'admin');
+    assert.match((await create.handler({ slug, name: 'First' })).content[0].text, /Created project/i);
+    // audited() catches and surfaces a throw, so a TOCTOU race would leak
+    // Postgres' own unique-violation text to an admin in chat.
+    const second = await create.handler({ slug, name: 'Second' });
+    assert.match(second.content[0].text, /already exists/i);
+    assert.doesNotMatch(
+      second.content[0].text,
+      /duplicate key|violates unique constraint/i,
+      'the raw Postgres error must never reach the reply',
+    );
   },
 );
 

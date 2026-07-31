@@ -774,7 +774,7 @@ test('assertAtLeast enforces the hierarchy', () => {
 });
 
 test('SECURITY: every project-management tool is admin-tier, never member or guest (issue #927)', () => {
-  // Project membership is a DATA scope, so these six are the only project
+  // Project membership is a DATA scope, so these eight are the only project
   // surface that is tier-gated at all — pinning their placement here is what
   // stops a future edit quietly moving one into MEMBER_TOOLS, where an
   // open-mode guest would reach it.
@@ -785,6 +785,7 @@ test('SECURITY: every project-management tool is admin-tier, never member or gue
     'mcp__community__project_bind_here',
     'mcp__community__project_unbind_here',
     'mcp__community__project_archive',
+    'mcp__community__project_unarchive',
     'mcp__community__project_info',
   ];
   for (const tool of adminProjectTools) {

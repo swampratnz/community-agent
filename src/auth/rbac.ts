@@ -218,6 +218,7 @@ export const ADMIN_TOOLS = [
   'mcp__community__project_bind_here',
   'mcp__community__project_unbind_here',
   'mcp__community__project_archive',
+  'mcp__community__project_unarchive',
   'mcp__community__project_info',
   'mcp__community__whats_new',
   'mcp__community__generate_image',

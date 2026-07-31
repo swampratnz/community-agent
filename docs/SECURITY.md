@@ -3121,6 +3121,32 @@ label: `visibleProjectIds` excludes archived projects, so content stops being
 served to its own members while nothing is deleted. `project_unbind_here`
 reverses a surface binding without touching membership.
 
+**Every project revocation is reversible from the bot's own tool surface**, and
+that is what keeps them off the CONFIRM gate. The gate here is for destructive
+or irreversible actions; each project revocation has a matching restore that
+touches nothing else — `project_remove_member` ↔ `project_add_member`,
+`project_unbind_here` ↔ `project_bind_here`, and `project_archive` ↔
+`project_unarchive` (PR #929 review). `unarchiveProject` only clears
+`archived_at`; membership and surface rows survive archiving untouched, so the
+restore returns exactly the access that existed before and grants nothing new,
+pinned by a `SECURITY:` test asserting both halves (the member reads again, a
+non-member still cannot). Without the unarchive tool, archiving would have been
+a one-way door that no admin could reopen without hand-editing the database —
+the exact property that *would* have obliged a CONFIRM gate. If a future change
+removes a restore path, that revocation must become CONFIRM-gated in the same
+diff.
+
+**`project_info` is deliberately guild-wide, not scoped to the calling admin's
+own projects.** The "admin data access is scoped in SQL to conversations the
+admin is in" rule governs *member content* — messages, notes, things said in
+confidence. `project_info` returns only the administrative register: project
+names and slugs, who holds access, which conversations are bound, and never a
+single project note. An admin who could only administer projects they happened
+to belong to could not audit the grants they are accountable for, and could
+give themselves the same visibility with one `project_add_member` call anyway,
+so the narrower scope would cost the audit trail without buying confidentiality.
+Same precedent as `list_roster` and `blocked_users` (PR #929 review).
+
 ## Platform-specific notes
 
 ### WhatsApp / Baileys ToS risk

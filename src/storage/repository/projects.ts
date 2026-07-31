@@ -252,18 +252,29 @@ export async function listVisibleProjects(caller: ProjectCaller): Promise<Projec
 
 // --- Admin-side management -------------------------------------------------
 
+/**
+ * Create a project, or return null if the slug is already taken.
+ *
+ * The duplicate check is the INSERT itself (PR #929 review): a SELECT-then-
+ * INSERT is a TOCTOU window, so two admins creating the same slug at once
+ * would race past the check and the loser would surface a raw Postgres
+ * unique-violation through `audited()`'s catch instead of the friendly
+ * "already exists" reply. `ON CONFLICT DO NOTHING` is the pattern
+ * addProjectMember/bindProjectSurface below already use.
+ */
 export async function createProject(input: {
   slug: string;
   name: string;
   brief?: string;
   createdBy: string;
-}): Promise<Project> {
+}): Promise<Project | null> {
   const { rows } = await pool.query(
     `INSERT INTO projects (slug, name, brief, created_by) VALUES ($1,$2,$3,$4)
+     ON CONFLICT (slug) DO NOTHING
      RETURNING id, slug, name, brief, created_at, archived_at`,
     [input.slug, input.name, input.brief ?? null, input.createdBy],
   );
-  return toProject(rows[0]);
+  return rows.length > 0 ? toProject(rows[0]) : null;
 }
 
 export async function getProjectBySlug(slug: string): Promise<Project | null> {
@@ -277,6 +288,22 @@ export async function getProjectBySlug(slug: string): Promise<Project | null> {
 export async function archiveProject(slug: string): Promise<boolean> {
   const { rowCount } = await pool.query(
     `UPDATE projects SET archived_at = now() WHERE slug = $1 AND archived_at IS NULL`,
+    [slug],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+/**
+ * Reverse an archive (PR #929 review). Archiving revokes read access for
+ * everyone including the project's own members, so without this the bot's own
+ * tool surface could take that access away but never give it back — a human
+ * editing the DB directly was the only undo. Membership and surface rows are
+ * untouched by archiving, so clearing `archived_at` restores exactly the
+ * access that existed before, and grants nothing new.
+ */
+export async function unarchiveProject(slug: string): Promise<boolean> {
+  const { rowCount } = await pool.query(
+    `UPDATE projects SET archived_at = NULL WHERE slug = $1 AND archived_at IS NOT NULL`,
     [slug],
   );
   return (rowCount ?? 0) > 0;

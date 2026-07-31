@@ -170,6 +170,7 @@ import {
   bindProjectSurface,
   unbindProjectSurface,
   archiveProject,
+  unarchiveProject,
   listAllProjects,
   listProjectMembers,
   listProjectSurfaces,
@@ -1791,7 +1792,8 @@ const ADMIN_CAPABILITIES_TEXT =
   '- Set the community guidelines or the welcome message shown to new members\n' +
   '- Assign a Discord role, remove a Discord role, or list which roles are available to assign\n' +
   "- Set up team projects: create one, give a member access, take a member's access away, allow or " +
-  'stop it being discussed here, review who has access, or archive a finished project\n' +
+  'stop it being discussed here, review who has access, or archive a finished project and bring it ' +
+  'back again\n' +
   '- Generate an image, or check recent changes to the bot and community (the changelog)';
 
 /**
@@ -7420,13 +7422,16 @@ export function buildToolServer(
         actionKind: 'project_create',
         params: { slug: args.slug },
         run: async () => {
-          if (await getProjectBySlug(args.slug)) return `A project "${args.slug}" already exists.`;
+          // The uniqueness check IS the insert (PR #929 review) — a
+          // SELECT-then-INSERT races two concurrent admins into a raw
+          // constraint-violation message instead of this reply.
           const project = await createProject({
             slug: args.slug,
             name: args.name,
             brief: args.brief,
             createdBy: caller.userId,
           });
+          if (!project) return `A project "${args.slug}" already exists.`;
           return `Created project ${project.name} [${project.slug}]. No members yet.`;
         },
       });
@@ -7529,6 +7534,16 @@ export function buildToolServer(
     },
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'project_info');
+      // Deliberately guild-wide, not scoped to projects this admin belongs to
+      // (PR #929 review). The "admin data access is scoped in SQL to
+      // conversations the admin is in" rule governs MEMBER CONTENT — messages,
+      // notes, the things members said in confidence. This is the
+      // administrative register: names, slugs, who has access, which
+      // conversations are bound, and never a single project NOTE. An admin who
+      // could only administer projects they happened to be a member of could
+      // not audit the grants they are responsible for, and could grant
+      // themselves the visibility anyway with one project_add_member call.
+      // Same precedent as list_roster and blocked_users.
       if (!args.project) {
         const projects = await listAllProjects();
         if (projects.length === 0) return text('No projects yet.');
@@ -7586,18 +7601,47 @@ export function buildToolServer(
     'project_archive',
     'Archive a project when a team is finished. This is a revocation, not a label: its shared memory ' +
       'immediately stops being readable by anyone, including its own members. Nothing is deleted, so ' +
-      'the record is kept. Admin only.',
+      'the record is kept and project_unarchive puts it back. Admin only.',
     { project: z.string().describe('The project slug') },
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'project_archive');
+      // Not requireConfirm-gated, on the same reasoning as
+      // project_add_member/project_remove_member above: this repo's CONFIRM
+      // gate is for DESTRUCTIVE or IRREVERSIBLE actions, and archiving is
+      // neither. It deletes nothing, and project_unarchive below reverses it
+      // in one call — which is precisely why that tool exists (PR #929
+      // review). Ship the two together or this becomes a one-way door.
       const { result } = await audited({
         actionKind: 'project_archive',
         params: { project: args.project },
         run: async () => {
           const archived = await archiveProject(args.project);
           return archived
-            ? `Archived ${args.project}. Its notes are retained but no longer readable.`
+            ? `Archived ${args.project}. Its notes are retained but no longer readable — project_unarchive restores access.`
             : `No active project "${args.project}".`;
+        },
+      });
+      return text(result);
+    },
+    { annotations: { readOnlyHint: false } },
+  );
+
+  const projectUnarchive = tool(
+    'project_unarchive',
+    'Bring an archived project back, undoing project_archive: its existing members can read and add ' +
+      'to its shared memory again from the conversations it was already bound to. This restores the ' +
+      'access that existed before archiving — it grants nobody new access. Admin only.',
+    { project: z.string().describe('The project slug') },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'project_unarchive');
+      const { result } = await audited({
+        actionKind: 'project_unarchive',
+        params: { project: args.project },
+        run: async () => {
+          const unarchived = await unarchiveProject(args.project);
+          return unarchived
+            ? `Restored ${args.project}. Its members can read and add to it again.`
+            : `No archived project "${args.project}".`;
         },
       });
       return text(result);
@@ -8422,6 +8466,7 @@ export function buildToolServer(
       projectUnbindHere,
       projectInfo,
       projectArchive,
+      projectUnarchive,
       listKnowledgeTopicsTool,
       rememberSearch,
       forgetMe,

@@ -113,6 +113,7 @@ async function fixture(r: Repo, suffix: string) {
     addedBy: 'test',
   });
   const project = await r.createProject({ slug, name: `Lab ${suffix}`, createdBy: 'test' });
+  assert.ok(project, `fixture setup: slug ${slug} must be free`);
   await r.addProjectMember(project.id, 'discord', member, 'test');
   await r.bindProjectSurface(project.id, 'discord', BOUND_CONVO, 'test');
   const saved = await r.saveProjectNote(
@@ -346,6 +347,95 @@ test(
       isDirect: false,
     });
     assert.deepEqual(hits, [], 'archiving must stop content being served');
+  },
+);
+
+test(
+  'SECURITY: projects: unarchiving restores the SAME access archiving revoked — the members who could read before can read again, and nobody else can (PR #929 review)',
+  { skip },
+  async (t) => {
+    // The point of project_unarchive is that archiving stops being a one-way
+    // door, which is also why project_archive is not CONFIRM-gated. So the
+    // test has to prove the round trip actually lands back where it started —
+    // both halves: the member regains access, and an outsider still has none.
+    const r = await repo(t);
+    const { slug, member } = await fixture(r, 'unarchived');
+    const outsiderCaller = {
+      platform: 'discord' as const,
+      userId: OUTSIDER,
+      conversationId: BOUND_CONVO,
+      isDirect: false,
+    };
+    const memberCaller = { ...outsiderCaller, userId: member };
+
+    await r.archiveProject(slug);
+    assert.deepEqual(
+      await r.searchProjectNotes(NOTE_CONTENT, memberCaller),
+      [],
+      'precondition: archiving revoked the member',
+    );
+
+    assert.equal(
+      await r.unarchiveProject(slug),
+      true,
+      'unarchiving an archived project must report a change',
+    );
+    const restored = await r.searchProjectNotes(NOTE_CONTENT, memberCaller);
+    assert.equal(restored.length, 1, 'the member must be able to read the project again');
+    assert.equal(restored[0]?.projectSlug, slug);
+
+    // Positive control's mirror: restoring access must not WIDEN it. An
+    // outsider was never a member, and unarchiving touches no membership row.
+    assert.deepEqual(
+      await r.searchProjectNotes(NOTE_CONTENT, outsiderCaller),
+      [],
+      'unarchiving must not grant access to a non-member',
+    );
+  },
+);
+
+test(
+  'SECURITY: projects: unarchiveProject only ever clears archived_at — it can neither create a project nor report success for an active one (PR #929 review)',
+  { skip },
+  async (t) => {
+    const r = await repo(t);
+    const { slug } = await fixture(r, 'unarchive-noop');
+
+    // An active project is not "restored" — the admin tool relies on this
+    // false to answer `No archived project "..."` rather than implying it
+    // changed something.
+    assert.equal(await r.unarchiveProject(slug), false, 'an already-active project must report no change');
+    assert.equal(
+      await r.unarchiveProject(`${RUN}-does-not-exist`),
+      false,
+      'an unknown slug must report no change, never conjure a project',
+    );
+    const { rows } = await pool.query(`SELECT slug FROM projects WHERE slug = $1`, [`${RUN}-does-not-exist`]);
+    assert.equal(rows.length, 0, 'unarchiving an unknown slug must not insert a row');
+  },
+);
+
+test(
+  'projects: createProject is race-free on a duplicate slug — the second create returns null instead of throwing a raw constraint violation (PR #929 review)',
+  { skip },
+  async (t) => {
+    const r = await repo(t);
+    const slug = `${RUN}-dup-slug`;
+    const first = await r.createProject({ slug, name: 'First', createdBy: 'test' });
+    assert.ok(first, 'the first create must win');
+
+    // Concurrent, so a SELECT-then-INSERT implementation cannot pass this by
+    // winning the check-then-act race — both calls are in flight together.
+    const [a, b] = await Promise.all([
+      r.createProject({ slug, name: 'Second', createdBy: 'test' }),
+      r.createProject({ slug, name: 'Third', createdBy: 'test' }),
+    ]);
+    assert.equal(a, null, 'a duplicate create must return null, not throw');
+    assert.equal(b, null, 'a duplicate create must return null, not throw');
+
+    const { rows } = await pool.query(`SELECT name FROM projects WHERE slug = $1`, [slug]);
+    assert.equal(rows.length, 1, 'exactly one project may hold a slug');
+    assert.equal(rows[0].name, 'First', 'the loser must not overwrite the winner');
   },
 );
 

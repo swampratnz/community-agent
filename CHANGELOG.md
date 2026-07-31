@@ -41,7 +41,8 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   `project_remove_member`), binds or unbinds the
   conversations it may be discussed in (`project_bind_here` /
   `project_unbind_here`), and archives it when the team is done
-  (`project_archive`), with `project_info` to review who has access; members
+  (`project_archive`) or brings it back if the team picks it up again
+  (`project_unarchive`), with `project_info` to review who has access; members
   then
   record decisions and notes with `project_note` and find them later with
   `project_recall`, from either platform, on whichever surface the project is
@@ -52,8 +53,11 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   about which tools they can call), and project content is only ever rendered
   where the project is bound — membership alone will not recite private notes
   into a public channel. Document links can be recorded as references, stored
-  verbatim and never fetched; no file storage and no external egress. One
-  privacy note: if a member later runs `forget_me`, their project membership
+  verbatim and never fetched; no file storage and no external egress. Every
+  way an admin can take project access away has a matching way to give it
+  back — remove/add a member, unbind/bind a conversation, archive/unarchive
+  the project — so nothing here is a one-way door that needs a human editing
+  the database to undo. One privacy note: if a member later runs `forget_me`, their project membership
   is deleted outright but the team's notes are kept with authorship removed,
   so an erasure request doesn't silently gut a project's history — see
   docs/SECURITY.md for the full rule and its documented limit.
