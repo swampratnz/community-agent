@@ -175,7 +175,8 @@ function makeRouter(opts: RouterOpts = {}): Router {
     opts.buildMemberDigestContentFn, // 23
     undefined, // 24 recentQuestionClustersFn
     opts.searchMemberInterestsForSelfFn, // 25
-    opts.listOwnProjectsFn, // 26
+    undefined, // 26 checkKnowledgeConflict
+    opts.listOwnProjectsFn, // 27
   );
 }
 

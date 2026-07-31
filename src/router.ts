@@ -17,6 +17,7 @@ import {
   formatKnowledgeCitationNote,
   formatProjectResults,
   formatRelativeAge,
+  KNOWLEDGE_CONFLICT_CAVEAT_TEXT,
   LIST_PROJECTS_DEFAULT_LIMIT,
   notifyAdmins,
   truncateForEcho,
@@ -37,6 +38,7 @@ import {
   countRepliesToUser,
   getLanguagePreference,
   getResponseStyle,
+  hasKnowledgeConflictForId,
   isKnowledgeLowRated,
   isKnowledgeStale,
   isUserBlocked,
@@ -511,11 +513,22 @@ export class Router {
    * consulted only from `tryWhatsAppTextCommand`'s bare-`!whois` branch (no
    * captured query), porting the same self-match `who_is_into`/`/whois`
    * already have to the third surface.
+   * `checkKnowledgeConflict` defaults to the real DB-backed single-id
+   * conflict check (issue #918), another trailing field for the same
+   * call-site-stability reason as `searchMemberInterestsForSelfFn` above.
+   * Consulted unconditionally (no config gate, matching `knowledge_search`/
+   * `/kb`'s own unconditional conflict check) from the member
+   * `sendKnowledgeShortcut` path ONLY — never `sendGuestKnowledgeShortcut`,
+   * mirroring `checkLowRatedKnowledge`'s existing member-only scope boundary
+   * — and `.catch()`-guarded to `false` like every other caveat lookup on
+   * this path, so a lookup failure degrades to no caveat rather than a
+   * blocked reply.
    * `listOwnProjectsFn` defaults to the real `listOwnProjects` (issue #916),
-   * another trailing defaulted field added after `searchMemberInterestsForSelfFn`
-   * for the same reason; consulted only from `tryWhatsAppTextCommand`'s
-   * `!projects mine` branch, keyed on `msg.platform`/`msg.userId` only —
-   * mirroring `list_projects({ mine: true })`/`/projects mine:true`'s own
+   * another trailing defaulted field added after `checkKnowledgeConflict`
+   * for the same call-site-stability reason; consulted only from
+   * `tryWhatsAppTextCommand`'s `!projects mine` branch, keyed on
+   * `msg.platform`/`msg.userId` only — mirroring
+   * `list_projects({ mine: true })`/`/projects mine:true`'s own
    * self-scoping, the third and last of the three `mine` surfaces.
    */
   constructor(
@@ -544,6 +557,7 @@ export class Router {
     private readonly buildMemberDigestContentFn: typeof buildMemberDigestContent = buildMemberDigestContent,
     private readonly recentQuestionClustersFn: typeof recentQuestionClusters = recentQuestionClusters,
     private readonly searchMemberInterestsForSelfFn: typeof searchMemberInterestsForSelf = searchMemberInterestsForSelf,
+    private readonly checkKnowledgeConflict: typeof hasKnowledgeConflictForId = hasKnowledgeConflictForId,
     private readonly listOwnProjectsFn: typeof listOwnProjects = listOwnProjects,
   ) {
     setInterval(() => this.sweep(), this.RATE_WINDOW_MS * 5).unref();
@@ -1734,6 +1748,17 @@ export class Router {
             return false;
           })
         : false;
+    // Member-facing conflict caveat (issue #918) — the single-id sibling of
+    // #389's knowledge_search/`/kb` check, reaching the third (and highest-
+    // volume) knowledge answer path. Unconditional, unlike lowRatedCaveat
+    // above: knowledge_search/`/kb` both compute their conflict caveat
+    // unconditionally too, so a config gate here would be an inconsistent
+    // third convention for the same information. `.catch()`-guarded to
+    // `false` like every other caveat lookup on this path.
+    const hasConflict = await this.checkKnowledgeConflict(hit.id).catch((err) => {
+      logger.warn({ err }, 'Knowledge conflict caveat lookup failed; omitting the caveat');
+      return false;
+    });
     // Language preference (issue #789) is resolved BEFORE the citation note
     // so both the note's low-rated caveat and the trailing suffix below
     // render from the same single lookup — a reorder, not a second DB read.
@@ -1748,8 +1773,14 @@ export class Router {
       undefined,
       lang,
     );
+    // Trailing conflict-caveat line (issue #918), appended after the note
+    // exactly like formatKnowledgeSearchResults' own trailing line for
+    // knowledge_search — never merged into the note's own parenthetical,
+    // which is per-hit low-rated/staleness framing, not this whole-reply
+    // signal.
+    const conflictCaveat = hasConflict ? `\n\n(${KNOWLEDGE_CONFLICT_CAVEAT_TEXT})` : '';
     const suffix = lang === 'mi' ? KNOWLEDGE_SHORTCUT_SUFFIX_MI : KNOWLEDGE_SHORTCUT_SUFFIX;
-    const replyText = `${hit.content}${note}${suffix}`;
+    const replyText = `${hit.content}${note}${conflictCaveat}${suffix}`;
     await this.send(adapter, target, replyText);
     this.recordShortcutRetrieval([hit.id]).catch((err) =>
       logger.warn({ err }, 'Knowledge shortcut retrieval count update failed'),

@@ -2743,7 +2743,13 @@ itself is still routed through that chain so it can never be delivered ahead
 of a turn already in flight; a lookup or DB failure falls through to a normal
 agent turn rather than dropping the message. Off by default; an operator opts
 in after confirming the threshold behaves well against their own knowledge
-base's size and content.
+base's size and content. The unreconciled-conflict caveat (issue #389,
+`KNOWLEDGE_CONFLICT_CAVEAT_TEXT`) reaches this path too (issue #918), via a
+single-id sibling of #389's multi-id `hasConflictAmongIds` — the served
+entry's own conflict status is checked unconditionally (no config gate,
+matching `knowledge_search`/`/kb`) and, like every other caveat here, a
+lookup failure falls back to omitting the caveat rather than blocking the
+reply. Not extended to the guest shortcut below.
 
 **Guest knowledge shortcut** (`GUEST_KNOWLEDGE_SHORTCUT_ENABLED`, off by
 default, issue #165): extends the same mechanism to a gated guest's first
