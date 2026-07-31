@@ -264,7 +264,7 @@ test('extractMessages: a plain text message is byte-identical to before #891 —
   ]);
 });
 
-test('extractMessages: non-text, non-image message types (audio, document, status, etc.) remain silently skipped', () => {
+test('extractMessages: non-text, non-image, non-audio message types (document, sticker, status, etc.) remain silently skipped, as does a malformed audio entry with no audio object', () => {
   const payload = {
     object: 'whatsapp_business_account',
     entry: [
@@ -285,6 +285,59 @@ test('extractMessages: non-text, non-image message types (audio, document, statu
     ],
   };
   assert.deepEqual(extractMessages(payload), []);
+});
+
+// --- issue #910: audio (voice note) message extraction -----------------
+
+function audioPayload(audio: Record<string, unknown>, overrides: Record<string, unknown> = {}) {
+  return {
+    object: 'whatsapp_business_account',
+    entry: [
+      {
+        changes: [
+          {
+            value: {
+              contacts: [{ profile: { name: 'Jamie' }, wa_id: '64211234567' }],
+              messages: [
+                {
+                  from: '64211234567',
+                  id: 'wamid.AUD2',
+                  timestamp: '1700000000',
+                  type: 'audio',
+                  audio,
+                  ...overrides,
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+test('extractMessages: a well-formed audio message is extracted with text left empty and the media id/mime type on the new voice field (issue #910)', () => {
+  const result = extractMessages(audioPayload({ id: 'media-aud-1', mime_type: 'audio/ogg' }));
+  assert.deepEqual(result, [
+    {
+      from: '64211234567',
+      id: 'wamid.AUD2',
+      timestampMs: 1700000000000,
+      text: '',
+      name: 'Jamie',
+      voice: { mediaId: 'media-aud-1', mimeType: 'audio/ogg' },
+    },
+  ]);
+});
+
+test("extractMessages: an audio message missing Meta's own media id is treated as malformed and skipped, mirroring the image gate", () => {
+  assert.deepEqual(extractMessages(audioPayload({ mime_type: 'audio/ogg' })), []);
+});
+
+test('extractMessages: an audio message with no declared mime_type still extracts (mimeType falls back to an empty string)', () => {
+  const result = extractMessages(audioPayload({ id: 'media-aud-2' }));
+  assert.equal(result.length, 1);
+  assert.equal(result[0].voice?.mimeType, '');
 });
 
 test('extractMessages: malformed or unrelated payloads yield an empty array', () => {

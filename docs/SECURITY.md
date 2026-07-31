@@ -2122,6 +2122,54 @@ reporting `duration_secs`, distinct from a regular file upload), reusing
   fires a guild (not DM) voice message and asserts the scan call's `text`
   equals the transcript, not the empty native content.
 
+**WhatsApp Cloud API counterpart (`WHATSAPP_CLOUD_VOICE_ENABLED`, off by
+default, issue #910).** Mirrors the #891 image-parity shape onto audio,
+closing the last silent-drop gap on the docs' own recommended production
+WhatsApp path — voice was the one input type that worked on Baileys and
+Discord but produced total silence on the Cloud API adapter:
+
+- **Same gate order as Cloud image input, adapted to voice.**
+  `maybeTranscribeVoiceNote` (`src/platforms/whatsapp/cloudAdapter.ts`)
+  mirrors `maybeFetchImageAttachment`'s order: flag →
+  `WHATSAPP_CLOUD_VOICE_MIN_ROLE` (default `'super_admin'`, the pure
+  `isSuperAdmin('whatsapp', senderId)` env check with no DB call at that
+  default, else `resolveRole`/`atLeast`) → `WHATSAPP_CLOUD_VOICE_RATE_LIMIT_PER_HOUR`
+  (checked before any Graph API call, once non-zero) → resolve the media URL
+  (`resolveMediaUrl`, JSON metadata only) → `WHATSAPP_CLOUD_VOICE_MAX_BYTES`
+  checked against the resolved `file_size`, strictly before the byte-download
+  call → download and transcribe via the same `transcribeVoiceNote` pipeline
+  Baileys/Discord use. Pinned by `SECURITY:` tests at every refusal point.
+- **A byte cap, not a duration cap — unlike Baileys.** Meta's Cloud webhook
+  `audio` object carries no duration at all (the same gap #891 hit for
+  image `file_size`), so there is no pre-download `audio.seconds` equivalent
+  to check. `WHATSAPP_CLOUD_VOICE_MAX_BYTES` is the enforceable substitute,
+  checked against `resolveMediaUrl`'s `file_size` — the resolve call itself
+  transfers only JSON metadata, never audio bytes, so an over-cap note is
+  still refused before a single byte is fetched, mirroring the exact same
+  fix `WHATSAPP_CLOUD_IMAGE_INPUT_MAX_BYTES` applied for image `file_size`.
+- **Fully independent flag.** `WHATSAPP_CLOUD_VOICE_*` is its own config
+  block — separate from `WHATSAPP_VOICE_*` (Baileys), `DISCORD_VOICE_*`, and
+  `WHATSAPP_CLOUD_IMAGE_INPUT_*` (the other Cloud-adapter opt-in). Enabling
+  any one flag never enables another; pinned by `SECURITY:` tests.
+- **No new `IncomingMessage` field, so nothing new to leak.** Unlike image
+  input, a transcribed voice note becomes ordinary `text` — there is no
+  `IncomingMessage.audio`/`voice` field at all. Audio bytes are held only for
+  the one `transcribeVoiceNote` call inside `cloudAdapter.ts` and are never
+  attached to the message the router/handler sees, so they structurally
+  cannot reach `recordInteraction`/the `interactions` table. Pinned by a
+  `SECURITY:` test asserting the `IncomingMessage` handed to the handler
+  carries no audio-shaped field.
+- **Same caveat DM, reused verbatim.** A successful transcription sends the
+  identical `VOICE_LANGUAGE_CAVEAT_TEXT_MI` DM (per the sender's stored
+  `language_prefs`), debounced identically to the Baileys/Discord paths — no
+  Cloud-specific copy. Unlike Baileys, every Cloud API sender id is already a
+  bare phone number, so there is no `lid:`-fallback case to skip.
+- **No new authority, no new egress, no new table.** Same local, offline
+  transformers.js Whisper pipeline as Baileys/Discord; the transcript
+  populates `text` and flows through the identical RBAC/tool-gating/CONFIRM
+  pipeline a typed message would — never more than the caller's own tier
+  already grants.
+
 ### 14. Real-time admin escalation after a max-turns failure (`ESCALATION_TO_ADMIN_ENABLED`, off by default, issue #479)
 
 Closes the "member exhausts `AGENT_MAX_TURNS` and gets nothing but a static

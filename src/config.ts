@@ -484,6 +484,41 @@ const EnvSchema = z.object({
   // single sender could otherwise run up.
   WHATSAPP_CLOUD_IMAGE_INPUT_DAILY_LIMIT_PER_USER: z.coerce.number().int().min(0).default(10),
 
+  // WhatsApp Cloud API counterpart to WHATSAPP_VOICE_* above (issue #910):
+  // closes the last silent-drop gap on the docs' own recommended production
+  // WhatsApp path for voice, mirroring the #891 image-parity shape and this
+  // adapter's own image gate order adapted to voice. WHATSAPP_CLOUD_-prefixed
+  // and fully independent of both WHATSAPP_VOICE_* (Baileys) and
+  // DISCORD_VOICE_* — an operator enables/tunes each platform's rollout
+  // separately. OFF by default; SUPER-ADMIN ONLY at the default minRole,
+  // enforced in the adapter before any Graph API call.
+  WHATSAPP_CLOUD_VOICE_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+  WHATSAPP_CLOUD_VOICE_MODEL: z.string().default('Xenova/whisper-base.en'),
+  // Unlike Baileys' `audio.seconds` (present on the message itself,
+  // pre-download), Meta's Cloud webhook `audio` object carries no duration at
+  // all — the same gap #891 hit for image `file_size`. So this is a BYTE cap,
+  // not a seconds cap, enforced once the media-URL resolve call reports
+  // `file_size` — strictly BEFORE the separate byte-download call — mirroring
+  // WHATSAPP_CLOUD_IMAGE_INPUT_MAX_BYTES exactly. A "duration from webhook"
+  // cap is unimplementable on this adapter (see issue #910's adversarial
+  // review); this replaces it with the enforceable equivalent.
+  WHATSAPP_CLOUD_VOICE_MAX_BYTES: z.coerce.number().int().positive().default(10_000_000),
+  // Minimum tier eligible for voice transcription. Defaults to 'super_admin'
+  // — the pure isSuperAdmin env check with no DB call — mirroring
+  // WHATSAPP_VOICE_MIN_ROLE/WHATSAPP_CLOUD_IMAGE_INPUT_MIN_ROLE's
+  // conservative default.
+  WHATSAPP_CLOUD_VOICE_MIN_ROLE: z.enum(['super_admin', 'admin', 'member', 'guest']).default('super_admin'),
+  // Rolling hourly cap on transcribed voice notes per sender (0 = unlimited).
+  // Only bites once an operator lowers WHATSAPP_CLOUD_VOICE_MIN_ROLE below
+  // 'super_admin' — bounds the resource-exhaustion surface a larger,
+  // less-trusted population could otherwise hit. Reserved under its own
+  // `whatsapp-cloud:${senderId}` key prefix (see reserveVoiceTranscriptionSlot)
+  // so it never shares Baileys' hourly quota.
+  WHATSAPP_CLOUD_VOICE_RATE_LIMIT_PER_HOUR: z.coerce.number().int().min(0).default(0),
+
   // Database
   DATABASE_URL: z.string().min(1),
   EMBEDDING_MODEL: z.string().default('Xenova/all-MiniLM-L6-v2'),
@@ -1342,6 +1377,13 @@ export const config = {
         minRole: env.WHATSAPP_CLOUD_IMAGE_INPUT_MIN_ROLE,
         maxBytes: env.WHATSAPP_CLOUD_IMAGE_INPUT_MAX_BYTES,
         dailyLimitPerUser: env.WHATSAPP_CLOUD_IMAGE_INPUT_DAILY_LIMIT_PER_USER,
+      },
+      voice: {
+        enabled: env.WHATSAPP_CLOUD_VOICE_ENABLED ?? false,
+        model: env.WHATSAPP_CLOUD_VOICE_MODEL,
+        maxBytes: env.WHATSAPP_CLOUD_VOICE_MAX_BYTES,
+        minRole: env.WHATSAPP_CLOUD_VOICE_MIN_ROLE,
+        rateLimitPerHour: env.WHATSAPP_CLOUD_VOICE_RATE_LIMIT_PER_HOUR,
       },
     },
   },
