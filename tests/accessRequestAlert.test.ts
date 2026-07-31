@@ -12,6 +12,7 @@ process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 
 const { notifyAccessRequest } = await import('../src/router.js');
+const { WindowClosedError } = await import('../src/platforms/whatsapp/cloudAdapter.js');
 
 function makeAdapter(
   platform: Platform,
@@ -37,6 +38,44 @@ function makeAdapter(
     },
   };
   return { adapter, dms };
+}
+
+/**
+ * A fake Cloud-like adapter (same shape as
+ * notifyAdminsWindowReopenQueue.test.ts's makeFakeCloudAdapter): `sendDirectMessage`
+ * rejects with whatever `rejections[userId]` names, and `queueForWindowReopen`
+ * records what was queued, per-recipient, for assertion (issue #922).
+ */
+function makeCloudAdapter(rejections: Record<string, unknown>): {
+  adapter: PlatformAdapter;
+  dms: Array<{ userId: string; text: string }>;
+  queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }>;
+} {
+  const dms: Array<{ userId: string; text: string }> = [];
+  const queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }> = [];
+  const adapter: PlatformAdapter = {
+    platform: 'whatsapp',
+    adminCapabilities: new Set(),
+    async start() {},
+    async stop() {},
+    isConnected: () => true,
+    onMessage() {},
+    async sendMessage() {},
+    async sendDirectMessage(userId: string, text: string) {
+      if (userId in rejections) throw rejections[userId];
+      dms.push({ userId, text });
+    },
+    queueForWindowReopen(userId: string, message: string, priority: 'system' | 'low') {
+      queued.push({ userId, message, priority });
+    },
+    async conversationsForUser() {
+      return [];
+    },
+    async performAdminAction() {
+      return '';
+    },
+  };
+  return { adapter, dms, queued };
 }
 
 // Pure-function-shaped unit tests (no Router, no DB) — mirrors
@@ -213,6 +252,70 @@ test(
     assert.ok(
       !dms[0].text.includes(injectionShapedText),
       'message content can never appear — it was never passed in',
+    );
+  },
+);
+
+// --- Per-recipient window-reopen queue extension (issue #922) --------------
+
+test(
+  "SECURITY: notifyAccessRequest — a WindowClosedError rejection queues via queueForWindowReopen at 'low' priority " +
+    "instead of only logging, matching this function's existing all-disconnected queuePendingAlert(..., 'low') " +
+    'branch (issue #922 acceptance criterion 1)',
+  async () => {
+    const { adapter, dms, queued } = makeCloudAdapter({
+      'admin-closed': new WindowClosedError('admin-closed'),
+    });
+    const listAdminsFn = async () => [
+      { platform: 'whatsapp' as const, platformUserId: 'admin-open' },
+      { platform: 'whatsapp' as const, platformUserId: 'admin-closed' },
+    ];
+
+    await notifyAccessRequest(
+      () => adapter,
+      { platform: 'whatsapp', userId: 'guest-8', userName: 'Guest Eight' },
+      listAdminsFn,
+    );
+
+    assert.deepEqual(
+      dms.map((d) => d.userId),
+      ['admin-open'],
+      'the open-window admin is still delivered live',
+    );
+    assert.equal(queued.length, 1, 'exactly one recipient was queued');
+    assert.equal(queued[0]?.userId, 'admin-closed');
+    assert.equal(queued[0]?.priority, 'low');
+    assert.match(queued[0]?.message ?? '', /Guest Eight/);
+  },
+);
+
+test(
+  'SECURITY: notifyAccessRequest — a rejection that is NOT a WindowClosedError (e.g. a generic Graph API error) ' +
+    'is never queued via queueForWindowReopen; it stays logged-and-dropped exactly as today (issue #922 ' +
+    'non-regression criterion)',
+  async () => {
+    const { adapter, dms, queued } = makeCloudAdapter({
+      'admin-closed': new Error('502 from Graph API'),
+    });
+    const listAdminsFn = async () => [
+      { platform: 'whatsapp' as const, platformUserId: 'admin-open' },
+      { platform: 'whatsapp' as const, platformUserId: 'admin-closed' },
+    ];
+
+    await notifyAccessRequest(
+      () => adapter,
+      { platform: 'whatsapp', userId: 'guest-9', userName: 'Guest Nine' },
+      listAdminsFn,
+    );
+
+    assert.deepEqual(
+      dms.map((d) => d.userId),
+      ['admin-open'],
+    );
+    assert.deepEqual(
+      queued,
+      [],
+      'a non-WindowClosedError rejection must never populate the per-recipient window-reopen queue',
     );
   },
 );

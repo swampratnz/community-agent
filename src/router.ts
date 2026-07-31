@@ -4,6 +4,7 @@ import { isPureAcknowledgement } from './ackClassifier.js';
 import { atLeast, type CallerContext, type Tier } from './auth/rbac.js';
 import { resolveRole, superAdminIds } from './auth/roles.js';
 import type { IncomingMessage, Platform, PlatformAdapter } from './platforms/types.js';
+import { WindowClosedError } from './platforms/whatsapp/cloudAdapter.js';
 import { sanitizeName } from './agent/systemPrompt.js';
 import {
   INTERNAL_ERROR_REPLY,
@@ -275,9 +276,17 @@ export async function notifyAccessRequest(
   for (const admin of admins) {
     const target = adapterFor(admin.platform);
     if (!target || !target.isConnected()) continue;
-    target
-      .sendDirectMessage(admin.platformUserId, message)
-      .catch((err) => logger.warn({ err, platform: admin.platform }, 'Access-request alert failed'));
+    target.sendDirectMessage(admin.platformUserId, message).catch((err) => {
+      if (err instanceof WindowClosedError && target.queueForWindowReopen) {
+        target.queueForWindowReopen(admin.platformUserId, message, 'low');
+        logger.warn(
+          { platform: admin.platform, id: admin.platformUserId },
+          'Access-request alert: recipient window closed, queued for reopen',
+        );
+        return;
+      }
+      logger.warn({ err, platform: admin.platform }, 'Access-request alert failed');
+    });
   }
 }
 
@@ -990,11 +999,17 @@ export class Router {
     }
     for (const adapter of connected) {
       for (const id of superAdminIds(adapter.platform)) {
-        adapter
-          .sendDirectMessage(id, message)
-          .catch((err) =>
-            logger.warn({ err, platform: adapter.platform, id }, 'Budget check failure alert DM failed'),
-          );
+        adapter.sendDirectMessage(id, message).catch((err) => {
+          if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+            adapter.queueForWindowReopen(id, message, 'system');
+            logger.warn(
+              { platform: adapter.platform, id },
+              'Budget check failure alert: recipient window closed, queued for reopen',
+            );
+            return;
+          }
+          logger.warn({ err, platform: adapter.platform, id }, 'Budget check failure alert DM failed');
+        });
       }
     }
   }
