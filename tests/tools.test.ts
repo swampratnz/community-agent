@@ -13331,6 +13331,96 @@ test(
 );
 
 test(
+  'project_bind_here/project_unbind_here and project_remove_member report their success AND no-op paths through the tool handler (PR #929 review)',
+  { skip },
+  async () => {
+    // These three were only exercised at the repository-function level, unlike
+    // their siblings — so the audited() wiring and reply text went untested.
+    const { createProject, upsertMember } = await import('../src/storage/repository.js');
+    const slug = `${RUN}-handler-paths`;
+    await createProject({ slug, name: 'Handler Lab', createdBy: 'test' });
+    const member = `${RUN.slice(1)}777`.slice(0, 19);
+    await upsertMember({ platform: 'discord', userId: member, role: 'member', addedBy: 'test' });
+
+    const bind = adminProjectToolHandler('project_bind_here', 'admin');
+    const unbind = adminProjectToolHandler('project_unbind_here', 'admin');
+    const add = adminProjectToolHandler('project_add_member', 'admin');
+    const remove = adminProjectToolHandler('project_remove_member', 'admin');
+
+    assert.match((await bind.handler({ project: slug })).content[0].text, /can now be discussed here/i);
+    assert.match(
+      (await bind.handler({ project: slug })).content[0].text,
+      /was already bound/i,
+      'binding twice must not claim a second binding',
+    );
+    assert.match(
+      (await unbind.handler({ project: slug })).content[0].text,
+      /can no longer be discussed here/i,
+    );
+    assert.match(
+      (await unbind.handler({ project: slug })).content[0].text,
+      /was not bound/i,
+      'unbinding twice must not claim a second unbinding',
+    );
+
+    assert.match((await add.handler({ project: slug, userId: member })).content[0].text, /Added to/i);
+    const removed = await remove.handler({ project: slug, userId: member });
+    assert.match(removed.content[0].text, /Removed from/i);
+    assert.match(
+      removed.content[0].text,
+      /notes remain with the project/i,
+      'the reply must say revocation is not erasure',
+    );
+    assert.match(
+      (await remove.handler({ project: slug, userId: member })).content[0].text,
+      /Not a member of/i,
+      'removing twice must not claim a second removal',
+    );
+  },
+);
+
+test(
+  'membership and surface edits on an ARCHIVED project say so, instead of silently reading as a no-op (PR #929 review)',
+  { skip },
+  async () => {
+    // getProjectBySlug deliberately does not exclude archived projects — an
+    // admin must still be able to tidy a team up before an unarchive. But
+    // nothing they change takes effect until then, so the reply has to say it.
+    const { createProject, upsertMember } = await import('../src/storage/repository.js');
+    const slug = `${RUN}-archived-edits`;
+    await createProject({ slug, name: 'Archived Lab', createdBy: 'test' });
+    const member = `${RUN.slice(1)}888`.slice(0, 19);
+    await upsertMember({ platform: 'discord', userId: member, role: 'member', addedBy: 'test' });
+
+    const add = adminProjectToolHandler('project_add_member', 'admin');
+    const bind = adminProjectToolHandler('project_bind_here', 'admin');
+
+    assert.doesNotMatch(
+      (await add.handler({ project: slug, userId: member })).content[0].text,
+      /ARCHIVED/,
+      'an active project must not carry the archived warning',
+    );
+
+    await adminProjectToolHandler('project_archive', 'admin').handler({ project: slug });
+    assert.match(
+      (await bind.handler({ project: slug })).content[0].text,
+      /ARCHIVED.*project_unarchive/i,
+      'binding an archived project must warn that nothing is reachable until it is unarchived',
+    );
+    assert.match(
+      (
+        await adminProjectToolHandler('project_remove_member', 'admin').handler({
+          project: slug,
+          userId: member,
+        })
+      ).content[0].text,
+      /ARCHIVED/,
+      'membership edits on an archived project must warn too',
+    );
+  },
+);
+
+test(
   'project_create reports the friendly duplicate-slug reply instead of a raw constraint violation (PR #929 review)',
   { skip },
   async () => {

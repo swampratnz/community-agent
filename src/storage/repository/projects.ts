@@ -26,6 +26,46 @@ import { KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD } from './shared.js';
  * exist for them. See docs/SECURITY.md.
  */
 
+/**
+ * Length caps on everything member- or admin-writable here (PR #929 review).
+ * Every other free-text field a member can write in this codebase is capped —
+ * suggest_knowledge's tip, member notes, interests, find_helper's topic, the
+ * member_projects showcase fields — and project_notes was the one new
+ * member-writable table with no bound at all.
+ *
+ * Named TEAM_PROJECT_* rather than PROJECT_* because `memberProjects.ts`
+ * already owns PROJECT_NAME_MAX_CHARS/PROJECT_DESCRIPTION_MAX_CHARS for the
+ * public showcase row, which is a different thing entirely (see the header of
+ * this file).
+ *
+ * CONTENT + TITLE are deliberately chosen so `title\ncontent` can never exceed
+ * embed()'s own 4000-char truncation: a note that embedded only its first half
+ * would be silently unfindable by its own second half, which is worse than a
+ * refusal at write time. Pinned by a test.
+ */
+export const PROJECT_NOTE_CONTENT_MAX_CHARS = 2000;
+export const PROJECT_NOTE_TITLE_MAX_CHARS = 120;
+/** Matches PROJECT_LINK_MAX_CHARS — the showcase link cap, same kind of field. */
+export const PROJECT_NOTE_REFERENCE_URL_MAX_CHARS = 300;
+export const TEAM_PROJECT_NAME_MAX_CHARS = 80;
+export const TEAM_PROJECT_BRIEF_MAX_CHARS = 1000;
+
+/**
+ * Per-member cap on new project notes in a rolling 24h window, enforced
+ * DB-side inside the INSERT (the restart-proof COUNT(*)-in-the-statement shape
+ * `createKnowledgeTip`/`createSuggestion` use, never an in-memory counter).
+ *
+ * Deliberately far larger than the 3/day those two carry. Every existing cap
+ * in this repo guards an action that costs a HUMAN something — an entry in an
+ * admin review queue, a DM to another member — so 3 is a courtesy budget.
+ * Writing a project note costs only storage, inside a team the member has
+ * already been trusted into by an admin, and a team minuting a meeting will
+ * legitimately record many in one sitting. So this is an abuse ceiling, not a
+ * usage budget: high enough that no honest team meets it, low enough that a
+ * single member cannot bloat the table unattended.
+ */
+export const PROJECT_NOTE_RATE_LIMIT_PER_DAY = 50;
+
 export interface Project {
   id: number;
   slug: string;
@@ -187,12 +227,18 @@ export async function searchProjectNotes(
  * Save a note against a project the caller may currently write to — the same
  * two checks as reading. Returns null when the project is not visible here,
  * which the tool layer renders as an ordinary "no such project" rather than
- * distinguishing "exists but you may not" (issue #205's wording rule).
+ * distinguishing "exists but you may not" (issue #205's wording rule), and
+ * `{ atCap: true }` when the caller has hit PROJECT_NOTE_RATE_LIMIT_PER_DAY.
+ *
+ * Lengths are BOTH zod-capped at the tool layer and sliced here (PR #929
+ * review), the same defence-in-depth `createKnowledgeTip` uses: zod only
+ * guards the one path that goes through the tool schema, and this function is
+ * an exported repository entry point that a later caller could reach directly.
  */
 export async function saveProjectNote(
   caller: ProjectCaller,
   input: { slug: string; content: string; title?: string; referenceUrl?: string },
-): Promise<{ id: number } | null> {
+): Promise<{ id: number } | { atCap: true } | null> {
   const visible = await visibleProjectIds(caller);
   if (visible.length === 0) return null;
 
@@ -203,26 +249,43 @@ export async function saveProjectNote(
   if (projectRows.length === 0) return null;
   const projectId = Number(projectRows[0].id);
 
+  const content = input.content.slice(0, PROJECT_NOTE_CONTENT_MAX_CHARS);
+  const title = input.title ? input.title.slice(0, PROJECT_NOTE_TITLE_MAX_CHARS) : null;
+  const referenceUrl = input.referenceUrl
+    ? input.referenceUrl.slice(0, PROJECT_NOTE_REFERENCE_URL_MAX_CHARS)
+    : null;
+
   let embedding: number[] | null = null;
   try {
-    embedding = await embed(input.title ? `${input.title}\n${input.content}` : input.content);
+    embedding = await embed(title ? `${title}\n${content}` : content);
   } catch (err) {
     logger.warn({ err }, 'Embedding failed for project note');
   }
 
+  // The rate check lives INSIDE the insert so it can't be raced by two
+  // concurrent turns, and survives a restart — same shape as createKnowledgeTip.
   const { rows } = await pool.query(
-    `INSERT INTO project_notes (project_id, title, content, reference_url, author_platform, author_user_id, embedding)
-     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+    `WITH recent AS (
+       SELECT count(*) AS n FROM project_notes
+        WHERE author_platform = $5 AND author_user_id = $6
+          AND created_at > now() - interval '24 hours'
+     )
+     INSERT INTO project_notes (project_id, title, content, reference_url, author_platform, author_user_id, embedding)
+     SELECT $1,$2,$3,$4,$5,$6,$7
+      WHERE (SELECT n FROM recent) < $8
+     RETURNING id`,
     [
       projectId,
-      input.title ?? null,
-      input.content,
-      input.referenceUrl ?? null,
+      title,
+      content,
+      referenceUrl,
       caller.platform,
       caller.userId,
       embedding ? pgvector.toSql(embedding) : null,
+      PROJECT_NOTE_RATE_LIMIT_PER_DAY,
     ],
   );
+  if (rows.length === 0) return { atCap: true };
   return { id: Number(rows[0].id) };
 }
 

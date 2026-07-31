@@ -53,7 +53,10 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   about which tools they can call), and project content is only ever rendered
   where the project is bound — membership alone will not recite private notes
   into a public channel. Document links can be recorded as references, stored
-  verbatim and never fetched; no file storage and no external egress. Every
+  verbatim and never fetched, and capped in length like every other thing a
+  member can write here, with a generous daily cap on how many notes one
+  member can add so the shared memory can't be flooded; no file storage and
+  no external egress. Every
   way an admin can take project access away has a matching way to give it
   back — remove/add a member, unbind/bind a conversation, archive/unarchive
   the project — so nothing here is a one-way door that needs a human editing

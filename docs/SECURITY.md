@@ -3136,6 +3136,39 @@ the exact property that *would* have obliged a CONFIRM gate. If a future change
 removes a restore path, that revocation must become CONFIRM-gated in the same
 diff.
 
+**Member-writable project content is length- and rate-capped.** `project_note`
+is member-tier, reachable by every member (and by a guest in open mode until
+the handler's tier re-check fires), and writes into a table of its own, so it
+carries the same two bounds every other member-writable free-text field in this
+repo has (PR #929 review): zod `.max()` at the tool layer on `content`, `title`
+and `reference_url`, **plus** a `slice()` in `saveProjectNote` itself, because
+that is an exported repository entry point a later caller could reach without
+going through the tool schema — the same defence-in-depth `createKnowledgeTip`
+uses. The content and title caps are chosen so `title\ncontent` always fits
+inside `embed()`'s own 4000-char truncation (pinned by a test): a note whose
+stored text outran its embedding would be silently unfindable by its own tail,
+which is worse than refusing the write.
+
+On top of that, `saveProjectNote` enforces a **rolling-24h per-member write
+cap**, counted inside the `INSERT` statement itself so it cannot be raced by two
+concurrent turns and survives a restart — the shape `createKnowledgeTip` and
+`createSuggestion` use, never an in-memory counter. It is set far higher than
+the 3/day those two carry: every other cap in this repo guards an action that
+costs a *human* something (an admin review-queue entry, a DM to another member),
+whereas a project note costs only storage inside a team the member has already
+been trusted into, and a team minuting a meeting legitimately records many in
+one sitting. So it is an abuse ceiling, not a usage budget. It is per-member,
+not per-project — pinned by a test, because a per-project cap would let one
+abuser deny service to their whole team. `project_create`'s `name` and `brief`
+are capped on the same principle, at lower severity since it is admin-only.
+
+**Admin edits to an archived project say so.** `getProjectBySlug` deliberately
+does *not* exclude archived projects, so an admin can still fix membership or
+surfaces before an unarchive. But `visibleProjectIds` excludes archived projects
+from every read and write, so those edits take effect only later — which reads
+as a silent no-op. Every membership and surface reply therefore carries an
+explicit ARCHIVED warning naming `project_unarchive` (PR #929 review).
+
 **`project_info` is deliberately guild-wide, not scoped to the calling admin's
 own projects.** The "admin data access is scoped in SQL to conversations the
 admin is in" rule governs *member content* — messages, notes, things said in

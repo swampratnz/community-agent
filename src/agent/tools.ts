@@ -171,6 +171,12 @@ import {
   unbindProjectSurface,
   archiveProject,
   unarchiveProject,
+  PROJECT_NOTE_CONTENT_MAX_CHARS,
+  PROJECT_NOTE_TITLE_MAX_CHARS,
+  PROJECT_NOTE_REFERENCE_URL_MAX_CHARS,
+  PROJECT_NOTE_RATE_LIMIT_PER_DAY,
+  TEAM_PROJECT_NAME_MAX_CHARS,
+  TEAM_PROJECT_BRIEF_MAX_CHARS,
   listAllProjects,
   listProjectMembers,
   listProjectSurfaces,
@@ -4895,11 +4901,20 @@ export function buildToolServer(
       'reference link is stored verbatim and never opened.',
     {
       project: z.string().describe('The project slug (see project_list)'),
-      content: z.string().min(1).describe('What to record'),
-      title: z.string().optional().describe('Short label for the note'),
+      content: z
+        .string()
+        .min(1)
+        .max(PROJECT_NOTE_CONTENT_MAX_CHARS)
+        .describe(`What to record (max ${PROJECT_NOTE_CONTENT_MAX_CHARS} characters)`),
+      title: z
+        .string()
+        .max(PROJECT_NOTE_TITLE_MAX_CHARS)
+        .optional()
+        .describe(`Short label for the note (max ${PROJECT_NOTE_TITLE_MAX_CHARS} characters)`),
       referenceUrl: z
         .string()
         .url()
+        .max(PROJECT_NOTE_REFERENCE_URL_MAX_CHARS)
         .optional()
         .describe('Optional link to an external doc — stored, never fetched'),
     },
@@ -4932,6 +4947,17 @@ export function buildToolServer(
       // yours / not bound here" (issue #205's wording rule): distinguishing
       // them would confirm a project's existence to a non-member.
       if (!saved) return text('No project by that name is accessible here.', true);
+      // A rolling-24h write cap, same refusal shape as suggest_knowledge's
+      // (PR #929 review). Deliberately worded as a limit that resets, not as
+      // a rejection of the content, so a team minuting a long meeting knows
+      // the note simply needs to wait rather than being lost to a bug.
+      if ('atCap' in saved) {
+        return text(
+          `You've already recorded ${PROJECT_NOTE_RATE_LIMIT_PER_DAY} project notes in the last 24 ` +
+            'hours. Try again later, or ask an admin if the team needs a higher limit.',
+          true,
+        );
+      }
       return text(`Recorded in ${args.project}.`);
     },
     { annotations: { readOnlyHint: false } },
@@ -7393,6 +7419,20 @@ export function buildToolServer(
     { annotations: { readOnlyHint: true } },
   );
 
+  /**
+   * Admin project tools resolve by slug via getProjectBySlug, which does NOT
+   * exclude archived projects — deliberately, since membership and surface
+   * edits must still work on an archived project so a team can be tidied up
+   * before (or set up before) an unarchive. But doing so silently reads as a
+   * no-op to the admin: nothing they change takes effect until the project is
+   * unarchived, because visibleProjectIds excludes archived projects from every
+   * read and write. So say so in the reply (PR #929 review).
+   */
+  const archivedSuffix = (project: { archivedAt: Date | null }) =>
+    project.archivedAt
+      ? ' Note: this project is ARCHIVED, so nobody can reach it until project_unarchive.'
+      : '';
+
   // --- Project management (issue #927, admin tier) ----------------------------
   //
   // Membership and surface bindings are set HERE and only here — never from
@@ -7410,11 +7450,19 @@ export function buildToolServer(
         .string()
         .regex(/^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$/, 'lowercase letters, digits and hyphens')
         .describe('Short handle used to refer to the project, e.g. "impact-lab"'),
-      name: z.string().min(1).describe('Human-readable project name'),
+      name: z
+        .string()
+        .min(1)
+        .max(TEAM_PROJECT_NAME_MAX_CHARS)
+        .describe(`Human-readable project name (max ${TEAM_PROJECT_NAME_MAX_CHARS} characters)`),
       brief: z
         .string()
+        .max(TEAM_PROJECT_BRIEF_MAX_CHARS)
         .optional()
-        .describe('Standing context about the project, shown to members who list it'),
+        .describe(
+          'Standing context about the project, shown to members who list it (max ' +
+            `${TEAM_PROJECT_BRIEF_MAX_CHARS} characters)`,
+        ),
     },
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'project_create');
@@ -7485,8 +7533,8 @@ export function buildToolServer(
           }
           const added = await addProjectMember(project.id, target.platform, target.userId, caller.userId);
           return added
-            ? `Added to ${project.name}. Their tier is unchanged.`
-            : `Already a member of ${project.name}.`;
+            ? `Added to ${project.name}. Their tier is unchanged.${archivedSuffix(project)}`
+            : `Already a member of ${project.name}.${archivedSuffix(project)}`;
         },
       });
       return text(result);
@@ -7516,8 +7564,8 @@ export function buildToolServer(
           if (!project) return `No project "${args.project}".`;
           const removed = await removeProjectMember(project.id, target.platform, target.userId);
           return removed
-            ? `Removed from ${project.name}. Their notes remain with the project.`
-            : `Not a member of ${project.name}.`;
+            ? `Removed from ${project.name}. Their notes remain with the project.${archivedSuffix(project)}`
+            : `Not a member of ${project.name}.${archivedSuffix(project)}`;
         },
       });
       return text(result);
@@ -7588,8 +7636,8 @@ export function buildToolServer(
           if (!project) return `No project "${args.project}".`;
           const unbound = await unbindProjectSurface(project.id, caller.platform, caller.conversationId);
           return unbound
-            ? `${project.name} can no longer be discussed here.`
-            : `${project.name} was not bound to this conversation.`;
+            ? `${project.name} can no longer be discussed here.${archivedSuffix(project)}`
+            : `${project.name} was not bound to this conversation.${archivedSuffix(project)}`;
         },
       });
       return text(result);
@@ -7674,8 +7722,8 @@ export function buildToolServer(
             caller.userId,
           );
           return bound
-            ? `${project.name} can now be discussed here.`
-            : `${project.name} was already bound to this conversation.`;
+            ? `${project.name} can now be discussed here.${archivedSuffix(project)}`
+            : `${project.name} was already bound to this conversation.${archivedSuffix(project)}`;
         },
       });
       return text(result);

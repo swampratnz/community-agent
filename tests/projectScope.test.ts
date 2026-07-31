@@ -18,6 +18,8 @@ const skip = hasDb
 
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { config } = await import('../src/config.js');
+const { PROJECT_NOTE_CONTENT_MAX_CHARS, PROJECT_NOTE_TITLE_MAX_CHARS } =
+  await import('../src/storage/repository/projects.js');
 
 /**
  * Projects (issue #927) enforce TWO checks, both in SQL in `visibleProjectIds`:
@@ -120,7 +122,7 @@ async function fixture(r: Repo, suffix: string) {
     { platform: 'discord', userId: member, conversationId: BOUND_CONVO, isDirect: false },
     { slug, content: NOTE_CONTENT },
   );
-  assert.ok(saved, 'fixture setup: the member must be able to save in a bound conversation');
+  assert.ok(saved && 'id' in saved, 'fixture setup: the member must be able to save in a bound conversation');
   return { project, slug, member, noteId: saved.id };
 }
 
@@ -347,6 +349,103 @@ test(
       isDirect: false,
     });
     assert.deepEqual(hits, [], 'archiving must stop content being served');
+  },
+);
+
+test(
+  'SECURITY: projects: saveProjectNote caps note length in the REPOSITORY, not only in the tool schema — the zod cap guards one path, this guards the exported function (PR #929 review)',
+  { skip },
+  async (t) => {
+    // project_notes was the one new member-writable table with no size bound
+    // at all. Same defence-in-depth as createKnowledgeTip: zod at the tool
+    // layer, slice() here, because this is an exported repository entry point
+    // a later caller could reach without going through the tool schema.
+    const r = await repo(t);
+    const { slug, member } = await fixture(r, 'length-cap');
+    const caller = {
+      platform: 'discord' as const,
+      userId: member,
+      conversationId: BOUND_CONVO,
+      isDirect: false,
+    };
+    const saved = await r.saveProjectNote(caller, {
+      slug,
+      content: 'x'.repeat(r.PROJECT_NOTE_CONTENT_MAX_CHARS + 500),
+      title: 'y'.repeat(r.PROJECT_NOTE_TITLE_MAX_CHARS + 50),
+      referenceUrl: `https://example.com/${'z'.repeat(r.PROJECT_NOTE_REFERENCE_URL_MAX_CHARS + 50)}`,
+    });
+    assert.ok(saved && 'id' in saved, 'an over-long note is truncated, not rejected outright');
+
+    const { rows } = await pool.query(
+      `SELECT title, content, reference_url FROM project_notes WHERE id = $1`,
+      [saved.id],
+    );
+    assert.equal(rows[0].content.length, r.PROJECT_NOTE_CONTENT_MAX_CHARS);
+    assert.equal(rows[0].title.length, r.PROJECT_NOTE_TITLE_MAX_CHARS);
+    assert.equal(rows[0].reference_url.length, r.PROJECT_NOTE_REFERENCE_URL_MAX_CHARS);
+  },
+);
+
+test(
+  "projects: the note caps keep `title\\ncontent` inside embed()'s own 4000-char truncation, so no note is ever half-embedded (PR #929 review)",
+  { skip: false },
+  () => {
+    // A note whose stored text outran its embedding would be silently
+    // unfindable by its own tail — worse than refusing the write. This pins
+    // the relationship between the two numbers rather than the numbers.
+    const EMBED_TRUNCATION = 4000;
+    assert.ok(
+      PROJECT_NOTE_TITLE_MAX_CHARS + 1 + PROJECT_NOTE_CONTENT_MAX_CHARS <= EMBED_TRUNCATION,
+      "title + newline + content must fit within embed()'s slice(0, 4000)",
+    );
+  },
+);
+
+test(
+  'SECURITY: projects: saveProjectNote enforces a rolling-24h per-member write cap DB-side, so a member cannot bloat project_notes unattended (PR #929 review)',
+  { skip },
+  async (t) => {
+    const r = await repo(t);
+    const { slug, member } = await fixture(r, 'rate-cap');
+    const caller = {
+      platform: 'discord' as const,
+      userId: member,
+      conversationId: BOUND_CONVO,
+      isDirect: false,
+    };
+
+    // fixture() already wrote one note as this member.
+    for (let i = 1; i < r.PROJECT_NOTE_RATE_LIMIT_PER_DAY; i++) {
+      const ok = await r.saveProjectNote(caller, { slug, content: NOTE_CONTENT });
+      assert.ok(ok && 'id' in ok, `write ${i + 1} must land while under the cap`);
+    }
+
+    const overCap = await r.saveProjectNote(caller, { slug, content: NOTE_CONTENT });
+    assert.deepEqual(
+      overCap,
+      { atCap: true },
+      'the write past the cap must be refused, not silently dropped',
+    );
+
+    const { rows } = await pool.query(
+      `SELECT count(*) AS n FROM project_notes WHERE author_platform = 'discord' AND author_user_id = $1`,
+      [member],
+    );
+    assert.equal(
+      Number(rows[0].n),
+      r.PROJECT_NOTE_RATE_LIMIT_PER_DAY,
+      'the refused write must not have inserted a row',
+    );
+
+    // The cap is per-member, not per-project or global: a different member in
+    // the same project is unaffected. Without this the cap would be a denial
+    // of service on the team rather than on the abuser.
+    const other = await fixture(r, 'rate-cap-other');
+    const otherWrite = await r.saveProjectNote(
+      { platform: 'discord', userId: other.member, conversationId: BOUND_CONVO, isDirect: false },
+      { slug: other.slug, content: NOTE_CONTENT },
+    );
+    assert.ok(otherWrite && 'id' in otherWrite, "one member's cap must not block another member");
   },
 );
 

@@ -1139,7 +1139,7 @@ CREATE TABLE IF NOT EXISTS admin_leverage_alert_sends (
 -- is a public showcase row: name, description, link, no content and no ACL):
 --
 --  1. Membership is per-identity here, but VISIBILITY expands through
---     `persons` at query time (see projectsVisibleTo), so one human's Discord
+--     `persons` at query time (see visibleProjectIds), so one human's Discord
 --     and WhatsApp identities reach the same project once `link_member` has
 --     linked them. Deliberately NOT keyed on person_id directly: linkMembers
 --     MERGES person rows (keeps the lower id, drops the other), so a
