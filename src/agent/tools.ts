@@ -6652,12 +6652,21 @@ export function buildToolServer(
     "Show how quickly your conversations' members are getting answered — count of replies, median and " +
       'p90 response time in seconds, over a recent window (default 7 days, max 30). Pairs each reply to a ' +
       "member with that member's preceding message; proactive digest/alert pushes are never counted. " +
-      'Aggregate only — never a per-message timestamp, user id, or message excerpt. Admin only.',
-    { days: z.number().optional().describe('Window in days (default 7, max 30)') },
+      "Optionally scope to 'auto_answer' (ambient auto-answer replies only) or 'mention' (every other " +
+      'reply — DMs and text-command replies included, since those also set replyToUserId without ' +
+      "autoAnswer); default 'all'. Aggregate only — never a per-message timestamp, user id, or message " +
+      'excerpt. Admin only.',
+    {
+      days: z.number().optional().describe('Window in days (default 7, max 30)'),
+      scope: z
+        .enum(['all', 'auto_answer', 'mention'])
+        .optional()
+        .describe("Restrict to 'auto_answer' or 'mention' replies (default 'all')"),
+    },
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'response_latency');
       const allowed = await callerScope();
-      const stats = await responseLatencyStats(allowed, args.days ?? 7);
+      const stats = await responseLatencyStats(allowed, args.days ?? 7, args.scope ?? 'all');
       const days = Math.min(Math.max(Math.trunc(args.days ?? 7) || 7, 1), 30);
       if (!stats) return text(`⏱️ Response latency (last ${days}d): not enough data yet.`);
       return text(

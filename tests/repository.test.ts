@@ -13913,6 +13913,27 @@ async function insertLatencyProactiveOutbound(conversationId: string, createdAt:
   );
 }
 
+// An ambient post — the trigger shape for an auto-answer reply: the member
+// never @-mentioned the bot, so `addressed_to_bot` is false (router.ts's
+// `isAutoAnswerCandidate` requires `!msg.addressedToBot`).
+async function insertLatencyAmbientInbound(conversationId: string, userId: string, createdAt: Date) {
+  await pool.query(
+    `INSERT INTO interactions
+       (platform, conversation_id, user_id, role, direction, content, addressed_to_bot, created_at)
+     VALUES ('discord',$1,$2,'member','inbound','an ambient post',false,$3)`,
+    [conversationId, userId, createdAt],
+  );
+}
+
+async function insertLatencyAutoAnswerReply(conversationId: string, replyToUserId: string, createdAt: Date) {
+  await pool.query(
+    `INSERT INTO interactions
+       (platform, conversation_id, user_id, role, direction, content, meta, created_at)
+     VALUES ('discord',$1,'bot','member','outbound','an auto-answer',$2,$3)`,
+    [conversationId, JSON.stringify({ replyToUserId, autoAnswer: true }), createdAt],
+  );
+}
+
 test(
   'repository: responseLatencyStats pairs each reply with the preceding inbound message from the same member and computes count/median/p90 in seconds',
   { skip },
@@ -14031,5 +14052,114 @@ test(
     await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [
       [inScopeConvo, outOfScopeConvo],
     ]);
+  },
+);
+
+// Pairing/scope fix, issue #911 — the LATERAL join previously required
+// `addressed_to_bot = true` unconditionally, which can never match the
+// ambient post that triggers an auto-answer reply (issue #477).
+
+test(
+  'repository: responseLatencyStats includes an auto-answer reply whose only inbound in the conversation is the ambient (addressed_to_bot=false) post that triggered it — pre-fix this dropped the row entirely (acceptance criterion 1)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-latency-autoanswer-drop`;
+    const now = new Date();
+    const user = `${RUN}-latency-autoanswer-drop-user`;
+
+    await insertLatencyAmbientInbound(conversationId, user, new Date(now.getTime() - 12_000));
+    await insertLatencyAutoAnswerReply(conversationId, user, now); // +12s
+
+    const stats = await responseLatencyStats([conversationId], 7);
+    assert.ok(
+      stats,
+      'the auto-answer reply must be paired and counted, not dropped by the bare JOIN LATERAL',
+    );
+    assert.equal(stats.count, 1);
+    assert.equal(stats.medianSeconds, 12);
+
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'repository: an auto-answer reply pairs with the most-recent prior inbound (the ambient trigger), not an unrelated older addressed_to_bot=true message from the same member (acceptance criterion 2)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-latency-autoanswer-mispair`;
+    const now = new Date();
+    const user = `${RUN}-latency-autoanswer-mispair-user`;
+
+    // OLD addressed inbound, unrelated to this reply.
+    await insertLatencyInbound(conversationId, user, new Date(now.getTime() - 500_000));
+    // RECENT ambient inbound — the actual trigger.
+    await insertLatencyAmbientInbound(conversationId, user, new Date(now.getTime() - 8_000));
+    await insertLatencyAutoAnswerReply(conversationId, user, now); // +8s from the ambient trigger
+
+    const stats = await responseLatencyStats([conversationId], 7);
+    assert.ok(stats);
+    assert.equal(stats.count, 1);
+    assert.equal(
+      stats.medianSeconds,
+      8,
+      'must pair with the RECENT ambient trigger, not the OLD addressed message',
+    );
+
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'repository: a non-auto-answer outbound still requires addressed_to_bot=true on its paired inbound — an ambient-only inbound does not pair with it (acceptance criterion 3, no-regression)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-latency-nonauto-noregress`;
+    const now = new Date();
+    const user = `${RUN}-latency-nonauto-noregress-user`;
+
+    // Only an ambient (non-addressed) inbound exists for this member — a
+    // non-auto-answer reply must find nothing to pair with.
+    await insertLatencyAmbientInbound(conversationId, user, new Date(now.getTime() - 9_000));
+    await insertLatencyReply(conversationId, user, now);
+
+    const stats = await responseLatencyStats([conversationId], 7);
+    assert.equal(stats, null, 'a non-auto-answer reply must never pair with an ambient-only inbound');
+
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  "repository: responseLatencyStats scope filters an auto-answer reply into 'auto_answer' and excludes it from 'mention', and 'auto_answer' + 'mention' partition 'all' with no overlap and no gap (acceptance criteria 4-5)",
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-latency-scope-partition`;
+    const now = new Date();
+    const autoUser = `${RUN}-latency-scope-partition-auto-user`;
+    const mentionUser = `${RUN}-latency-scope-partition-mention-user`;
+
+    await insertLatencyAmbientInbound(conversationId, autoUser, new Date(now.getTime() - 10_000));
+    await insertLatencyAutoAnswerReply(conversationId, autoUser, now); // +10s, auto_answer
+
+    await insertLatencyInbound(conversationId, mentionUser, new Date(now.getTime() - 20_000));
+    await insertLatencyReply(conversationId, mentionUser, now); // +20s, mention (no autoAnswer key)
+
+    const all = await responseLatencyStats([conversationId], 7, 'all');
+    const autoAnswer = await responseLatencyStats([conversationId], 7, 'auto_answer');
+    const mention = await responseLatencyStats([conversationId], 7, 'mention');
+
+    assert.ok(all && autoAnswer && mention);
+    assert.equal(all.count, 2);
+    assert.equal(autoAnswer.count, 1, "'auto_answer' scope includes only the autoAnswer-flagged reply");
+    assert.equal(autoAnswer.medianSeconds, 10);
+    assert.equal(mention.count, 1, "'mention' scope includes only the non-autoAnswer reply");
+    assert.equal(mention.medianSeconds, 20);
+    assert.equal(
+      autoAnswer.count + mention.count,
+      all.count,
+      "'auto_answer' and 'mention' must partition 'all' with no overlap and no gap",
+    );
+
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
   },
 );

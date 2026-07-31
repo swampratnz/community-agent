@@ -133,7 +133,7 @@
   "statusCheckAlert.test.ts": 4,
   "suggestIssue.test.ts": 3,
   "systemPrompt.test.ts": 19,
-  "tools.test.ts": 287,
+  "tools.test.ts": 290,
   "unhelpfulAnswerEscalationRouter.test.ts": 2,
   "usageAlertPendingQueue.test.ts": 3,
   "usageCostDigest.test.ts": 4,
