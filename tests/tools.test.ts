@@ -21860,7 +21860,7 @@ test(
 // Pairing/scope fix, issue #911 — adds an optional `scope` argument
 // ('all' | 'auto_answer' | 'mention') to response_latency.
 
-test('SECURITY: response_latency rejects a scope value outside the enum at the zod schema boundary, never silently coercing it to \'all\' (acceptance criterion 4)', () => {
+test("SECURITY: response_latency rejects a scope value outside the enum at the zod schema boundary, never silently coercing it to 'all' (acceptance criterion 4)", () => {
   const adapter = stubAdapter(async () => {});
   const caller = {
     platform: 'discord' as const,
@@ -21884,7 +21884,11 @@ test('SECURITY: response_latency rejects a scope value outside the enum at the z
   for (const scope of ['all', 'auto_answer', 'mention']) {
     assert.equal(registeredTool.inputSchema.safeParse({ scope }).success, true, `${scope} is allow-listed`);
   }
-  assert.equal(registeredTool.inputSchema.safeParse({}).success, true, 'scope stays optional, defaulting to all');
+  assert.equal(
+    registeredTool.inputSchema.safeParse({}).success,
+    true,
+    'scope stays optional, defaulting to all',
+  );
 });
 
 test(
@@ -21947,11 +21951,14 @@ test(
           },
           stubAdapter(async () => {}),
         );
-        const out = (await responseLatencyToolFrom(server.instance).handler({ scope })).content[0]?.text ?? '';
+        const out =
+          (await responseLatencyToolFrom(server.instance).handler({ scope })).content[0]?.text ?? '';
         const [expectedCount, expectedMedian] = expectedByScope[scope];
         assert.match(
           out,
-          new RegExp(`^⏱️ Response latency \\(last 7d\\): ${expectedCount} replies, median ${expectedMedian}s, p90 \\d+s$`),
+          new RegExp(
+            `^⏱️ Response latency \\(last 7d\\): ${expectedCount} replies, median ${expectedMedian}s, p90 \\d+s$`,
+          ),
           `SECURITY: scope=${scope} must reflect only the in-scope conversation's pairs`,
         );
         assert.ok(
@@ -22002,14 +22009,17 @@ test(
           },
           stubAdapter(async () => {}),
         );
-        const out = (await responseLatencyToolFrom(server.instance).handler({ scope })).content[0]?.text ?? '';
+        const out =
+          (await responseLatencyToolFrom(server.instance).handler({ scope })).content[0]?.text ?? '';
         assert.match(
           out,
           /^⏱️ Response latency \(last 7d\): (\d+ replies, median \d+s, p90 \d+s|not enough data yet\.)$/,
           `scope=${scope} reply must be exactly the fixed label plus aggregate numbers, or the fixed empty message`,
         );
         assert.ok(
-          !out.includes(secretUserId) && !out.includes(secretContent) && !out.includes('the reply text itself'),
+          !out.includes(secretUserId) &&
+            !out.includes(secretContent) &&
+            !out.includes('the reply text itself'),
           `SECURITY: scope=${scope} must never render a user id, display name, or message excerpt`,
         );
       }

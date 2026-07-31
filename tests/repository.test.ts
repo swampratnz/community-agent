@@ -14071,7 +14071,10 @@ test(
     await insertLatencyAutoAnswerReply(conversationId, user, now); // +12s
 
     const stats = await responseLatencyStats([conversationId], 7);
-    assert.ok(stats, 'the auto-answer reply must be paired and counted, not dropped by the bare JOIN LATERAL');
+    assert.ok(
+      stats,
+      'the auto-answer reply must be paired and counted, not dropped by the bare JOIN LATERAL',
+    );
     assert.equal(stats.count, 1);
     assert.equal(stats.medianSeconds, 12);
 

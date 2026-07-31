@@ -37,6 +37,15 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   since been removed still shows up, with a graceful placeholder in place of
   the (now-gone) project name.
 
+### Fixed
+- **`response_latency` now correctly counts and pairs auto-answer replies**
+  (#911): the metric previously either dropped an auto-answer reply
+  entirely or paired it with an unrelated older message, because it required
+  the triggering post to be an explicit @-mention — which an auto-answer
+  reply's ambient trigger never is. Admins can also now pass an optional
+  `scope` (`'auto_answer'` or `'mention'`) to see auto-answer-channel
+  latency on its own, the specific figure VISION names as a north star.
+
 ## 2026-07-30
 
 ### Added

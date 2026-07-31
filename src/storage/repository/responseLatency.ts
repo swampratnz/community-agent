@@ -67,7 +67,11 @@ export async function responseLatencyStats(
     conversationScope = `AND o.conversation_id = ANY($${params.length})`;
   }
   const scopeClause =
-    scope === 'auto_answer' ? `AND o.meta ? 'autoAnswer'` : scope === 'mention' ? `AND NOT (o.meta ? 'autoAnswer')` : '';
+    scope === 'auto_answer'
+      ? `AND o.meta ? 'autoAnswer'`
+      : scope === 'mention'
+        ? `AND NOT (o.meta ? 'autoAnswer')`
+        : '';
 
   const { rows } = await pool.query(
     `WITH paired AS (

@@ -6653,7 +6653,7 @@ export function buildToolServer(
       'p90 response time in seconds, over a recent window (default 7 days, max 30). Pairs each reply to a ' +
       "member with that member's preceding message; proactive digest/alert pushes are never counted. " +
       "Optionally scope to 'auto_answer' (ambient auto-answer replies only) or 'mention' (every other " +
-      "reply — DMs and text-command replies included, since those also set replyToUserId without " +
+      'reply — DMs and text-command replies included, since those also set replyToUserId without ' +
       "autoAnswer); default 'all'. Aggregate only — never a per-message timestamp, user id, or message " +
       'excerpt. Admin only.',
     {
