@@ -7773,12 +7773,13 @@ test(
 );
 
 test(
-  "repository: listOwnProjectConnectionRequests returns the caller's own SENT connection requests newest-first with the requested project's name and a null name for a since-gone project row, honouring the 1–50 limit clamp (issue #908)",
+  "repository: listOwnProjectConnectionRequests returns the caller's own SENT connection requests newest-first with the requested project's name and a null name for a since-gone or soft-removed project row, honouring the 1–50 limit clamp (issue #908)",
   { skip },
   async () => {
     const requester = `${RUN}-my-connreq-user`;
     const owner1 = `${RUN}-my-connreq-owner-1`;
     const owner2 = `${RUN}-my-connreq-owner-2`;
+    const owner3 = `${RUN}-my-connreq-owner-3`;
 
     const shared1 = await shareProject({
       platform: 'discord',
@@ -7794,7 +7795,14 @@ test(
       description: 'second project',
       seekingCollaborators: true,
     });
-    assert.ok(shared1.ok && shared2.ok, 'fixtures recorded');
+    const shared3 = await shareProject({
+      platform: 'discord',
+      userId: owner3,
+      name: 'Receipt Project Three Removed',
+      description: 'third project, soon soft-removed',
+      seekingCollaborators: true,
+    });
+    assert.ok(shared1.ok && shared2.ok && shared3.ok, 'fixtures recorded');
 
     const insertReq = async (ownerUserId: string, projectId: number) => {
       const { rows } = await pool.query(
@@ -7808,22 +7816,32 @@ test(
 
     const req1Id = await insertReq(owner1, shared1.id);
     const req2Id = await insertReq(owner2, shared2.id);
+    const req3Id = await insertReq(owner3, shared3.id);
     // No FK on project_id (see recordProjectConnectionIfUnderCap's own
     // fixtures using arbitrary ids) — a nonexistent id mirrors a project row
     // that's since been removed (owner purged/left) after the request was
     // recorded, which is a real, reachable state.
     const reqGoneId = await insertReq(`${RUN}-my-connreq-owner-gone`, shared1.id + 5_000_000);
 
+    // The only reachable removal path in production: the owner soft-removes
+    // the project (remove_project). member_projects.id still matches — the
+    // placeholder must come from the join's removed_at filter, not from the
+    // row going missing.
+    assert.ok(
+      await removeMemberProject('discord', owner3, 'Receipt Project Three Removed'),
+      'fixture project soft-removed',
+    );
+
     const own = await listOwnProjectConnectionRequests('discord', requester);
     assert.deepEqual(
       own.map((r) => r.id),
-      [reqGoneId, req2Id, req1Id],
+      [reqGoneId, req3Id, req2Id, req1Id],
       'own requests are returned newest-first',
     );
     assert.deepEqual(
       own.map((r) => r.projectName),
-      [null, 'Receipt Project Two', 'Receipt Project One'],
-      "a since-gone project's row reads back a null name rather than throwing or being dropped",
+      [null, null, 'Receipt Project Two', 'Receipt Project One'],
+      "a since-gone (hard-deleted) project's row AND a soft-removed (remove_project) project's row both read back a null name rather than the stale name, throwing, or being dropped",
     );
 
     assert.equal(
@@ -7833,12 +7851,14 @@ test(
     );
     assert.equal(
       (await listOwnProjectConnectionRequests('discord', requester, 999)).length,
-      3,
+      4,
       'an over-large limit is clamped to a ceiling of 50, not passed straight through',
     );
 
     await pool.query(`DELETE FROM project_connection_requests WHERE requester_user_id = $1`, [requester]);
-    await pool.query(`DELETE FROM member_projects WHERE id = ANY($1)`, [[shared1.id, shared2.id]]);
+    await pool.query(`DELETE FROM member_projects WHERE id = ANY($1)`, [
+      [shared1.id, shared2.id, shared3.id],
+    ]);
   },
 );
 

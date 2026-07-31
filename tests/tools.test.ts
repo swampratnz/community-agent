@@ -137,6 +137,7 @@ const {
   blockUser,
   unblockUser,
   shareProject,
+  removeMemberProject,
   setMemberInterests,
   purgeUserData,
   recordProjectConnectionIfUnderCap,
@@ -18594,6 +18595,57 @@ test(
     );
 
     await pool.query(`DELETE FROM project_connection_requests WHERE requester_user_id = $1`, [userId]);
+  },
+);
+
+test(
+  'my_submissions renders the same graceful placeholder for a connection request whose project the owner soft-removed via remove_project — the only reachable removal path in production (issue #908)',
+  { skip },
+  async () => {
+    const userId = `${MY_SUBMISSIONS_HANDLER_USER}-connreq-soft-removed-project`;
+    const ownerId = `${MY_SUBMISSIONS_HANDLER_USER}-connreq-soft-removed-project-owner`;
+
+    const shared = await shareProject({
+      platform: 'whatsapp',
+      userId: ownerId,
+      name: 'About To Be Removed Project',
+      description: 'will be soft-removed via remove_project',
+      seekingCollaborators: true,
+    });
+    assert.ok(shared.ok);
+    const claimed = await recordProjectConnectionIfUnderCap(
+      'whatsapp',
+      ownerId,
+      'whatsapp',
+      userId,
+      shared.id,
+    );
+    assert.ok(claimed);
+    // Soft-remove exactly as remove_project does: the member_projects row
+    // stays in place with removed_at set, unlike the hard-delete test above.
+    assert.ok(
+      await removeMemberProject('whatsapp', ownerId, 'About To Be Removed Project'),
+      'fixture project soft-removed',
+    );
+
+    const result = await mySubmissionsHandler(userId).handler();
+    const output = result.content[0]?.text ?? '';
+
+    assert.equal(result.isError, false);
+    assert.match(output, /Your connection requests:/);
+    assert.doesNotMatch(
+      output,
+      /About To Be Removed Project/,
+      'the soft-removed project name must not keep showing as a stale name forever',
+    );
+    assert.match(
+      output,
+      /- #\d+ — a project that is no longer listed — filed/,
+      'the placeholder fires for the soft-removal path too, not just a hard delete',
+    );
+
+    await pool.query(`DELETE FROM project_connection_requests WHERE requester_user_id = $1`, [userId]);
+    await pool.query(`DELETE FROM member_projects WHERE id = $1`, [shared.id]);
   },
 );
 

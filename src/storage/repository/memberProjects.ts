@@ -407,7 +407,7 @@ export async function countProjectConnectionsSince(since: Date): Promise<number>
 export interface ProjectConnectionRequestReceipt {
   id: number;
   projectId: number;
-  /** The requested project's name, or null if that `member_projects` row is gone (owner purged/left/forgot themselves) since the request was recorded. */
+  /** The requested project's name, or null if that project is gone: soft-removed (`removed_at`, e.g. via `remove_project`) or the `member_projects` row itself is hard-deleted (owner purged/left). */
   projectName: string | null;
   createdAt: Date;
 }
@@ -422,10 +422,15 @@ export interface ProjectConnectionRequestReceipt {
  * those; a request the caller merely owns is not one they filed.
  *
  * LEFT JOINs `member_projects` for the project name rather than requiring the
- * row still exist: the owner may have since removed, purged, or left with
- * that project, and (unlike `getActiveProjectById`) the receipt must still
- * render for a since-gone project — `projectName` reads back `null` rather
- * than throwing or silently dropping the row.
+ * row still exist, so the receipt still renders for a since-gone project
+ * instead of throwing or being silently dropped. The join additionally
+ * requires `mp.removed_at IS NULL`, matching `list_projects`/`listOwnProjects`/
+ * `getActiveProjectById`'s treatment of soft-removal: removal in this
+ * codebase is soft (`removeMemberProject`, wired to the member-facing
+ * `remove_project` tool), so without this filter `mp.id` still matches a
+ * removed project and its stale name would keep showing forever. A row whose
+ * `member_projects` id no longer exists at all (hard-deleted via purge/leave)
+ * also reads back null via the LEFT JOIN itself.
  */
 export async function listOwnProjectConnectionRequests(
   platform: Platform,
@@ -436,7 +441,7 @@ export async function listOwnProjectConnectionRequests(
   const { rows } = await pool.query(
     `SELECT pcr.id, pcr.project_id, mp.name AS project_name, pcr.created_at
        FROM project_connection_requests pcr
-       LEFT JOIN member_projects mp ON mp.id = pcr.project_id
+       LEFT JOIN member_projects mp ON mp.id = pcr.project_id AND mp.removed_at IS NULL
       WHERE pcr.requester_platform = $1 AND pcr.requester_user_id = $2
       ORDER BY pcr.created_at DESC
       LIMIT $3`,
