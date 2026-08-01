@@ -28,6 +28,7 @@
     "src/**/*.ts",
     "tests/backgroundJobCostAlert.test.ts",
     "tests/memberDigest.test.ts",
+    "tests/noticeDebounce.test.ts",
     "tests/projectScope.test.ts",
     "tests/schemaConstraintIdempotency.test.ts",
     "tests/usageCostDigest.test.ts",

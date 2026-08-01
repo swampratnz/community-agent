@@ -1,7 +1,7 @@
 /**
- * Pure debounce for the per-user rate-limit notice. Mirrors router.ts's
- * inline budgetNotified check (router.ts:180-181), but debounced against
- * the rate-limit window instead of the 24h budget window, so a burst of
+ * Per-user rate-limit notice: text constants plus the shared
+ * `shouldNotifyAfterWindow` debounce (util/noticeDebounce.ts) under a
+ * domain name, debounced against the rate-limit window so a burst of
  * over-limit messages produces exactly one notice per episode.
  */
 
@@ -24,10 +24,4 @@ export const RATE_LIMIT_NOTICE_TEXT_MI =
 export const RATE_LIMIT_NOTICE_TEXT_PLAIN =
   "You're sending messages too fast. Please wait a bit, then try again.";
 
-export function shouldNotifyRateLimited(
-  lastNotifiedAt: number | undefined,
-  now: number,
-  windowMs: number,
-): boolean {
-  return lastNotifiedAt === undefined || now - lastNotifiedAt > windowMs;
-}
+export { shouldNotifyAfterWindow as shouldNotifyRateLimited } from './util/noticeDebounce.js';

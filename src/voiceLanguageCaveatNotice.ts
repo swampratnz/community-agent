@@ -19,6 +19,4 @@ export const VOICE_LANGUAGE_CAVEAT_TEXT =
 export const VOICE_LANGUAGE_CAVEAT_TEXT_MI =
   'He mihi whakamōhio: ko te reo Ingarihi anake e whakamāoritia ana ngā karere reo i tēnei wā, nā reira tērā pea kāore te kupu i mahia e au e rite tonu ana ki tāu i kī ai.';
 
-export function shouldNotify(lastNotifiedAt: number | undefined, now: number, windowMs: number): boolean {
-  return lastNotifiedAt === undefined || now - lastNotifiedAt > windowMs;
-}
+export { shouldNotifyAfterWindow as shouldNotify } from './util/noticeDebounce.js';
