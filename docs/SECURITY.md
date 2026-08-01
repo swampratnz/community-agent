@@ -3336,6 +3336,8 @@ run, `actionKind: 'team_setup'`, with `params` carrying the slug, name, and
 the full (normalized) member list — one row to review for the whole batch,
 not one per sub-action.
 
+## Platform-specific notes
+
 ### WhatsApp / Baileys ToS risk
 Baileys uses the unofficial WhatsApp Web protocol. This **violates WhatsApp's
 Terms of Service** and the number can be **banned** at any time, and the
