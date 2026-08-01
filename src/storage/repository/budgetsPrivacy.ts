@@ -3,6 +3,7 @@ import { pool } from '../db.js';
 import { invalidateDigestsForInteractions } from './shared.js';
 import { resolveLinkedIdentities } from './members.js';
 import { forgetLidMappingsForPhone } from './whatsappLidMap.js';
+import { clearAccessRequest } from './accessRequests.js';
 import { getResponseStyle, type ResponseStyle } from './preferences.js';
 
 /**
@@ -274,6 +275,25 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
     // atomically with the rest of this transaction.
     const lidMappings = platform === 'whatsapp' ? await forgetLidMappingsForPhone(userId, client) : 0;
 
+    // access_requests (issue #939). Previously the ONLY route out of this
+    // table was `clearAccessRequest` on approval, so someone who asked for
+    // access and was never added had their display name — and on WhatsApp
+    // their phone number, since that IS the user id there — retained
+    // indefinitely with no erasure path and no expiry. docs/SECURITY.md named
+    // it a metadata-only exception to guest invisibility, which is true of its
+    // CONTENT but was never a licence to keep the identity forever.
+    //
+    // Delegates to `clearAccessRequest` with this transaction's `client`, for
+    // the same one-deletion-path reason as the LID mapping above rather than
+    // inlining a second DELETE here.
+    //
+    // Deleting a PENDING request cannot be an end-run around moderation, which
+    // is why this is safe where `blocked_users` deliberately is not: an
+    // access_requests row grants nothing and gates nothing — it is a queue
+    // entry. Someone who erases it and asks again simply reappears in the
+    // queue as a fresh request.
+    const accessRequests = await clearAccessRequest(platform, userId, client);
+
     await client.query(`UPDATE projects SET created_by = NULL WHERE created_by = $1`, [userId]);
     await client.query(`UPDATE project_members SET added_by = NULL WHERE added_by = $1`, [userId]);
     await client.query(`UPDATE project_surfaces SET bound_by = NULL WHERE bound_by = $1`, [userId]);
@@ -301,7 +321,8 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
       (knowledgeTips ?? 0) +
       (helperNotifications ?? 0) +
       (projectConnectionRequests ?? 0) +
-      lidMappings
+      lidMappings +
+      accessRequests
     );
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
@@ -321,7 +342,8 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
  * knowledge_candidates drafted from an invalidated digest (issue #102), any
  * moderation appeal(s) *they filed* (issue #554), and any knowledge_candidates
  * row *they themselves suggested* via suggest_knowledge in ANY status (issue
- * #633) — across every identity linked to them via
+ * #633), and any still-pending access request in their name (issue #939) —
+ * across every identity linked to them via
  * `link_member` (SECURITY: this is a deliberate blast-radius expansion —
  * linking two identities means forget_me/purge from *either* now erases
  * *both*, which is why `link_member` is CONFIRM-gated, audited, and

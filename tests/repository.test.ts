@@ -103,6 +103,7 @@ const {
   countAccessRequests,
   oldestAccessRequestAgeDays,
   clearAccessRequest,
+  purgeOldAccessRequests,
   upsertRosterMember,
   markRosterLeave,
   listRoster,
@@ -14290,5 +14291,118 @@ test(
     );
 
     await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'repository: purgeOldAccessRequests sweeps a request that has gone QUIET past the window, keeps a recent one, and — the point of the last_requested_at clock — keeps an ancient request the person is STILL making (issue #939)',
+  { skip },
+  async () => {
+    const quiet = `${RUN}-arret-quiet`;
+    const recent = `${RUN}-arret-recent`;
+    const persistent = `${RUN}-arret-persistent`;
+    for (const userId of [quiet, recent, persistent]) {
+      await recordAccessRequest({ platform: 'discord', userId, userName: 'tester' });
+    }
+
+    // `quiet`: asked once, long ago, never again -> abandoned, sweep it.
+    await pool.query(
+      `UPDATE access_requests
+          SET first_requested_at = now() - interval '400 days',
+              last_requested_at  = now() - interval '400 days'
+        WHERE platform = 'discord' AND user_id = $1`,
+      [quiet],
+    );
+    // `persistent`: FIRST asked even longer ago, but asked again an hour ago.
+    // On a first_requested_at clock this row would be swept — deleting an open
+    // request from someone actively still waiting on an answer, which is the
+    // exact failure the last_requested_at choice exists to prevent.
+    await pool.query(
+      `UPDATE access_requests
+          SET first_requested_at = now() - interval '500 days',
+              last_requested_at  = now() - interval '1 hour'
+        WHERE platform = 'discord' AND user_id = $1`,
+      [persistent],
+    );
+
+    const purged = await purgeOldAccessRequests(365);
+    assert.ok(purged >= 1, 'the abandoned request is swept');
+
+    const { rows } = await pool.query(
+      `SELECT user_id FROM access_requests WHERE user_id = ANY($1::text[]) ORDER BY user_id`,
+      [[quiet, recent, persistent]],
+    );
+    const survivors = rows.map((r) => r.user_id).sort();
+    assert.deepEqual(
+      survivors,
+      [persistent, recent].sort(),
+      'only the quiet row is deleted — a still-active requester survives however old their first ask was',
+    );
+
+    await clearAccessRequest('discord', recent);
+    await clearAccessRequest('discord', persistent);
+  },
+);
+
+test(
+  'SECURITY: repository: purgeUserData (forget_me/purge_user_data) erases the caller\u2019s PENDING access request and nobody else\u2019s (issue #939)',
+  { skip },
+  async () => {
+    const victim = `${RUN}-arpurge-victim`;
+    const bystander = `${RUN}-arpurge-bystander`;
+    await recordAccessRequest({ platform: 'discord', userId: victim, userName: 'Victim Name' });
+    await recordAccessRequest({ platform: 'discord', userId: bystander, userName: 'Bystander Name' });
+
+    await purgeUserData('discord', victim);
+
+    const { rows: gone } = await pool.query(
+      `SELECT 1 FROM access_requests WHERE platform = 'discord' AND user_id = $1`,
+      [victim],
+    );
+    assert.equal(gone.length, 0, 'SECURITY: a pending access request must not survive an erasure request');
+    const { rows: kept } = await pool.query(
+      `SELECT 1 FROM access_requests WHERE platform = 'discord' AND user_id = $1`,
+      [bystander],
+    );
+    assert.equal(kept.length, 1, "another pending requester's row is untouched");
+
+    await clearAccessRequest('discord', bystander);
+  },
+);
+
+test(
+  'SECURITY: repository: clearAccessRequest honours a caller-supplied transaction client, so the erasure rolls back with the rest of purgeSingleIdentity instead of committing on its own (issue #939)',
+  { skip },
+  async () => {
+    // The regression this pins is precisely the one PR #935 review caught on
+    // the sibling LID-mapping delete: writing `pool` where `client` belongs.
+    // It typechecks, it passes any test that only asserts the row is gone, and
+    // it silently makes erasure non-atomic — a crash later in the purge would
+    // leave this row deleted while everything else rolled back. Here the
+    // rollback is explicit, so a `pool` regression fails loudly.
+    const userId = `${RUN}-artx`;
+    await recordAccessRequest({ platform: 'discord', userId, userName: 'tester' });
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const deleted = await clearAccessRequest('discord', userId, client);
+      assert.equal(deleted, 1, 'the delete reports the row it removed, so the purge can count it');
+      await client.query('ROLLBACK');
+    } finally {
+      client.release();
+    }
+
+    const { rows } = await pool.query(
+      `SELECT 1 FROM access_requests WHERE platform = 'discord' AND user_id = $1`,
+      [userId],
+    );
+    assert.equal(
+      rows.length,
+      1,
+      'SECURITY: the delete must participate in the caller\u2019s transaction — rolled back, the row is still here',
+    );
+
+    await clearAccessRequest('discord', userId);
   },
 );

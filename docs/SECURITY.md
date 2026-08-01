@@ -3603,7 +3603,14 @@ often.
   old posture, pinned by test). Two metadata-only exceptions exist
   regardless of either flag: `access_requests` (identity + request count for
   guests who addressed the bot) and `server_roster` (join/leave identity
-  metadata, Discord-only) — neither stores content.
+  metadata, Discord-only) — neither stores content. **Metadata-only is a
+  statement about what these tables hold, never a licence to hold it
+  forever**: both are erasable via `forget_me`/`purge_user_data` and both are
+  age-purgeable (`ACCESS_REQUEST_RETENTION_DAYS` /
+  `ROSTER_DEPARTED_RETENTION_DAYS`). Until issue #939, `access_requests` was
+  neither — the sole delete was on approval, so a non-member who asked and was
+  never added was retained indefinitely with no erasure path. That was a real
+  gap, not an accepted trade-off, and it is now closed on both axes.
 - **The roster narrows the "guests are invisible" spirit, not its letter**:
   `server_roster` deliberately records the *identity* (never content) of every
   guild member — including lurkers who never touched the bot — because the
@@ -3616,11 +3623,30 @@ often.
   default disabled; a 30-day floor when enabled keeps `list_roster`'s
   "left this week" pulse intact). Currently-present rows (`left_at IS NULL`)
   are never purged regardless of this setting.
+- **The pending access-request queue expires too (issue #939)**:
+  `access_requests` holds the display name and platform user id of anyone who
+  addressed the bot in gated mode without being a member — and on WhatsApp the
+  user id *is* the phone number, so this is the single most sensitive
+  non-member record the system keeps. A row leaves the table three ways now:
+  deleted on approval (`add_member` -> `clearAccessRequest`), erased on
+  `forget_me`/`purge_user_data` (delegating to that same single deletion path,
+  inside the purge transaction), or age-purged once the requester has gone
+  quiet for `ACCESS_REQUEST_RETENTION_DAYS` (default disabled; a 30-day floor
+  when enabled). The retention clock runs off `last_requested_at`, not
+  `first_requested_at`, so an open request from someone still asking is never
+  swept — only abandoned ones. Erasing a pending request is safe where erasing
+  a `blocked_users` row would not be: the queue entry grants nothing and gates
+  nothing, and a purged requester who asks again simply reappears as a fresh
+  request (and re-triggers the first-time-only admin alert, by design).
+  Enabling retention does bound `list_access_requests`/the admin digest's
+  oldest-pending age from above — anything older has been deleted — which is
+  why the floor is generous rather than tight.
 - **forget_me/purge scope**: deletes the user's messages, replies to them,
   knowledge entries *sourced from* them, content reports *they submitted
   as reporter*, their response-style preference, their auto-moderation
-  warning history (`member_warnings`), and moderation appeals *they filed*
-  (`moderation_appeals`, issue #554). Membership rows, the
+  warning history (`member_warnings`), moderation appeals *they filed*
+  (`moderation_appeals`, issue #554), and any pending access request in their
+  name (`access_requests`, issue #939). Membership rows, the
   admin audit log, and reports where the user is only the *target* (not the
   reporter) are retained deliberately
   (accountability) — the same precedent already applied to `admin_audit`. If
@@ -3636,7 +3662,10 @@ often.
   so it can never see another member's data. It deliberately does **not**
   count or query `member_notes` (issue #45's members-have-no-self-access
   boundary), `member_warnings` (see `my_warnings` instead), `server_roster`,
-  `admin_digest_sends`, or `answer_feedback` — `forget_me` purges a strict
+  `admin_digest_sends`, `access_requests` (a pending request is guest-tier
+  state; `my_data` is member-tier, and by the time a member can call it their
+  row has already been deleted at approval), or `answer_feedback` —
+  `forget_me` purges a strict
   superset of what `my_data` ever reports, and that asymmetry is intentional,
   not a bug to "reconcile" away.
 - **DM-originated content reports are visible to every admin, not only

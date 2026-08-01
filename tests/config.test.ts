@@ -48,6 +48,46 @@ test('config: ROSTER_DEPARTED_RETENTION_DAYS unset (default) is disabled — zer
   assert.equal(config.behaviour.rosterDepartedRetentionDays, 0);
 });
 
+test('config: ACCESS_REQUEST_RETENTION_DAYS unset (default) is disabled — a purge that deletes rows is never turned on by an upgrade (issue #939)', () => {
+  assert.equal(config.behaviour.accessRequestRetentionDays, 0);
+});
+
+test('config: ACCESS_REQUEST_RETENTION_DAYS is REJECTED at startup below its 30-day floor (issue #939)', () => {
+  // The floor is not cosmetic. A pending access request is a person waiting on
+  // a human decision, so too tight a window deletes open requests before
+  // admins realistically triage them — and it silently caps
+  // oldestAccessRequestAgeDays, the very signal the admin digest uses to nag
+  // about the backlog. Refusing at startup beats discovering it from a queue
+  // that mysteriously never ages past the window.
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  const runWith = (days: string) =>
+    spawnSync(process.execPath, ['node_modules/tsx/dist/cli.mjs', 'tests/fixtures/loadConfig.ts'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
+        DISCORD_BOT_TOKEN: 'test-token',
+        DISCORD_GUILD_ID: '1',
+        DATABASE_URL: 'postgres://test:test@127.0.0.1:5432/test',
+        WHATSAPP_PROVIDER: 'disabled',
+        ACCESS_REQUEST_RETENTION_DAYS: days,
+      },
+    });
+
+  const tooLow = runWith('7');
+  assert.notEqual(tooLow.status, 0, 'below the floor must fail startup, not be silently accepted');
+  assert.match(`${tooLow.stderr}${tooLow.stdout}`, /ACCESS_REQUEST_RETENTION_DAYS/);
+
+  const disabled = runWith('0');
+  assert.equal(disabled.status, 0, `0 stays the explicit disabled value; stderr: ${disabled.stderr}`);
+  assert.equal(JSON.parse(disabled.stdout).behaviour.accessRequestRetentionDays, 0);
+
+  const atFloor = runWith('30');
+  assert.equal(atFloor.status, 0, `the floor itself is accepted; stderr: ${atFloor.stderr}`);
+  assert.equal(JSON.parse(atFloor.stdout).behaviour.accessRequestRetentionDays, 30);
+});
+
 test('config: AGENT_TURN_TIMEOUT_MS unset defaults to 300_000 (issue #826)', () => {
   assert.equal(config.behaviour.agentTurnTimeoutMs, 300_000);
 });

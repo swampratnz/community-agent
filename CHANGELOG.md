@@ -27,6 +27,15 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-08-01
 
 ### Changed
+- **If you asked the bot for access and were never added, that record no longer
+  sits there forever.** When someone who isn't a member messages the bot, it
+  keeps their name and platform id so admins can see the request — on WhatsApp
+  that id is their phone number. Until now the only way that record was ever
+  deleted was being approved. Two fixes: asking to be forgotten
+  (`forget_me`, or an admin's `purge_user_data`) now erases a pending request
+  too, and communities can set `ACCESS_REQUEST_RETENTION_DAYS` so requests that
+  have gone quiet are cleared automatically. If you're still asking, your
+  request is never swept — the clock only starts once you stop.
 - **Admins can now archive every WhatsApp group the bot is in, not just named
   ones** (`WHATSAPP_ARCHIVE_ALL_GROUPS`, off by default). Previously each group
   had to be listed individually; this matches how Discord archiving already
