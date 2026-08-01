@@ -136,6 +136,7 @@
   "statusCheckAlert.test.ts": 4,
   "suggestIssue.test.ts": 3,
   "systemPrompt.test.ts": 21,
+  "teamSetup.test.ts": 4,
   "tools.test.ts": 296,
   "unhelpfulAnswerEscalationRouter.test.ts": 2,
   "usageAlertPendingQueue.test.ts": 3,

@@ -2714,14 +2714,15 @@ test('community_info: admin-tier reply stays byte-identical, never gains SUPER_A
     '- Assign a Discord role, remove a Discord role, or list which roles are available to assign\n' +
     "- Set up team projects: create one, give a member access, take a member's access away, allow or " +
     'stop it being discussed here, review who has access, or archive a finished project and bring it ' +
-    'back again\n' +
+    'back again — or set up a whole team in one confirmed step (team_setup): create the project, ' +
+    'register and add its members, and bind the channel it was called in\n' +
     '- Generate an image, or check recent changes to the bot and community (the changelog)';
 
   const memberReply = (await communityInfoHandler('member')).content[0]?.text ?? '';
   assert.equal(
     adminReply,
     `${memberReply}\n${expectedAdminCapabilitiesText}`,
-    'admin-tier reply must be byte-identical to today — this PR must not change the admin branch (issue #582)',
+    'admin-tier reply must be byte-identical to today except the team_setup addition (issue #944)',
   );
   assert.doesNotMatch(
     adminReply,
@@ -2882,6 +2883,7 @@ const ADMIN_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__project_archive', /archive a finished project/i],
   ['mcp__community__project_unarchive', /archive a finished project and bring it\s+back again/i],
   ['mcp__community__project_info', /review who has access/i],
+  ['mcp__community__team_setup', /set up a whole team in one confirmed step/i],
   ['mcp__community__whats_new', /the changelog/i],
   ['mcp__community__generate_image', /generate an image/i],
   ['mcp__community__user_history', /history across conversations/i],
@@ -3008,8 +3010,9 @@ test('community_info: admin reply stays under a hard char cap, not a wall of tex
   // (one member line + one admin line), widened once more when PR #929's
   // review added project_remove_member/project_unbind_here/project_archive
   // to the same admin line, and once more for that review's project_unarchive
-  // clause (same line again, not a new bullet).
-  assert.ok(adminReply.length < 4260, `admin reply should stay short; was ${adminReply.length} chars`);
+  // clause (same line again, not a new bullet); bumped again for issue #944's
+  // team_setup clause (same project line again, not a new bullet).
+  assert.ok(adminReply.length < 4500, `admin reply should stay short; was ${adminReply.length} chars`);
 });
 
 test('SECURITY: community_info member-tier and guest-tier replies never name an admin/super_admin-only tool or contain any ADMIN_CAPABILITIES_TEXT-unique line (issue #367, issue #311)', async () => {
@@ -3146,9 +3149,10 @@ test('community_info: super_admin reply stays under a hard char cap, not a wall 
   // alongside the member/admin caps for issue #927's project lines, and
   // again for #927's project_remove_member/project_unbind_here/
   // project_archive clauses added in PR review, and once more for that
-  // review's project_unarchive clause.
+  // review's project_unarchive clause; bumped again alongside the admin cap
+  // for issue #944's team_setup clause.
   assert.ok(
-    superAdminReply.length < 4920,
+    superAdminReply.length < 5100,
     `super_admin reply should stay short; was ${superAdminReply.length} chars`,
   );
 });

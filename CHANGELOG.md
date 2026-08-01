@@ -24,6 +24,17 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 -->
 
 
+## 2026-08-02
+
+### Added
+- **Admins can now stand up a whole team in one step** (#944). Setting up a
+  team for an event (a project, its channel, and its roster) used to mean a
+  separate command per member. `team_setup` does it all at once — create the
+  project, register anyone new, add every listed member, and bind the current
+  channel — behind a single confirmation that shows the full plan before
+  anything runs. Capped at 10 members per call, and safe to re-run: it reports
+  what already existed instead of duplicating anything.
+
 ## 2026-08-01
 
 ### Changed

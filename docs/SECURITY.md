@@ -3289,7 +3289,52 @@ give themselves the same visibility with one `project_add_member` call anyway,
 so the narrower scope would cost the audit trail without buying confidentiality.
 Same precedent as `list_roster` and `blocked_users` (PR #929 review).
 
-## Platform-specific notes
+### 26. Batch team onboarding (`team_setup`, issue #944)
+
+Event setup (an Impact Lab, a meetup) means standing up N teams, each a
+project + a roster + a bound channel — otherwise ~25 sequential admin-tool
+calls per team (`project_create`, `project_add_member` per member,
+`add_member` for anyone not yet registered, `project_bind_here`). `team_setup`
+composes exactly those **existing, already-audited writes** into one call.
+
+**No new authority — the same writes, batched behind one CONFIRM.** Every
+write `team_setup` performs is a write an admin could already make serially:
+`createProject`, `upsertMember` at `role: 'member'` only (never a tier above
+member, the same `add_member` grants), `addProjectMember` (data scope only,
+per the `#927` invariant above), and `bindProjectSurface` on the calling
+conversation only — there is no conversation-id argument, the same
+`project_bind_here` discipline. The tool adds no new repository function and
+no new SQL. Because bulk member *registration* is the one materially larger
+grant a single call can now make, it is **CONFIRM-gated** (unlike
+`project_add_member`, which is not — see the "Access grants are reversible"
+note above): the confirmation names the project, how many of the listed
+members are actually new, and that new registrations land at member tier
+only, so the admin approves the whole plan before anything executes. This is
+arguably a *stronger* checkpoint than today's N unconfirmed calls, not a
+weaker one.
+
+**Capped at 10 members per call**, enforced twice: a zod `.max()` at the tool
+schema (refuses before the handler ever runs over the real MCP transport) and
+an explicit re-check as the first line of the handler (so a caller that
+reaches the handler directly — as tests do — still can't exceed it), both
+before any write and before a pending action is ever registered.
+
+**Idempotent and partial-failure-tolerant.** `createProject`,
+`addProjectMember` and `bindProjectSurface` are all `ON CONFLICT DO NOTHING`
+already, so re-running an identical `team_setup` call duplicates nothing.
+Each member is processed in its own `try`/`catch`: one member's failure is
+reported inline (`failed — <reason>`) without aborting the registration or
+project-access steps for the rest of the list, or the surface bind after
+them — a partial failure stays visible and the call stays safely re-runnable,
+per the acceptance criteria. A project-creation failure is the one step that
+blocks everything downstream (every later step needs `project.id`), so it is
+reported and the run stops there rather than throwing and losing the report
+that was built so far.
+
+**Audited as one row.** A single `audited()` call wraps the whole composed
+run, `actionKind: 'team_setup'`, with `params` carrying the slug, name, and
+the full (normalized) member list — one row to review for the whole batch,
+not one per sub-action.
 
 ### WhatsApp / Baileys ToS risk
 Baileys uses the unofficial WhatsApp Web protocol. This **violates WhatsApp's

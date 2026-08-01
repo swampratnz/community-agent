@@ -182,6 +182,7 @@ import {
   listAllProjects,
   listProjectMembers,
   listProjectSurfaces,
+  type Project,
   type KnowledgeSearchHit,
   searchMemory,
   searchProjects,
@@ -1805,7 +1806,8 @@ const ADMIN_CAPABILITIES_TEXT =
   '- Assign a Discord role, remove a Discord role, or list which roles are available to assign\n' +
   "- Set up team projects: create one, give a member access, take a member's access away, allow or " +
   'stop it being discussed here, review who has access, or archive a finished project and bring it ' +
-  'back again\n' +
+  'back again — or set up a whole team in one confirmed step (team_setup): create the project, ' +
+  'register and add its members, and bind the channel it was called in\n' +
   '- Generate an image, or check recent changes to the bot and community (the changelog)';
 
 /**
@@ -7780,6 +7782,174 @@ export function buildToolServer(
     { annotations: { readOnlyHint: false } },
   );
 
+  /**
+   * Batch team onboarding (issue #944): standing up N teams for an event
+   * (e.g. the Impact Lab) is otherwise ~25 sequential admin-tool calls per
+   * team — project_create, project_add_member x members, project_bind_here,
+   * plus an add_member registration for anyone not yet a community member.
+   * team_setup composes exactly those EXISTING, already-audited writes behind
+   * ONE CONFIRM whose description echoes the full plan, rather than adding any
+   * new authority: an admin who could already do all of this serially can do
+   * it in one call, with a stronger checkpoint (one confirmed plan) than
+   * today's N unconfirmed calls.
+   *
+   * Run IN the team's own channel — like project_bind_here, there is no
+   * conversation-id argument, so binding always targets the conversation the
+   * admin is actually in.
+   */
+  const TEAM_SETUP_MAX_MEMBERS = 10;
+
+  const teamSetup = tool(
+    'team_setup',
+    'Batch team onboarding for event setup (e.g. standing up N teams for a lab or meetup): create a ' +
+      'project, register any listed member who is not yet a community member (member tier only — ' +
+      "exactly what add_member does), add every listed member to the project's shared memory, and " +
+      "bind THIS conversation as the project's surface — all as ONE call instead of a project_create " +
+      'plus a project_add_member per member plus a project_bind_here. CONFIRM-gated: the confirmation ' +
+      `echoes the full plan before anything runs. Capped at ${TEAM_SETUP_MAX_MEMBERS} members per call. ` +
+      'Idempotent — re-running the same call reports every step as already existed rather than ' +
+      'duplicating anything. Admin only.',
+    {
+      slug: z
+        .string()
+        .regex(/^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$/, 'lowercase letters, digits and hyphens')
+        .describe('Short handle for the project, e.g. "impact-lab-team-3"'),
+      name: z
+        .string()
+        .min(1)
+        .max(TEAM_PROJECT_NAME_MAX_CHARS)
+        .describe(`Human-readable project name (max ${TEAM_PROJECT_NAME_MAX_CHARS} characters)`),
+      brief: z
+        .string()
+        .max(TEAM_PROJECT_BRIEF_MAX_CHARS)
+        .optional()
+        .describe(`Standing context about the team (max ${TEAM_PROJECT_BRIEF_MAX_CHARS} characters)`),
+      members: z
+        .array(z.string().min(1))
+        .max(TEAM_SETUP_MAX_MEMBERS)
+        .describe(
+          `Platform user ids of the team's members, on THIS platform — capped at ${TEAM_SETUP_MAX_MEMBERS} per call`,
+        ),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'team_setup');
+      // Explicit re-check alongside the zod `.max()` above: the schema
+      // refuses an over-cap call before the handler ever runs through the
+      // real MCP transport, but this handler is also called directly in
+      // tests, so the cap must hold here too — refused before any write,
+      // before a pending action is even registered.
+      if (args.members.length > TEAM_SETUP_MAX_MEMBERS) {
+        return text(
+          `Refusing: ${args.members.length} members exceeds the cap of ${TEAM_SETUP_MAX_MEMBERS} per call.`,
+          true,
+        );
+      }
+      // Shape-validate every id up front (same per-platform check
+      // resolveMemberTarget applies) so a malformed id refuses the whole call
+      // before a CONFIRM is ever queued, rather than surfacing as one
+      // "failed" line buried in a report the admin has already confirmed.
+      let memberIds: string[];
+      try {
+        memberIds = args.members.map((raw) => normalizeMemberId(caller.platform, raw));
+      } catch (err) {
+        return text(err instanceof Error ? err.message : String(err), true);
+      }
+
+      // Read-only lookups to compose an accurate CONFIRM description — no
+      // write happens until CONFIRM, so this cannot itself register anyone.
+      const newCount = (await Promise.all(memberIds.map((id) => getMemberRole(caller.platform, id)))).filter(
+        (role) => role === null,
+      ).length;
+
+      return requireConfirm(
+        `create project "${args.name}" [${args.slug}], register ${newCount} of ${memberIds.length} ` +
+          `listed member(s) as new (member tier only), add all ${memberIds.length} to the project, ` +
+          'and bind this conversation',
+        'admin',
+        async () => {
+          const { result } = await audited({
+            actionKind: 'team_setup',
+            params: { slug: args.slug, name: args.name, members: memberIds },
+            run: async () => {
+              const lines: string[] = [];
+
+              let project: Project;
+              try {
+                const created = await createProject({
+                  slug: args.slug,
+                  name: args.name,
+                  brief: args.brief,
+                  createdBy: caller.userId,
+                });
+                if (created) {
+                  project = created;
+                  lines.push(`project ${project.slug}: ${project.name} — created`);
+                } else {
+                  // Slug already taken (ON CONFLICT DO NOTHING) — re-fetching
+                  // rather than stopping is what makes a re-run idempotent.
+                  const existing = await getProjectBySlug(args.slug);
+                  if (!existing) throw new Error(`project "${args.slug}" could not be created or found`);
+                  project = existing;
+                  lines.push(`project ${project.slug}: ${project.name} — already existed`);
+                }
+              } catch (err) {
+                // A project failure blocks everything downstream (members and
+                // the surface bind both need project.id) — report it and stop,
+                // rather than throwing and losing the whole report: the call
+                // is safely re-runnable, so a partial report is more useful
+                // than none.
+                lines.push(
+                  `project ${args.slug}: failed — ${err instanceof Error ? err.message : String(err)}`,
+                );
+                return lines.join('\n');
+              }
+
+              for (const userId of memberIds) {
+                try {
+                  const wasAlreadyMember = (await getMemberRole(caller.platform, userId)) !== null;
+                  if (!wasAlreadyMember) {
+                    await upsertMember({
+                      platform: caller.platform,
+                      userId,
+                      role: 'member',
+                      addedBy: caller.userId,
+                    });
+                  }
+                  lines.push(
+                    `member ${userId} registration: ${wasAlreadyMember ? 'already existed' : 'created'}`,
+                  );
+                  const added = await addProjectMember(project.id, caller.platform, userId, caller.userId);
+                  lines.push(`member ${userId} project access: ${added ? 'created' : 'already existed'}`);
+                } catch (err) {
+                  lines.push(
+                    `member ${userId}: failed — ${err instanceof Error ? err.message : String(err)}`,
+                  );
+                }
+              }
+
+              const bound = await bindProjectSurface(
+                project.id,
+                caller.platform,
+                caller.conversationId,
+                caller.userId,
+              );
+              lines.push(`surface: ${bound ? 'created' : 'already existed'}`);
+              if (project.archivedAt) {
+                lines.push(
+                  `Note: ${project.name} is ARCHIVED, so nobody can reach it until project_unarchive.`,
+                );
+              }
+
+              return lines.join('\n');
+            },
+          });
+          return result;
+        },
+      );
+    },
+    { annotations: { readOnlyHint: false } },
+  );
+
   // --- Super-admin tools -------------------------------------------------------
 
   const grantAdmin = tool(
@@ -8564,6 +8734,7 @@ export function buildToolServer(
       projectInfo,
       projectArchive,
       projectUnarchive,
+      teamSetup,
       listKnowledgeTopicsTool,
       rememberSearch,
       forgetMe,

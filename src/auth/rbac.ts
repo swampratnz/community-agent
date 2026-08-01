@@ -220,6 +220,11 @@ export const ADMIN_TOOLS = [
   'mcp__community__project_archive',
   'mcp__community__project_unarchive',
   'mcp__community__project_info',
+  // Batch team onboarding (issue #944): composes project_create +
+  // project_add_member (+ add_member registration where needed) +
+  // project_bind_here behind one CONFIRM — no new authority over its parts,
+  // just one confirmed plan instead of ~25 unconfirmed calls per team.
+  'mcp__community__team_setup',
   'mcp__community__whats_new',
   'mcp__community__generate_image',
   'mcp__community__user_history',
