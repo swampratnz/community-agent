@@ -19,6 +19,7 @@ const { buildToolServer } = await import('../src/agent/tools.js');
 const { toolsForRole } = await import('../src/auth/rbac.js');
 const { hasPendingAction, takePendingAction } = await import('../src/agent/pendingActions.js');
 const {
+  archiveProject,
   createProject,
   getMemberRole,
   getProjectBySlug,
@@ -363,5 +364,65 @@ test(
     assert.equal(rows[0].success, true);
     assert.equal(rows[0].params.slug, slug);
     assert.deepEqual(rows[0].params.members, members, 'the audit params must carry the full member list');
+  },
+);
+
+test(
+  'SECURITY: team_setup discloses in the CONFIRM that the slug resolves to an ARCHIVED project — every ' +
+    'step would report success while the team can reach nothing (issue #944)',
+  { skip },
+  async () => {
+    // Sibling of the slug-collision test above, and the same principle: state
+    // that changes what the admin is agreeing to belongs in the plan, not in a
+    // note after the writes.
+    //
+    // Archived is the nastier case of the two. A collision at least reports
+    // something the admin might notice; an archived reuse reports
+    // created/added/bound on EVERY line — nothing refuses on an archived
+    // project — and the team still cannot reach it, because visibleProjectIds
+    // excludes archived projects from every read path. A silent success is
+    // exactly the outcome a CONFIRM exists to prevent.
+    const conversationId = `convo-${RUN}-archived`;
+    const slug = `${RUN}-archived`;
+    const project = await createProject({
+      slug,
+      name: 'Finished Team',
+      createdBy: `${RUN}-other-admin`,
+    });
+    assert.ok(project, 'setup: the project must exist before it is archived');
+    assert.equal(await archiveProject(slug), true, 'setup: the project must actually be archived');
+
+    const handler = teamSetupHandler({ conversationId });
+    const confirmReply = await handler.handler({
+      slug,
+      name: 'Finished Team',
+      members: [memberId('701')],
+    });
+
+    const confirmText = confirmReply.content[0].text;
+    assert.match(confirmText, /CONFIRM/);
+    assert.match(
+      confirmText,
+      /ARCHIVED/,
+      'the confirmation must say the project is archived BEFORE the admin approves adding a team to it',
+    );
+    assert.match(
+      confirmText,
+      /project_unarchive/,
+      'and must name the remedy, so the admin can act on the warning rather than just be alarmed by it',
+    );
+
+    // The disclosure must not have cost the honesty the collision test pins:
+    // this is still a reuse, and must still not claim to create anything.
+    assert.doesNotMatch(
+      confirmText,
+      /create project "Finished Team"/,
+      'an archived project is still an EXISTING one — the confirmation must not claim to create it',
+    );
+    assert.equal(
+      (await listProjectMembers(project.id)).length,
+      0,
+      'and still nothing is written before CONFIRM',
+    );
   },
 );

@@ -7866,13 +7866,30 @@ export function buildToolServer(
       // a false claim, and the admin needs the chance to recognise a
       // collision with someone else's project BEFORE approving, not after
       // members have already been added to it.
+      //
+      // ARCHIVED is the same class of surprise and gets the same treatment.
+      // Nothing REFUSES on an archived project — createProject no-ops on the
+      // slug, addProjectMember and bindProjectSurface both happily write, and
+      // `visibleProjectIds` then excludes it from every read path. So the run
+      // reports create/add/bind success on every line and the team still
+      // cannot reach a thing. That outcome is knowable here, from a row already
+      // fetched, so it belongs in the plan the admin approves rather than in a
+      // trailing note they read afterwards (the existing archivedSuffix
+      // convention is fine for single-write tools, where there is no plan to
+      // approve and the write is one line — it is not sufficient for a batch
+      // an admin signs off in advance).
       const existingProject = await getProjectBySlug(args.slug);
       const projectPlan = existingProject
-        ? `reuse the EXISTING project "${existingProject.name}" [${args.slug}] (no new project will be ` +
-          `created)${
+        ? `reuse the EXISTING${existingProject.archivedAt ? ', ARCHIVED,' : ''} project ` +
+          `"${existingProject.name}" [${args.slug}] (no new project will be created)${
             existingProject.name === args.name
               ? ''
               : ` — note: its name "${existingProject.name}" differs from the requested "${args.name}"`
+          }${
+            existingProject.archivedAt
+              ? ' — WARNING: every step below will SUCCEED but the team will not be able to reach ' +
+                'the project until project_unarchive'
+              : ''
           }`
         : `create project "${args.name}" [${args.slug}]`;
 
