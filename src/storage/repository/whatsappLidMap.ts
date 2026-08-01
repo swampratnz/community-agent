@@ -18,6 +18,7 @@
 // it is erased with everything else.
 // ---------------------------------------------------------------------------
 import { pool } from '../db.js';
+import type { Queryable } from './shared.js';
 
 /**
  * Record (or refresh) a LID -> phone mapping learned from a real message
@@ -62,9 +63,15 @@ export async function phoneForLid(lid: string): Promise<string | null> {
  * it must not outlive the data it belongs to. A person can hold more than one
  * LID over time, hence the phone-keyed delete rather than a single row.
  *
+ * Takes an optional {@link Queryable} so `purgeSingleIdentity` can pass its
+ * checked-out transaction client: the erasure must commit or roll back
+ * ATOMICALLY with the rest of that person's deletion, never on a separate
+ * connection that could survive a rollback and leave the mapping gone while
+ * everything else came back. Defaults to the pool for standalone callers.
+ *
  * Returns the number of rows removed so the purge total stays honest.
  */
-export async function forgetLidMappingsForPhone(phone: string): Promise<number> {
-  const { rowCount } = await pool.query(`DELETE FROM whatsapp_lid_map WHERE phone = $1`, [phone]);
+export async function forgetLidMappingsForPhone(phone: string, db: Queryable = pool): Promise<number> {
+  const { rowCount } = await db.query(`DELETE FROM whatsapp_lid_map WHERE phone = $1`, [phone]);
   return rowCount ?? 0;
 }

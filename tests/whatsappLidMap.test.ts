@@ -105,3 +105,60 @@ test(`${RUN}: forgetting an unknown phone is a no-op, never an error`, { skip },
   const { forgetLidMappingsForPhone } = await import('../src/storage/repository/whatsappLidMap.js');
   assert.equal(await forgetLidMappingsForPhone('64279999999'), 0);
 });
+
+test(
+  'purge_user_data COUNTS the LID mappings it erased, so the reported total is honest',
+  { skip },
+  async () => {
+    // PR #935 review: the purge originally inlined the DELETE and discarded its
+    // row count, so `purge_user_data`'s "deleted N stored record(s)" reply
+    // under-reported whenever the identity had LID mappings. The count is part
+    // of the privacy contract — a member told "3 records deleted" when it was 5
+    // has been given a wrong answer about their own data.
+    const { rememberLidPhone, forgetLidMappingsForPhone } =
+      await import('../src/storage/repository/whatsappLidMap.js');
+    const { purgeUserData } = await import('../src/storage/repository/budgetsPrivacy.js');
+    const phone = '64270000006';
+    const lids = [`4${Date.now()}`.slice(0, 15), `3${Date.now()}`.slice(0, 15)];
+    try {
+      for (const lid of lids) await rememberLidPhone(lid, phone);
+      // This identity has no other data, so the total IS the mapping count.
+      const deleted = await purgeUserData('whatsapp', phone);
+      assert.equal(deleted, lids.length, `expected both mappings counted, got ${deleted}`);
+    } finally {
+      await forgetLidMappingsForPhone(phone);
+    }
+  },
+);
+
+test(
+  'forgetLidMappingsForPhone runs on a caller-supplied client, so erasure is atomic with the rest of a purge',
+  { skip },
+  async () => {
+    // Not cosmetic: the purge runs inside BEGIN/COMMIT on a checked-out client.
+    // Calling the pool-based default from in there would delete on a SEPARATE
+    // connection, which would survive a rollback and leave the mapping gone
+    // while everything else came back. Proven by rolling back deliberately.
+    const { pool } = await import('../src/storage/db.js');
+    const { rememberLidPhone, phoneForLid, forgetLidMappingsForPhone } =
+      await import('../src/storage/repository/whatsappLidMap.js');
+    const phone = '64270000007';
+    const lid = `2${Date.now()}`.slice(0, 15);
+    const client = await pool.connect();
+    try {
+      await rememberLidPhone(lid, phone);
+      await client.query('BEGIN');
+      const removed = await forgetLidMappingsForPhone(phone, client);
+      assert.equal(removed, 1, 'deleted inside the transaction');
+      await client.query('ROLLBACK');
+      assert.equal(
+        await phoneForLid(lid),
+        phone,
+        'the rollback must restore it — proving the delete used the caller’s transaction, not a separate connection',
+      );
+    } finally {
+      client.release();
+      await forgetLidMappingsForPhone(phone);
+    }
+  },
+);
