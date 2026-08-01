@@ -7860,9 +7860,24 @@ export function buildToolServer(
       const newCount = (await Promise.all(memberIds.map((id) => getMemberRole(caller.platform, id)))).filter(
         (role) => role === null,
       ).length;
+      // The slug may already belong to a project — either a genuine re-run of
+      // this same call, or an unrelated project someone else created. Either
+      // way the confirmation must say so up front: "create project" would be
+      // a false claim, and the admin needs the chance to recognise a
+      // collision with someone else's project BEFORE approving, not after
+      // members have already been added to it.
+      const existingProject = await getProjectBySlug(args.slug);
+      const projectPlan = existingProject
+        ? `reuse the EXISTING project "${existingProject.name}" [${args.slug}] (no new project will be ` +
+          `created)${
+            existingProject.name === args.name
+              ? ''
+              : ` — note: its name "${existingProject.name}" differs from the requested "${args.name}"`
+          }`
+        : `create project "${args.name}" [${args.slug}]`;
 
       return requireConfirm(
-        `create project "${args.name}" [${args.slug}], register ${newCount} of ${memberIds.length} ` +
+        `${projectPlan}, register ${newCount} of ${memberIds.length} ` +
           `listed member(s) as new (member tier only), add all ${memberIds.length} to the project, ` +
           'and bind this conversation',
         'admin',

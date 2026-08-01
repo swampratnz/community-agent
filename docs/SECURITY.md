@@ -3313,6 +3313,17 @@ only, so the admin approves the whole plan before anything executes. This is
 arguably a *stronger* checkpoint than today's N unconfirmed calls, not a
 weaker one.
 
+**A slug collision is disclosed before CONFIRM, not after.** `createProject`
+is `ON CONFLICT (slug) DO NOTHING`, so a slug can resolve to a genuine re-run
+of this same call OR to an unrelated project someone else already created —
+those look identical once running. The handler looks up the slug at
+CONFIRM-composition time (the same read-only pass that counts new members)
+and words the confirmation honestly: "reuse the EXISTING project ..." instead
+of "create project ...", with a note when the existing name differs from the
+requested one. That is the point at which the admin can still recognise a
+collision with someone else's project and decline, rather than discovering it
+only in the executed report after members have already been added to it.
+
 **Capped at 10 members per call**, enforced twice: a zod `.max()` at the tool
 schema (refuses before the handler ever runs over the real MCP transport) and
 an explicit re-check as the first line of the handler (so a caller that

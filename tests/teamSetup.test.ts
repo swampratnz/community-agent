@@ -18,8 +18,14 @@ const skip = hasDb
 const { buildToolServer } = await import('../src/agent/tools.js');
 const { toolsForRole } = await import('../src/auth/rbac.js');
 const { hasPendingAction, takePendingAction } = await import('../src/agent/pendingActions.js');
-const { getMemberRole, getProjectBySlug, listProjectMembers, listProjectSurfaces, upsertMember } =
-  await import('../src/storage/repository.js');
+const {
+  createProject,
+  getMemberRole,
+  getProjectBySlug,
+  listProjectMembers,
+  listProjectSurfaces,
+  upsertMember,
+} = await import('../src/storage/repository.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
 
 const RUN = `t${Date.now()}${Math.floor(Math.random() * 1e6)}`;
@@ -270,6 +276,68 @@ test(
       await getMemberRole('discord', brandNew),
       'member',
       'a brand-new registration must land at member tier only, never higher',
+    );
+  },
+);
+
+test(
+  'SECURITY: team_setup discloses a slug collision with an unrelated pre-existing project honestly in the ' +
+    'CONFIRM text, before any member is added to it (issue #944)',
+  { skip },
+  async () => {
+    const conversationId = `convo-${RUN}-collision`;
+    const slug = `${RUN}-collision`;
+    const otherAdmin = `${RUN}-other-admin`;
+    const unrelatedProject = await createProject({
+      slug,
+      name: 'Somebody Else Project',
+      createdBy: otherAdmin,
+    });
+    assert.ok(unrelatedProject, 'setup: the unrelated project must exist before the colliding call');
+
+    const members = [memberId('601')];
+    const handler = teamSetupHandler({ conversationId });
+    const confirmReply = await handler.handler({
+      slug,
+      name: 'My New Team',
+      members,
+    });
+
+    assert.match(confirmReply.content[0].text, /CONFIRM/);
+    assert.match(
+      confirmReply.content[0].text,
+      /reuse the EXISTING project "Somebody Else Project"/,
+      'the confirmation must name the actual existing project, not claim it will "create" one',
+    );
+    assert.doesNotMatch(
+      confirmReply.content[0].text,
+      /create project "My New Team"/,
+      'the confirmation must not claim to create a project when the slug already belongs to one',
+    );
+    assert.match(
+      confirmReply.content[0].text,
+      /differs from the requested "My New Team"/,
+      'the confirmation must flag that the existing name differs from the requested one',
+    );
+
+    // Confirm and execute: no member may reach the pre-existing project
+    // until the admin has seen and approved that honest disclosure.
+    assert.equal(
+      (await listProjectMembers(unrelatedProject.id)).length,
+      0,
+      'no member may be added before CONFIRM even when the slug already resolves to a project',
+    );
+    const pending = takePendingAction('discord', conversationId, `${RUN}-admin`);
+    const report = await pending?.execute();
+    assert.match(report ?? '', /project .* already existed/);
+
+    const projectAfter = await getProjectBySlug(slug);
+    assert.equal(projectAfter?.name, 'Somebody Else Project', 'the existing project must not be renamed');
+    const projectMembers = await listProjectMembers(unrelatedProject.id);
+    assert.deepEqual(
+      new Set(projectMembers.map((m) => m.userId)),
+      new Set(members),
+      'members are added to the existing (reused) project, exactly as disclosed',
     );
   },
 );
