@@ -41,7 +41,7 @@ import {
   type JobFailureTracker,
 } from './backgroundJobHealth.js';
 import { queuePendingAlert } from './pendingAlertQueue.js';
-import { WindowClosedError } from './platforms/whatsapp/cloudAdapter.js';
+import { WindowClosedError } from './platforms/types.js';
 import type { PlatformAdapter } from './platforms/types.js';
 
 const TICK_INTERVAL_MS = 6 * 3_600_000;

@@ -9,7 +9,7 @@ import { isSuperAdmin, resolveRole, superAdminIds } from '../auth/roles.js';
 import { config } from '../config.js';
 import { logger, hashId } from '../logger.js';
 import { queuePendingAlert, type AlertPriority } from '../pendingAlertQueue.js';
-import { WindowClosedError } from '../platforms/whatsapp/cloudAdapter.js';
+import { WindowClosedError } from '../platforms/types.js';
 import { memoryHitJumpLink } from './discordLink.js';
 import { manualWarnBlockedAlertText } from '../moderation/moderator.js';
 import {

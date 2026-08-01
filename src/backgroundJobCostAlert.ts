@@ -3,7 +3,7 @@ import { logger } from './logger.js';
 import { superAdminIds } from './auth/roles.js';
 import { startTrackedJob } from './backgroundJobs.js';
 import { sumBackgroundJobCosts, type BackgroundJob } from './storage/repository.js';
-import { WindowClosedError } from './platforms/whatsapp/cloudAdapter.js';
+import { WindowClosedError } from './platforms/types.js';
 import type { PlatformAdapter } from './platforms/types.js';
 
 /** The three background jobs that write `background_job_costs` rows (issue #401) — a fixed enum, never derived from anything dynamic. */

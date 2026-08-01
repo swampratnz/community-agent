@@ -5,7 +5,7 @@ import { listAdminRoster, type AdminRosterEntry } from './storage/repository.js'
 import { startTrackedJob } from './backgroundJobs.js';
 import { initialUsageAlertTracker, stepUsageAlertTracker } from './usageAlert.js';
 import { queuePendingAlert } from './pendingAlertQueue.js';
-import { WindowClosedError } from './platforms/whatsapp/cloudAdapter.js';
+import { WindowClosedError } from './platforms/types.js';
 import type { PlatformAdapter } from './platforms/types.js';
 
 /**

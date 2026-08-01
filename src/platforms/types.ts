@@ -107,6 +107,30 @@ export type MessageHandler = (message: IncomingMessage) => Promise<void> | void;
 export type AdapterLookup = (platform: Platform) => PlatformAdapter | undefined;
 
 /**
+ * Thrown by an adapter's send path when a platform-specific delivery window
+ * is closed for the recipient — a recoverable/expected condition, distinct
+ * from a genuine send failure (a 5xx, missing config, etc). Callers pair an
+ * `instanceof` check with `queueForWindowReopen` to queue instead of drop.
+ *
+ * Defined here (not in the WhatsApp Cloud adapter, its only thrower today,
+ * issue #602) because the generic alert/DM send paths that catch it must not
+ * import from a concrete adapter: the contract belongs to the platform
+ * abstraction, like `queueForWindowReopen` itself.
+ */
+export class WindowClosedError extends Error {
+  readonly recipientId: string;
+
+  constructor(recipientId: string) {
+    super(
+      `Cannot send free-form WhatsApp message to ${recipientId}: outside the 24h customer-service window ` +
+        '(no recent inbound message from this user). Only pre-approved message templates can be sent here.',
+    );
+    this.name = 'WindowClosedError';
+    this.recipientId = recipientId;
+  }
+}
+
+/**
  * A privileged action the agent can request against a platform. Adapters
  * advertise which capabilities they support; unsupported actions throw.
  * RBAC is enforced *before* these are ever invoked (tier-gated tools plus

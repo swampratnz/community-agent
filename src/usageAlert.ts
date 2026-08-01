@@ -11,7 +11,7 @@ import {
   type JobFailureTracker,
 } from './backgroundJobHealth.js';
 import { queuePendingAlert } from './pendingAlertQueue.js';
-import { WindowClosedError } from './platforms/whatsapp/cloudAdapter.js';
+import { WindowClosedError } from './platforms/types.js';
 import type { PlatformAdapter } from './platforms/types.js';
 
 type UsageAlertStats = Awaited<ReturnType<typeof usageStats>>;

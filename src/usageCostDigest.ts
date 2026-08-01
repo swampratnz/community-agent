@@ -9,7 +9,7 @@ import {
   usageStats,
   wasUsageCostDigestSentRecently,
 } from './storage/repository.js';
-import { WindowClosedError } from './platforms/whatsapp/cloudAdapter.js';
+import { WindowClosedError } from './platforms/types.js';
 import type { PlatformAdapter } from './platforms/types.js';
 
 /** Same weekly window as `adminDigest.ts`'s `FRESHNESS_DAYS` — this signal targets the same ~7-day cadence. */

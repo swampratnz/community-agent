@@ -17,7 +17,7 @@ import {
   getPendingAlertsForTests,
   resetPendingAlertsForTests,
 } from './pendingAlertQueue.js';
-import { WindowClosedError } from './platforms/whatsapp/cloudAdapter.js';
+import { WindowClosedError } from './platforms/types.js';
 import type { PlatformAdapter } from './platforms/types.js';
 
 const CHECK_INTERVAL_MS = 30_000;
