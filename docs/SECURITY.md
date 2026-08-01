@@ -3144,15 +3144,18 @@ deleting them.
 **Documented residual (NZ Privacy Act 2020).** Nulling authorship removes the
 *link*, not personal information the note's own text may contain ("Chris is
 hosting at his place"). The erasure is therefore partial by design. This is
-stated here. It must ALSO be reflected in what `forget_me` tells the member,
-so nobody is told their data is gone when some of it is retained — and that
-half is **not yet done**: `forget_me`'s confirm prompt and reply still say
-"delete ALL of X's stored data" with no mention of projects. The wording is
-member-facing copy about a privacy guarantee, so it is the repo owner's to
-write rather than a build worker's to guess; tracked in **#930**, filed
-separately because this PR closes #927 and would otherwise close that
-acceptance criterion unmet. Until #930 lands, this document is the only
-place the retention is stated. The exception is
+stated here, and is ALSO reflected in what `forget_me` and `purge_user_data`
+tell the caller, so nobody is told their data is gone when some of it is
+retained (issue #930): both tools' CONFIRM prompt and post-confirm reply state
+that project membership is deleted immediately on every platform, that project
+notes the person authored are kept with the authorship link removed, and that
+removing the link does not scrub personal information the note's own text may
+contain — the same `PROJECT_NOTE_RETENTION_NOTICE` constant
+(`src/agent/tools.ts`) in all four places, pinned by a `SECURITY:` test so the
+copy and behaviour cannot drift apart again. The prompt stays generic — it
+never enumerates the affected project names, since reciting them into a
+possibly-public conversation at the exact moment someone is asserting a
+privacy right would itself be a small exposure. The exception is
 scoped to project content **only** — the `DELETE FROM knowledge WHERE
 source_user_id = $1` in `purgeSingleIdentity` is untouched and ordinary
 member-authored knowledge still disappears entirely, pinned by its own
