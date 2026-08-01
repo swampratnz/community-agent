@@ -20,7 +20,7 @@ preamble, which src/agent/changelog.ts skips, so `whats_new` never shows it
 to members. Append numbers; never remove them.
 Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #775 #784 #804 #807 #809 #810 #812 #814 #816 #817 #818 #819 #821 #824 #825
-#868 #896 #899
+#868 #896 #899 #904
 -->
 
 
@@ -97,6 +97,29 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   moderation state with no read path, mirroring the gap `list_muted_members`
   (#487) closed for mutes. Admin-tier, read-only, no new data — it only
   aggregates state the block flow already writes and audits.
+
+### Changed
+- **The knowledge-conflict caveat now also covers the free knowledge shortcut,
+  not just `knowledge_search` and `/kb`** (#919): Discord's ambient
+  knowledge-match reply and WhatsApp's only free knowledge path both skip a
+  full model turn, so neither carried the "these notes may disagree" caveat
+  #389 added to `knowledge_search` and #802 extended to `/kb` — a conflicting
+  pair could be served here with no signal at all. The caveat now appears
+  whenever the single hit served here is part of an unreconciled conflicting
+  pair, reusing the exact same fixed caveat text and the same
+  never-say-which-entries rule as the other two surfaces. The guest shortcut
+  is unchanged, matching #337's existing precedent of excluding guests from
+  this caveat.
+- **Dave's tone is now calibrated for off-limits declines and playful probes**
+  (#915): declining a request for real people's private data, illegal or
+  harmful content, or internal details now happens in one short, plain
+  sentence with no lecture, followed by an offer to help with something else
+  instead. A harmless, in-character probe (e.g. "are you a weasel?") now gets
+  an in-character answer rather than being treated with suspicion — scoped
+  tightly to probes that aren't actually trying to extract anything real, so
+  a genuine extraction attempt dressed as a joke still gets the ordinary
+  refusal. Pure tone guidance; no change to what's off-limits or who's
+  authorized to ask for what.
 
 ### Fixed
 - **`response_latency` now correctly counts and pairs auto-answer replies**
@@ -231,6 +254,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   image (with or without a caption) sent to the Cloud API bot got total
   silence, not even a "can't handle images" reply. No image bytes are ever
   stored.
+- **Super admins now get a DM when an Anthropic status incident resolves, not
+  just when one starts** (#906): completes #601's proactive status alert with
+  the transition it deferred, sent once on the `active → none` edge over the
+  same `alertSuperAdmins` path (and its closed-WhatsApp-window
+  queue-and-resend recovery) the existing incident-start DM already uses.
+  Since the cache always shows zero active incidents at that point, the
+  resolved DM's body is always the fixed "no known incidents" text — it can
+  never carry incident-specific wording from the incident that just cleared.
 
 ### Fixed
 - **Six more background alerts to super admins now survive a closed WhatsApp
