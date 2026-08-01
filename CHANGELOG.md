@@ -27,7 +27,7 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-08-01
 
 ### Changed
-- **Asking the bot which Agent Skills are on now lists all of them** (#943).
+- **Asking the bot which Agent Skills are on now lists all of them** (#942).
   It was naming two (`prompt-review`, `claude-code-setup`) while six were
   actually loaded — the label was written when only those two existed and was
   never updated as more were added. It's now generated from the real list, so
