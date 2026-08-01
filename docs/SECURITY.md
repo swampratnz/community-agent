@@ -1692,6 +1692,41 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   them, so an aggregate over exactly those conversations exposes nothing they
   couldn't already read directly.
 
+### 6b. WhatsApp LIDs must never become member ids (2026-08-01 incident)
+
+WhatsApp exposes two identifiers for the same person: the **phone number**
+(E.164) and a **LID** (`<digits>@lid`, a privacy id). Only the phone number is a
+usable identity here — `resolveSenderId` resolves LID → phone via `senderPn`
+on every inbound message, so `community_users` lookups, RBAC and project
+membership all match on the phone number. A LID matches nothing.
+
+Strip `@lid` and a LID is just digits, so it used to pass `normalizeMemberId`'s
+old 7-15 digit E.164 check. Four members were created that way (2026-07-21,
+×2 on 2026-07-27, 2026-08-01) and were **permanently unmatchable**: they stayed
+gated guests while appearing in `community_users` as members. One went
+unnoticed for 11 days; another surfaced only when a project-membership check
+failed. The supply of LIDs is not hypothetical — `server_roster` for WhatsApp
+is LID-keyed (820 of 850 entries were 14-15 digits, because group participant
+metadata gives LIDs and nothing else), and `list_roster` exposes it to the
+model, so "add this person" naturally picks one up.
+
+`normalizeMemberId` now caps a WhatsApp id at **13 digits**
+(`MAX_WHATSAPP_ID_DIGITS`), below E.164's 15, because that is where the two
+populations separate in practice: real member numbers observed here are 10-12
+digits, every observed LID is 14-15. A 14+ digit id is refused as **ambiguous**
+with an actionable message. The deliberate cost is that a genuine 14-15 digit
+E.164 number is also refused; that is preferred to silently minting an identity
+that can never be matched — and that could be *messaged*, since `targetJid`
+routes a phone-shaped id to `<id>@s.whatsapp.net`, which for LID digits may be
+an unrelated real person's number. Pinned by `SECURITY:` tests using the four
+real ids from the incident.
+
+`isPhoneUserId` (5-16 digits) was deliberately **left unchanged**: it gates live
+routing (DM send, moderation actions, revoke authorship), so tightening it could
+silently stop serving an existing member with a long number. With the add-time
+gate closed and the phantom rows removed, no LID reaches it — a LID-only sender
+is already marked `lid:`-prefixed by `lidFallbackId` and rejected there.
+
 ### 7. Cross-platform identity linking (`link_member` / `unlink_member`)
 A member's Discord account and WhatsApp number are, by default, two unrelated
 `community_users` rows — `forget_me` on one silently leaves the other's data

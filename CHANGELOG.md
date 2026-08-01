@@ -41,6 +41,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   affected projects — so a privacy request doesn't recite project names into
   a possibly-public conversation. See docs/SECURITY.md §25 for the full rule.
 
+### Fixed
+- **Members added by a WhatsApp "LID" are now refused instead of silently
+  failing.** WhatsApp gives each person a phone number *and* a privacy id
+  ("LID"). A LID looks like a long phone number, so one could be accepted as a
+  member id — but the bot only ever recognises people by phone number, so such
+  members were never actually recognised: they stayed gated guests while
+  appearing in the member list. Adding someone with a LID now fails with a clear
+  message saying to use their phone number instead. Four affected entries were
+  cleaned up; nobody lost real access.
+
 ## 2026-07-31
 
 ### Added
