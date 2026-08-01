@@ -41,6 +41,7 @@ import {
   withWebSearchDedupLock,
   type ToolServerTurnState,
 } from './tools.js';
+import { ENABLED_SKILLS } from './enabledSkills.js';
 import {
   initialUsageLimitTracker,
   isUsageLimitFailure,
@@ -330,21 +331,6 @@ function filterFeatureFlaggedTools(tools: string[]): string[] {
  */
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SKILLS_DIR = join(__dirname, 'skills');
-
-/**
- * The explicit, hand-written skill allowlist (issue #741) — never 'all', so a
- * future skill file added to SKILLS_DIR needs a deliberate second edit here
- * to activate, matching this repo's existing convention of hand-written,
- * non-reflective tool/skill allowlists elsewhere.
- */
-const ENABLED_SKILLS = [
-  'prompt-review',
-  'model-and-plan-selection',
-  'agent-architecture-review',
-  'project-showcase',
-  'claude-code-setup',
-  'getting-started',
-] as const;
 
 /**
  * Build the SDK query options for one turn. Extracted (and exported) so the

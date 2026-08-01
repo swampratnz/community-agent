@@ -1,5 +1,6 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { ENABLED_SKILLS } from '../src/agent/enabledSkills.js';
 import { readFileSync } from 'node:fs';
 import type { AdapterLookup, Platform, PlatformAdapter, UpcomingEvent } from '../src/platforms/types.js';
 import { formatNzEventTime } from '../src/util/nzTime.js';
@@ -8874,6 +8875,28 @@ test('SECURITY: engagement_stats handler refuses a forged direct call from a non
 });
 
 // --- issue #559: feature_flags ---------------------------------------------
+
+test('feature_flags: the Agent Skills label names EVERY enabled skill — it is derived from ENABLED_SKILLS, not a second hand-written copy that can go stale (issue #941)', () => {
+  // This is a regression test for a real, live mis-report, not a hypothetical.
+  // The label was written once in #742 naming the two skills that existed
+  // then, and was never updated while four more were added (#755/#757/#758/
+  // #759 + getting-started). An admin who asked the bot which skills were on
+  // was told "prompt-review, claude-code-setup" while six were actually
+  // loaded — the bot confidently under-reporting its own configuration, which
+  // is worse than saying nothing, because it reads as a config error and
+  // invites someone to go "fix" a system that was already correct.
+  const rendered = formatFeatureFlags({ agentSkills: { enabled: true } });
+  const skillsLine = rendered.split('\n').find((l) => l.startsWith('- Agent Skills'));
+  assert.ok(skillsLine, 'the Agent Skills flag renders a line');
+  for (const skill of ENABLED_SKILLS) {
+    assert.ok(
+      skillsLine.includes(skill),
+      `the label must name '${skill}' — it is loaded, so reporting anything less misleads the admin who asked. ` +
+        `Rendered: ${skillsLine}`,
+    );
+  }
+  assert.match(skillsLine, /: On$/, 'and it still reports the flag state itself');
+});
 
 function featureFlagsHandler(role: 'member' | 'admin' | 'guest' | 'super_admin') {
   const server = buildToolServer(
