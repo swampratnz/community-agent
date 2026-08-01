@@ -362,7 +362,20 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   allowlist**, not a single all-channels flag. WhatsApp groups have no
   "public channel" convention, so each group's archiving is opted into
   individually — the act of adding a JID to the list **is** the operator's
-  assertion that the group's notice has been posted. Guest 1:1 DMs to the
+  assertion that the group's notice has been posted.
+
+  **`WHATSAPP_ARCHIVE_ALL_GROUPS` (off by default) deliberately reverses that
+  for operators who want Discord parity.** With it on, every group the bot is
+  in — including ones it is added to later — is archived with no per-group
+  step. That removes the checkpoint described above, so the notice obligation
+  moves *entirely* onto the operator: turning it on is an assertion that every
+  group the bot is in has been told, and that any group it is added to in
+  future will be. Prefer the JID allowlist if you want the per-group pause;
+  choose the blanket flag knowingly, not for convenience. What it does **not**
+  do is widen archiving beyond groups — `!msg.isDirect` still gates the write
+  in both the router and `inArchiveScope`, so a guest's 1:1 DM is never stored
+  under either setting (pinned by a `SECURITY:` test that runs with the blanket
+  flag on and the allowlist empty). Guest 1:1 DMs to the
   bot are never archived, regardless of config. Edit-tracking is
   best-effort (Baileys' protocol fidelity for edits is less reliable than
   for revokes); delete-honouring is the load-bearing privacy promise and

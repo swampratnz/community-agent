@@ -142,6 +142,7 @@
   "usageCostDigest.test.ts": 4,
   "voiceTranscribeModelRouting.test.ts": 2,
   "whatsappAmbientArchiving.test.ts": 3,
+  "whatsappArchiveAllGroups.test.ts": 1,
   "whatsappBlockRouter.test.ts": 1,
   "whatsappBlockRouterOpen.test.ts": 1,
   "whatsappCloudAdapter.test.ts": 21,

@@ -666,9 +666,14 @@ export class BaileysAdapter implements PlatformAdapter {
     }
   }
 
-  /** True for a group JID that's opted into ambient archiving (`WHATSAPP_ARCHIVE_GROUP_JIDS`, issue #103). */
+  /** True for a group opted into ambient archiving — either blanket
+   * (`WHATSAPP_ARCHIVE_ALL_GROUPS`) or by JID (`WHATSAPP_ARCHIVE_GROUP_JIDS`, issue #103). */
   private inArchiveScope(remoteJid: string, isGroup: boolean): boolean {
-    return isGroup && config.whatsapp.archiveGroupJids.includes(remoteJid);
+    // `isGroup` stays the outer condition, not an afterthought: the blanket
+    // flag widens WHICH groups are archived, never whether 1:1 DMs are. A
+    // guest's DM to the bot is unstored regardless of either setting.
+    if (!isGroup) return false;
+    return config.whatsapp.archiveAllGroups || config.whatsapp.archiveGroupJids.includes(remoteJid);
   }
 
   /**

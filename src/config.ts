@@ -335,6 +335,22 @@ const EnvSchema = z.object({
   // added here (see SECURITY.md). Unset/empty = feature fully off, zero
   // behaviour change. 1:1 DMs are never archived for gated guests regardless.
   WHATSAPP_ARCHIVE_GROUP_JIDS: z.string().optional(),
+  // Blanket ambient archiving for EVERY group Dave is in, present and future —
+  // the WhatsApp counterpart to DISCORD_ARCHIVE_ALL_MESSAGES, and a deliberate
+  // reversal of the per-group allowlist's original rationale (issue #103,
+  // docs/SECURITY.md): that allowlist existed because adding a JID by hand WAS
+  // the operator's assertion that the group's notice had been posted. A blanket
+  // flag removes that per-group step, so the notice obligation moves entirely
+  // onto the operator — turning this on is an assertion that every group the
+  // bot is in has been told, including groups it is added to later.
+  //
+  // Off by default, and it does NOT widen what is archived beyond groups:
+  // `!msg.isDirect` still gates the write, so a guest's 1:1 DM is never stored
+  // regardless of this flag (pinned by a SECURITY: test).
+  WHATSAPP_ARCHIVE_ALL_GROUPS: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
   // Voice-note transcription (Baileys only). A super admin's voice message is
   // transcribed locally (transformers.js Whisper, no external API/key — same
   // model-download pattern as embeddings) and the transcript is actioned as if
@@ -1352,6 +1368,7 @@ export const config = {
       cooldownMinutes: env.WHATSAPP_WELCOME_COOLDOWN_MINUTES,
     },
     archiveGroupJids: csv(env.WHATSAPP_ARCHIVE_GROUP_JIDS),
+    archiveAllGroups: env.WHATSAPP_ARCHIVE_ALL_GROUPS ?? false,
     voice: {
       enabled: env.WHATSAPP_VOICE_ENABLED ?? false,
       model: env.WHATSAPP_VOICE_MODEL,
