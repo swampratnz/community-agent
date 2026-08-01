@@ -611,6 +611,12 @@ const EnvSchema = z.object({
   // upgrade). Currently-present members (left_at IS NULL) are never touched
   // regardless of this setting — see storage/repository.ts:purgeDepartedRoster.
   ROSTER_DEPARTED_RETENTION_DAYS: z.coerce.number().int().nonnegative().default(0),
+  // Age-based purge of PENDING `access_requests` rows that have gone quiet
+  // (issue #939). Unset/0 = disabled (no behaviour change on upgrade). Clock
+  // runs off last_requested_at, so a guest who is still asking is never
+  // purged; an approved requester's row is already deleted on add_member.
+  // See storage/repository.ts:purgeOldAccessRequests.
+  ACCESS_REQUEST_RETENTION_DAYS: z.coerce.number().int().nonnegative().default(0),
   // Sustained platform disconnect -> one debounced super-admin DM alert.
   HEALTH_ALERT_AFTER_MINUTES: z.coerce.number().positive().default(5),
   // Proactive super-admin alert when rolling-24h outbound reply count
@@ -1140,6 +1146,15 @@ const MIN_INTERACTION_RETENTION_DAYS = 7;
 // floor comfortably preserves that pulse while still bounding retention.
 const MIN_ROSTER_DEPARTED_RETENTION_DAYS = 30;
 
+// A pending access request is a person waiting on a human decision, so the
+// floor is set by how long admins can plausibly take to make one, not by how
+// fast the data could be dropped. 30 days matches the roster floor and keeps
+// this comfortably clear of the admin digest's own nag horizon — enabling
+// retention must never delete a backlog out from under the digest that exists
+// to surface it. It also bounds `oldestAccessRequestAgeDays` from above (see
+// its doc comment), which is only honest if the bound is generous.
+const MIN_ACCESS_REQUEST_RETENTION_DAYS = 30;
+
 // A threshold below a month would flag entries an admin just as plausibly
 // hasn't gotten around to re-checking yet rather than ones that are stale.
 const MIN_KNOWLEDGE_STALE_DAYS = 30;
@@ -1188,6 +1203,15 @@ const EnvSchemaChecked = EnvSchema.refine(
     {
       message: `ROSTER_DEPARTED_RETENTION_DAYS must be 0 (disabled) or at least ${MIN_ROSTER_DEPARTED_RETENTION_DAYS}`,
       path: ['ROSTER_DEPARTED_RETENTION_DAYS'],
+    },
+  )
+  .refine(
+    (e) =>
+      e.ACCESS_REQUEST_RETENTION_DAYS === 0 ||
+      e.ACCESS_REQUEST_RETENTION_DAYS >= MIN_ACCESS_REQUEST_RETENTION_DAYS,
+    {
+      message: `ACCESS_REQUEST_RETENTION_DAYS must be 0 (disabled) or at least ${MIN_ACCESS_REQUEST_RETENTION_DAYS}`,
+      path: ['ACCESS_REQUEST_RETENTION_DAYS'],
     },
   )
   .refine((e) => e.KNOWLEDGE_STALE_DAYS === 0 || e.KNOWLEDGE_STALE_DAYS >= MIN_KNOWLEDGE_STALE_DAYS, {
@@ -1528,6 +1552,7 @@ export const config = {
     maxIncomingMessageChars: env.MAX_INCOMING_MESSAGE_CHARS,
     interactionRetentionDays: env.INTERACTION_RETENTION_DAYS,
     rosterDepartedRetentionDays: env.ROSTER_DEPARTED_RETENTION_DAYS,
+    accessRequestRetentionDays: env.ACCESS_REQUEST_RETENTION_DAYS,
     healthAlertAfterMinutes: env.HEALTH_ALERT_AFTER_MINUTES,
     healthPort: env.HEALTH_PORT,
     healthHost: env.HEALTH_HOST,
