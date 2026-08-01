@@ -47,6 +47,7 @@ export type BackgroundJobName =
   | 'knowledge-link-check'
   | 'interaction-retention-purge'
   | 'roster-retention-purge'
+  | 'access-request-retention-purge'
   | 'anthropic-status-check'
   | 'embedding-model'
   | 'admin-digest'

@@ -1,5 +1,6 @@
 import type { Platform } from '../../platforms/types.js';
 import { pool } from '../db.js';
+import type { Queryable } from './shared.js';
 
 /**
  * Gated-mode pending access-request queue: who has asked for access, how long
@@ -74,9 +75,67 @@ export async function listAccessRequests(limit = 50): Promise<AccessRequest[]> {
   }));
 }
 
-/** Clear a resolved access request (e.g. after add_member succeeds for that user). */
-export async function clearAccessRequest(platform: Platform, userId: string): Promise<void> {
-  await pool.query(`DELETE FROM access_requests WHERE platform = $1 AND user_id = $2`, [platform, userId]);
+/**
+ * Clear a resolved access request (e.g. after add_member succeeds for that
+ * user) — and, since issue #939, the ERASURE path for this table too: this is
+ * the single deletion path `purgeSingleIdentity` delegates to for
+ * `forget_me`/`purge_user_data`.
+ *
+ * Takes an optional {@link Queryable} for exactly the reason
+ * `forgetLidMappingsForPhone` does (PR #935 review): the privacy purge must be
+ * able to pass its own transaction `client` so this delete commits or rolls
+ * back atomically with the rest of the erasure, and there must be ONE copy of
+ * the DELETE so a future predicate change can't apply to the add_member path
+ * but not the erasure path — that kind of drift is a PII-retention bug, not a
+ * cosmetic one.
+ *
+ * Returns the row count (0 or 1 — `UNIQUE (platform, user_id)`) so the purge
+ * can include it in its total rather than silently dropping it.
+ */
+export async function clearAccessRequest(
+  platform: Platform,
+  userId: string,
+  db: Queryable = pool,
+): Promise<number> {
+  const { rowCount } = await db.query(`DELETE FROM access_requests WHERE platform = $1 AND user_id = $2`, [
+    platform,
+    userId,
+  ]);
+  return rowCount ?? 0;
+}
+
+/**
+ * Age-based retention: delete pending access requests that have gone quiet for
+ * `days` (issue #939). Until this existed, `access_requests` was the one PII
+ * store in the schema with NO expiry at all — the only delete was
+ * `clearAccessRequest` on approval, so a non-member's name and (on WhatsApp)
+ * phone number sat there indefinitely for anyone who asked and was never
+ * added. That is the population least likely to have any relationship with
+ * this community, so it is the last data that should be kept forever.
+ *
+ * Keyed on `last_requested_at`, NOT `first_requested_at`: the row should
+ * expire once the person STOPS asking, not on a fixed clock from their first
+ * ping. A guest still actively requesting is still an open request and is
+ * never purged, however old their first attempt is.
+ *
+ * Deleting a row is not the same as resolving it — a purged guest who asks
+ * again gets a genuinely fresh row, so `recordAccessRequest` reports
+ * `inserted: true` and the first-time-only admin alert fires again (correct: a
+ * new request months later deserves a new notification), and their
+ * `first_requested_at` wait clock restarts.
+ *
+ * NOTE the interaction with {@link oldestAccessRequestAgeDays}: when this is
+ * enabled, the admin digest's oldest-pending age can never exceed `days`,
+ * because anything older has been deleted. The floor in config.ts
+ * (MIN_ACCESS_REQUEST_RETENTION_DAYS) exists so that ceiling always stays well
+ * above the horizon admins actually triage on.
+ */
+export async function purgeOldAccessRequests(days: number): Promise<number> {
+  const { rowCount } = await pool.query(
+    `DELETE FROM access_requests WHERE last_requested_at < now() - ($1::text || ' days')::interval`,
+    [days],
+  );
+  return rowCount ?? 0;
 }
 
 /**
@@ -99,6 +158,12 @@ export async function countAccessRequests(): Promise<number> {
  * backlog and `MIN` over an empty table is `null`, never `0` — returned
  * as-is rather than coerced, so an admin/digest reader can never mistake
  * "no pending requests" for "a request that just arrived".
+ *
+ * One caveat once ACCESS_REQUEST_RETENTION_DAYS is enabled (issue #939): this
+ * value is then bounded above by that setting, since
+ * {@link purgeOldAccessRequests} has already deleted anything quiet for
+ * longer. "Oldest pending: 29 days" under a 30-day retention means the oldest
+ * SURVIVING request, not necessarily the oldest ever made.
  */
 export async function oldestAccessRequestAgeDays(): Promise<number | null> {
   const { rows } = await pool.query(

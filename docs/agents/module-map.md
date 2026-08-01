@@ -23,6 +23,7 @@ is marked **🔒**. Changes there need a `SECURITY:` test (see
 
 <!-- module-map:begin -->
 
+- `src/accessRequestRetention.ts` — Scheduled purge of pending access requests whose requester has gone quiet, the third retention sweep beside interactions and roster; the clock runs off the LAST request, so an open request is never swept.
 - `src/ackClassifier.ts` — Deterministic "is this just 'thanks'?" classifier; lets the router skip a whole agent turn (and its cost) on a pure acknowledgement.
 - `src/adminDigest.ts` — Builds and sends the periodic admin digest: moderation, engagement, feedback and cost summaries for admins, scoped to their own conversations.
 - `src/adminLeverageAlert.ts` — Weekly super-admin push of `adminActivitySummary`'s actions-per-admin rate, the pull-to-push complement of the on-demand `admin_activity` tool.

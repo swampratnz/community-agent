@@ -7,6 +7,7 @@ import { closeDb, healthcheck } from './storage/db.js';
 import { verifyEmbeddingDim } from './storage/repository.js';
 import { startRetentionPurge } from './interactionRetention.js';
 import { startRosterRetentionPurge } from './rosterRetention.js';
+import { startAccessRequestRetentionPurge } from './accessRequestRetention.js';
 import {
   startContextBuilder,
   startKnowledgeRefresh,
@@ -75,6 +76,7 @@ async function main(): Promise<void> {
   //     (issue #291), hence the `adapters` argument.
   const retentionTimer = startRetentionPurge(adapters);
   const rosterRetentionTimer = startRosterRetentionPurge(adapters);
+  const accessRequestRetentionTimer = startAccessRequestRetentionPurge(adapters);
 
   // 4c. Sustained-disconnect super-admin alerting (always on; no user-facing
   //     surface to disable) and the optional /healthz endpoint.
@@ -137,6 +139,7 @@ async function main(): Promise<void> {
     logger.info({ signal }, 'Shutting down');
     if (retentionTimer) clearInterval(retentionTimer);
     if (rosterRetentionTimer) clearInterval(rosterRetentionTimer);
+    if (accessRequestRetentionTimer) clearInterval(accessRequestRetentionTimer);
     clearInterval(disconnectAlertTimer);
     if (embeddingHealthTimer) clearInterval(embeddingHealthTimer);
     if (usageAlertTimer) clearInterval(usageAlertTimer);
