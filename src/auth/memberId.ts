@@ -31,7 +31,8 @@ export const MAX_WHATSAPP_ID_DIGITS = 13;
  * leading '+', requires an all-digit id, and range-checks the length by
  * platform. Throws with an actionable message (pointing at the `platform`
  * argument) on a mismatch — Discord snowflakes are 17-20 digits, WhatsApp
- * E.164 numbers are 7-15.
+ * numbers are 7-{@link MAX_WHATSAPP_ID_DIGITS} (deliberately tighter than
+ * E.164's 15 — see that constant).
  */
 export function normalizeMemberId(platform: Platform, rawId: string): string {
   const id = rawId.trim().replace(/^\+/, '');
@@ -47,17 +48,31 @@ export function normalizeMemberId(platform: Platform, rawId: string): string {
         `If this is a WhatsApp number, pass platform: "whatsapp".`,
     );
   }
-  if (platform === 'whatsapp' && (id.length < 7 || id.length > MAX_WHATSAPP_ID_DIGITS)) {
-    // 14+ digits is refused as AMBIGUOUS, not merely malformed: that is the
-    // length band WhatsApp LIDs occupy, and a LID is indistinguishable from an
-    // E.164 number once the `@lid` suffix is stripped. See the constant below.
+  // The two out-of-range WhatsApp cases are deliberately SEPARATE, because they
+  // have different causes and so need different advice. Folding them together
+  // told an admin who fat-fingered a 5-digit id that it was "probably a LID
+  // copied from the roster" — a confident, wrong diagnosis, in exactly the
+  // situation this validation exists to make less confusing.
+  if (platform === 'whatsapp' && id.length > MAX_WHATSAPP_ID_DIGITS) {
+    // TOO LONG: refused as AMBIGUOUS rather than merely malformed. 14+ digits
+    // is the band WhatsApp LIDs occupy, and a LID is indistinguishable from an
+    // E.164 number once the `@lid` suffix is stripped. See the constant above.
     throw new Error(
       `"${rawId}" doesn't look like a WhatsApp number (expected 7-${MAX_WHATSAPP_ID_DIGITS} digits, ` +
-        `E.164 without +). If this is a Discord id, pass platform: "discord". ` +
+        `E.164 without +) — it is too long. If this is a Discord id, pass platform: "discord". ` +
         `If you copied it from the roster or a group listing, it is probably a WhatsApp LID ` +
         `(a privacy id), NOT a phone number — a member added under a LID can never be matched to ` +
         `a real sender, because inbound messages always resolve to the phone number. Use the ` +
         `person's actual phone number in E.164 form.`,
+    );
+  }
+  if (platform === 'whatsapp' && id.length < 7) {
+    // TOO SHORT: an ordinary typo — a partial number, or one missing its
+    // country code. Deliberately says nothing about LIDs, which are long.
+    throw new Error(
+      `"${rawId}" doesn't look like a WhatsApp number (expected 7-${MAX_WHATSAPP_ID_DIGITS} digits, ` +
+        `E.164 without +) — it is too short. Check for a missing country code (e.g. NZ 021 234 5678 -> 6421234567) ` +
+        `or a truncated number.`,
     );
   }
   return id;

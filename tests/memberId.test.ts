@@ -66,3 +66,31 @@ test('every real member number in production still validates — the LID bound m
   assert.equal(normalizeMemberId('whatsapp', '1234567890123'), '1234567890123');
   assert.throws(() => normalizeMemberId('whatsapp', '12345678901234'), /probably a WhatsApp LID/);
 });
+
+test('a too-SHORT WhatsApp id is diagnosed as a typo, never as a LID (PR #934 review)', () => {
+  // Regression: the too-short and too-long branches were one condition, so a
+  // 5-digit typo was told it was "probably a WhatsApp LID copied from the
+  // roster" — a confident wrong answer during exactly the confusion this
+  // validation exists to reduce. LIDs are long (14-15 digits); a short id
+  // cannot be one.
+  for (const short of ['12345', '123456', '1']) {
+    assert.throws(() => normalizeMemberId('whatsapp', short), /it is too short/);
+    assert.throws(() => normalizeMemberId('whatsapp', short), /missing country code|truncated/);
+    // The LID diagnosis must NOT appear.
+    try {
+      normalizeMemberId('whatsapp', short);
+      assert.fail(`${short} should have been rejected`);
+    } catch (err) {
+      assert.doesNotMatch(
+        (err as Error).message,
+        /LID|roster|group listing/,
+        `a too-short id must not be blamed on a LID (got: ${(err as Error).message})`,
+      );
+    }
+  }
+});
+
+test('the too-LONG branch keeps its LID diagnosis, and the two messages stay distinct', () => {
+  assert.throws(() => normalizeMemberId('whatsapp', '205995875803153'), /it is too long/);
+  assert.throws(() => normalizeMemberId('whatsapp', '205995875803153'), /probably a WhatsApp LID/);
+});
