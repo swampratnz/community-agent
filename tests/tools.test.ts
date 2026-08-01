@@ -85,6 +85,7 @@ const {
   APPEAL_MODERATION_REASON_MAX_CHARS,
   reserveVoiceTranscriptionSlot,
   HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER,
+  PROJECT_NOTE_RETENTION_NOTICE,
 } = await import('../src/agent/tools.js');
 const { filterOutbound } = await import('../src/agent/outbound.js');
 const {
@@ -3639,6 +3640,93 @@ test("SECURITY: forget_me confirms at 'guest' tier so an open-mode guest's own C
     "a self-scoped purge must confirm at 'guest' tier — gating at 'member' made the guest's CONFIRM fail the re-check",
   );
 });
+
+test(
+  "SECURITY: forget_me and purge_user_data's CONFIRM prompts and post-confirm replies state project-note retention, not unqualified deletion (issue #930)",
+  { skip },
+  async () => {
+    // forget_me — self-scoped.
+    const forgetAdapter = stubAdapter(async () => {});
+    const forgetCaller = {
+      platform: 'discord' as const,
+      userId: 'forget-retention-1',
+      userName: 'ForgetMember',
+      role: 'member' as const,
+      conversationId: 'convo-forget-retention',
+    };
+    const forgetServer = buildToolServer(forgetCaller, forgetAdapter);
+    const forgetMeTool = (
+      forgetServer.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['forget_me'];
+
+    const forgetConfirm = await forgetMeTool.handler({});
+    assert.doesNotMatch(
+      forgetConfirm.content[0].text,
+      /delete ALL of/i,
+      "forget_me's CONFIRM prompt must not claim unqualified deletion",
+    );
+    assert.ok(
+      forgetConfirm.content[0].text.includes(PROJECT_NOTE_RETENTION_NOTICE),
+      "forget_me's CONFIRM prompt must state the project-note retention facts",
+    );
+    const forgetPending = takePendingAction('discord', 'convo-forget-retention', 'forget-retention-1');
+    assert.ok(forgetPending, 'forget_me must register a pending action');
+    const forgetReply = await forgetPending?.execute();
+    assert.ok(
+      typeof forgetReply === 'string' && forgetReply.includes(PROJECT_NOTE_RETENTION_NOTICE),
+      "forget_me's post-confirm reply must state the project-note retention facts",
+    );
+
+    // purge_user_data — super-admin-scoped.
+    const purgeAdapter = stubAdapter(async () => {});
+    const purgeCaller = {
+      platform: 'discord' as const,
+      userId: 'super-retention-1',
+      userName: 'SuperAdmin',
+      role: 'super_admin' as const,
+      conversationId: 'convo-purge-retention',
+    };
+    const purgeServer = buildToolServer(purgeCaller, purgeAdapter);
+    const purgeUserDataTool = (
+      purgeServer.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['purge_user_data'];
+
+    const targetId = '99988877766655544'; // 18-digit synthetic Discord snowflake
+    // A stored record must exist so the reply takes the "Done: ..." success
+    // branch rather than the "No stored data found" one — that branch is a
+    // no-op (nothing was erased) so it deliberately carries no retention claim.
+    await recordInteraction({
+      platform: 'discord',
+      conversationId: 'convo-purge-retention-seed',
+      userId: targetId,
+      role: 'member',
+      direction: 'inbound',
+      content: 'seed record for purge_user_data retention-copy test',
+    });
+    const purgeConfirm = await purgeUserDataTool.handler({ userId: targetId });
+    assert.ok(
+      purgeConfirm.content[0].text.includes(PROJECT_NOTE_RETENTION_NOTICE),
+      "purge_user_data's CONFIRM prompt must state the project-note retention facts",
+    );
+    const purgePending = takePendingAction('discord', 'convo-purge-retention', 'super-retention-1');
+    assert.ok(purgePending, 'purge_user_data must register a pending action');
+    const purgeReply = await purgePending?.execute();
+    assert.ok(
+      typeof purgeReply === 'string' && purgeReply.includes(PROJECT_NOTE_RETENTION_NOTICE),
+      "purge_user_data's post-confirm reply must state the project-note retention facts",
+    );
+  },
+);
 
 test('SECURITY: set_community_guidelines rejects a non-admin caller (assertAtLeast re-check, issue #212)', async () => {
   const adapter = stubAdapter(async () => {});
