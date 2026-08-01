@@ -2,7 +2,7 @@ import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import type { AdapterLookup, Platform, PlatformAdapter } from '../platforms/types.js';
 import { assertAtLeast, atLeast, type CallerContext } from '../auth/rbac.js';
-import { normalizeMemberId } from '../auth/memberId.js';
+import { normalizeMemberId, resolveWhatsappLid } from '../auth/memberId.js';
 import { sanitizeName, untrustedEntryContent } from './systemPrompt.js';
 import { isSuperAdmin, resolveRole, superAdminIds } from '../auth/roles.js';
 import { config } from '../config.js';
@@ -47,6 +47,7 @@ import {
   demoteAdmin,
   getMemberNote,
   getMemberRole,
+  phoneForLid,
   getMyDataSummary,
   getPublishedInterestsForOwners,
   hasConflictAmongIds,
@@ -3266,14 +3267,39 @@ export function buildToolServer(
    * authority, so it requires super_admin. The id is shape-checked per platform
    * so a WhatsApp number can't be silently filed as a Discord user (issue #78).
    */
-  function resolveMemberTarget(
+  async function resolveMemberTarget(
     rawUserId: string,
     platformArg?: Platform,
-  ): { platform: Platform; userId: string } {
+  ): Promise<{ platform: Platform; userId: string }> {
     const platform = platformArg ?? caller.platform;
     if (platform !== caller.platform) {
       assertAtLeast(caller.role, 'super_admin', `managing a ${platform} user from ${caller.platform}`);
     }
+
+    // A WhatsApp LID is the one id that LOOKS valid and is silently useless:
+    // it is digits, so it reads as a phone number, but nothing ever matches it
+    // because inbound messages always resolve LID -> phone (docs/SECURITY.md
+    // §6b — four phantom members were created this way). LIDs are the only ids
+    // group metadata and `list_roster` expose, so an admin or the model
+    // genuinely cannot tell them apart by eye.
+    //
+    // If we have LEARNED this LID's phone number from a real message envelope,
+    // resolve it rather than refusing: the mapping came from `senderPn`, so it
+    // is authoritative, and refusing something we can answer is just friction.
+    // No mapping (the person has never posted where the bot could see) falls
+    // through to normalizeMemberId's error, which explains the LID problem and
+    // asks for the number.
+    if (platform === 'whatsapp') {
+      const resolved = await resolveWhatsappLid(rawUserId, phoneForLid);
+      if (resolved) {
+        logger.info(
+          { lid: hashId(rawUserId.trim()), phone: hashId(resolved) },
+          'Resolved a WhatsApp LID to its learned phone number for a membership action',
+        );
+        return { platform, userId: resolved };
+      }
+    }
+
     return { platform, userId: normalizeMemberId(platform, rawUserId) };
   }
 
@@ -6459,7 +6485,7 @@ export function buildToolServer(
     },
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'add_member_note');
-      const { platform, userId } = resolveMemberTarget(args.userId, args.platform);
+      const { platform, userId } = await resolveMemberTarget(args.userId, args.platform);
       if ((await getMemberRole(platform, userId)) === null) {
         return text(`Refusing: "${userId}" is not a registered community member on ${platform}.`, true);
       }
@@ -6484,7 +6510,7 @@ export function buildToolServer(
     { userId: z.string().min(1).describe('Platform user id of the member'), platform: platformArg },
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'list_member_notes');
-      const { platform, userId } = resolveMemberTarget(args.userId, args.platform);
+      const { platform, userId } = await resolveMemberTarget(args.userId, args.platform);
       const notes = await listMemberNotes(platform, userId);
       if (notes.length === 0) return text(`No notes for ${userId} on ${platform}.`);
       return text(
@@ -7171,7 +7197,7 @@ export function buildToolServer(
     },
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'add_member');
-      const { platform, userId } = resolveMemberTarget(args.userId, args.platform);
+      const { platform, userId } = await resolveMemberTarget(args.userId, args.platform);
       const wasAlreadyMember = (await getMemberRole(platform, userId)) !== null;
       const finalRole = await upsertMember({
         platform,
@@ -7211,7 +7237,7 @@ export function buildToolServer(
     { userId: z.string().min(1).describe('Platform user id to remove'), platform: platformArg },
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'remove_member');
-      const { platform, userId } = resolveMemberTarget(args.userId, args.platform);
+      const { platform, userId } = await resolveMemberTarget(args.userId, args.platform);
       // Resolve the name before the row is deleted (roster still has it after).
       const label = await resolveSanitizedLabel(platform, userId);
       if (isSuperAdmin(platform, userId)) {
@@ -7519,7 +7545,7 @@ export function buildToolServer(
     },
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'project_add_member');
-      const target = resolveMemberTarget(args.userId, args.platform);
+      const target = await resolveMemberTarget(args.userId, args.platform);
       // Deliberately NOT requireConfirm-gated, and the precedent is
       // `add_member`, not `link_member` (PR #929 review). This repo's CONFIRM
       // gate is for DESTRUCTIVE or irreversible actions — delete_knowledge,
@@ -7572,7 +7598,7 @@ export function buildToolServer(
     },
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'project_remove_member');
-      const target = resolveMemberTarget(args.userId, args.platform);
+      const target = await resolveMemberTarget(args.userId, args.platform);
       const { result } = await audited({
         actionKind: 'project_remove_member',
         targetUserId: target.userId,
@@ -7761,7 +7787,7 @@ export function buildToolServer(
     },
     async (args) => {
       assertAtLeast(caller.role, 'super_admin', 'grant_admin');
-      const { platform, userId } = resolveMemberTarget(args.userId, args.platform);
+      const { platform, userId } = await resolveMemberTarget(args.userId, args.platform);
       const label = await resolveSanitizedLabel(platform, userId, args.displayName);
       // Privilege escalation is the highest-blast-radius action in the
       // system — CONFIRM-gated like kick/purge so an injected turn can
@@ -7809,7 +7835,7 @@ export function buildToolServer(
     { userId: z.string().min(1).describe('Platform user id to demote'), platform: platformArg },
     async (args) => {
       assertAtLeast(caller.role, 'super_admin', 'revoke_admin');
-      const { platform, userId } = resolveMemberTarget(args.userId, args.platform);
+      const { platform, userId } = await resolveMemberTarget(args.userId, args.platform);
       const label = await resolveSanitizedLabel(platform, userId);
       if (isSuperAdmin(platform, userId)) {
         return text('Refusing: super admins are configured in the environment, not manageable here.', true);

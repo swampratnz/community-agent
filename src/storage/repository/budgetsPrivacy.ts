@@ -2,6 +2,7 @@ import type { Platform } from '../../platforms/types.js';
 import { pool } from '../db.js';
 import { invalidateDigestsForInteractions } from './shared.js';
 import { resolveLinkedIdentities } from './members.js';
+import { forgetLidMappingsForPhone } from './whatsappLidMap.js';
 import { getResponseStyle, type ResponseStyle } from './preferences.js';
 
 /**
@@ -259,6 +260,20 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
     // access is `project_members`, which IS platform-qualified above. Fixing it
     // properly needs a platform column on all three, which is a repo-wide
     // change, not a project-local one.
+    // WhatsApp LID -> phone mapping (schema.sql, docs/SECURITY.md §6b). This
+    // row de-anonymises a privacy id, so it is squarely personal data and must
+    // not survive an erasure request. Keyed on the PHONE because that is what
+    // `userId` is for a WhatsApp identity, and one person can accumulate more
+    // than one LID over time. Deleted, not nulled: unlike a project note there
+    // is nothing shared to preserve here, it is pure identity.
+    // Delegates to the domain module rather than inlining the DELETE, so there
+    // is ONE deletion path: a second copy here would silently drift the day
+    // someone adds a predicate or an audit trail to one and not the other, and
+    // that drift would be a PII-retention bug, not a cosmetic one (PR #935
+    // review). `client` is passed so the erasure commits or rolls back
+    // atomically with the rest of this transaction.
+    const lidMappings = platform === 'whatsapp' ? await forgetLidMappingsForPhone(userId, client) : 0;
+
     await client.query(`UPDATE projects SET created_by = NULL WHERE created_by = $1`, [userId]);
     await client.query(`UPDATE project_members SET added_by = NULL WHERE added_by = $1`, [userId]);
     await client.query(`UPDATE project_surfaces SET bound_by = NULL WHERE bound_by = $1`, [userId]);
@@ -285,7 +300,8 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
       (memberInterests ?? 0) +
       (knowledgeTips ?? 0) +
       (helperNotifications ?? 0) +
-      (projectConnectionRequests ?? 0)
+      (projectConnectionRequests ?? 0) +
+      lidMappings
     );
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});

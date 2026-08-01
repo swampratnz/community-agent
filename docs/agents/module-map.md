@@ -72,6 +72,7 @@ is marked **🔒**. Changes there need a `SECURITY:` test (see
 - `src/storage/repository.ts` — 🔒 The repository entry point every caller imports: still holds the not-yet-extracted queries, and re-exports the per-domain modules in `repository/`. Conversation scoping for admin reads is enforced in the queries themselves, not by callers.
 - `src/storage/repository/` — 🔒 Per-domain query modules being carved out of `repository.ts` one domain at a time (audit L14). Add a new query to its domain module here, not to `repository.ts`; everything is re-exported so import sites never change.
 - `src/storage/repository/projects.ts` — 🔒 Project shared memory (issue #927). `visibleProjectIds` is the one place the two access checks live — membership (expanded through linked `persons`) and surface (a bound conversation or a DM) — and every read/write here goes through it in SQL.
+- `src/storage/repository/whatsappLidMap.ts` — 🔒 Durable WhatsApp LID -> phone mapping. A LID is a privacy id that looks like a number but matches no one; persisting what the adapter learns from real envelopes lets a LID be resolved rather than refused. PII — erased by `forget_me`/`purge_user_data`. See docs/SECURITY.md §6b.
 - `src/usageAlert.ts` — Usage-threshold alerting to super admins with a debounce tracker shared by several other alert modules.
 - `src/usageCostDigest.ts` — The periodic cost digest (spend, cache hit rate) sent to super admins.
 - `src/util/` — Shared leaf helpers with no dependencies of their own; currently NZ-timezone rendering for member-facing times.

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeMemberId } from '../src/auth/memberId.js';
+import { normalizeMemberId, resolveWhatsappLid } from '../src/auth/memberId.js';
 
 test('accepts a valid WhatsApp E.164 number and strips a leading +', () => {
   assert.equal(normalizeMemberId('whatsapp', '64273938855'), '64273938855');
@@ -93,4 +93,53 @@ test('a too-SHORT WhatsApp id is diagnosed as a typo, never as a LID (PR #934 re
 test('the too-LONG branch keeps its LID diagnosis, and the two messages stay distinct', () => {
   assert.throws(() => normalizeMemberId('whatsapp', '205995875803153'), /it is too long/);
   assert.throws(() => normalizeMemberId('whatsapp', '205995875803153'), /probably a WhatsApp LID/);
+});
+
+// --- LID -> phone resolution (the persisted mapping's payoff) --------------
+// A LID is the only id group metadata and `list_roster` expose, so an admin
+// genuinely cannot tell it from a number. When the adapter has LEARNED that
+// LID's phone from a real message envelope, resolve it rather than refuse —
+// refusing something we can answer is just friction.
+
+test('resolveWhatsappLid: a KNOWN LID resolves to its learned phone number', async () => {
+  const resolved = await resolveWhatsappLid('205995875803153', async (lid) => {
+    assert.equal(lid, '205995875803153', 'looks the LID up verbatim');
+    return '64272480362';
+  });
+  assert.equal(resolved, '64272480362');
+});
+
+test('resolveWhatsappLid: an UNKNOWN LID resolves to null so the caller falls through to the explanatory error', async () => {
+  assert.equal(await resolveWhatsappLid('100515186753604', async () => null), null);
+});
+
+test('resolveWhatsappLid: a normal phone number is never touched — the lookup is not even attempted', async () => {
+  let looked = false;
+  const out = await resolveWhatsappLid('64272480362', async () => {
+    looked = true;
+    return '99999999999';
+  });
+  assert.equal(out, null, 'a valid-length number is left for normalizeMemberId to accept as-is');
+  assert.equal(looked, false, 'it can never reinterpret an id that would otherwise be accepted');
+});
+
+test('resolveWhatsappLid: non-numeric input is ignored', async () => {
+  assert.equal(await resolveWhatsappLid('not-a-number', async () => '64272480362'), null);
+});
+
+test('SECURITY: a corrupt mapping cannot smuggle an invalid id past validation', async () => {
+  // If the stored phone is itself junk (another LID, a truncated number), the
+  // resolution must fail closed rather than hand the caller something
+  // normalizeMemberId would have rejected.
+  for (const bad of ['177983595790491', '123', 'lid:205995875803153', '']) {
+    assert.equal(
+      await resolveWhatsappLid('205995875803153', async () => bad),
+      null,
+      `a mapping to "${bad}" must not resolve`,
+    );
+  }
+});
+
+test('resolveWhatsappLid: a leading + on the supplied LID is tolerated', async () => {
+  assert.equal(await resolveWhatsappLid('+205995875803153', async () => '64272480362'), '64272480362');
 });

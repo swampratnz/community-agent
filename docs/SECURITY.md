@@ -1721,6 +1721,32 @@ routes a phone-shaped id to `<id>@s.whatsapp.net`, which for LID digits may be
 an unrelated real person's number. Pinned by `SECURITY:` tests using the four
 real ids from the incident.
 
+**The mapping is now persisted** (`whatsapp_lid_map`). The adapter always
+learned LID -> phone opportunistically from group envelopes (`senderPn`), but
+only into an in-memory `Map`: lost on every restart, and invisible outside the
+adapter. It is now written through to the database — the `Map` stays as the
+hot-path cache, and the durable write is fire-and-forget so a failed write
+degrades to exactly the old behaviour rather than breaking the message path.
+
+That turns a refusal into a resolution: `resolveMemberTarget` asks
+`resolveWhatsappLid` first, so an admin (or the model) who supplies a LID we
+have *learned* gets the right member added instead of an error. A LID we have
+never seen still falls through to the refusal above, because the mapping is only
+ever learned from someone actually posting — an unknown LID means "cannot
+resolve", never "not a member". The resolution is deliberately narrow: it only
+fires for ids too long to be valid member numbers anyway, so it can never
+reinterpret something that would otherwise have been accepted, and a corrupt
+mapping is re-validated through `normalizeMemberId` before use (pinned by a
+`SECURITY:` test).
+
+**PII.** A row links a privacy id to a phone number — it de-anonymises the very
+thing WhatsApp issued to avoid that — so it is personal data. `forget_me` /
+`purge_user_data` delete it with the rest of a person's data, keyed on the phone
+because one person accumulates several LIDs over time. Verified against a real
+Postgres, not asserted: a `SECURITY:` test writes two LIDs for one person, runs
+`purgeUserData`, and checks both are gone while an unrelated person's mapping
+survives.
+
 `isPhoneUserId` (5-16 digits) was deliberately **left unchanged**: it gates live
 routing (DM send, moderation actions, revoke authorship), so tightening it could
 silently stop serving an existing member with a long number. With the add-time
