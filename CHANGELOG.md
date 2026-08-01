@@ -27,6 +27,11 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-08-01
 
 ### Changed
+- **Asking the bot which Agent Skills are on now lists all of them** (#943).
+  It was naming two (`prompt-review`, `claude-code-setup`) while six were
+  actually loaded — the label was written when only those two existed and was
+  never updated as more were added. It's now generated from the real list, so
+  it can't fall behind again.
 - **Admins can now archive every WhatsApp group the bot is in, not just named
   ones** (`WHATSAPP_ARCHIVE_ALL_GROUPS`, off by default). Previously each group
   had to be listed individually; this matches how Discord archiving already

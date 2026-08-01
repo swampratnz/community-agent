@@ -99,8 +99,10 @@ const EnvSchema = z.object({
   AGENT_WEB_SEARCH_DEDUP_SIMILARITY_THRESHOLD: z.coerce.number().min(0).max(1).default(0.9),
   // Wires the SDK's Agent Skills mechanism (issue #741): when on,
   // buildQueryOptions (agent/core.ts) adds 'Skill' to the base tools array
-  // and loads the repo-bundled agent/skills/ plugin directory (skills:
-  // ['prompt-review', 'claude-code-setup'], never 'all'), and the #635
+  // and loads the repo-bundled agent/skills/ plugin directory (the skills
+  // named in agent/enabledSkills.ts, never 'all' — six of them as of
+  // #755/#757/#758/#759; that list is the single source, so do not restate it
+  // here, which is exactly how the feature_flags label went stale), and the #635
   // prompt-review checklist moves out of the always-on GUIDELINES
   // system-prompt block into skills/prompt-review/SKILL.md — a lower
   // per-turn cached-prefix token count for the overwhelming majority of

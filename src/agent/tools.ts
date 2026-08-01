@@ -1,4 +1,5 @@
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
+import { ENABLED_SKILLS } from './enabledSkills.js';
 import { z } from 'zod';
 import type { AdapterLookup, Platform, PlatformAdapter } from '../platforms/types.js';
 import { assertAtLeast, atLeast, type CallerContext } from '../auth/rbac.js';
@@ -1509,7 +1510,11 @@ export const FEATURE_FLAG_MAP: readonly FeatureFlagEntry[] = [
   {
     envVar: 'AGENT_SKILLS_ENABLED',
     configPath: 'agentSkills.enabled',
-    label: 'Agent Skills (prompt-review, claude-code-setup)',
+    // DERIVED from the allowlist, never a second hand-written copy of it: the
+    // literal this replaced named two skills and stayed that way through four
+    // more being added, so admins were told less was enabled than actually
+    // was. See agent/enabledSkills.ts.
+    label: `Agent Skills (${ENABLED_SKILLS.join(', ')})`,
     category: 'Integrations',
   },
 ] as const;
