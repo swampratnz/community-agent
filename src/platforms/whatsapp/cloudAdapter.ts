@@ -35,6 +35,7 @@ import {
 import { chunkText } from '../textChunk.js';
 import {
   paramString,
+  WindowClosedError,
   type AdminAction,
   type IncomingMessage,
   type MessageHandler,
@@ -122,19 +123,12 @@ export const WHATSAPP_CLOUD_WELCOME_MESSAGE =
  * Graph API 5xx, missing config, etc). `agent/tools.ts`'s `notifyAdmins`/
  * `notifySuperAdmins` use this to decide whether to queue the message via
  * `queueForWindowReopen` instead of only logging and dropping it.
+ *
+ * The class itself now lives in `../types.ts` so generic alert/DM send paths
+ * can `instanceof`-check it without importing a concrete adapter; this
+ * re-export keeps existing import sites working.
  */
-export class WindowClosedError extends Error {
-  readonly recipientId: string;
-
-  constructor(recipientId: string) {
-    super(
-      `Cannot send free-form WhatsApp message to ${recipientId}: outside the 24h customer-service window ` +
-        '(no recent inbound message from this user). Only pre-approved message templates can be sent here.',
-    );
-    this.name = 'WindowClosedError';
-    this.recipientId = recipientId;
-  }
-}
+export { WindowClosedError } from '../types.js';
 
 // Selected instead of WHATSAPP_CLOUD_WELCOME_MESSAGE when
 // config.rbac.accessMode.whatsapp is 'open' (issue #351) — same
