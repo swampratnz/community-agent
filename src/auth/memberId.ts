@@ -77,3 +77,36 @@ export function normalizeMemberId(platform: Platform, rawId: string): string {
   }
   return id;
 }
+
+/**
+ * Decide whether a supplied WhatsApp id is a LID we can resolve to a real
+ * phone number, and resolve it if so.
+ *
+ * Extracted from `resolveMemberTarget` so the decision is unit-testable
+ * without standing up the whole tool transport: `lookup` is injected, so a
+ * test can drive the known/unknown/not-a-LID branches directly.
+ *
+ * Returns the phone number when `rawId` is LID-shaped AND we have learned that
+ * LID's number from a real message envelope; otherwise null, meaning "not
+ * resolvable — carry on and let normalizeMemberId explain the problem".
+ *
+ * Deliberately conservative: it only ever fires for an id too long to be a
+ * valid member number anyway, so it can never reinterpret something that would
+ * otherwise have been accepted as a phone number.
+ */
+export async function resolveWhatsappLid(
+  rawId: string,
+  lookup: (lid: string) => Promise<string | null>,
+): Promise<string | null> {
+  const id = rawId.trim().replace(/^\+/, '');
+  if (!/^\d+$/.test(id) || id.length <= MAX_WHATSAPP_ID_DIGITS) return null;
+  const phone = await lookup(id);
+  if (!phone) return null;
+  // Never hand back something that would fail validation anyway — a corrupt or
+  // mis-learned mapping must not smuggle an invalid id past the gate.
+  try {
+    return normalizeMemberId('whatsapp', phone);
+  } catch {
+    return null;
+  }
+}

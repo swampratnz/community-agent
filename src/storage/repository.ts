@@ -570,3 +570,4 @@ export async function listReleaseWatchUpdatesSince(
   }
   return [...byPage.values()].slice(0, clampedLimit);
 }
+export * from './repository/whatsappLidMap.js';

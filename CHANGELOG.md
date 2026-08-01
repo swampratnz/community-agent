@@ -27,6 +27,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-08-01
 
 ### Changed
+- **The bot now remembers which WhatsApp privacy id belongs to which number.**
+  WhatsApp gives people a phone number and a separate "privacy id", and only the
+  number identifies someone here. The bot already worked out the link when it
+  saw someone post in a group, but forgot it whenever it restarted — so adding
+  that person could fail for no visible reason. It now remembers, which means
+  adding a member usually just works instead of needing their number looked up
+  by hand. The link is personal data and is deleted along with everything else
+  when someone asks to be forgotten.
 - **`forget_me` and `purge_user_data` no longer claim unqualified deletion for
   a project member** (#930). #927/#929 made project-note retention (a note a
   departing member wrote stays with the team, authorship unlinked) this

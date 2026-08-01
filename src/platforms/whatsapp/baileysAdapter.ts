@@ -25,6 +25,7 @@ import {
   unblockUser,
   updateInteractionByMessageId,
   upsertRosterMember,
+  rememberLidPhone,
 } from '../../storage/repository.js';
 import { isSuperAdmin, resolveRole } from '../../auth/roles.js';
 import { atLeast } from '../../auth/rbac.js';
@@ -760,7 +761,17 @@ export class BaileysAdapter implements PlatformAdapter {
     const senderNumber = senderPhoneNumber(msg, isGroup);
     const rawFallback = jidLocalPart(isGroup ? msg.key.participant : remoteJid);
     if (isGroup && isLidJid(msg.key.participant) && senderNumber) {
-      this.lidToPhone.set(rawFallback, senderNumber);
+      // Write THROUGH: the Map stays the hot-path cache (this runs on every
+      // group message, so it must not await a query), and the durable copy is
+      // written fire-and-forget behind it. A failed write degrades to exactly
+      // the old in-memory-only behaviour, so it must never break the message
+      // path — hence the catch. See storage/repository/whatsappLidMap.ts.
+      if (this.lidToPhone.get(rawFallback) !== senderNumber) {
+        this.lidToPhone.set(rawFallback, senderNumber);
+        void rememberLidPhone(rawFallback, senderNumber).catch((err) =>
+          logger.warn({ err }, 'Persisting the WhatsApp LID->phone mapping failed (cache still set)'),
+        );
+      }
     }
     return senderNumber || (rawFallback ? lidFallbackId(rawFallback) : 'unknown');
   }

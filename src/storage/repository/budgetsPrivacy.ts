@@ -259,6 +259,16 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
     // access is `project_members`, which IS platform-qualified above. Fixing it
     // properly needs a platform column on all three, which is a repo-wide
     // change, not a project-local one.
+    // WhatsApp LID -> phone mapping (schema.sql, docs/SECURITY.md §6b). This
+    // row de-anonymises a privacy id, so it is squarely personal data and must
+    // not survive an erasure request. Keyed on the PHONE because that is what
+    // `userId` is for a WhatsApp identity, and one person can accumulate more
+    // than one LID over time. Deleted, not nulled: unlike a project note there
+    // is nothing shared to preserve here, it is pure identity.
+    if (platform === 'whatsapp') {
+      await client.query(`DELETE FROM whatsapp_lid_map WHERE phone = $1`, [userId]);
+    }
+
     await client.query(`UPDATE projects SET created_by = NULL WHERE created_by = $1`, [userId]);
     await client.query(`UPDATE project_members SET added_by = NULL WHERE added_by = $1`, [userId]);
     await client.query(`UPDATE project_surfaces SET bound_by = NULL WHERE bound_by = $1`, [userId]);
