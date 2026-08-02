@@ -7,7 +7,7 @@ import {
   recordAdminLeverageAlertSent,
   wasAdminLeverageAlertSentRecently,
 } from './storage/repository.js';
-import { startTrackedJob } from './backgroundJobs.js';
+import { startTrackedJob } from './jobs/trackedJob.js';
 import { alertSuperAdmins } from './departedAdminAlert.js';
 import type { JobSpec } from './jobs/types.js';
 import type { PlatformAdapter } from './platforms/types.js';

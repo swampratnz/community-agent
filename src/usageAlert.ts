@@ -1,7 +1,7 @@
 import { config } from './config.js';
 import { logger } from './logger.js';
 import { usageStats } from './storage/repository.js';
-import { BACKGROUND_JOB_FAILURE_ALERT_THRESHOLD } from './backgroundJobs.js';
+import { BACKGROUND_JOB_FAILURE_ALERT_THRESHOLD } from './jobs/trackedJob.js';
 import {
   buildJobFailureAlert,
   initialJobFailureTracker,

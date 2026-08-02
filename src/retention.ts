@@ -1,7 +1,7 @@
 import { config } from './config.js';
 import { logger } from './logger.js';
 import { purgeDepartedRoster, purgeOldAccessRequests, purgeOldInteractions } from './storage/repository.js';
-import { startTrackedJob } from './backgroundJobs.js';
+import { startTrackedJob } from './jobs/trackedJob.js';
 import type { BackgroundJobName } from './backgroundJobHealth.js';
 import type { JobSpec } from './jobs/types.js';
 import type { PlatformAdapter } from './platforms/types.js';

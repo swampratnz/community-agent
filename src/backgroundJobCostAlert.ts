@@ -1,6 +1,6 @@
 import { config } from './config.js';
 import { logger } from './logger.js';
-import { startTrackedJob } from './backgroundJobs.js';
+import { startTrackedJob } from './jobs/trackedJob.js';
 import { sumBackgroundJobCosts, type BackgroundJob } from './storage/repository.js';
 import { alertSuperAdmins as sendSuperAdminAlert } from './notifications.js';
 import type { JobSpec } from './jobs/types.js';

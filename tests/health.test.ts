@@ -32,7 +32,7 @@ const { WhatsAppCloudAdapter } = await import('../src/platforms/whatsapp/cloudAd
 const { logger } = await import('../src/logger.js');
 // Cross-producer cap test below (issue #545) drives the OTHER two shared-
 // queue producers directly, without their own test files' env/setup.
-const { startTrackedJob } = await import('../src/backgroundJobs.js');
+const { startTrackedJob } = await import('../src/jobs/trackedJob.js');
 const { notifyReportFiled } = await import('../src/agent/tools.js');
 // One of #593's four new pending-alert-queue producers, imported directly to
 // prove the flush path (unmodified since #545) also drains a message queued

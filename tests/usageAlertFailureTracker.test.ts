@@ -65,7 +65,7 @@ async function modules(t: { mock: { module: (specifier: string, opts: unknown) =
         { getJobHealthSnapshot, resetJobHealthRegistryForTests },
       ] = await Promise.all([
         import('../src/usageAlert.js'),
-        import('../src/backgroundJobs.js'),
+        import('../src/jobs/trackedJob.js'),
         import('../src/backgroundJobHealth.js'),
       ]);
       return {

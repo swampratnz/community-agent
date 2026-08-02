@@ -1,6 +1,6 @@
 import { config } from './config.js';
 import { logger } from './logger.js';
-import { startTrackedJob } from './backgroundJobs.js';
+import { startTrackedJob } from './jobs/trackedJob.js';
 import {
   answerFeedbackOriginSummary,
   answerFeedbackWeeklySummary,

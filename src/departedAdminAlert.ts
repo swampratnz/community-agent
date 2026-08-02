@@ -1,7 +1,7 @@
 import { config } from './config.js';
 import { logger } from './logger.js';
 import { listAdminRoster, type AdminRosterEntry } from './storage/repository.js';
-import { startTrackedJob } from './backgroundJobs.js';
+import { startTrackedJob } from './jobs/trackedJob.js';
 import { initialUsageAlertTracker, stepUsageAlertTracker } from './usageAlert.js';
 import { alertSuperAdmins as sendSuperAdminAlert } from './notifications.js';
 import type { JobSpec } from './jobs/types.js';
