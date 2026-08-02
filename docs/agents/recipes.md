@@ -58,7 +58,7 @@ The single most common change, and the one with the most gates.
 | `src/agent/tools.ts` | The tool definition, its input schema, and its **tier requirement**. |
 | `src/agent/core.ts` | Only if the tool needs a new gating rule — the tool surface is derived from the caller's tier here. |
 | `src/agent/pendingActions.ts` | **If the tool is destructive.** It must register a pending action for the router to execute after an explicit confirmation, never act directly. |
-| `src/agent/systemPrompt.ts` | Only if members need to be told the capability exists. |
+| `src/agent/communityPromptSections.ts` | Only if members need to be told the capability exists (the community prose sections; `systemPrompt.ts`/`promptSpine.ts` own assembly and the security spine). Any prompt-text change must regenerate `tests/fixtures/systemPromptByteStability.json` in the same diff. |
 | `tests/` + `tests/security-floor.json` | A `SECURITY:` test for the tier gate, plus the manifest bump in the **same diff**. |
 
 Two invariants that are not negotiable: a privileged tool **re-asserts the

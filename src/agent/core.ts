@@ -1,5 +1,3 @@
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import {
   query,
   type HookJSONOutput,
@@ -42,7 +40,11 @@ import {
   reserveWebSearchSlot,
   withWebSearchDedupLock,
 } from './webSearchGuard.js';
-import { ENABLED_SKILLS } from './enabledSkills.js';
+import { skillsManifest } from './skillsManifest.js';
+// Side-effect import: registers the community skills manifest ({skillsDir,
+// enabledSkills}) before any turn can read it. Phase 2 of the agent-base
+// plan replaces this with composition-root injection.
+import './enabledSkills.js';
 import {
   initialUsageLimitTracker,
   isUsageLimitFailure,
@@ -249,24 +251,6 @@ export function filterFeatureFlaggedTools(tools: string[]): string[] {
 }
 
 /**
- * Repo-bundled Agent Skills plugin directory (issue #741), resolved the same
- * way the schema manifest locates its fragments: relative to this file's own
- * compiled location, so it resolves to src/agent/skills in dev (tsx) and
- * dist/agent/skills in the built artifact (package.json's build script
- * copies it there, mirroring the existing schema-fragments copy step). Contains
- * only a `.claude-plugin/plugin.json` manifest and static per-skill
- * `skills/<name>/SKILL.md` files (currently `prompt-review`,
- * `model-and-plan-selection` per issue #758, `agent-architecture-review` per
- * issue #755, `project-showcase` per issue #759, `claude-code-setup` per
- * issue #757, and `getting-started` per issue #776) — no
- * hooks/agents/commands/.mcp.json — so nothing beyond those
- * static markdown skill bodies is ever loadable from
- * it (pinned by a dedicated test).
- */
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const SKILLS_DIR = join(__dirname, 'skills');
-
-/**
  * Build the SDK query options for one turn. Extracted (and exported) so the
  * security invariants are regression-testable:
  *  - built-in Claude Code tools are disabled via `tools` (empty for members;
@@ -391,12 +375,18 @@ export function buildQueryOptions(
     ...(resumeSession ? { resume: resumeSession } : {}),
     // Don't load the host machine's ~/.claude config into the agent.
     settingSources: [] as [],
-    // Agent Skills (issue #741): loads exactly the repo-bundled skills
-    // plugin — never a runtime-derived path or allowlist. Unset/disabled,
-    // this object carries neither key at all (not empty-valued), so the
-    // returned options are byte-identical to pre-#741 behaviour.
+    // Agent Skills (issue #741): loads exactly the registered skills
+    // manifest — the repo-bundled plugin directory and the literal
+    // hand-written allowlist (enabledSkills.ts), with the never-'all'
+    // invariant enforced at registration by skillsManifest.ts — never a
+    // runtime-derived path or allowlist. Unset/disabled, this object carries
+    // neither key at all (not empty-valued), so the returned options are
+    // byte-identical to pre-#741 behaviour.
     ...(config.agentSkills.enabled
-      ? { plugins: [{ type: 'local' as const, path: SKILLS_DIR }], skills: [...ENABLED_SKILLS] }
+      ? {
+          plugins: [{ type: 'local' as const, path: skillsManifest().skillsDir }],
+          skills: [...skillsManifest().enabledSkills],
+        }
       : {}),
     ...(webSearch
       ? {

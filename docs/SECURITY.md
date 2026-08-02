@@ -132,6 +132,23 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   instructs the model to treat recalled/tool-returned chat content as data,
   never instructions. This mitigates stored prompt injection; it does not
   eliminate it — see "Residual risks".
+- **The system prompt's security spine is base-owned** (agent-base Phase 1
+  item 8): `buildSystemPrompt` is a slot assembler (`src/agent/promptSpine.ts`
+  + `src/agent/systemPrompt.ts`) whose top-level slot order is a frozen base
+  constant. The injection-defence/RBAC clauses are base constants rendered at
+  hard-coded positions; a module registers CONTENT for a closed slot set
+  (charter, the behaviour-guideline chunks, web-search authority domains,
+  date grounding — plus the persona roster and the skills manifest via their
+  own registries), and **no registration API can insert, remove, reorder,
+  rename, or precede a spine clause** — an unknown slot name throws, and a
+  second registration throws instead of swapping content after boot. The
+  skills manifest re-asserts the never-`'all'` allowlist invariant at
+  registration and freezes the registered list; the persona roster is
+  append-only with exactly one immutable default. Pinned by `SECURITY:` tests
+  in `tests/systemPromptSlots.test.ts`; the assembled output itself is
+  byte-pinned per (role, policy, persona, day) by
+  `tests/systemPromptByteStability.test.ts`, protecting the prompt cache from
+  silent reassembly drift.
 - **Privileged targets are validated**: `moderate`/`announce`/`create_poll`/
   `end_poll`/`create_thread`/`archive_thread` refuse targets
   (conversations/users) the bot has never seen, so a manipulated admin turn
