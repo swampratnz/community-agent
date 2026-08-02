@@ -33,7 +33,7 @@ import { formatNzEventTime } from '../../util/nzTime.js';
 import { logger, hashId } from '../../logger.js';
 import { filterOutbound } from '../../agent/outbound.js';
 import { runtimeSecrets } from '../../agent/secrets.js';
-import { reserveVoiceTranscriptionSlot, reserveImageInputDaily } from '../../agent/tools.js';
+import { reserveVoiceTranscriptionSlot, reserveImageInputDaily } from '../../agent/rateReservers.js';
 import { transcribeVoiceNote } from '../../media/voiceTranscribe.js';
 import {
   VOICE_LANGUAGE_CAVEAT_TEXT_MI,

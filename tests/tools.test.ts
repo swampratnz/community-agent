@@ -84,10 +84,10 @@ const {
   ANNOUNCE_RATE_LIMIT_PER_HOUR,
   EVENTS_LIST_LIMIT,
   APPEAL_MODERATION_REASON_MAX_CHARS,
-  reserveVoiceTranscriptionSlot,
   HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER,
   PROJECT_NOTE_RETENTION_NOTICE,
 } = await import('../src/agent/tools.js');
+const { reserveVoiceTranscriptionSlot } = await import('../src/agent/rateReservers.js');
 const { filterOutbound } = await import('../src/agent/outbound.js');
 const {
   MODERATION_ACTION_KINDS,

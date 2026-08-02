@@ -1,7 +1,6 @@
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import type { AdapterLookup, PlatformAdapter } from '../platforms/types.js';
 import type { CallerContext } from '../auth/rbac.js';
-import { makeCalendarDayReserver, makeSlidingWindowReserver } from '../util/rateReservation.js';
 import { KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD, getLanguagePreference } from '../storage/repository.js';
 import { makeToolContext } from './tools/context.js';
 import { TOOL_REGISTRY } from './tools/index.js';
@@ -95,19 +94,6 @@ export { COMMUNITY_GUIDELINES_MAX_CHARS, WELCOME_MESSAGE_MAX_CHARS } from './too
 export { KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD };
 
 /**
- * Discord image-attachment fetches per platform-qualified sender, for the
- * rolling calendar-day cap (IMAGE_INPUT_DAILY_LIMIT_PER_USER, issue #783) —
- * same calendar-day shape as reserveImageGenDaily/reserveDevTeamDispatchDaily,
- * bounding the real per-image multimodal token cost a single caller could run
- * up. Checked in the adapter BEFORE the MIME/byte check and any fetch, per
- * the acceptance criteria, so an at-cap sender never has their attachment
- * inspected further. `key` MUST be platform-qualified (`` `discord:${senderId}` ``)
- * even though only Discord implements image input today, matching the
- * defensive convention `reserveVoiceTranscriptionSlot` already established.
- */
-export const reserveImageInputDaily = makeCalendarDayReserver();
-
-/**
  * The WebSearch guard itself (volume cap, query dedup, per-conversation
  * lock) lives in `webSearchGuard.ts` — WebSearch is a built-in SDK tool
  * gated by `core.ts`'s PreToolUse hook, not one of this file's MCP tools.
@@ -120,24 +106,6 @@ export {
   isDuplicateWebSearchQuery,
   recordWebSearchQuery,
 } from './webSearchGuard.js';
-
-/**
- * Reserve one voice-transcription slot for `key` against a rolling hourly
- * cap (issue #507; platform-qualified in issue #732 —
- * `config.whatsapp.voice.rateLimitPerHour` /
- * `config.discord.voice.rateLimitPerHour`). Per-sender rather than
- * per-conversation (unlike `reserveWebSearchSlot`) since this bounds one
- * person's own audio volume, not a shared conversation. Returns false
- * without reserving if the sender already hit `limit` within the last hour.
- * Called from `BaileysAdapter`/`DiscordAdapter` BEFORE any media download,
- * so a refused slot never triggers a download/decode/model run. Callers must
- * skip this entirely when `limit` is 0 (unlimited) so the default
- * configuration does no bookkeeping. `key` MUST be platform-qualified
- * (e.g. `` `whatsapp:${senderId}` ``/`` `discord:${senderId}` ``) — a bare
- * sender id would let a WhatsApp phone number and a Discord snowflake that
- * happen to collide share one quota bucket across platforms (issue #732).
- */
-export const reserveVoiceTranscriptionSlot = makeSlidingWindowReserver(60 * 60 * 1000);
 
 /**
  * Turn-scoped, mutable correlation state threaded in from `execTurn` (issue
