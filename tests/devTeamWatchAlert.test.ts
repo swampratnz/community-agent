@@ -189,8 +189,8 @@ test("startDevTeamWatchPoller: records 'dev-team-watch' in the shared job-health
     t.mock.timers.tick(POLL_MS);
     await flush(); // 2nd run succeeds
     snap = getJobHealthSnapshot()['dev-team-watch'];
-    assert.equal(snap!.consecutiveFailures, 0, 'a success resets consecutiveFailures in the registry');
-    assert.ok(snap!.lastSuccessAt !== null, 'a success records a lastSuccessAt in the registry');
+    assert.equal(snap.consecutiveFailures, 0, 'a success resets consecutiveFailures in the registry');
+    assert.ok(snap.lastSuccessAt !== null, 'a success records a lastSuccessAt in the registry');
   } finally {
     clearInterval(timer!);
   }

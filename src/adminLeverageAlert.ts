@@ -9,6 +9,7 @@ import {
 } from './storage/repository.js';
 import { startTrackedJob } from './backgroundJobs.js';
 import { alertSuperAdmins } from './departedAdminAlert.js';
+import type { JobSpec } from './jobs/types.js';
 import type { PlatformAdapter } from './platforms/types.js';
 
 /**
@@ -102,3 +103,10 @@ export function startAdminLeverageAlert(
 ): ReturnType<typeof setInterval> | null {
   return startTrackedJob('admin-leverage-alert', adapters, config.adminLeverageAlert.enabled, runOnce);
 }
+
+// Registry entry (see src/jobs/registry.ts) — gate mirrors startAdminLeverageAlert's own flag.
+export const adminLeverageAlertJob: JobSpec = {
+  name: 'admin-leverage-alert',
+  enabled: (cfg) => cfg.adminLeverageAlert.enabled,
+  start: (adapters) => startAdminLeverageAlert(adapters),
+};

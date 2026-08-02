@@ -63,6 +63,14 @@ async function modules(t: { mock: { module: (specifier: string, opts: unknown) =
     t.mock.module('../src/storage/repository.js', {
       namedExports: { ...realRepo, recordBackgroundJobCost: spyRecordBackgroundJobCost },
     });
+    // builder.ts/knowledgeRefresh.ts import recordBackgroundJobCost from the
+    // owning domain module directly (the storage-split cycle break repointed
+    // src/context/ off the barrel), so the spy must cover that specifier too —
+    // moderator.ts still reaches it through the barrel mock above.
+    const realAdminStats = await import('../src/storage/repository/adminStats.js');
+    t.mock.module('../src/storage/repository/adminStats.js', {
+      namedExports: { ...realAdminStats, recordBackgroundJobCost: spyRecordBackgroundJobCost },
+    });
     modulesPromise = Promise.all([
       import('../src/moderation/moderator.js'),
       import('../src/context/builder.js'),

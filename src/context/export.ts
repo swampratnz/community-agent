@@ -4,7 +4,7 @@ import { dirname, resolve } from 'node:path';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import { closeDb } from '../storage/db.js';
-import { listContextDigests, type ContextDigest } from '../storage/repository.js';
+import { listContextDigests, type ContextDigest } from '../storage/repository/contextDigests.js';
 
 /**
  * Anonymised community-context export (issue #53): renders `context_digests`

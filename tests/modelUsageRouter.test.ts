@@ -16,7 +16,7 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 
 const { pool, closeDb } = await import('../src/storage/db.js');
-const { Router } = await import('../src/router.js');
+const { Router, makeRouterDeps } = await import('../src/router.js');
 const { embed } = await import('../src/storage/embeddings.js');
 
 await embed('warmup').catch(() => {});
@@ -106,12 +106,14 @@ test(
   async () => {
     const conversationId = `${RUN}-hit`;
     const router = new Router(
-      async () => ({
-        text: 'the answer',
-        ok: true,
-        modelUsage: { 'claude-sonnet-5': 1.23, 'claude-haiku-4-5': 0.04 },
+      makeRouterDeps({
+        runTurn: async () => ({
+          text: 'the answer',
+          ok: true,
+          modelUsage: { 'claude-sonnet-5': 1.23, 'claude-haiku-4-5': 0.04 },
+        }),
+        typingRefireMs: 20,
       }),
-      20,
     );
     const { adapter, sent, trigger } = makeAdapter();
     router.register(adapter);
@@ -129,7 +131,9 @@ test(
   { skip: !hasDb },
   async () => {
     const conversationId = `${RUN}-absent`;
-    const router = new Router(async () => ({ text: 'a normal answer', ok: true }), 20);
+    const router = new Router(
+      makeRouterDeps({ runTurn: async () => ({ text: 'a normal answer', ok: true }), typingRefireMs: 20 }),
+    );
     const { adapter, sent, trigger } = makeAdapter();
     router.register(adapter);
 
@@ -146,7 +150,12 @@ test(
   { skip: !hasDb },
   async () => {
     const conversationId = `${RUN}-empty`;
-    const router = new Router(async () => ({ text: 'a normal answer', ok: true, modelUsage: {} }), 20);
+    const router = new Router(
+      makeRouterDeps({
+        runTurn: async () => ({ text: 'a normal answer', ok: true, modelUsage: {} }),
+        typingRefireMs: 20,
+      }),
+    );
     const { adapter, sent, trigger } = makeAdapter();
     router.register(adapter);
 

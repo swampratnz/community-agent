@@ -62,15 +62,17 @@ export interface HealthzPayload {
  * job whose tracker has crossed its own alert threshold (`alerted === true` —
  * a CONFIRMED outage, not a single sub-threshold blip) also flips the
  * top-level `status` to `"degraded"`, the same signal `db`/`adapters` already
- * contribute. Never widen this beyond the fixed enum key + integer + ISO
- * timestamp fields below: `/healthz` is unauthenticated and world-reachable if
+ * contribute. Never widen this beyond the fixed registered job-name key
+ * (a literal in the job's owning module — see src/jobs/registry.ts — never a
+ * runtime-derived string) + integer + ISO timestamp fields below: `/healthz`
+ * is unauthenticated and world-reachable if
  * `HEALTH_HOST` is opened, so no dynamic string (an error message, a stack)
  * may ever reach this payload.
  */
 export function buildHealthzPayload(
   dbOk: boolean,
   adapterStatus: Record<string, boolean>,
-  jobHealth?: Partial<Record<BackgroundJobName, JobHealthSnapshot>>,
+  jobHealth?: Record<BackgroundJobName, JobHealthSnapshot>,
 ): HealthzPayload {
   const entries = jobHealth ? Object.entries(jobHealth) : [];
   const anyJobAlerted = entries.some(([, snapshot]) => snapshot.alerted);

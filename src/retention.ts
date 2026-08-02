@@ -3,6 +3,7 @@ import { logger } from './logger.js';
 import { purgeDepartedRoster, purgeOldAccessRequests, purgeOldInteractions } from './storage/repository.js';
 import { startTrackedJob } from './backgroundJobs.js';
 import type { BackgroundJobName } from './backgroundJobHealth.js';
+import type { JobSpec } from './jobs/types.js';
 import type { PlatformAdapter } from './platforms/types.js';
 
 const DAY_MS = 24 * 60 * 60_000;
@@ -93,3 +94,24 @@ export function startAccessRequestRetentionPurge(
     logMessage: 'Purged stale pending access requests (retention policy)',
   });
 }
+
+// Registry entries (see src/jobs/registry.ts). Each `enabled` mirrors the
+// `days > 0` gate startRetentionJob already passes to startTrackedJob —
+// declarative metadata only, pinned by tests/jobsRegistry.test.ts.
+export const interactionRetentionPurgeJob: JobSpec = {
+  name: 'interaction-retention-purge',
+  enabled: (cfg) => cfg.behaviour.interactionRetentionDays > 0,
+  start: (adapters) => startRetentionPurge(adapters),
+};
+
+export const rosterRetentionPurgeJob: JobSpec = {
+  name: 'roster-retention-purge',
+  enabled: (cfg) => cfg.behaviour.rosterDepartedRetentionDays > 0,
+  start: (adapters) => startRosterRetentionPurge(adapters),
+};
+
+export const accessRequestRetentionPurgeJob: JobSpec = {
+  name: 'access-request-retention-purge',
+  enabled: (cfg) => cfg.behaviour.accessRequestRetentionDays > 0,
+  start: (adapters) => startAccessRequestRetentionPurge(adapters),
+};

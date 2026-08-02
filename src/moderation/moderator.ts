@@ -2,6 +2,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import { makeAlertSlotReserver } from '../notifications.js';
+import { notice } from '../strings/notices.js';
 import type { Platform } from '../platforms/types.js';
 import {
   recordBackgroundJobCost,
@@ -84,19 +85,12 @@ export interface ModeratorDeps {
   enforcer: ModerationEnforcer;
 }
 
-const MUTED_ROLE_NOTE = 'You can post again once an admin clears your warnings.';
+// The warn/block DM texts live in the strings catalogue (agent-base plan
+// item 6, `strings/notices.ts` entries `warnDm`/`blockedDm`/`mutedRoleNote`);
+// these derived consts keep every existing import site and pinned test value
+// byte-identical.
 
-// Fixed, human-authored te reo Māori variant (issue #333), same trust level
-// as MUTED_ROLE_NOTE: no model call, no translation, no injection surface.
-const MUTED_ROLE_NOTE_MI =
-  'Ka taea anō e koe te tuhi i te wā e whakawāteatia ai ō whakatūpato e tētahi kaiwhakahaere.';
-
-export function warnDmText(active: number, limit: number): string {
-  return (
-    `⚠️ A moderator warning was recorded for your message (${active}/${limit}). ` +
-    `Please keep it respectful. At ${limit} warnings you'll be temporarily unable to post.`
-  );
-}
+export const warnDmText = notice('warnDm');
 
 // Fixed, human-authored te reo Māori variant (issue #333), served instead of
 // warnDmText to a member with a standing 'mi' language_prefs row
@@ -104,12 +98,7 @@ export function warnDmText(active: number, limit: number): string {
 // model call, no translation, no injection surface. Mirrors the
 // pauseNotice.ts/rateLimitNotice.ts/dailyBudgetNotice.ts `_MI` pattern
 // (issue #300).
-export function warnDmTextMi(active: number, limit: number): string {
-  return (
-    `⚠️ Kua tuhia he whakatūpato mō tō karere (${active}/${limit}). ` +
-    `Kia āta kōrero. Ka eke koe ki te ${limit}, ka aukatia koe mō tētahi wā poto.`
-  );
-}
+export const warnDmTextMi = notice('warnDm', { language: 'mi' });
 
 // Fixed, human-authored plain-language variant (issue #657, extending #430's
 // _PLAIN pattern to this file), served instead of warnDmText to a member
@@ -117,31 +106,20 @@ export function warnDmTextMi(active: number, limit: number): string {
 // #126) whose language preference is NOT 'mi' — 'mi' takes precedence over
 // 'plain'. Same trust level as warnDmText: no model call, no translation, no
 // injection surface.
-export function warnDmTextPlain(active: number, limit: number): string {
-  return (
-    `⚠️ You got a warning (${active}/${limit}). Please be respectful. ` +
-    `At ${limit} warnings, you won't be able to post for a while.`
-  );
-}
+export const warnDmTextPlain = notice('warnDm', { style: 'plain' });
 
-export function blockedDmText(): string {
-  return `⛔ You've reached the warning limit and can no longer post in the server. ${MUTED_ROLE_NOTE}`;
-}
+export const blockedDmText = notice('blockedDm');
 
 // Fixed, human-authored te reo Māori variant (issue #333) of blockedDmText,
 // same pattern/trust level as warnDmTextMi above.
-export function blockedDmTextMi(): string {
-  return `⛔ Kua eke koe ki te tepe whakatūpato, kāore koe e taea te tuhi anō i roto i te hapori. ${MUTED_ROLE_NOTE_MI}`;
-}
+export const blockedDmTextMi = notice('blockedDm', { language: 'mi' });
 
 // Fixed, human-authored plain-language variant (issue #657) of
 // blockedDmText, same pattern/trust level as warnDmTextPlain above. Reuses
-// MUTED_ROLE_NOTE (not a separate _PLAIN constant) since that shell is
-// already short/plain by construction — the same reasoning #430 used to skip
-// a _PLAIN counterpart for CANCEL_TEXT.
-export function blockedDmTextPlain(): string {
-  return `⛔ You've reached the warning limit. You can't post in the server right now. ${MUTED_ROLE_NOTE}`;
-}
+// the base MUTED_ROLE_NOTE shell (not a separate _PLAIN constant) since that
+// shell is already short/plain by construction — the same reasoning #430
+// used to skip a _PLAIN counterpart for CANCEL_TEXT.
+export const blockedDmTextPlain = notice('blockedDm', { style: 'plain' });
 
 /**
  * Public, in-channel warning shown where the message was posted. Deliberately
@@ -286,11 +264,7 @@ export class Moderator {
         'block-channel',
       );
       await this.safe(
-        () =>
-          this.deps.enforcer.warnUser(
-            ctx.userId,
-            lang === 'mi' ? blockedDmTextMi() : style === 'plain' ? blockedDmTextPlain() : blockedDmText(),
-          ),
+        () => this.deps.enforcer.warnUser(ctx.userId, notice('blockedDm', { language: lang, style })()),
         'block-dm',
       );
       await this.safe(() => this.postAlert(blockedAlertText(ctx, active, hit)), 'block-alert');
@@ -307,11 +281,7 @@ export class Moderator {
         () =>
           this.deps.enforcer.warnUser(
             ctx.userId,
-            lang === 'mi'
-              ? warnDmTextMi(active, this.deps.strikeLimit)
-              : style === 'plain'
-                ? warnDmTextPlain(active, this.deps.strikeLimit)
-                : warnDmText(active, this.deps.strikeLimit),
+            notice('warnDm', { language: lang, style })(active, this.deps.strikeLimit),
           ),
         'warn-dm',
       );

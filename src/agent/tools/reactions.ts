@@ -44,6 +44,12 @@ export const reactionsTools = [
       'no other emoji, custom, or Nitro emoji can be used. Defaults to the message that triggered this ' +
       'turn when messageId is omitted. Works on Discord and WhatsApp (both Baileys and Cloud API).',
     minTier: 'member',
+    // No `platforms` restriction, and the capability invariant now ENFORCES
+    // that: both platforms declare 'react_to_message' (WhatsApp's set is the
+    // union over its providers), so a future edit narrowing this def to
+    // ['discord'] fails assertToolAvailabilityConsistent — the deliberate-
+    // inclusion history from rbac's old hand-maintained list, made structural.
+    requiresCapability: 'react_to_message',
     readOnlyHint: false,
     schema: {
       emoji: z

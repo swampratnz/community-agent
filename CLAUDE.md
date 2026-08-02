@@ -71,7 +71,9 @@ orientation and never authority. If it is wrong, fix it in your PR.
   check keeps failing until someone writes the one-line description. A fixer
   that auto-satisfied this gate would let modules enter the tree undescribed,
   which is the exact rot it exists to prevent. Runs in CI's `lint` job.
-- `npm run build` — tsc + copies `schema.sql` into `dist/`.
+- `npm run build` — tsc + copies the `src/storage/schema/` fragments into
+  `dist/`, then smoke-checks that `dist/storage/schema/` matches the manifest
+  (`scripts/check-dist-schema.mjs`).
 - DB-touching changes: CI runs `tests/repository.test.ts` against a real
   `pgvector/pgvector:pg16` service container (see `.github/workflows/ci.yml`),
   so this is enforced, not just a manual reminder. Do it locally too for the

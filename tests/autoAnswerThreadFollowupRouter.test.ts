@@ -35,7 +35,7 @@ process.env.AUTO_ANSWER_RATE_LIMIT_PER_HOUR = '2';
 
 const { config } = await import('../src/config.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
-const { Router } = await import('../src/router.js');
+const { Router, makeRouterDeps } = await import('../src/router.js');
 const { ADMIN_TOOLS, MEMBER_TOOLS, SUPER_ADMIN_TOOLS, toolsForRole } = await import('../src/auth/rbac.js');
 type Tier = Parameters<typeof toolsForRole>[0];
 const { embed } = await import('../src/storage/embeddings.js');
@@ -120,10 +120,15 @@ function makeReply(text: string): AgentReply {
 
 test('auto-answer: an unaddressed follow-up inside a bot-opened auto-answer thread is answered in-thread, no second thread (issue #519, AC1)', async () => {
   let calls = 0;
-  const router = new Router(async () => {
-    calls += 1;
-    return makeReply('here is your answer');
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => {
+        calls += 1;
+        return makeReply('here is your answer');
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, sent, threadCalls, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -151,10 +156,15 @@ test('auto-answer: a follow-up past the TTL (thread mapping swept) reverts to me
   t.mock.timers.enable({ apis: ['setInterval', 'Date'], now: 0 });
   try {
     let calls = 0;
-    const router = new Router(async () => {
-      calls += 1;
-      return makeReply('answer');
-    }, 20);
+    const router = new Router(
+      makeRouterDeps({
+        runTurn: async () => {
+          calls += 1;
+          return makeReply('answer');
+        },
+        typingRefireMs: 20,
+      }),
+    );
     const { adapter, sent, threadCalls, trigger } = makeAdapter();
     router.register(adapter);
 
@@ -187,10 +197,15 @@ test('auto-answer: a follow-up past the TTL (thread mapping swept) reverts to me
 
 test('SECURITY: a thread follow-up reserves the per-channel cap against the PARENT channel, not the thread id (issue #519, AC3)', async () => {
   let calls = 0;
-  const router = new Router(async () => {
-    calls += 1;
-    return makeReply('answer');
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => {
+        calls += 1;
+        return makeReply('answer');
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, sent, threadCalls, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -219,11 +234,16 @@ test('SECURITY: a thread follow-up reserves the per-channel cap against the PARE
 test('SECURITY: a thread follow-up resolves the exact member/guest tool surface, and a bot-authored follow-up is never auto-answered (issue #519, AC4)', async () => {
   let seenRole: Tier | undefined;
   let calls = 0;
-  const router = new Router(async (caller) => {
-    calls += 1;
-    seenRole = caller.role;
-    return makeReply('answer');
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async (caller) => {
+        calls += 1;
+        seenRole = caller.role;
+        return makeReply('answer');
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, sent, threadCalls, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -273,10 +293,15 @@ test('auto-answer: a follow-up refreshes the thread TTL, sliding it past the ori
   t.mock.timers.enable({ apis: ['setInterval', 'Date'], now: 0 });
   try {
     let calls = 0;
-    const router = new Router(async () => {
-      calls += 1;
-      return makeReply('answer');
-    }, 20);
+    const router = new Router(
+      makeRouterDeps({
+        runTurn: async () => {
+          calls += 1;
+          return makeReply('answer');
+        },
+        typingRefireMs: 20,
+      }),
+    );
     const { adapter, sent, threadCalls, trigger } = makeAdapter();
     router.register(adapter);
 
@@ -330,25 +355,30 @@ test('auto-answer: a follow-up refreshes the thread TTL, sliding it past the ori
 test('SECURITY: parent is preserved unchanged across refreshes — a CONFIRM typed after follow-ups still resolves the original parent-scoped pending action (issue #542, AC4+AC7)', async () => {
   const userId = `${RUN}-member-542-parent`;
   let executed = false;
-  const router = new Router(async (caller) => {
-    // Only the origin-post turn registers the pending action, against the
-    // PARENT channel — exactly as a real requireConfirm-gated tool would. Keyed
-    // on `caller.conversationId === AUTO_CHAN` so the later in-thread follow-up
-    // turn does NOT also register a (thread-keyed) action; this test is
-    // specifically about the parent action surviving refreshes, which is the
-    // origin-post fallback path preserved by the audit-M1 own-id-first fix.
-    if (caller.conversationId === AUTO_CHAN && !executed) {
-      registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
-        description: `${RUN} delete your data`,
-        minTier: 'guest',
-        execute: async () => {
-          executed = true;
-          return 'Deleted.';
-        },
-      });
-    }
-    return makeReply('Are you sure?');
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async (caller) => {
+        // Only the origin-post turn registers the pending action, against the
+        // PARENT channel — exactly as a real requireConfirm-gated tool would. Keyed
+        // on `caller.conversationId === AUTO_CHAN` so the later in-thread follow-up
+        // turn does NOT also register a (thread-keyed) action; this test is
+        // specifically about the parent action surviving refreshes, which is the
+        // origin-post fallback path preserved by the audit-M1 own-id-first fix.
+        if (caller.conversationId === AUTO_CHAN && !executed) {
+          registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
+            description: `${RUN} delete your data`,
+            minTier: 'guest',
+            execute: async () => {
+              executed = true;
+              return 'Deleted.';
+            },
+          });
+        }
+        return makeReply('Are you sure?');
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, threadCalls, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -393,26 +423,31 @@ test('SECURITY: a CONFIRM typed inside an auto-answer thread resolves a pending 
   const userId = `${RUN}-member-m1-thread`;
   let executed = false;
   let registered = false;
-  const router = new Router(async (caller) => {
-    // Register the confirm-gated action ONLY on the in-thread follow-up turn,
-    // where caller.conversationId is the THREAD id — exactly as a
-    // requireConfirm-gated tool invoked from a #519 follow-up would key it. The
-    // origin-post turn just answers. Before the audit-M1 fix the confirm
-    // intercept unconditionally translated thread → parent before lookup, so
-    // this thread-keyed action was unconfirmable anywhere (a guaranteed miss).
-    if (caller.conversationId !== AUTO_CHAN && !registered) {
-      registered = true;
-      registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
-        description: `${RUN} delete your data`,
-        minTier: 'guest',
-        execute: async () => {
-          executed = true;
-          return 'Deleted.';
-        },
-      });
-    }
-    return makeReply('Are you sure?');
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async (caller) => {
+        // Register the confirm-gated action ONLY on the in-thread follow-up turn,
+        // where caller.conversationId is the THREAD id — exactly as a
+        // requireConfirm-gated tool invoked from a #519 follow-up would key it. The
+        // origin-post turn just answers. Before the audit-M1 fix the confirm
+        // intercept unconditionally translated thread → parent before lookup, so
+        // this thread-keyed action was unconfirmable anywhere (a guaranteed miss).
+        if (caller.conversationId !== AUTO_CHAN && !registered) {
+          registered = true;
+          registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
+            description: `${RUN} delete your data`,
+            minTier: 'guest',
+            execute: async () => {
+              executed = true;
+              return 'Deleted.';
+            },
+          });
+        }
+        return makeReply('Are you sure?');
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, threadCalls, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -459,27 +494,23 @@ test("SECURITY: an escalation 'yes' typed inside an auto-answer thread resolves 
   (config.behaviour as { escalationToAdminEnabled: boolean }).escalationToAdminEnabled = true;
   const notifyCalls: { message: string; excludeUserId: string }[] = [];
   const router = new Router(
-    async () => makeReply('answer'),
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async (
-      _adapterFor: (p: Platform) => PlatformAdapter | undefined,
-      message: string,
-      excludeUserId: string,
-    ) => {
-      notifyCalls.push({ message, excludeUserId });
-    },
-    async (_platform: Platform, _conversationId: string, _userId: string, _query: string) => ({ id: 1 }),
+    makeRouterDeps({
+      runTurn: async () => makeReply('answer'),
+      typingRefireMs: 20,
+      notifyAdminsFn: async (
+        _adapterFor: (p: Platform) => PlatformAdapter | undefined,
+        message: string,
+        excludeUserId: string,
+      ) => {
+        notifyCalls.push({ message, excludeUserId });
+      },
+      recordEscalatedGapFn: async (
+        _platform: Platform,
+        _conversationId: string,
+        _userId: string,
+        _query: string,
+      ) => ({ id: 1 }),
+    }),
   );
   const { adapter, threadCalls, trigger } = makeAdapter();
   router.register(adapter);
@@ -522,10 +553,15 @@ test('SECURITY: a refreshed follow-up still consumes the shared per-channel cap 
   // AUTO_ANSWER_RATE_LIMIT_PER_HOUR is '2' for this whole file (set at the
   // top); this Router instance's own autoAnswerHits map starts empty.
   let calls = 0;
-  const router = new Router(async () => {
-    calls += 1;
-    return makeReply('answer');
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => {
+        calls += 1;
+        return makeReply('answer');
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, sent, threadCalls, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -567,10 +603,15 @@ test('SECURITY: a follow-up arriving after sweep has pruned the entry gets no re
   t.mock.timers.enable({ apis: ['setInterval', 'Date'], now: 0 });
   try {
     let calls = 0;
-    const router = new Router(async () => {
-      calls += 1;
-      return makeReply('answer');
-    }, 20);
+    const router = new Router(
+      makeRouterDeps({
+        runTurn: async () => {
+          calls += 1;
+          return makeReply('answer');
+        },
+        typingRefireMs: 20,
+      }),
+    );
     const { adapter, sent, threadCalls, trigger } = makeAdapter();
     router.register(adapter);
 
@@ -620,20 +661,25 @@ test('SECURITY: a stale/expired pending CONFIRM action is not made resolvable by
     const userId = `${RUN}-member-542-shared-map`;
     let executed = false;
     let registered = false;
-    const router = new Router(async (caller) => {
-      if (!registered) {
-        registered = true;
-        registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
-          description: `${RUN} delete your data`,
-          minTier: 'guest',
-          execute: async () => {
-            executed = true;
-            return 'Deleted.';
-          },
-        });
-      }
-      return makeReply('Are you sure?');
-    }, 20);
+    const router = new Router(
+      makeRouterDeps({
+        runTurn: async (caller) => {
+          if (!registered) {
+            registered = true;
+            registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
+              description: `${RUN} delete your data`,
+              minTier: 'guest',
+              execute: async () => {
+                executed = true;
+                return 'Deleted.';
+              },
+            });
+          }
+          return makeReply('Are you sure?');
+        },
+        typingRefireMs: 20,
+      }),
+    );
     const { adapter, threadCalls, trigger } = makeAdapter();
     router.register(adapter);
 

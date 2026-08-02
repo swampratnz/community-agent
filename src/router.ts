@@ -1,4 +1,17 @@
 import { config } from './config.js';
+import {
+  PRE_TURN_SPINE,
+  registerPostTurnHandler,
+  registerPreTurnIntercept,
+  registeredPostTurnHandlers,
+  registeredPreTurnIntercepts,
+  type InterceptOutcome,
+  type PostTurnContext,
+  type PreTurnContext,
+  type PreTurnIntercept,
+  type SpineStepName,
+} from './routerIntercepts.js';
+import { COMMUNITY_COMMANDS, TEXT_COMMAND_UNMATCHED, type WhatsAppTextCommandDeps } from './commands.js';
 import { logger } from './logger.js';
 import { isPureAcknowledgement } from './ackClassifier.js';
 import { atLeast, type CallerContext, type Tier } from './auth/rbac.js';
@@ -6,20 +19,12 @@ import { resolveRole, superAdminIds } from './auth/roles.js';
 import type { IncomingMessage, Platform, PlatformAdapter } from './platforms/types.js';
 import { WindowClosedError } from './platforms/types.js';
 import { sanitizeName } from './util/sanitizeName.js';
+import { INTERNAL_ERROR_REPLY, runAgentTurn, type AgentReply } from './agent/core.js';
+import { notice } from './strings/notices.js';
 import {
-  INTERNAL_ERROR_REPLY,
-  MAX_TURNS_REPLY,
-  MAX_TURNS_REPLY_MI,
-  runAgentTurn,
-  type AgentReply,
-} from './agent/core.js';
-import {
-  formatInterestResults,
   formatKnowledgeCitationNote,
-  formatProjectResults,
   formatRelativeAge,
   KNOWLEDGE_CONFLICT_CAVEAT_TEXT,
-  LIST_PROJECTS_DEFAULT_LIMIT,
   notifyAdmins,
   truncateForEcho,
 } from './agent/tools.js';
@@ -61,28 +66,8 @@ import {
   searchProjects,
 } from './storage/repository.js';
 import { FRESHNESS_DAYS, CLUSTER_LIMIT } from './adminDigest.js';
-import {
-  RATE_LIMIT_NOTICE_TEXT,
-  RATE_LIMIT_NOTICE_TEXT_MI,
-  RATE_LIMIT_NOTICE_TEXT_PLAIN,
-  shouldNotifyRateLimited,
-} from './rateLimitNotice.js';
-import {
-  PAUSE_NOTICE_TEXT,
-  PAUSE_NOTICE_TEXT_MI,
-  PAUSE_NOTICE_TEXT_PLAIN,
-  shouldNotifyPaused,
-} from './pauseNotice.js';
-import {
-  DAILY_BUDGET_NOTICE_TEXT,
-  DAILY_BUDGET_NOTICE_TEXT_MI,
-  DAILY_BUDGET_NOTICE_TEXT_PLAIN,
-} from './dailyBudgetNotice.js';
-import {
-  DAILY_REPLY_BUDGET_WARNING_TEXT,
-  DAILY_REPLY_BUDGET_WARNING_TEXT_MI,
-  DAILY_REPLY_BUDGET_WARNING_TEXT_PLAIN,
-} from './dailyReplyBudgetWarning.js';
+import { shouldNotifyRateLimited } from './rateLimitNotice.js';
+import { shouldNotifyPaused } from './pauseNotice.js';
 import { shouldNotifyBudgetCheckFailed } from './budgetCheckFailureNotice.js';
 import { makeAlertSlotReserver } from './notifications.js';
 import {
@@ -98,8 +83,7 @@ import {
 // (getLanguagePreference, issue #189) — e.g. a former member who set the
 // preference before being removed. Same trust level as the English constant:
 // no model call, no translation, no injection surface.
-export const GATED_NOTICE_MI =
-  'Kia ora! He kaupapa mema anake tēnei kaiāwhina. Tonoa he kaiwhakahaere hapori ki te tāpiri i a koe hei mema, kātahi ka taea e au te āwhina.';
+export const GATED_NOTICE_MI = notice('gatedNotice', { language: 'mi' });
 
 // Fixed, human-authored plain-language variant (issue #430) of the static
 // GATED_NOTICE fallback ONLY — `getGatedNotice`'s dynamic admin-name
@@ -108,28 +92,24 @@ export const GATED_NOTICE_MI =
 // gated guest with a standing 'plain' response-style preference
 // (getResponseStyle, issue #126) whose language preference is NOT 'mi' —
 // 'mi' takes precedence over 'plain'.
-export const GATED_NOTICE_PLAIN =
-  'Kia ora! Only members can use this assistant. Please ask a community admin to add you as a member — then I can help.';
+export const GATED_NOTICE_PLAIN = notice('gatedNotice', { style: 'plain' });
 
 // The three fixed strings the CONFIRM/CANCEL intercept itself authors (issue
 // #405) — the one deterministic path #300/#363's own sweep of this file
 // missed. Same `_MI` + `getLanguagePreference` pattern as every constant
 // above: no model call, no translation, no injection surface, and `.catch(()
 // => 'auto')` at each call site fails safe to the English default.
-export const CANCEL_TEXT = 'Cancelled.';
-export const CANCEL_TEXT_MI = 'Kua whakakorea.';
+export const CANCEL_TEXT = notice('cancelConfirm');
+export const CANCEL_TEXT_MI = notice('cancelConfirm', { language: 'mi' });
 // Deliberately no CANCEL_TEXT_PLAIN (issue #430): already at the floor of
 // simplicity, so a plain variant would be change for change's sake.
 
-export const PERMISSIONS_CHANGED_TEXT =
-  'Not executed: your permissions changed since this action was requested.';
-export const PERMISSIONS_CHANGED_TEXT_MI =
-  'Kāore i whakahaerehia: kua rerekē ō mana whakaaetanga mai i te wā i tonoa ai tēnei mahi.';
+export const PERMISSIONS_CHANGED_TEXT = notice('permissionsChanged');
+export const PERMISSIONS_CHANGED_TEXT_MI = notice('permissionsChanged', { language: 'mi' });
 // Fixed, human-authored plain-language variant (issue #430) — rewords the
 // English constant's passive-voice, negation-first construction into a
 // short, direct statement. Same trust level as the English constant.
-export const PERMISSIONS_CHANGED_TEXT_PLAIN =
-  'I did not do this. Your permission level changed after you asked, so I can no longer do it.';
+export const PERMISSIONS_CHANGED_TEXT_PLAIN = notice('permissionsChanged', { style: 'plain' });
 
 // Fixed, human-authored te reo Māori substitute for the literal `'Failed: '`
 // shell prefix a CONFIRM-gated `requireConfirm` outcome falls back to on a
@@ -139,7 +119,7 @@ export const PERMISSIONS_CHANGED_TEXT_PLAIN =
 // dynamic `result`/error text after it is untouched, same "translate the
 // shell, not the payload" discipline as CODE_TRUNCATED_NOTE_MI (#339) and
 // every other constant in this file.
-export const FAILED_PREFIX_MI = 'I hapa: ';
+export const FAILED_PREFIX_MI = notice('confirmFailedPrefix', { language: 'mi' });
 
 // Symmetric te reo Māori substitute for the literal `'Done: '` shell prefix
 // a successful `requireConfirm` outcome uses when it returns the shared
@@ -150,7 +130,7 @@ export const FAILED_PREFIX_MI = 'I hapa: ';
 // requireConfirm tools that return fully bespoke (non-`Done:`) success
 // strings stay English-only — the same scope boundary FAILED_PREFIX_MI
 // already draws for bespoke failure strings.
-export const DONE_PREFIX_MI = 'Kua oti: ';
+export const DONE_PREFIX_MI = notice('confirmDonePrefix', { language: 'mi' });
 
 // Wrapper around the deterministic pending-action notice (issue #405),
 // mirroring the "translate the shell, leave the dynamic payload alone"
@@ -161,74 +141,28 @@ export const DONE_PREFIX_MI = 'Kua oti: ';
 // and `CANCEL` must stay literal, untranslated tokens in the `_MI` variant:
 // `classifyConfirmReply` matches exactly those strings, so translating them
 // would break the confirm protocol itself.
-export const PENDING_NOTICE = (description: string) =>
-  `⚠️ Pending: ${description}\nReply CONFIRM within 60 seconds to proceed, or CANCEL to abort. ` +
-  `(This confirmation is handled outside the AI and must come from you in this conversation.)`;
-export const PENDING_NOTICE_MI = (description: string) =>
-  `⚠️ Kei te tatari: ${description}\nWhakahokia mai te CONFIRM i roto i te 60 hēkona kia haere tonu ai, ` +
-  `CANCEL rānei kia whakakorehia. (Ka whakahaeretia tēnei whakaūnga i waho o te AI, ā, me ahu mai i a koe ` +
-  `i roto i tēnei kōrerorero.)`;
+export const PENDING_NOTICE = notice('pendingNotice');
+export const PENDING_NOTICE_MI = notice('pendingNotice', { language: 'mi' });
 // Fixed, human-authored plain-language variant (issue #430) — same
 // "translate the shell, leave CONFIRM/CANCEL and `description` literal"
 // treatment as PENDING_NOTICE_MI, but also rewords the meta, abstract
 // parenthetical into something concrete a plain-language reader can act on.
-export const PENDING_NOTICE_PLAIN = (description: string) =>
-  `⚠️ Waiting for you: ${description}\nReply CONFIRM within 60 seconds to go ahead, or CANCEL to stop. ` +
-  `(A person must reply CONFIRM or CANCEL — I cannot do this step myself.)`;
+export const PENDING_NOTICE_PLAIN = notice('pendingNotice', { style: 'plain' });
 
-// Static reply for the ACK_SHORTCUT_ENABLED short-circuit (see
-// ackClassifier.ts). Sent via send() so outbound filtering still applies;
-// deliberately not counted toward the daily reply budget (no outbound
-// recordInteraction call for it — only respond() records outbound), since
-// it isn't a real answer.
-const ACK_REPLY_TEXT = 'No worries!';
-
-// Suffix appended to a KNOWLEDGE_SHORTCUT_ENABLED reply so the member always
-// has an escape hatch to a real agent turn (issue #162) — unlike the ack
-// shortcut, this reply carries real content standing in for the model, so it
-// must be attributed rather than look like the agent answered directly.
-const KNOWLEDGE_SHORTCUT_SUFFIX =
-  "\n\n— From our knowledge base; ask me to explain if this doesn't quite answer it.";
-
-// Appended (instead of KNOWLEDGE_SHORTCUT_SUFFIX's member-facing escape
-// hatch) when a GUEST_KNOWLEDGE_SHORTCUT_ENABLED hit is served to a gated
-// guest (issue #165) — a guest can't "just ask again" for a real turn, so the
-// nudge points at the actual unblock: getting added as a member.
-const GUEST_KNOWLEDGE_SHORTCUT_NUDGE = '\n\nAsk a community admin to add you as a member to keep chatting.';
-
-// Prefix for a REPEAT_QUESTION_SHORTCUT_ENABLED replay (issue #259) — the
-// cached text is a real (already-served) answer, not the ack shortcut's
-// no-content courtesy reply, so it must be clearly labelled as a repeat
-// rather than look like a fresh turn.
-const REPEAT_SHORTCUT_NOTICE = "↩️ You asked this a moment ago — here's my answer again:\n\n";
-
-// Prefix for a REPEAT_MAX_TURNS_SHORTCUT_ENABLED replay (issue #306) — makes
-// clear this is a replayed prior failure, not a fresh attempt that also
-// happened to hit the wall.
-const REPEAT_MAX_TURNS_SHORTCUT_NOTICE =
-  '↩️ Same request as a moment ago — it still needs breaking down:\n\n';
-
-// Fixed, human-authored te reo Māori variants (issue #435) of the five
-// opt-in shortcut-reply strings above, served instead of the English
-// constant to a caller with a standing 'mi' language_prefs row
-// (getLanguagePreference, issue #189) — the closing installment of the
-// #266 series, a scope #363/#396/#405 each named and deliberately deferred
-// as "a different file's call sites... a materially lower-reach path" since
-// every one of these five sits behind an off-by-default flag. Same trust
-// level as every English constant above: no model call, no translation, no
-// injection surface, and `.catch(() => 'auto')` at each call site fails safe
-// to the English default.
-const ACK_REPLY_TEXT_MI = 'Kāore he raru!';
-
-const KNOWLEDGE_SHORTCUT_SUFFIX_MI =
-  '\n\n— Nō tā mātou pātengi mōhiotanga; pātai mai kia whakamāramatia mehemea kāore tēnei e tino whakautu ana i tāu pātai.';
-
-const GUEST_KNOWLEDGE_SHORTCUT_NUDGE_MI =
-  '\n\nTonoa tētahi kaiwhakahaere hapori ki te tāpiri i a koe hei mema kia taea ai te kōrero tonu.';
-
-const REPEAT_SHORTCUT_NOTICE_MI = '↩️ I pātai mai koe i tēnei mea i tērā wā — anei anō tāku whakautu:\n\n';
-
-const REPEAT_MAX_TURNS_SHORTCUT_NOTICE_MI = '↩️ He rite tonu ki tō tono o mua tata nei — me wāwāhi tonu:\n\n';
+// The five opt-in shortcut-reply strings (ack reply/ackClassifier.ts,
+// knowledge-shortcut suffix #162, guest-knowledge nudge #165, repeat-question
+// prefix #259, repeat-max-turns prefix #306) and their fixed, human-authored
+// te reo Māori variants (issue #435, the closing installment of the #266
+// series) live in the strings catalogue (`strings/notices.ts` entries
+// `ackReply`/`knowledgeShortcutSuffix`/`guestKnowledgeShortcutNudge`/
+// `repeatShortcutNotice`/`repeatMaxTurnsShortcutNotice`) and are selected at
+// their call sites via `notice(id, { language })`. Same trust level as every
+// other catalogue entry: no model call, no translation, no injection
+// surface, and `.catch(() => 'auto')` at each call site fails safe to the
+// English default. All are sent via send() so outbound filtering still
+// applies; the ack reply is deliberately not counted toward the daily reply
+// budget (no outbound recordInteraction call for it — only respond() records
+// outbound), since it isn't a real answer.
 
 /**
  * Real-time admin alert fired the moment a gated guest's FIRST-EVER addressed
@@ -297,23 +231,13 @@ export async function notifyAccessRequest(
 // lives entirely in this deterministic router layer — never routed through
 // the model — mirroring the CONFIRM/CANCEL intercept's trust level.
 
-/** Appended to MAX_TURNS_REPLY/_MI (and the repeat-max-turns shortcut's replay of it) when the flag is on — see `offerEscalation`. */
-const ESCALATION_OFFER_SUFFIX =
-  '\n\nWant me to flag this for a community admin? Reply yes within 10 minutes.';
-const ESCALATION_OFFER_SUFFIX_MI =
-  '\n\nMe tohu tēnei mō tētahi kaiwhakahaere hapori? Whakahokia mai "āe" i roto i te 10 meneti.';
-
-/** Sent when a "yes"/"y"/"āe" confirms a live pending escalation and a notification slot was available. */
-const ESCALATION_CONFIRMED_TEXT = '👍 Flagged for a community admin — someone will follow up soon.';
-const ESCALATION_CONFIRMED_TEXT_MI =
-  '👍 Kua tohu mō tētahi kaiwhakahaere hapori — ka whai kōrero mai tētahi i muri tata nei.';
-
-/** Sent when a confirmation would otherwise fire but ESCALATION_RATE_LIMIT_PER_HOUR is already exhausted (issue #479 acceptance criterion 6). */
-const ESCALATION_RATE_LIMITED_TEXT =
-  'Already flagged the max I can this hour, sorry — please try again later or contact an admin directly.';
-const ESCALATION_RATE_LIMITED_TEXT_MI =
-  'Kua tae ki te tepe mō tēnei haora, aroha mai — tēnā koa whakamātauria anō ā muri ake, ' +
-  'whakapā tika rānei ki tētahi kaiwhakahaere.';
+// The three escalation texts — the offer suffix appended to
+// MAX_TURNS_REPLY/_MI (see `offerEscalation`), the "yes"-confirmed
+// acknowledgement, and the ESCALATION_RATE_LIMIT_PER_HOUR-exhausted notice
+// (issue #479 acceptance criterion 6) — live in the strings catalogue
+// (`strings/notices.ts` entries `escalationOfferSuffix`/
+// `escalationConfirmed`/`escalationRateLimited`), selected at their call
+// sites via `notice(id, { language })`.
 
 /**
  * How long a pending escalation offer stays live (issue #479's "reply yes
@@ -349,6 +273,161 @@ interface KnowledgeShortcutHit {
   /** Weekly link-rot checker's verdict (issue #448); null means never checked. */
   sourceUnreachable: boolean | null;
   sourceCheckedAt: Date | null;
+}
+
+/**
+ * The Router's full injectable surface (agent-base plan §Phase-1 item 7) —
+ * ONE typed deps object replacing the former 28 positional constructor
+ * parameters. Every field is REQUIRED: like `MemberDigestContentDeps`
+ * (memberDigest.ts) and per docs/STANDARDS.md, a *partial* deps object would
+ * silently leave un-stubbed reads pointing at live repository functions, the
+ * exact bug class the tests-typecheck ratchet exists to catch. Production
+ * passes nothing (`new Router()` → `makeRouterDeps()` supplies every real
+ * implementation); tests build a full object with
+ * `makeRouterDeps({ ...overrides })`.
+ *
+ * Field provenance (formerly the constructor doc):
+ * - `runTurn` defaults to the real agent core; `typingRefireMs` to a sane
+ *   production cadence (Discord auto-clears its indicator after ~10s, so
+ *   re-firing every 8s keeps it continuously visible); `checkPaused` to the
+ *   real policy read; `searchKnowledgeForShortcut`/`recordShortcutRetrieval`
+ *   to the real DB-backed implementations; `countReplies` to the real
+ *   daily-budget read; `getLangPref` to the real standing-language-preference
+ *   read (issue #300); `checkLowRatedKnowledge` to the real low-rated check
+ *   (issue #337), consulted ONLY from the member `sendKnowledgeShortcut`
+ *   path; `getGatedNotice` to the real TTL-cached, admin-naming gated notice
+ *   builder (issue #360). All are overridable in tests so the
+ *   typing-indicator, pause, knowledge-shortcut, budget-check-failure,
+ *   language-notice, and gated-notice behaviour can be exercised without
+ *   spawning a real Claude Code subprocess, waiting 8 real seconds, or a
+ *   live DB.
+ * - `getRespStyle`: the real standing-response-style read (issue #430),
+ *   mirroring `getLangPref` exactly — consulted at the same call sites, but
+ *   only when `getLangPref` didn't already resolve to 'mi' (which takes
+ *   precedence).
+ * - `recordShortcutHit`: the real DB-backed shortcut-hit recorder (issue
+ *   #440), fired at each of the four member-facing shortcut short-circuits,
+ *   plus `sendWhatsAppTextCommand`'s shared send path (issue #874).
+ * - `notifyAccessRequestFn`: the real `notifyAccessRequest` (issue #480),
+ *   consulted only when `ACCESS_REQUEST_ALERT_ENABLED` is on and
+ *   `recordAccessRequest` reports a fresh insert. `recordAccessRequestFn`:
+ *   the real DB-backed upsert; overridable so its insert-vs-update return
+ *   value can be controlled in tests without a live Postgres.
+ * - `notifyAdminsFn`: the real `listAdmins()`-backed admin alert (issue
+ *   #479), fired from the escalation-confirmation intercept in `handle()`.
+ *   `recordEscalatedGapFn`: the real escalated-gap recorder (issue #514),
+ *   fired alongside it from the same intercept.
+ * - `markStaleKnowledgeAlertedFn`: the real atomic gate+stamp (issue #701),
+ *   consulted from `maybeAlertStaleKnowledge`.
+ * - `getCommunityGuidelinesFn`/`getCommunityGuidelinesMiFn`: the real
+ *   TTL-cached policy reads (issue #850), consulted only from the
+ *   gated-notice branch while `waitDays` is falsy.
+ * - `searchMemberInterestsFn`/`searchProjectsFn`/`listRecentProjectsFn`/
+ *   `buildMemberDigestContentFn`: the real repository/digest reads (issue
+ *   #859), consulted only from `tryWhatsAppTextCommand`'s
+ *   `!whois`/`!projects`/`!digest` branches — overridable so the WhatsApp
+ *   text-command tests can assert `runTurn` (and therefore `embed()`) is
+ *   never reached, without a live DB.
+ * - `recentQuestionClustersFn`: the real clustering read (issue #887),
+ *   consulted only from `maybeAlertRepeatQuestion` when
+ *   `config.repeatQuestionAlert.enabled` is true and the per-conversation
+ *   cooldown has elapsed.
+ * - `searchMemberInterestsForSelfFn` (issue #889): consulted only from
+ *   `tryWhatsAppTextCommand`'s bare-`!whois` branch (no captured query),
+ *   porting the self-match `who_is_into`/`/whois` already have.
+ * - `checkKnowledgeConflict` (issue #918): consulted unconditionally (no
+ *   config gate, matching `knowledge_search`/`/kb`'s own unconditional
+ *   conflict check) from the member `sendKnowledgeShortcut` path ONLY —
+ *   never `sendGuestKnowledgeShortcut`, mirroring `checkLowRatedKnowledge`'s
+ *   member-only scope boundary — and `.catch()`-guarded to `false` like
+ *   every other caveat lookup on that path.
+ * - `listOwnProjectsFn` (issue #916): consulted only from
+ *   `tryWhatsAppTextCommand`'s `!projects mine` branch, keyed on
+ *   `msg.platform`/`msg.userId` only.
+ * - `listRecentInterestsFn` (issue #920): consulted only from the
+ *   bare-`!whois` branch when `searchMemberInterestsForSelfFn` reports
+ *   `hasProfile: false` — the same no-profile browse fallback
+ *   who_is_into/`/whois` gained.
+ */
+export interface RouterDeps {
+  runTurn: typeof runAgentTurn;
+  typingRefireMs: number;
+  checkPaused: typeof isPaused;
+  searchKnowledgeForShortcut: typeof searchKnowledge;
+  recordShortcutRetrieval: typeof recordKnowledgeRetrieval;
+  countReplies: typeof countRepliesToUser;
+  getLangPref: typeof getLanguagePreference;
+  checkLowRatedKnowledge: typeof isKnowledgeLowRated;
+  getGatedNotice: typeof buildGatedNotice;
+  getRespStyle: typeof getResponseStyle;
+  recordShortcutHit: typeof recordShortcutHitDefault;
+  recordAccessRequestFn: typeof recordAccessRequest;
+  notifyAccessRequestFn: typeof notifyAccessRequest;
+  notifyAdminsFn: typeof notifyAdmins;
+  recordEscalatedGapFn: typeof recordEscalatedKnowledgeGap;
+  markKnowledgeGapsAlertedFn: typeof markKnowledgeGapsAlerted;
+  markStaleKnowledgeAlertedFn: typeof markStaleKnowledgeAlerted;
+  getCommunityGuidelinesFn: typeof getCommunityGuidelines;
+  getCommunityGuidelinesMiFn: typeof getCommunityGuidelinesMi;
+  searchMemberInterestsFn: typeof searchMemberInterests;
+  searchProjectsFn: typeof searchProjects;
+  listRecentProjectsFn: typeof listRecentProjects;
+  buildMemberDigestContentFn: typeof buildMemberDigestContent;
+  recentQuestionClustersFn: typeof recentQuestionClusters;
+  searchMemberInterestsForSelfFn: typeof searchMemberInterestsForSelf;
+  checkKnowledgeConflict: typeof hasKnowledgeConflictForId;
+  listOwnProjectsFn: typeof listOwnProjects;
+  listRecentInterestsFn: typeof listRecentInterests;
+}
+
+/**
+ * Build a COMPLETE `RouterDeps` — the real production wiring overlaid with
+ * `overrides`. This is the one sanctioned way to construct a partial-looking
+ * deps object: the result is always full (so `RouterDeps` needs no optional
+ * fields), and any field a test doesn't override keeps today's behaviour of
+ * falling through to the real implementation — exactly the semantics the old
+ * positional-parameter defaults had, made explicit at the call site. An
+ * override whose VALUE is `undefined` is skipped too, for the same reason:
+ * test helpers forward their own optional parameters straight through
+ * (`getLangPref: maybeUndefined`), and under the old positional defaults an
+ * `undefined` argument meant "use the real implementation", never "inject
+ * undefined".
+ */
+export function makeRouterDeps(overrides: Partial<RouterDeps> = {}): RouterDeps {
+  const defined = Object.fromEntries(
+    Object.entries(overrides).filter(([, value]) => value !== undefined),
+  ) as Partial<RouterDeps>;
+  return {
+    runTurn: runAgentTurn,
+    typingRefireMs: 8_000,
+    checkPaused: isPaused,
+    searchKnowledgeForShortcut: searchKnowledge,
+    recordShortcutRetrieval: recordKnowledgeRetrieval,
+    countReplies: countRepliesToUser,
+    getLangPref: getLanguagePreference,
+    checkLowRatedKnowledge: isKnowledgeLowRated,
+    getGatedNotice: buildGatedNotice,
+    getRespStyle: getResponseStyle,
+    recordShortcutHit: recordShortcutHitDefault,
+    recordAccessRequestFn: recordAccessRequest,
+    notifyAccessRequestFn: notifyAccessRequest,
+    notifyAdminsFn: notifyAdmins,
+    recordEscalatedGapFn: recordEscalatedKnowledgeGap,
+    markKnowledgeGapsAlertedFn: markKnowledgeGapsAlerted,
+    markStaleKnowledgeAlertedFn: markStaleKnowledgeAlerted,
+    getCommunityGuidelinesFn: getCommunityGuidelines,
+    getCommunityGuidelinesMiFn: getCommunityGuidelinesMi,
+    searchMemberInterestsFn: searchMemberInterests,
+    searchProjectsFn: searchProjects,
+    listRecentProjectsFn: listRecentProjects,
+    buildMemberDigestContentFn: buildMemberDigestContent,
+    recentQuestionClustersFn: recentQuestionClusters,
+    searchMemberInterestsForSelfFn: searchMemberInterestsForSelf,
+    checkKnowledgeConflict: hasKnowledgeConflictForId,
+    listOwnProjectsFn: listOwnProjects,
+    listRecentInterestsFn: listRecentInterests,
+    ...defined,
+  };
 }
 
 /**
@@ -460,122 +539,76 @@ export class Router {
   private readonly BUDGET_CHECK_FAILURE_ALERT_WINDOW_MS = 900_000; // 15 minutes — a DB recording failure is a systemic condition, not per-user
   private readonly REPEAT_SHORTCUT_WINDOW_MS = 120_000; // 2 minutes — long enough for a double-tap/impatient-resend, short enough that a genuinely new question with identical text is unlikely
 
+  private readonly runTurn: typeof runAgentTurn;
+  private readonly typingRefireMs: number;
+  private readonly checkPaused: typeof isPaused;
+  private readonly searchKnowledgeForShortcut: typeof searchKnowledge;
+  private readonly recordShortcutRetrieval: typeof recordKnowledgeRetrieval;
+  private readonly countReplies: typeof countRepliesToUser;
+  private readonly getLangPref: typeof getLanguagePreference;
+  private readonly checkLowRatedKnowledge: typeof isKnowledgeLowRated;
+  private readonly getGatedNotice: typeof buildGatedNotice;
+  private readonly getRespStyle: typeof getResponseStyle;
+  private readonly recordShortcutHit: typeof recordShortcutHitDefault;
+  private readonly recordAccessRequestFn: typeof recordAccessRequest;
+  private readonly notifyAccessRequestFn: typeof notifyAccessRequest;
+  private readonly notifyAdminsFn: typeof notifyAdmins;
+  private readonly recordEscalatedGapFn: typeof recordEscalatedKnowledgeGap;
+  private readonly markKnowledgeGapsAlertedFn: typeof markKnowledgeGapsAlerted;
+  private readonly markStaleKnowledgeAlertedFn: typeof markStaleKnowledgeAlerted;
+  private readonly getCommunityGuidelinesFn: typeof getCommunityGuidelines;
+  private readonly getCommunityGuidelinesMiFn: typeof getCommunityGuidelinesMi;
+  private readonly searchMemberInterestsFn: typeof searchMemberInterests;
+  private readonly searchProjectsFn: typeof searchProjects;
+  private readonly listRecentProjectsFn: typeof listRecentProjects;
+  private readonly buildMemberDigestContentFn: typeof buildMemberDigestContent;
+  private readonly recentQuestionClustersFn: typeof recentQuestionClusters;
+  private readonly searchMemberInterestsForSelfFn: typeof searchMemberInterestsForSelf;
+  private readonly checkKnowledgeConflict: typeof hasKnowledgeConflictForId;
+  private readonly listOwnProjectsFn: typeof listOwnProjects;
+  private readonly listRecentInterestsFn: typeof listRecentInterests;
+
   /**
-   * `runTurn` defaults to the real agent core; `typingRefireMs` defaults to a
-   * sane production cadence (Discord auto-clears its own indicator after
-   * ~10s, so re-firing every 8s keeps it continuously visible). `checkPaused`
-   * defaults to the real policy read. `searchKnowledgeForShortcut` and
-   * `recordShortcutRetrieval` default to the real DB-backed implementations.
-   * `countReplies` defaults to the real daily-budget read. `getLangPref`
-   * defaults to the real standing-language-preference read (issue #300).
-   * `checkLowRatedKnowledge` defaults to the real DB-backed low-rated check
-   * (issue #337), consulted ONLY from the member `sendKnowledgeShortcut`
-   * path. `getGatedNotice` defaults to the real TTL-cached, admin-naming
-   * gated notice builder (issue #360). All are overridable in tests so the
-   * typing-indicator, pause, knowledge-shortcut, budget-check-failure,
-   * language-notice, and gated-notice behaviour can be exercised without
-   * spawning a real Claude Code subprocess, waiting 8 real seconds, or a
-   * live DB. `getRespStyle` defaults to the real standing-response-style-
-   * preference read (issue #430), mirroring `getLangPref`'s shape exactly —
-   * consulted at the same call sites, but only when `getLangPref` didn't
-   * already resolve to 'mi' (which takes precedence). `recordShortcutHit`
-   * defaults to the real DB-backed shortcut-hit recorder (issue #440),
-   * fired at each of the four member-facing shortcut short-circuits, plus
-   * `sendWhatsAppTextCommand`'s shared send path (issue #874).
-   * `notifyAccessRequestFn` defaults to the real `notifyAccessRequest`
-   * (issue #480), consulted only when `ACCESS_REQUEST_ALERT_ENABLED` is on
-   * and `recordAccessRequest` reports a fresh insert — overridable so tests
-   * can assert the alert fired/didn't without a live DB or adapter.
-   * `recordAccessRequestFn` defaults to the real DB-backed upsert; overridable
-   * (like every other DB read/write above) so its insert-vs-update return
-   * value can be controlled in tests without a live Postgres.
-   * `notifyAdminsFn` defaults to the real `listAdmins()`-backed admin alert
-   * (issue #479), fired from the escalation-confirmation intercept in
-   * `handle()`; overridable so tests can assert on it without a live DB.
-   * `recordEscalatedGapFn` defaults to the real DB-backed escalated-gap
-   * recorder (issue #514), fired alongside `notifyAdminsFn` from the same
-   * intercept; overridable so tests can assert on it without a live DB.
-   * `markStaleKnowledgeAlertedFn` defaults to the real DB-backed atomic
-   * gate+stamp (issue #701), consulted from `maybeAlertStaleKnowledge` below;
-   * overridable so tests can assert on it without a live DB.
-   * `getCommunityGuidelinesFn`/`getCommunityGuidelinesMiFn` default to the
-   * real TTL-cached policy reads (issue #850), consulted only from the
-   * gated-notice branch while `waitDays` is falsy (a guest's first message,
-   * or any message before a whole day has passed) — overridable so tests can
-   * assert on the appended text, the unset no-op, and the fail-open catch
-   * without a live DB. `searchMemberInterestsFn`/`searchProjectsFn`/
-   * `listRecentProjectsFn`/`buildMemberDigestContentFn` default to the real
-   * repository/digest reads (issue #859), consulted only from
-   * `tryWhatsAppTextCommand`'s `!whois`/`!projects`/`!digest` branches —
-   * overridable so the WhatsApp text-command tests can assert `runTurn` (and
-   * therefore `embed()`, which only the real search functions would call) is
-   * never reached, without a live DB.
-   * `recentQuestionClustersFn` defaults to the real DB-backed clustering read
-   * (issue #887), consulted only from `maybeAlertRepeatQuestion` below when
-   * `config.repeatQuestionAlert.enabled` is true and the per-conversation
-   * cooldown has elapsed — overridable so tests can assert on its call count
-   * directly (acceptance criterion 2) without a live DB.
-   * `searchMemberInterestsForSelfFn` defaults to the real
-   * `searchMemberInterestsForSelf` (issue #889), a further trailing field
-   * added after `!whois`/`!projects`/`!guidelines`/`!digest` shipped so every
-   * existing positional `new Router(...)` call site stays unaffected;
-   * consulted only from `tryWhatsAppTextCommand`'s bare-`!whois` branch (no
-   * captured query), porting the same self-match `who_is_into`/`/whois`
-   * already have to the third surface.
-   * `checkKnowledgeConflict` defaults to the real DB-backed single-id
-   * conflict check (issue #918), another trailing field for the same
-   * call-site-stability reason as `searchMemberInterestsForSelfFn` above.
-   * Consulted unconditionally (no config gate, matching `knowledge_search`/
-   * `/kb`'s own unconditional conflict check) from the member
-   * `sendKnowledgeShortcut` path ONLY — never `sendGuestKnowledgeShortcut`,
-   * mirroring `checkLowRatedKnowledge`'s existing member-only scope boundary
-   * — and `.catch()`-guarded to `false` like every other caveat lookup on
-   * this path, so a lookup failure degrades to no caveat rather than a
-   * blocked reply.
-   * `listOwnProjectsFn` defaults to the real `listOwnProjects` (issue #916),
-   * another trailing defaulted field added after `checkKnowledgeConflict`
-   * for the same call-site-stability reason; consulted only from
-   * `tryWhatsAppTextCommand`'s `!projects mine` branch, keyed on
-   * `msg.platform`/`msg.userId` only — mirroring
-   * `list_projects({ mine: true })`/`/projects mine:true`'s own
-   * self-scoping, the third and last of the three `mine` surfaces.
-   * `listRecentInterestsFn` defaults to the real `listRecentInterests`
-   * (issue #920), a further trailing field for the same call-site-stability
-   * reason as `searchMemberInterestsForSelfFn`/`checkKnowledgeConflict`
-   * above; consulted only from `tryWhatsAppTextCommand`'s bare-`!whois`
-   * branch when `searchMemberInterestsForSelfFn` reports `hasProfile: false`
-   * — the same no-profile browse fallback who_is_into/`/whois` gained.
+   * ONE deps object (agent-base plan §Phase-1 item 7), replacing the 28
+   * positional constructor parameters whose *positions* had become the API —
+   * every new injectable had to be a trailing field so existing
+   * `new Router(...)` call sites stayed unaffected (see `RouterDeps`'s field
+   * docs for each field's provenance). Production passes nothing —
+   * `makeRouterDeps()` supplies every real implementation. Tests pass a FULL
+   * object too, via `makeRouterDeps({ ...overrides })`, matching the
+   * all-or-nothing deps discipline in `memberDigest.ts`/`docs/STANDARDS.md`:
+   * `RouterDeps` has no optional fields, so a hand-written literal can never
+   * silently omit a field and fall through to a live-Postgres read.
    */
-  constructor(
-    private readonly runTurn: typeof runAgentTurn = runAgentTurn,
-    private readonly typingRefireMs = 8_000,
-    private readonly checkPaused: typeof isPaused = isPaused,
-    private readonly searchKnowledgeForShortcut: typeof searchKnowledge = searchKnowledge,
-    private readonly recordShortcutRetrieval: typeof recordKnowledgeRetrieval = recordKnowledgeRetrieval,
-    private readonly countReplies: typeof countRepliesToUser = countRepliesToUser,
-    private readonly getLangPref: typeof getLanguagePreference = getLanguagePreference,
-    private readonly checkLowRatedKnowledge: typeof isKnowledgeLowRated = isKnowledgeLowRated,
-    private readonly getGatedNotice: typeof buildGatedNotice = buildGatedNotice,
-    private readonly getRespStyle: typeof getResponseStyle = getResponseStyle,
-    private readonly recordShortcutHit: typeof recordShortcutHitDefault = recordShortcutHitDefault,
-    private readonly recordAccessRequestFn: typeof recordAccessRequest = recordAccessRequest,
-    private readonly notifyAccessRequestFn: typeof notifyAccessRequest = notifyAccessRequest,
-    private readonly notifyAdminsFn: typeof notifyAdmins = notifyAdmins,
-    private readonly recordEscalatedGapFn: typeof recordEscalatedKnowledgeGap = recordEscalatedKnowledgeGap,
-    private readonly markKnowledgeGapsAlertedFn: typeof markKnowledgeGapsAlerted = markKnowledgeGapsAlerted,
-    private readonly markStaleKnowledgeAlertedFn: typeof markStaleKnowledgeAlerted = markStaleKnowledgeAlerted,
-    private readonly getCommunityGuidelinesFn: typeof getCommunityGuidelines = getCommunityGuidelines,
-    private readonly getCommunityGuidelinesMiFn: typeof getCommunityGuidelinesMi = getCommunityGuidelinesMi,
-    private readonly searchMemberInterestsFn: typeof searchMemberInterests = searchMemberInterests,
-    private readonly searchProjectsFn: typeof searchProjects = searchProjects,
-    private readonly listRecentProjectsFn: typeof listRecentProjects = listRecentProjects,
-    private readonly buildMemberDigestContentFn: typeof buildMemberDigestContent = buildMemberDigestContent,
-    private readonly recentQuestionClustersFn: typeof recentQuestionClusters = recentQuestionClusters,
-    private readonly searchMemberInterestsForSelfFn: typeof searchMemberInterestsForSelf = searchMemberInterestsForSelf,
-    private readonly checkKnowledgeConflict: typeof hasKnowledgeConflictForId = hasKnowledgeConflictForId,
-    private readonly listOwnProjectsFn: typeof listOwnProjects = listOwnProjects,
-    private readonly listRecentInterestsFn: typeof listRecentInterests = listRecentInterests,
-  ) {
+  constructor(deps: RouterDeps = makeRouterDeps()) {
+    this.runTurn = deps.runTurn;
+    this.typingRefireMs = deps.typingRefireMs;
+    this.checkPaused = deps.checkPaused;
+    this.searchKnowledgeForShortcut = deps.searchKnowledgeForShortcut;
+    this.recordShortcutRetrieval = deps.recordShortcutRetrieval;
+    this.countReplies = deps.countReplies;
+    this.getLangPref = deps.getLangPref;
+    this.checkLowRatedKnowledge = deps.checkLowRatedKnowledge;
+    this.getGatedNotice = deps.getGatedNotice;
+    this.getRespStyle = deps.getRespStyle;
+    this.recordShortcutHit = deps.recordShortcutHit;
+    this.recordAccessRequestFn = deps.recordAccessRequestFn;
+    this.notifyAccessRequestFn = deps.notifyAccessRequestFn;
+    this.notifyAdminsFn = deps.notifyAdminsFn;
+    this.recordEscalatedGapFn = deps.recordEscalatedGapFn;
+    this.markKnowledgeGapsAlertedFn = deps.markKnowledgeGapsAlertedFn;
+    this.markStaleKnowledgeAlertedFn = deps.markStaleKnowledgeAlertedFn;
+    this.getCommunityGuidelinesFn = deps.getCommunityGuidelinesFn;
+    this.getCommunityGuidelinesMiFn = deps.getCommunityGuidelinesMiFn;
+    this.searchMemberInterestsFn = deps.searchMemberInterestsFn;
+    this.searchProjectsFn = deps.searchProjectsFn;
+    this.listRecentProjectsFn = deps.listRecentProjectsFn;
+    this.buildMemberDigestContentFn = deps.buildMemberDigestContentFn;
+    this.recentQuestionClustersFn = deps.recentQuestionClustersFn;
+    this.searchMemberInterestsForSelfFn = deps.searchMemberInterestsForSelfFn;
+    this.checkKnowledgeConflict = deps.checkKnowledgeConflict;
+    this.listOwnProjectsFn = deps.listOwnProjectsFn;
+    this.listRecentInterestsFn = deps.listRecentInterestsFn;
     setInterval(() => this.sweep(), this.RATE_WINDOW_MS * 5).unref();
   }
 
@@ -851,7 +884,7 @@ export class Router {
    */
   private offerEscalation(msg: IncomingMessage, failureText: string, isMi: boolean): string {
     this.pendingEscalations.set(this.callerKey(msg), { query: msg.text, at: Date.now() });
-    return `${failureText}${isMi ? ESCALATION_OFFER_SUFFIX_MI : ESCALATION_OFFER_SUFFIX}`;
+    return `${failureText}${notice('escalationOfferSuffix', { language: isMi ? 'mi' : undefined })}`;
   }
 
   /**
@@ -927,8 +960,8 @@ export class Router {
     adapter: PlatformAdapter,
     conversationId: string,
     text: string,
-    language?: 'mi',
-    style?: 'plain',
+    language?: string,
+    style?: string,
   ): Promise<string[] | undefined> {
     return adapter.sendMessage({ conversationId, text, language, style });
   }
@@ -985,10 +1018,71 @@ export class Router {
     await tracked;
   }
 
+  /**
+   * The spine step implementations, keyed by the frozen `PRE_TURN_SPINE`
+   * names (routerIntercepts.ts) — a `Record` over `SpineStepName` so a
+   * missing or extra implementation is a compile error, and the ORDER
+   * authority stays the frozen array alone. Each step body was moved
+   * VERBATIM from the old inline `handle()` sequence; only the early
+   * `return;`s became `return 'handled';` and cross-step locals moved onto
+   * `ctx.state`.
+   */
+  private readonly spineSteps: Record<SpineStepName, (ctx: PreTurnContext) => Promise<InterceptOutcome>> = {
+    'block-list': (ctx) => this.blockListStep(ctx),
+    'role-resolution': (ctx) => this.roleResolutionStep(ctx),
+    'gated-guest': (ctx) => this.gatedGuestStep(ctx),
+    'record-inbound': (ctx) => this.recordInboundStep(ctx),
+    'confirm-intercept': (ctx) => this.confirmInterceptStep(ctx),
+    'escalation-confirm': (ctx) => this.escalationConfirmStep(ctx),
+    'addressed-gate': (ctx) => this.addressedGateStep(ctx),
+    pause: (ctx) => this.pauseStep(ctx),
+    'rate-limit': (ctx) => this.rateLimitStep(ctx),
+    'daily-budget': (ctx) => this.dailyBudgetStep(ctx),
+    'auto-answer-reserve': (ctx) => this.autoAnswerReserveStep(ctx),
+    'memory-barrier': (ctx) => this.memoryBarrierStep(ctx),
+    'auto-answer-thread': (ctx) => this.autoAnswerThreadStep(ctx),
+  };
+
+  /**
+   * The full ordered pre-turn chain: the frozen security spine first (built
+   * HERE from `PRE_TURN_SPINE` — no registration API can insert, remove or
+   * reorder a spine step), then the module-registered post-spine intercepts
+   * in registration order. Rebuilt per message so late registrations (module
+   * init) apply; the spine prefix is structurally identical every time.
+   */
+  preTurnChain(): readonly PreTurnIntercept[] {
+    return [
+      ...PRE_TURN_SPINE.map((name) => ({ name, run: this.spineSteps[name] })),
+      ...registeredPreTurnIntercepts(),
+    ];
+  }
+
+  /** Chain step names in execution order — inspected by the SECURITY spine test. */
+  preTurnChainNames(): string[] {
+    return this.preTurnChain().map((intercept) => intercept.name);
+  }
+
   private async handle(msg: IncomingMessage): Promise<void> {
     const adapter = this.adapters.get(msg.platform);
     if (!adapter) return;
 
+    // Run the pre-turn intercept chain (routerIntercepts.ts): the security
+    // spine in its frozen order, then the registered community shortcuts.
+    // Each step either fully handles the message (chain stops) or passes it
+    // on; whatever survives every intercept becomes a real agent turn.
+    const ctx: PreTurnContext = { msg, adapter, router: this, state: {} };
+    for (const intercept of this.preTurnChain()) {
+      if ((await intercept.run(ctx)) === 'handled') return;
+    }
+
+    // Serialise per conversation so session resume stays consistent.
+    await this.enqueue(this.convoKey(msg), 'respond', () =>
+      this.respond(msg, ctx.state.role!, adapter, ctx.state.replyBudget, ctx.state.replyConversationId),
+    );
+  }
+
+  private async blockListStep(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg } = ctx;
     // Block list (issue #572): checked before role resolution and before any
     // storage, so a blocked sender gets zero footprint — no interaction row,
     // no reply — and this overrides `open` access mode's default-allow,
@@ -996,11 +1090,15 @@ export class Router {
     // and continue) on a DB error, same posture as the role-resolution catch
     // just below: one failed check must never itself become an outage.
     try {
-      if (await isUserBlocked(msg.platform, msg.userId)) return;
+      if (await isUserBlocked(msg.platform, msg.userId)) return 'handled';
     } catch (err) {
       logger.error({ err }, 'Block-list check failed; treating sender as not blocked');
     }
+    return 'continue';
+  }
 
+  private async roleResolutionStep(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg } = ctx;
     let role: Tier;
     try {
       role = await resolveRole(msg.platform, msg.userId);
@@ -1008,7 +1106,13 @@ export class Router {
       logger.error({ err }, 'Role resolution failed; treating sender as guest');
       role = 'guest';
     }
+    ctx.state.role = role;
+    return 'continue';
+  }
 
+  private async gatedGuestStep(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg, adapter } = ctx;
+    const role = ctx.state.role!;
     const gated = config.rbac.accessMode[msg.platform] === 'gated';
 
     // Gated mode: guests are not part of the community — do not store their
@@ -1168,12 +1272,17 @@ export class Router {
           }
         }
       }
-      return;
+      return 'handled';
     }
+    return 'continue';
+  }
 
+  private async recordInboundStep(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg } = ctx;
+    const role = ctx.state.role!;
     // Record member+ (and open-mode guest) traffic for audit + learning.
     // Fire-and-forget so embedding CPU never blocks channels we won't answer.
-    const recorded = recordInteraction({
+    ctx.state.recorded = recordInteraction({
       platform: msg.platform,
       conversationId: msg.conversationId,
       userId: msg.userId,
@@ -1186,7 +1295,12 @@ export class Router {
       messageId: msg.messageId,
       kind: msg.addressedToBot || msg.isDirect ? 'addressed' : 'ambient',
     }).catch((err) => logger.error({ err }, 'Failed to record inbound interaction'));
+    return 'continue';
+  }
 
+  private async confirmInterceptStep(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg, adapter } = ctx;
+    const role = ctx.state.role!;
     // Deterministic CONFIRM/CANCEL intercept for pending destructive actions.
     // Runs BEFORE the addressed check so a bare "CONFIRM" works in groups
     // (where plain replies aren't "addressed"). Only fires when this exact
@@ -1208,10 +1322,10 @@ export class Router {
       if (verdict === 'cancel') {
         cancelPendingAction(msg.platform, pendingConversationId, msg.userId);
         const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
-        await this.send(adapter, msg.conversationId, lang === 'mi' ? CANCEL_TEXT_MI : CANCEL_TEXT).catch(
+        await this.send(adapter, msg.conversationId, notice('cancelConfirm', { language: lang })).catch(
           () => {},
         );
-        return;
+        return 'handled';
       }
       const pending = takePendingAction(msg.platform, pendingConversationId, msg.userId);
       if (pending) {
@@ -1220,12 +1334,14 @@ export class Router {
         // confirm TTL invalidates the queued action.
         if (!atLeast(role, pending.minTier)) {
           const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
-          if (lang === 'mi') {
-            outcome = PERMISSIONS_CHANGED_TEXT_MI;
-          } else {
-            const style = await this.getRespStyle(msg.platform, msg.userId).catch(() => 'standard' as const);
-            outcome = style === 'plain' ? PERMISSIONS_CHANGED_TEXT_PLAIN : PERMISSIONS_CHANGED_TEXT;
-          }
+          // Style is only looked up once 'mi' is ruled out (it takes
+          // precedence), so the 'mi' path pays no style DB read — the
+          // selection itself lives in strings/notices.ts.
+          const style =
+            lang === 'mi'
+              ? undefined
+              : await this.getRespStyle(msg.platform, msg.userId).catch(() => 'standard' as const);
+          outcome = notice('permissionsChanged', { language: lang, style });
         } else {
           try {
             outcome = await pending.execute();
@@ -1254,10 +1370,14 @@ export class Router {
         await this.send(adapter, msg.conversationId, outcome).catch((err) =>
           logger.error({ err }, 'Failed to send confirm outcome'),
         );
-        return;
+        return 'handled';
       }
     }
+    return 'continue';
+  }
 
+  private async escalationConfirmStep(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg, adapter } = ctx;
     // Deterministic escalation-confirmation intercept (issue #479). Sibling
     // of the CONFIRM/CANCEL intercept above: runs BEFORE the addressed check
     // (so a bare "yes" works in a group where a plain reply isn't
@@ -1307,19 +1427,23 @@ export class Router {
           await this.send(
             adapter,
             msg.conversationId,
-            lang === 'mi' ? ESCALATION_CONFIRMED_TEXT_MI : ESCALATION_CONFIRMED_TEXT,
+            notice('escalationConfirmed', { language: lang }),
           ).catch(() => {});
         } else {
           await this.send(
             adapter,
             msg.conversationId,
-            lang === 'mi' ? ESCALATION_RATE_LIMITED_TEXT_MI : ESCALATION_RATE_LIMITED_TEXT,
+            notice('escalationRateLimited', { language: lang }),
           ).catch(() => {});
         }
-        return;
+        return 'handled';
       }
     }
+    return 'continue';
+  }
 
+  private async addressedGateStep(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg } = ctx;
     // Auto-answer (issue #477): an operator-allowlisted Discord channel
     // (AUTO_ANSWER_CHANNEL_IDS) gets an answer for a plain top-level human
     // post too, not just one that mentions/replies to the bot — this only
@@ -1354,9 +1478,16 @@ export class Router {
 
     // Only respond when addressed (mention/reply), in a direct conversation,
     // or an auto-answer candidate.
-    if (!msg.addressedToBot && !msg.isDirect && !isAutoAnswerCandidate) return;
-    if (!msg.text.trim()) return;
+    if (!msg.addressedToBot && !msg.isDirect && !isAutoAnswerCandidate) return 'handled';
+    if (!msg.text.trim()) return 'handled';
+    ctx.state.autoAnswerThreadParent = autoAnswerThreadParent;
+    ctx.state.isAutoAnswerCandidate = isAutoAnswerCandidate;
+    return 'continue';
+  }
 
+  private async pauseStep(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg, adapter } = ctx;
+    const role = ctx.state.role!;
     // Paused: only super admins get through (so they can resume it). Everyone
     // else gets a debounced notice instead of silence (issue #128, mirroring
     // the rate-limit/budget notices below) — at most once per
@@ -1372,18 +1503,23 @@ export class Router {
         // channel's shed messages never pay a per-message DB read — at most
         // once per PAUSE_NOTIFY_WINDOW_MS per user, same as the send itself.
         const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
-        let pauseText = PAUSE_NOTICE_TEXT;
-        if (lang === 'mi') {
-          pauseText = PAUSE_NOTICE_TEXT_MI;
-        } else {
-          const style = await this.getRespStyle(msg.platform, msg.userId).catch(() => 'standard' as const);
-          if (style === 'plain') pauseText = PAUSE_NOTICE_TEXT_PLAIN;
-        }
-        await this.send(adapter, msg.conversationId, pauseText).catch(() => {});
+        // Style only looked up once 'mi' is ruled out (it takes precedence) —
+        // no style DB read on the 'mi' path; selection lives in strings/notices.ts.
+        const style =
+          lang === 'mi'
+            ? undefined
+            : await this.getRespStyle(msg.platform, msg.userId).catch(() => 'standard' as const);
+        await this.send(adapter, msg.conversationId, notice('pauseNotice', { language: lang, style })).catch(
+          () => {},
+        );
       }
-      return;
+      return 'handled';
     }
+    return 'continue';
+  }
 
+  private async rateLimitStep(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg, adapter } = ctx;
     const userKey = `${msg.platform}:${msg.userId}`;
     if (this.rateLimited(userKey)) {
       logger.warn({ userKey }, 'User rate limited');
@@ -1395,18 +1531,27 @@ export class Router {
         // rate-limit path exists to shed load, so it must not add a
         // per-message DB read to every over-limit message.
         const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
-        let rateLimitText = RATE_LIMIT_NOTICE_TEXT;
-        if (lang === 'mi') {
-          rateLimitText = RATE_LIMIT_NOTICE_TEXT_MI;
-        } else {
-          const style = await this.getRespStyle(msg.platform, msg.userId).catch(() => 'standard' as const);
-          if (style === 'plain') rateLimitText = RATE_LIMIT_NOTICE_TEXT_PLAIN;
-        }
-        await this.send(adapter, msg.conversationId, rateLimitText).catch(() => {});
+        // Same lazy style lookup as the pause notice above.
+        const style =
+          lang === 'mi'
+            ? undefined
+            : await this.getRespStyle(msg.platform, msg.userId).catch(() => 'standard' as const);
+        await this.send(
+          adapter,
+          msg.conversationId,
+          notice('rateLimitNotice', { language: lang, style }),
+        ).catch(() => {});
       }
-      return;
+      return 'handled';
     }
+    ctx.state.userKey = userKey;
+    return 'continue';
+  }
 
+  private async dailyBudgetStep(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg, adapter } = ctx;
+    const role = ctx.state.role!;
+    const userKey = ctx.state.userKey!;
     // Daily reply budget (super admins exempt). `replyBudget` is hoisted out
     // of this block (issue #511) so the already-fetched `used`/`limit` pair
     // can be threaded into `respond()` below for the approaching-budget
@@ -1439,20 +1584,29 @@ export class Router {
           // budget path exists to shed load, so it must not add a
           // per-message DB read to every over-budget message.
           const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
-          let budgetText = DAILY_BUDGET_NOTICE_TEXT;
-          if (lang === 'mi') {
-            budgetText = DAILY_BUDGET_NOTICE_TEXT_MI;
-          } else {
-            const style = await this.getRespStyle(msg.platform, msg.userId).catch(() => 'standard' as const);
-            if (style === 'plain') budgetText = DAILY_BUDGET_NOTICE_TEXT_PLAIN;
-          }
-          await this.send(adapter, msg.conversationId, budgetText).catch(() => {});
+          // Same lazy style lookup as the pause/rate-limit notices above.
+          const style =
+            lang === 'mi'
+              ? undefined
+              : await this.getRespStyle(msg.platform, msg.userId).catch(() => 'standard' as const);
+          await this.send(
+            adapter,
+            msg.conversationId,
+            notice('dailyBudgetNotice', { language: lang, style }),
+          ).catch(() => {});
         }
-        return;
+        return 'handled';
       }
       replyBudget = { used, limit };
     }
+    ctx.state.replyBudget = replyBudget;
+    return 'continue';
+  }
 
+  private async autoAnswerReserveStep(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg } = ctx;
+    const isAutoAnswerCandidate = ctx.state.isAutoAnswerCandidate === true;
+    const autoAnswerThreadParent = ctx.state.autoAnswerThreadParent;
     // Per-channel rolling-hour cap (issue #477) — bounds the flood/cost risk
     // of this new untrusted-input path. Reserved HERE, only once pause, the
     // per-user rate limit, and the daily budget have all passed, so a message
@@ -1465,12 +1619,21 @@ export class Router {
     // side-channel around AUTO_ANSWER_RATE_LIMIT_PER_HOUR the moment a
     // member replies inside a busy auto-answer thread.
     if (isAutoAnswerCandidate && !this.reserveAutoAnswerSlot(autoAnswerThreadParent ?? msg.conversationId))
-      return;
+      return 'handled';
+    return 'continue';
+  }
 
+  private async memoryBarrierStep(ctx: PreTurnContext): Promise<InterceptOutcome> {
     // If we ARE replying, make sure this message is in memory before the
     // agent turn runs (so recall can see it and ordering stays sane).
-    await recorded;
+    await ctx.state.recorded;
+    return 'continue';
+  }
 
+  private async autoAnswerThreadStep(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg, adapter } = ctx;
+    const isAutoAnswerCandidate = ctx.state.isAutoAnswerCandidate === true;
+    const autoAnswerThreadParent = ctx.state.autoAnswerThreadParent;
     // Auto-answer replies are contained in a new Discord thread anchored to
     // the origin post (issue #477), never sent bare into the channel — every
     // shortcut/respond send below is redirected through `replyConversationId`.
@@ -1513,9 +1676,15 @@ export class Router {
         }
       }
     }
+    ctx.state.replyConversationId = replyConversationId;
+    return 'continue';
+  }
 
+  /** Post-spine intercept (registered at module scope below): the ack shortcut. */
+  async ackShortcutIntercept(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg, adapter } = ctx;
+    const replyConversationId = ctx.state.replyConversationId;
     const key = this.convoKey(msg);
-
     // Deterministic short-circuit for pure acknowledgements ("thanks", "👍")
     // that carry no information for the agent to act on: skip the expensive
     // turn (memory recall + a query() subprocess against the shared Max
@@ -1533,12 +1702,19 @@ export class Router {
         await this.send(
           adapter,
           replyConversationId ?? msg.conversationId,
-          lang === 'mi' ? ACK_REPLY_TEXT_MI : ACK_REPLY_TEXT,
+          notice('ackReply', { language: lang }),
         );
       });
-      return;
+      return 'handled';
     }
+    return 'continue';
+  }
 
+  /** Post-spine intercept (registered at module scope below): the near-exact FAQ shortcut. */
+  async knowledgeShortcutIntercept(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg, adapter } = ctx;
+    const replyConversationId = ctx.state.replyConversationId;
+    const key = this.convoKey(msg);
     // Deterministic-ish near-exact FAQ short-circuit (issue #162): if the
     // message scores at or above a strict floor against an existing
     // knowledge entry, reply with that entry's content instead of spawning a
@@ -1554,10 +1730,17 @@ export class Router {
         await this.enqueue(key, 'knowledge shortcut reply', () =>
           this.sendKnowledgeShortcut(msg, adapter, hit, replyConversationId),
         );
-        return;
+        return 'handled';
       }
     }
+    return 'continue';
+  }
 
+  /** Post-spine intercept (registered at module scope below): the WhatsApp `!` text commands. */
+  async whatsappTextCommandIntercept(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg, adapter } = ctx;
+    const role = ctx.state.role!;
+    const key = this.convoKey(msg);
     // WhatsApp-only, zero-model-call text commands (issue #859): the
     // WhatsApp counterpart to Discord's slash commands (slashCommands.ts),
     // checked alongside the shortcuts above. Off by default. A gate failure
@@ -1573,10 +1756,17 @@ export class Router {
         await this.enqueue(key, 'whatsapp text command reply', () =>
           this.sendWhatsAppTextCommand(msg, adapter, replyText),
         );
-        return;
+        return 'handled';
       }
     }
+    return 'continue';
+  }
 
+  /** Post-spine intercept (registered at module scope below): the repeat-question replay shortcut. */
+  async repeatQuestionShortcutIntercept(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg, adapter } = ctx;
+    const replyConversationId = ctx.state.replyConversationId;
+    const key = this.convoKey(msg);
     // Deterministic repeat-question short-circuit (issue #259): the same
     // caller (platform + conversation + user) sending the exact
     // whitespace-normalized text again inside REPEAT_SHORTCUT_WINDOW_MS gets
@@ -1603,10 +1793,17 @@ export class Router {
         await this.enqueue(key, 'repeat-question shortcut reply', () =>
           this.sendRepeatShortcut(msg, adapter, cached.replyText, replyConversationId),
         );
-        return;
+        return 'handled';
       }
     }
+    return 'continue';
+  }
 
+  /** Post-spine intercept (registered at module scope below): the repeat-max-turns replay shortcut. */
+  async repeatMaxTurnsShortcutIntercept(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg, adapter } = ctx;
+    const replyConversationId = ctx.state.replyConversationId;
+    const key = this.convoKey(msg);
     // Deterministic max-turns repeat short-circuit (issue #306): the sibling
     // of the shortcut above, for the one outcome it deliberately excludes — a
     // turn that exhausted AGENT_MAX_TURNS. Same caller key, same normalized
@@ -1630,14 +1827,10 @@ export class Router {
         await this.enqueue(key, 'repeat-max-turns shortcut reply', () =>
           this.sendRepeatMaxTurnsShortcut(msg, adapter, replyConversationId),
         );
-        return;
+        return 'handled';
       }
     }
-
-    // Serialise per conversation so session resume stays consistent.
-    await this.enqueue(key, 'respond', () =>
-      this.respond(msg, role, adapter, replyBudget, replyConversationId),
-    );
+    return 'continue';
   }
 
   /**
@@ -1751,7 +1944,7 @@ export class Router {
     // which is per-hit low-rated/staleness framing, not this whole-reply
     // signal.
     const conflictCaveat = hasConflict ? `\n\n(${KNOWLEDGE_CONFLICT_CAVEAT_TEXT})` : '';
-    const suffix = lang === 'mi' ? KNOWLEDGE_SHORTCUT_SUFFIX_MI : KNOWLEDGE_SHORTCUT_SUFFIX;
+    const suffix = notice('knowledgeShortcutSuffix', { language: lang });
     const replyText = `${hit.content}${note}${conflictCaveat}${suffix}`;
     await this.send(adapter, target, replyText);
     this.recordShortcutRetrieval([hit.id]).catch((err) =>
@@ -1808,91 +2001,37 @@ export class Router {
    * reply (see the call site's comment for why silent fallthrough, not a
    * denial reply, is the deliberate choice here).
    *
-   * Tier floors mirror each Discord handler's REAL minimum exactly:
-   * `who_is_into`/`list_projects`/`community_digest` are structurally
-   * reachable by every role (including guest) via `toolsForRole` — none of
-   * them are Discord-only tools — so `atLeast(role, 'member')` alone is
-   * equivalent to Discord's own `toolsForRole(...).includes(...) ||
-   * !atLeast(...)` check for these three. `community_guidelines` has no tier
-   * floor in either handler.
+   * Since the command-registry split (agent-base plan §3 `commands` row) the
+   * per-command matchers/handlers live VERBATIM in `src/commands.ts` — one
+   * registry consumed by this dispatcher AND Discord slash registration —
+   * with the tier-floor rationale documented there. Each entry's `whatsapp`
+   * handler gets the trimmed text and either declines
+   * (`TEXT_COMMAND_UNMATCHED` → this loop tries the next entry), matches but
+   * falls through (`null` — the ineligible-tier case above), or returns the
+   * reply text. The injected repository reads are threaded through as
+   * same-named deps, so every existing test fake reaches the moved handlers
+   * unchanged.
    */
   private async tryWhatsAppTextCommand(msg: IncomingMessage, role: Tier): Promise<string | null> {
     if (msg.platform !== 'whatsapp') return null;
     const text = msg.text.trim();
-
-    const whoisMatch = /^!whois(?:\s+(.+))?$/i.exec(text);
-    if (whoisMatch) {
-      if (!atLeast(role, 'member')) return null;
-      const query = whoisMatch[1]?.trim();
-      if (query) {
-        const hits = await this.searchMemberInterestsFn(query);
-        return hits.length === 0
-          ? 'No members have published interests matching that yet.'
-          : await formatInterestResults(hits);
-      }
-      // Bare `!whois` (issue #889): mirror who_is_into's/`/whois`'s own
-      // no-argument self-match — the implicit query is the caller's own
-      // already-stored `member_interests` embedding, keyed on
-      // `msg.platform`/`msg.userId` only, never re-embedded and never
-      // sourced from the surrounding message text (SECURITY: #634 AC #4 /
-      // #882's "never inferred from chat content" invariant).
-      const selfMatch = await this.searchMemberInterestsForSelfFn(msg.platform, msg.userId);
-      if (!selfMatch.hasProfile) {
-        // Issue #920: same no-profile browse fallback as who_is_into's chat
-        // path and /whois — a separate call site, wired independently via
-        // the injected listRecentInterestsFn.
-        const hint =
-          "You haven't published interests yet — call set_my_interests first, then who_is_into with no " +
-          'topic will search using your own published interests.';
-        const recent = await this.listRecentInterestsFn();
-        return recent.length === 0 ? hint : `${await formatInterestResults(recent)}\n\n${hint}`;
-      }
-      return selfMatch.hits.length === 0
-        ? 'No members have published interests matching that yet.'
-        : await formatInterestResults(selfMatch.hits);
+    const deps: WhatsAppTextCommandDeps = {
+      searchMemberInterestsFn: this.searchMemberInterestsFn,
+      searchMemberInterestsForSelfFn: this.searchMemberInterestsForSelfFn,
+      listRecentInterestsFn: this.listRecentInterestsFn,
+      listOwnProjectsFn: this.listOwnProjectsFn,
+      searchProjectsFn: this.searchProjectsFn,
+      listRecentProjectsFn: this.listRecentProjectsFn,
+      getLangPref: this.getLangPref,
+      getCommunityGuidelinesFn: this.getCommunityGuidelinesFn,
+      getCommunityGuidelinesMiFn: this.getCommunityGuidelinesMiFn,
+      buildMemberDigestContentFn: this.buildMemberDigestContentFn,
+    };
+    for (const command of COMMUNITY_COMMANDS) {
+      if (!command.whatsapp) continue;
+      const result = await command.whatsapp(text, msg, role, deps);
+      if (result !== TEXT_COMMAND_UNMATCHED) return result;
     }
-
-    // Checked BEFORE the general `!projects [query]` branch below so the
-    // literal word "mine" is never swallowed as a `searchProjectsFn` query
-    // (issue #916) — mirrors `list_projects({ mine: true })`'s own ignore-
-    // query-when-mine behaviour rather than blending the two.
-    if (/^!projects\s+mine$/i.test(text)) {
-      if (!atLeast(role, 'member')) return null;
-      const projects = await this.listOwnProjectsFn(msg.platform, msg.userId);
-      return projects.length === 0
-        ? "You haven't shared any projects yet."
-        : await formatProjectResults(projects);
-    }
-
-    const projectsMatch = /^!projects(?:\s+(.+))?$/i.exec(text);
-    if (projectsMatch) {
-      if (!atLeast(role, 'member')) return null;
-      const query = projectsMatch[1]?.trim();
-      const projects = query
-        ? await this.searchProjectsFn(query, LIST_PROJECTS_DEFAULT_LIMIT)
-        : await this.listRecentProjectsFn(LIST_PROJECTS_DEFAULT_LIMIT);
-      return projects.length === 0
-        ? query
-          ? 'No shared projects match that.'
-          : 'No projects have been shared yet.'
-        : await formatProjectResults(projects);
-    }
-
-    if (/^!guidelines$/i.test(text)) {
-      const languagePreference = await this.getLangPref(msg.platform, msg.userId);
-      const guidelines =
-        languagePreference === 'mi'
-          ? ((await this.getCommunityGuidelinesMiFn()) ?? (await this.getCommunityGuidelinesFn()))
-          : await this.getCommunityGuidelinesFn();
-      return guidelines ?? 'No community guidelines have been set yet — ask an admin.';
-    }
-
-    if (/^!digest$/i.test(text)) {
-      if (!atLeast(role, 'member')) return null;
-      const message = await this.buildMemberDigestContentFn();
-      return message ?? 'Nothing to report right now.';
-    }
-
     return null;
   }
 
@@ -1961,8 +2100,8 @@ export class Router {
       undefined,
       lang,
     );
-    const suffix = lang === 'mi' ? KNOWLEDGE_SHORTCUT_SUFFIX_MI : KNOWLEDGE_SHORTCUT_SUFFIX;
-    const nudge = lang === 'mi' ? GUEST_KNOWLEDGE_SHORTCUT_NUDGE_MI : GUEST_KNOWLEDGE_SHORTCUT_NUDGE;
+    const suffix = notice('knowledgeShortcutSuffix', { language: lang });
+    const nudge = notice('guestKnowledgeShortcutNudge', { language: lang });
     const replyText = `${hit.content}${note}${suffix}${nudge}`;
     await this.send(adapter, msg.conversationId, replyText);
     this.recordShortcutRetrieval([hit.id]).catch((err) =>
@@ -2004,8 +2143,8 @@ export class Router {
     // original (already-served) answer's language, left untouched (issue
     // #339/#405's "translate the shell, not the dynamic payload" discipline).
     const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
-    const notice = lang === 'mi' ? REPEAT_SHORTCUT_NOTICE_MI : REPEAT_SHORTCUT_NOTICE;
-    const replyText = `${notice}${cachedReplyText}`;
+    const repeatNotice = notice('repeatShortcutNotice', { language: lang });
+    const replyText = `${repeatNotice}${cachedReplyText}`;
     await this.send(adapter, target, replyText);
     await recordInteraction({
       platform: msg.platform,
@@ -2042,11 +2181,11 @@ export class Router {
   ): Promise<void> {
     const target = replyConversationId ?? msg.conversationId;
     const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
-    const notice = lang === 'mi' ? REPEAT_MAX_TURNS_SHORTCUT_NOTICE_MI : REPEAT_MAX_TURNS_SHORTCUT_NOTICE;
-    const failure = lang === 'mi' ? MAX_TURNS_REPLY_MI : MAX_TURNS_REPLY;
+    const repeatNotice = notice('repeatMaxTurnsShortcutNotice', { language: lang });
+    const failure = notice('maxTurnsReply', { language: lang });
     const replyText = config.behaviour.escalationToAdminEnabled
-      ? `${notice}${this.offerEscalation(msg, failure, lang === 'mi')}`
-      : `${notice}${failure}`;
+      ? `${repeatNotice}${this.offerEscalation(msg, failure, lang === 'mi')}`
+      : `${repeatNotice}${failure}`;
     await this.send(adapter, target, replyText);
     await recordInteraction({
       platform: msg.platform,
@@ -2066,6 +2205,135 @@ export class Router {
     }).catch((err) =>
       logger.error({ err }, 'Failed to record repeat-max-turns-shortcut outbound interaction'),
     );
+  }
+
+  /**
+   * Post-turn handler (registered at module scope below): real-time admin
+   * escalation for a member's own thumbs-down (issue #598) — a direct-fire
+   * sibling of the max-turns offer in `respond()`, not a speculative offer:
+   * `rate_answer(helpful: false)` IS the explicit action already taken, so
+   * there is nothing to confirm and no `pendingEscalations` entry is
+   * registered. Never touches `outboundText`/`reply.text` — the member still
+   * just sees "Thanks for the feedback, noted." Shares (never adds to) the
+   * same guild-wide `ESCALATION_RATE_LIMIT_PER_HOUR` cap as the max-turns
+   * producer; when the cap is exhausted this is silently suppressed, not
+   * queued or retried.
+   */
+  async unhelpfulAnswerEscalationHandler(ctx: PostTurnContext): Promise<void> {
+    const { msg, reply } = ctx;
+    if (config.behaviour.escalationToAdminEnabled && reply.turnState?.unhelpfulAnswerRated === true) {
+      if (this.reserveEscalationSlot(ESCALATION_RATE_LIMIT_PER_HOUR)) {
+        await this.notifyAdminsFn(
+          (platform) => this.adapters.get(platform),
+          `${msg.userName} rated my last answer unhelpful on ${msg.platform} ` +
+            `(conversation ${msg.conversationId}): "${truncateForEcho(msg.text)}"`,
+          msg.userId,
+        ).catch((err) => logger.warn({ err }, 'Unhelpful-answer admin notification failed'));
+      }
+    }
+  }
+
+  /**
+   * Post-turn handler (registered at module scope below): real-time admin
+   * escalation for a member's own explicit ask (issue #808) — a third
+   * direct-fire sibling: the member's own words ARE the explicit action,
+   * mirroring #598's reasoning exactly ("the rating itself is the explicit
+   * action, so there's nothing to confirm"), so no `pendingEscalations`
+   * entry is registered. Never touches `outboundText`/`reply.text` — the
+   * member still just sees the model's own reply, informed only by the
+   * tool's fixed neutral acknowledgement text. Shares (never adds to) the
+   * same guild-wide `ESCALATION_RATE_LIMIT_PER_HOUR` cap as both producers
+   * above — the per-caller daily cap that bounds a single member's own
+   * worst-case share of that budget is enforced inside the
+   * `request_human_help` tool handler itself (`tools.ts`), before
+   * `turnState.humanHelpRequested` is ever set.
+   */
+  async humanHelpEscalationHandler(ctx: PostTurnContext): Promise<void> {
+    const { msg, reply } = ctx;
+    if (config.behaviour.escalationToAdminEnabled && reply.turnState?.humanHelpRequested === true) {
+      if (this.reserveEscalationSlot(ESCALATION_RATE_LIMIT_PER_HOUR)) {
+        await this.notifyAdminsFn(
+          (platform) => this.adapters.get(platform),
+          `${msg.userName} asked to talk to a human on ${msg.platform} ` +
+            `(conversation ${msg.conversationId}): "${truncateForEcho(msg.text)}"`,
+          msg.userId,
+        ).catch((err) => logger.warn({ err }, 'Human-help-request admin notification failed'));
+      }
+    }
+  }
+
+  /**
+   * Post-turn handler (registered at module scope below): real-time admin
+   * nudge when a knowledge-gap cluster crosses KNOWLEDGE_GAP_ALERT_THRESHOLD
+   * (issue #650) — the "asked N times, never confidently answered" signal
+   * promoted from the weekly digest's bare count to an instant DM.
+   * `turnState.knowledgeGapCluster` is only ever set (by the
+   * knowledge_search tool handler) when config.knowledgeGapAlert.enabled is
+   * true and the turn ended in genuine success, so no separate flag check is
+   * needed here. The rate slot is reserved BEFORE marking the cluster
+   * alerted: on a miss, the cluster's rows are deliberately left unalerted
+   * (not marked) so a later gap in the same cluster can retry once the
+   * trailing hour frees up — the underlying gap is still recorded and still
+   * counted by the weekly digest either way (acceptance criterion 6).
+   * SECURITY: unlike the escalation/unhelpful-answer alerts above, the
+   * message deliberately omits `msg.platform`/`msg.conversationId` —
+   * acceptance criterion 5 requires the DM body to be a strict subset of
+   * what `list_knowledge_gaps` already returns for the same scope (query
+   * text + count only, no new field), and that tool's own output never
+   * includes a conversation id.
+   */
+  async knowledgeGapAlertHandler(ctx: PostTurnContext): Promise<void> {
+    const { msg, reply } = ctx;
+    if (reply.turnState?.knowledgeGapCluster) {
+      const cluster = reply.turnState.knowledgeGapCluster;
+      if (this.reserveKnowledgeGapAlertSlot(config.knowledgeGapAlert.rateLimitPerHour)) {
+        await this.markKnowledgeGapsAlertedFn(cluster.rowIds).catch((err) =>
+          logger.warn({ err }, 'Failed to mark knowledge gap cluster alerted'),
+        );
+        await this.notifyAdminsFn(
+          (platform) => this.adapters.get(platform),
+          `A knowledge gap has come up ${cluster.count} times recently and might be worth turning ` +
+            `into a FAQ: "${truncateForEcho(cluster.representative)}"`,
+          msg.userId,
+        ).catch((err) => logger.warn({ err }, 'Knowledge gap cluster admin notification failed'));
+      }
+    }
+  }
+
+  /**
+   * Post-turn handler (registered at module scope below): real-time admin
+   * nudge for a served, stale knowledge entry (issue #701) — the
+   * `knowledge_search` call site's half of the mechanism; the two shortcut
+   * call sites (`sendKnowledgeShortcut`/`sendGuestKnowledgeShortcut`) call
+   * the identical `maybeAlertStaleKnowledge` directly, since they never go
+   * through the model/turn-state plumbing `knowledge_search` does.
+   * `turnState.staleKnowledgeAlertIds` is only ever set (by the
+   * `knowledge_search` tool handler) when `config.knowledgeStaleAlert.enabled`
+   * is true and the turn ended in genuine success, so no separate flag check
+   * is needed here.
+   */
+  async staleKnowledgeAlertHandler(ctx: PostTurnContext): Promise<void> {
+    const { msg, reply } = ctx;
+    if (reply.turnState?.staleKnowledgeAlertIds) {
+      for (const id of reply.turnState.staleKnowledgeAlertIds) {
+        await this.maybeAlertStaleKnowledge(id, msg.userId);
+      }
+    }
+  }
+
+  /**
+   * Post-turn handler (registered at module scope below): best-effort
+   * knowledge_search-hit correlation on the normal (non-shortcut) outbound
+   * path (issue #411) — contributes the same scalar `knowledgeEntryId` meta
+   * key `sendKnowledgeShortcut` already writes, so both paths feed
+   * `listKnowledgeFeedbackSummary`/`listAnswerFeedback` with no query/schema
+   * change. Absent whenever no `knowledge_search` call in the turn had a hit
+   * clear the relevance floor.
+   */
+  async knowledgeEntryMetaHandler(ctx: PostTurnContext): Promise<void> {
+    if (ctx.reply.turnState?.knowledgeEntryId != null) {
+      ctx.outboundMeta.knowledgeEntryId = ctx.reply.turnState.knowledgeEntryId;
+    }
   }
 
   private async respond(
@@ -2143,98 +2411,16 @@ export class Router {
           ? this.offerEscalation(msg, reply.text, reply.languagePreference === 'mi')
           : reply.text;
 
-      // Real-time admin escalation for a member's own thumbs-down (issue
-      // #598) — a direct-fire sibling of the max-turns offer above, not a
-      // speculative offer: `rate_answer(helpful: false)` IS the explicit
-      // action already taken, so there is nothing to confirm and no
-      // `pendingEscalations` entry is registered. Never touches
-      // `outboundText`/`reply.text` — the member still just sees "Thanks for
-      // the feedback, noted." Shares (never adds to) the same guild-wide
-      // `ESCALATION_RATE_LIMIT_PER_HOUR` cap as the max-turns producer; when
-      // the cap is exhausted this is silently suppressed, not queued or
-      // retried.
-      if (config.behaviour.escalationToAdminEnabled && reply.unhelpfulAnswerRated === true) {
-        if (this.reserveEscalationSlot(ESCALATION_RATE_LIMIT_PER_HOUR)) {
-          await this.notifyAdminsFn(
-            (platform) => this.adapters.get(platform),
-            `${msg.userName} rated my last answer unhelpful on ${msg.platform} ` +
-              `(conversation ${msg.conversationId}): "${truncateForEcho(msg.text)}"`,
-            msg.userId,
-          ).catch((err) => logger.warn({ err }, 'Unhelpful-answer admin notification failed'));
-        }
-      }
-
-      // Real-time admin escalation for a member's own explicit ask (issue
-      // #808) — a third direct-fire sibling of the two above: the member's
-      // own words ARE the explicit action, mirroring #598's reasoning
-      // exactly ("the rating itself is the explicit action, so there's
-      // nothing to confirm"), so no `pendingEscalations` entry is
-      // registered. Never touches `outboundText`/`reply.text` — the member
-      // still just sees the model's own reply, informed only by the tool's
-      // fixed neutral acknowledgement text. Shares (never adds to) the same
-      // guild-wide `ESCALATION_RATE_LIMIT_PER_HOUR` cap as both producers
-      // above — the per-caller daily cap that bounds a single member's own
-      // worst-case share of that budget is enforced inside the
-      // `request_human_help` tool handler itself (`tools.ts`), before
-      // `reply.humanHelpRequested` is ever set.
-      if (config.behaviour.escalationToAdminEnabled && reply.humanHelpRequested === true) {
-        if (this.reserveEscalationSlot(ESCALATION_RATE_LIMIT_PER_HOUR)) {
-          await this.notifyAdminsFn(
-            (platform) => this.adapters.get(platform),
-            `${msg.userName} asked to talk to a human on ${msg.platform} ` +
-              `(conversation ${msg.conversationId}): "${truncateForEcho(msg.text)}"`,
-            msg.userId,
-          ).catch((err) => logger.warn({ err }, 'Human-help-request admin notification failed'));
-        }
-      }
-
-      // Real-time admin nudge when a knowledge-gap cluster crosses
-      // KNOWLEDGE_GAP_ALERT_THRESHOLD (issue #650) — the "asked N times,
-      // never confidently answered" signal promoted from the weekly digest's
-      // bare count to an instant DM, same promote-to-instant-DM shape as the
-      // escalation branch above. `reply.knowledgeGapCluster` is only ever set
-      // (by the knowledge_search tool handler) when
-      // config.knowledgeGapAlert.enabled is true and the turn ended in
-      // genuine success, so no separate flag check is needed here. The rate
-      // slot is reserved BEFORE marking the cluster alerted: on a miss, the
-      // cluster's rows are deliberately left unalerted (not marked) so a
-      // later gap in the same cluster can retry once the trailing hour frees
-      // up — the underlying gap is still recorded and still counted by the
-      // weekly digest either way (acceptance criterion 6). SECURITY: unlike
-      // the escalation/unhelpful-answer alerts above, the message deliberately
-      // omits `msg.platform`/`msg.conversationId` — acceptance criterion 5
-      // requires the DM body to be a strict subset of what `list_knowledge_gaps`
-      // already returns for the same scope (query text + count only, no new
-      // field), and that tool's own output never includes a conversation id.
-      if (reply.knowledgeGapCluster) {
-        const cluster = reply.knowledgeGapCluster;
-        if (this.reserveKnowledgeGapAlertSlot(config.knowledgeGapAlert.rateLimitPerHour)) {
-          await this.markKnowledgeGapsAlertedFn(cluster.rowIds).catch((err) =>
-            logger.warn({ err }, 'Failed to mark knowledge gap cluster alerted'),
-          );
-          await this.notifyAdminsFn(
-            (platform) => this.adapters.get(platform),
-            `A knowledge gap has come up ${cluster.count} times recently and might be worth turning ` +
-              `into a FAQ: "${truncateForEcho(cluster.representative)}"`,
-            msg.userId,
-          ).catch((err) => logger.warn({ err }, 'Knowledge gap cluster admin notification failed'));
-        }
-      }
-
-      // Real-time admin nudge for a served, stale knowledge entry (issue
-      // #701) — the `knowledge_search` call site's half of the mechanism;
-      // the two shortcut call sites (`sendKnowledgeShortcut`/
-      // `sendGuestKnowledgeShortcut`) call the identical
-      // `maybeAlertStaleKnowledge` directly, since they never go through the
-      // model/turn-state plumbing `knowledge_search` does.
-      // `reply.staleKnowledgeAlertIds` is only ever set (by the
-      // `knowledge_search` tool handler) when
-      // `config.knowledgeStaleAlert.enabled` is true and the turn ended in
-      // genuine success, so no separate flag check is needed here.
-      if (reply.staleKnowledgeAlertIds) {
-        for (const id of reply.staleKnowledgeAlertIds) {
-          await this.maybeAlertStaleKnowledge(id, msg.userId);
-        }
+      // Post-turn handler chain (routerIntercepts.ts): the module-registered
+      // handlers — today the four community alert readers plus the
+      // knowledge-entry meta stamp, each moved verbatim into a named handler
+      // below — run in registration order at exactly the point their inline
+      // blocks sat. Handlers read module signals off `reply.turnState` and
+      // may contribute outbound-meta entries; they never touch
+      // `outboundText`, the caches, or anything the pre-turn spine decided.
+      const postCtx: PostTurnContext = { msg, adapter, reply, router: this, outboundMeta: {} };
+      for (const handler of registeredPostTurnHandlers()) {
+        await handler.run(postCtx);
       }
 
       // Real-time admin nudge for a generic repeat-question cluster (issue
@@ -2265,16 +2451,17 @@ export class Router {
           const lastWarned = this.budgetWarned.get(userKey) ?? 0;
           if (Date.now() - lastWarned > 24 * 3_600_000) {
             this.budgetWarned.set(userKey, Date.now());
-            let warningText = DAILY_REPLY_BUDGET_WARNING_TEXT(remaining);
-            if (reply.languagePreference === 'mi') {
-              warningText = DAILY_REPLY_BUDGET_WARNING_TEXT_MI(remaining);
-            } else {
-              const style = await this.getRespStyle(msg.platform, msg.userId).catch(
-                () => 'standard' as const,
-              );
-              if (style === 'plain') warningText = DAILY_REPLY_BUDGET_WARNING_TEXT_PLAIN(remaining);
-            }
-            outboundText += warningText;
+            // Style only looked up once 'mi' is ruled out (it takes
+            // precedence) — no style DB read on the 'mi' path; selection
+            // lives in strings/notices.ts.
+            const style =
+              reply.languagePreference === 'mi'
+                ? undefined
+                : await this.getRespStyle(msg.platform, msg.userId).catch(() => 'standard' as const);
+            outboundText += notice('dailyReplyBudgetWarning', {
+              language: reply.languagePreference,
+              style,
+            })(remaining);
           }
         }
       }
@@ -2326,16 +2513,14 @@ export class Router {
       const registeredNewPending = Boolean(pending && pending !== priorPending);
       if (pending && registeredNewPending) {
         const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
-        let pendingText: string;
-        if (lang === 'mi') {
-          pendingText = PENDING_NOTICE_MI(pending.description);
-        } else {
-          const style = await this.getRespStyle(msg.platform, msg.userId).catch(() => 'standard' as const);
-          pendingText =
-            style === 'plain'
-              ? PENDING_NOTICE_PLAIN(pending.description)
-              : PENDING_NOTICE(pending.description);
-        }
+        // Style only looked up once 'mi' is ruled out (it takes precedence) —
+        // no style DB read on the 'mi' path; selection lives in
+        // strings/notices.ts.
+        const style =
+          lang === 'mi'
+            ? undefined
+            : await this.getRespStyle(msg.platform, msg.userId).catch(() => 'standard' as const);
+        const pendingText = notice('pendingNotice', { language: lang, style })(pending.description);
         await this.send(adapter, target, pendingText).catch((err) =>
           logger.warn({ err }, 'Failed to send deterministic pending notice'),
         );
@@ -2378,14 +2563,11 @@ export class Router {
         meta: {
           replyToUserId: msg.userId,
           ...(reply.maxTurnsExceeded === true ? { maxTurnsExceeded: true } : {}),
-          // Best-effort knowledge_search-hit correlation on the normal
-          // (non-shortcut) outbound path (issue #411) — the same scalar
-          // `knowledgeEntryId` meta key `sendKnowledgeShortcut` already
-          // writes, so both paths feed `listKnowledgeFeedbackSummary` /
-          // `listAnswerFeedback` with no query/schema change. Absent
-          // whenever no `knowledge_search` call in the turn had a hit clear
-          // the relevance floor.
-          ...(reply.knowledgeEntryId != null ? { knowledgeEntryId: reply.knowledgeEntryId } : {}),
+          // Handler-contributed meta (the former inline `knowledgeEntryId`
+          // spread, issue #411 — see `knowledgeEntryMetaHandler` below):
+          // spread at the exact position the scalar key previously held, so
+          // the recorded meta shape is unchanged.
+          ...postCtx.outboundMeta,
           // Cache-usage telemetry (issue #522): mirrors the conditional-spread
           // pattern above, but gated on `> 0` rather than `!= null` — a turn
           // whose SDK result carried no `usage` at all (undefined) AND a turn
@@ -2421,3 +2603,56 @@ export class Router {
     }
   }
 }
+
+// The five community shortcut/command intercepts, registered through the same
+// post-spine extension point a future module would use (agent-base plan §3
+// `intercepts` row). Order is load-bearing and long-standing: ack → knowledge
+// → WhatsApp `!` commands → repeat-question → repeat-max-turns — pinned
+// (along with the spine prefix) by the SECURITY chain test
+// (tests/routerInterceptChain.test.ts). Registration can only ever land AFTER
+// the frozen spine, so none of these can run before block/role/gate/CONFIRM/
+// pause/rate/budget.
+registerPreTurnIntercept({ name: 'ack-shortcut', run: (ctx) => ctx.router.ackShortcutIntercept(ctx) });
+registerPreTurnIntercept({
+  name: 'knowledge-shortcut',
+  run: (ctx) => ctx.router.knowledgeShortcutIntercept(ctx),
+});
+registerPreTurnIntercept({
+  name: 'whatsapp-text-commands',
+  run: (ctx) => ctx.router.whatsappTextCommandIntercept(ctx),
+});
+registerPreTurnIntercept({
+  name: 'repeat-question-shortcut',
+  run: (ctx) => ctx.router.repeatQuestionShortcutIntercept(ctx),
+});
+registerPreTurnIntercept({
+  name: 'repeat-max-turns-shortcut',
+  run: (ctx) => ctx.router.repeatMaxTurnsShortcutIntercept(ctx),
+});
+
+// The five community post-turn handlers (agent-base plan §3
+// `postTurnHandlers` row), registered in the exact order their inline blocks
+// ran in `respond()`: the four alert readers of the (former) AgentReply
+// community fields — now `reply.turnState` keys — then the outbound-meta
+// knowledge-entry stamp. Handlers observe the finished turn and fire
+// deterministic side effects only; they never rewrite the reply.
+registerPostTurnHandler({
+  name: 'unhelpful-answer-escalation',
+  run: (ctx) => ctx.router.unhelpfulAnswerEscalationHandler(ctx),
+});
+registerPostTurnHandler({
+  name: 'human-help-escalation',
+  run: (ctx) => ctx.router.humanHelpEscalationHandler(ctx),
+});
+registerPostTurnHandler({
+  name: 'knowledge-gap-alert',
+  run: (ctx) => ctx.router.knowledgeGapAlertHandler(ctx),
+});
+registerPostTurnHandler({
+  name: 'stale-knowledge-alert',
+  run: (ctx) => ctx.router.staleKnowledgeAlertHandler(ctx),
+});
+registerPostTurnHandler({
+  name: 'knowledge-entry-meta',
+  run: (ctx) => ctx.router.knowledgeEntryMetaHandler(ctx),
+});

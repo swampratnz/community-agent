@@ -116,7 +116,7 @@ test('runAgentTurn: AgentReply.humanHelpRequested is true after a genuine reques
   const reply = await runAgentTurn(makeCaller(), 'can I talk to a human', makeAdapter().adapter);
 
   assert.equal(reply.ok, true);
-  assert.equal(reply.humanHelpRequested, true);
+  assert.equal(reply.turnState?.humanHelpRequested, true);
 });
 
 test('runAgentTurn: AgentReply.humanHelpRequested is absent when the turn makes no request_human_help call (issue #808)', async (t) => {
@@ -125,7 +125,7 @@ test('runAgentTurn: AgentReply.humanHelpRequested is absent when the turn makes 
 
   const reply = await runAgentTurn(makeCaller(), 'hello', makeAdapter().adapter);
 
-  assert.equal(reply.humanHelpRequested, undefined);
+  assert.equal(reply.turnState?.humanHelpRequested, undefined);
 });
 
 test('SECURITY: runAgentTurn: AgentReply.humanHelpRequested is absent when the turn ends in a thrown failure, even though a genuine request was recorded first — never a stale flag on a failed turn (issue #808, mirrors #598)', async (t) => {
@@ -136,7 +136,7 @@ test('SECURITY: runAgentTurn: AgentReply.humanHelpRequested is absent when the t
 
   assert.equal(reply.ok, false, 'the simulated thrown failure must surface as a failed turn');
   assert.equal(
-    reply.humanHelpRequested,
+    reply.turnState?.humanHelpRequested,
     undefined,
     'a failed turn must never carry humanHelpRequested, even if a genuine request was recorded before the failure',
   );
@@ -151,7 +151,7 @@ test('SECURITY: runAgentTurn: AgentReply.humanHelpRequested is absent on an erro
   assert.equal(reply.ok, false);
   assert.equal(reply.maxTurnsExceeded, true);
   assert.equal(
-    reply.humanHelpRequested,
+    reply.turnState?.humanHelpRequested,
     undefined,
     'a max-turns failure must never carry humanHelpRequested, even if a genuine request was recorded before it',
   );

@@ -17,6 +17,7 @@ import {
   resetPendingAlertsForTests,
 } from './pendingAlertQueue.js';
 import { alertSuperAdmins as sendSuperAdminAlert } from './notifications.js';
+import type { JobSpec } from './jobs/types.js';
 import type { PlatformAdapter } from './platforms/types.js';
 
 const CHECK_INTERVAL_MS = 30_000;
@@ -66,6 +67,17 @@ export function startDisconnectAlerts(adapters: readonly PlatformAdapter[]): Ret
   timer.unref();
   return timer;
 }
+
+// Registry entry (see src/jobs/registry.ts). Always on — sustained-disconnect
+// alerting has no user-facing surface to disable, so there is no enable flag
+// (same convention as the embedding-model health check). Note this job never
+// records into the job-health registry: its 30s bespoke tick predates
+// startTrackedJob and its own per-adapter debounce IS its health signal.
+export const disconnectAlertsJob: JobSpec = {
+  name: 'disconnect-alerts',
+  enabled: () => true,
+  start: (adapters) => startDisconnectAlerts(adapters),
+};
 
 // Exported (not just used internally by the check() interval) so tests can
 // drive queuing/overflow behaviour directly, without waiting out the

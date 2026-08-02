@@ -63,6 +63,7 @@ import { chunkText } from '../textChunk.js';
 import { handleInteraction, registerSlashCommands } from './slashCommands.js';
 import {
   paramString,
+  type AdapterTextPack,
   type AdminAction,
   type IncomingMessage,
   type MessageHandler,
@@ -145,27 +146,59 @@ export const WELCOME_MESSAGE_OPEN =
   'go ahead and message me any time, no admin approval needed. Ask me "what can you do?" any time for ' +
   'a quick rundown.';
 
+/**
+ * The default injected text pack (agent-base plan item 6, `AdapterTextPack`
+ * in ../types.ts): exactly today's constants, so a constructor that passes
+ * nothing is byte-identical to the pre-pack behaviour. A future module can
+ * swap the pack via the constructor; whatever it injects still leaves
+ * through this adapter's `filtered()` send paths.
+ */
+export const DISCORD_TEXT_PACK: AdapterTextPack = {
+  welcomeMessage: WELCOME_MESSAGE,
+  welcomeMessageOpen: WELCOME_MESSAGE_OPEN,
+  warnUserDmPrefix: WARN_USER_DM_PREFIX,
+  warnUserDmPrefixMi: WARN_USER_DM_PREFIX_MI,
+};
+
+/** Every `AdminAction` kind this adapter's `performAdminAction` implements — hoisted to a module const so the factory registry (agent-base plan item 9) can declare it without an instance. */
+export const DISCORD_ADMIN_CAPABILITIES: ReadonlySet<string> = new Set([
+  'timeout_user',
+  'kick_user',
+  'ban_user',
+  'unban_user',
+  'delete_message',
+  'warn_user',
+  'unmute_user',
+  'mute_user',
+  'assign_community_role',
+  'remove_community_role',
+  'list_assignable_roles',
+  'create_poll',
+  'end_poll',
+  'create_thread',
+  'archive_thread',
+  'create_event',
+  'cancel_event',
+]);
+
+/**
+ * Discord's declared tool-capability set (agent-base plan item 9): the admin
+ * capabilities above plus the feature-capability ids for the optional
+ * adapter methods tools key on (`reactToMessage` / `listUpcomingEvents`).
+ * `assertToolAvailabilityConsistent` checks every ToolDef platform
+ * restriction against this, and the `SECURITY:` platform-registry test pins
+ * the declaration against the real instance (method presence), so it cannot
+ * drift from what the adapter actually implements.
+ */
+export const DISCORD_TOOL_CAPABILITIES: ReadonlySet<string> = new Set([
+  ...DISCORD_ADMIN_CAPABILITIES,
+  'react_to_message',
+  'list_events',
+]);
+
 export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
   readonly platform = 'discord' as const;
-  readonly adminCapabilities = new Set([
-    'timeout_user',
-    'kick_user',
-    'ban_user',
-    'unban_user',
-    'delete_message',
-    'warn_user',
-    'unmute_user',
-    'mute_user',
-    'assign_community_role',
-    'remove_community_role',
-    'list_assignable_roles',
-    'create_poll',
-    'end_poll',
-    'create_thread',
-    'archive_thread',
-    'create_event',
-    'cancel_event',
-  ]);
+  readonly adminCapabilities = DISCORD_ADMIN_CAPABILITIES;
 
   private readonly client: Client;
   private handler: MessageHandler | null = null;
@@ -191,6 +224,7 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
   constructor(
     private readonly mutedRoleOverwriteRetryDelayMs = MUTED_ROLE_OVERWRITE_RETRY_DELAY_MS,
     private readonly sendRetryDelayMs = DISCORD_SEND_RETRY_DELAY_MS,
+    private readonly textPack: AdapterTextPack = DISCORD_TEXT_PACK,
   ) {
     this.moderator = createModerator(this);
     this.client = new Client({
@@ -830,7 +864,9 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     const languagePreference = await getLanguagePreference('discord', member.id);
     const welcomeMessageMi = languagePreference === 'mi' ? await getWelcomeMessageMi() : null;
     const defaultWelcomeMessage =
-      config.rbac.accessMode.discord === 'open' ? WELCOME_MESSAGE_OPEN : WELCOME_MESSAGE;
+      config.rbac.accessMode.discord === 'open'
+        ? this.textPack.welcomeMessageOpen
+        : this.textPack.welcomeMessage;
     const welcomeMessage = welcomeMessageMi ?? (await getWelcomeMessage()) ?? defaultWelcomeMessage;
     const guidelines = await getCommunityGuidelines();
     const welcomeText = guidelines
@@ -1072,7 +1108,7 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
    * site below omits both, so their output stays English-only by
    * construction (never `_MI`/`_PLAIN`).
    */
-  private async filtered(text: string, language?: 'mi', style?: 'plain'): Promise<string> {
+  private async filtered(text: string, language?: string, style?: string): Promise<string> {
     return filterOutbound(text, await getCodeAnswersPolicy(), runtimeSecrets(), undefined, language, style);
   }
 
@@ -1380,7 +1416,10 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
       }
       case 'warn_user': {
         // A "warn" is a DM to the user; recorded in the audit log by the caller.
-        const prefix = action.params?.language === 'mi' ? WARN_USER_DM_PREFIX_MI : WARN_USER_DM_PREFIX;
+        const prefix =
+          action.params?.language === 'mi'
+            ? this.textPack.warnUserDmPrefixMi
+            : this.textPack.warnUserDmPrefix;
         await this.sendDirectMessage(action.targetUserId!, `${prefix} ${paramString(action.params?.reason)}`);
         return `Warned ${action.targetUserId}.`;
       }

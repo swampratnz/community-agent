@@ -5950,10 +5950,7 @@ test(
     config.moderation.strikeLimit = 3;
     config.moderation.strikeWindowDays = 30;
     try {
-      const result = await listMutedMembersHandler(
-        'admin',
-        LIST_MUTED_PLATFORM as unknown as Platform,
-      ).handler();
+      const result = await listMutedMembersHandler('admin', LIST_MUTED_PLATFORM).handler();
       assert.notEqual(result.isError, true);
       const text = result.content[0]?.text ?? '';
 
@@ -6000,10 +5997,7 @@ test(
     const originalLimit = config.moderation.strikeLimit;
     config.moderation.strikeLimit = 3;
     try {
-      const result = await listMutedMembersHandler(
-        'admin',
-        LIST_MUTED_PLATFORM as unknown as Platform,
-      ).handler();
+      const result = await listMutedMembersHandler('admin', LIST_MUTED_PLATFORM).handler();
       const text = result.content[0]?.text ?? '';
       assert.match(text, new RegExp(user));
       assert.doesNotMatch(text, new RegExp(distinctiveReason), 'the reason never reaches the output');
@@ -6029,10 +6023,7 @@ test(
     // deterministic regardless of any other concurrently-running platform.
     config.moderation.strikeLimit = 1_000_000;
     try {
-      const result = await listMutedMembersHandler(
-        'admin',
-        `${RUN}-list-muted-empty` as unknown as Platform,
-      ).handler();
+      const result = await listMutedMembersHandler('admin', `${RUN}-list-muted-empty`).handler();
       assert.equal(result.content[0]?.text, 'No members are currently muted.');
     } finally {
       config.moderation.strikeLimit = originalLimit;
@@ -6083,7 +6074,7 @@ test(
     await blockUser(platform, withReason, 'admin-1', 'harassment');
     await blockUser(platform, withoutReason, 'admin-2', null);
     try {
-      const result = await listBlockedMembersHandler('admin', platform as unknown as Platform).handler();
+      const result = await listBlockedMembersHandler('admin', platform).handler();
       assert.notEqual(result.isError, true);
       // untrusted() strips '\n' from the rendered body (issue #227
       // quarantine-escape fix), so rows are space-joined, not newline-joined
@@ -6115,10 +6106,7 @@ test(
   'list_blocked_members reports "No blocked users." when nothing is blocked on that platform (issue #924)',
   { skip },
   async () => {
-    const result = await listBlockedMembersHandler(
-      'admin',
-      `${RUN}-list-blocked-empty` as unknown as Platform,
-    ).handler();
+    const result = await listBlockedMembersHandler('admin', `${RUN}-list-blocked-empty`).handler();
     assert.equal(result.content[0]?.text, 'No blocked users.');
   },
 );
@@ -6136,12 +6124,12 @@ test(
     await blockUser(platformA, userA, 'admin-1', 'harassment');
     await blockUser(platformB, userB, 'admin-1', 'spam');
     try {
-      const resultA = await listBlockedMembersHandler('admin', platformA as unknown as Platform).handler();
+      const resultA = await listBlockedMembersHandler('admin', platformA).handler();
       const textA = resultA.content[0]?.text ?? '';
       assert.match(textA, new RegExp(userA), "platform A's caller sees platform A's block");
       assert.doesNotMatch(textA, new RegExp(userB), "platform A's caller must never see platform B's block");
 
-      const resultB = await listBlockedMembersHandler('admin', platformB as unknown as Platform).handler();
+      const resultB = await listBlockedMembersHandler('admin', platformB).handler();
       const textB = resultB.content[0]?.text ?? '';
       assert.match(textB, new RegExp(userB), "platform B's caller sees platform B's block");
       assert.doesNotMatch(textB, new RegExp(userA), "platform B's caller must never see platform A's block");

@@ -151,6 +151,7 @@ export const broadcastTools = [
       "poll starts with zero votes (the old poll's votes cannot be carried over).",
     minTier: 'admin',
     platforms: ['discord'],
+    requiresCapability: 'create_poll',
     readOnlyHint: false,
     schema: {
       question: z.string().max(POLL_QUESTION_MAX_CHARS).describe('The poll question'),
@@ -237,6 +238,7 @@ export const broadcastTools = [
       'create_poll.',
     minTier: 'admin',
     platforms: ['discord'],
+    requiresCapability: 'end_poll',
     readOnlyHint: false,
     schema: {
       messageId: z
@@ -289,6 +291,7 @@ export const broadcastTools = [
       'seeded from an existing message. Discord only. Admins can only open threads in conversations they are in.',
     minTier: 'admin',
     platforms: ['discord'],
+    requiresCapability: 'create_thread',
     readOnlyHint: false,
     schema: {
       name: z
@@ -374,6 +377,7 @@ export const broadcastTools = [
       'conversations they are in.',
     minTier: 'admin',
     platforms: ['discord'],
+    requiresCapability: 'archive_thread',
     readOnlyHint: false,
     schema: {
       threadId: z.string().describe('The thread id to archive'),

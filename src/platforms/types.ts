@@ -10,10 +10,52 @@
  * never from message content.
  */
 
-export type Platform = 'discord' | 'whatsapp';
+/**
+ * Platform identifier — an OPEN string (agent-base plan item 9), no longer
+ * the closed `'discord' | 'whatsapp'` union that was duplicated across
+ * core.ts/tools metadata/zod enums. The set of platforms that actually
+ * exists in a deployment is the registry (`src/platforms/registry.ts`:
+ * `PLATFORM_DESCRIPTORS` + `src/platforms/factories.ts`: `ADAPTER_FACTORIES`)
+ * — adding a platform is a registration, not a type edit fanned out across
+ * the codebase.
+ *
+ * Opening the TYPE does not open any runtime trust boundary. Every value
+ * that flows through a `Platform`-typed position still originates from one
+ * of exactly three registration-validated sources, never from message
+ * content:
+ *   1. an adapter's own `platform` field (a fixed literal on each adapter
+ *      class, checked against its factory registration at composition time);
+ *   2. a DB `platform` column, which only ever stores values written from
+ *      source 1 or 3;
+ *   3. a model-facing tool argument, where the zod schema stays a CLOSED
+ *      enum by design (`platformArg` in tools/helpers.ts, the
+ *      `link_member`/super-admin enums) — the model can select among known
+ *      platforms but can never mint a new one.
+ */
+export type Platform = string;
 
 /** Permission tier. Defined here to keep types.ts dependency-free. */
 export type Tier = 'super_admin' | 'admin' | 'member' | 'guest';
+
+/**
+ * Per-platform member-id validation heuristics (agent-base plan item 9):
+ * what shape a *membership target id* must have on this platform, owned by
+ * the platform's own lightweight rules module
+ * (`discord/memberIdRules.ts` / `whatsapp/memberIdRules.ts`) and looked up
+ * through the registry — `src/auth/memberId.ts` is now a thin dispatcher
+ * over these, so its import sites and error behaviour are unchanged.
+ * Defined here (not in registry.ts) so the rules modules can implement the
+ * contract without a type-level cycle back through the registry.
+ */
+export interface PlatformMemberIdRules {
+  /**
+   * Validate and normalise a membership target id for this platform.
+   * Throws with an actionable message on a mismatch; returns the
+   * normalised id otherwise. Must never accept an id whose shape belongs
+   * to a different platform (issue #78's cross-platform filing bug).
+   */
+  normalizeMemberId(rawId: string): string;
+}
 
 /** A message received from a platform, normalised to a common shape. */
 export interface IncomingMessage {
@@ -72,26 +114,56 @@ export interface OutgoingMessage {
   conversationId: string;
   text: string;
   /**
-   * Set only on the router's real-agent-turn main reply (issue #339) when the
-   * caller has a standing `language_preference` of `'mi'` — picks the `_MI`
-   * variant of the outbound code-policy note. Every other send path
-   * (`sendDirectMessage`, poll question/answers, thread name/description,
-   * announce, warn) never sets this and stays English-only, by construction.
+   * Opaque render-variant hint: the caller's standing language preference,
+   * as an OPEN string (agent-base plan item 6 — no longer a closed `'mi'`
+   * union on the platform contract). Adapters never interpret it; they
+   * thread it into `filterOutbound`, where the strings catalogue's
+   * REGISTERED axes (`strings/notices.ts`: `'mi'` today) decide what it
+   * selects — an unregistered value renders the default text. Set only on
+   * the router's real-agent-turn main reply (issue #339); every other send
+   * path (`sendDirectMessage`, poll question/answers, thread
+   * name/description, announce, warn) never sets this and stays
+   * English-only, by construction. The DB-facing `LanguagePreference` union
+   * and the `set_language_preference` tool's input enum stay CLOSED — see
+   * strings/catalogue.ts's note on that tension.
    */
-  language?: 'mi';
+  language?: string;
   /**
-   * Set only on the router's real-agent-turn main reply (issue #657) when the
-   * caller has a standing `response_style_prefs` of `'plain'` — picks the
-   * `_PLAIN` variant of the outbound code-policy note. `filterOutbound`/
-   * `applyCodePolicy` already prioritise `language: 'mi'` over this
-   * internally, so a caller with both set is unaffected by the order these
-   * two fields are set in. Every other send path stays English-only, by
-   * construction, same as `language` above.
+   * Opaque render-variant hint for the response-style axis (issue #657),
+   * open on the same terms as `language` above (`'plain'` is the one
+   * registered style today). `filterOutbound`/the strings catalogue
+   * prioritise a registered `language` over this internally, so a caller
+   * with both set is unaffected by the order these two fields are set in.
+   * Every other send path stays English-only, by construction, same as
+   * `language` above.
    */
-  style?: 'plain';
+  style?: string;
 }
 
 export type MessageHandler = (message: IncomingMessage) => Promise<void> | void;
+
+/**
+ * Community-owned fixed texts an adapter sends on its own initiative
+ * (agent-base plan item 6, the `textPacks` extension point): the join
+ * welcome and the manual `warn_user` DM shell. Injected as an optional
+ * constructor parameter on each adapter with that adapter's historical
+ * constants as the default pack, so today's deployments are byte-identical
+ * and a future module can swap the pack without forking the adapter. Every
+ * value is a fixed, operator/developer-authored literal — never runtime
+ * input — and everything an adapter builds from it still leaves through the
+ * adapter's own outbound filter (`filtered()`), so an injected pack gains no
+ * new egress path.
+ */
+export interface AdapterTextPack {
+  /** Join welcome fallback when no admin-configured welcome_message policy is set. */
+  welcomeMessage: string;
+  /** Welcome fallback when this platform's access mode is 'open' (issue #351). */
+  welcomeMessageOpen: string;
+  /** Fixed shell prefixed to a manual `warn_user` DM — the admin's reason is appended verbatim. */
+  warnUserDmPrefix: string;
+  /** Fixed, human-authored te reo Māori variant of `warnUserDmPrefix` (issue #618). */
+  warnUserDmPrefixMi: string;
+}
 
 /**
  * Looks up the live adapter for a platform other than the one the current

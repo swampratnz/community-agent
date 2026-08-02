@@ -9,6 +9,7 @@
 
 import type { PoolClient } from 'pg';
 import { pool } from '../db.js';
+import { registerOnInteractionsInvalidated } from '../lifecycle.js';
 
 /**
  * A pool or a checked-out transaction client — anything that can run a query.
@@ -79,6 +80,12 @@ export async function invalidateDigestsForInteractions(
   await db.query(`DELETE FROM context_digests WHERE id = ANY($1::bigint[])`, [digestIds]);
   return deletedCandidates ?? 0;
 }
+
+// The digest-coherence sweep above is the FIRST interactions-invalidated hook
+// (order 0, storage/lifecycle.ts): the purge path awaits it propagating inside
+// its transaction, and the delete/edit honouring paths run it .catch(warn)-
+// isolated — exactly the three call sites that used to invoke it directly.
+registerOnInteractionsInvalidated(invalidateDigestsForInteractions, 0);
 
 export const QUESTION_CLUSTER_SIMILARITY_THRESHOLD = 0.85;
 

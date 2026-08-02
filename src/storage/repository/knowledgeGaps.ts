@@ -4,6 +4,7 @@ import { logger } from '../../logger.js';
 import { pool } from '../db.js';
 import { embed } from '../embeddings.js';
 import { QUESTION_CLUSTER_SIMILARITY_THRESHOLD, cosineSim } from './shared.js';
+import { registerPurgeContributor } from '../lifecycle.js';
 
 /**
  * Knowledge gaps (#208): questions whose knowledge_search fell below the
@@ -292,3 +293,19 @@ export async function markStaleKnowledgeAlerted(
   if (rows.length === 0) return null;
   return { title: rows[0].title, content: rows[0].content, updatedAt: rows[0].updated_at };
 }
+
+// --- Lifecycle registration (storage/lifecycle.ts) ---------------------------
+
+registerPurgeContributor({
+  name: 'knowledge_gaps',
+  order: 110,
+  async purge({ platform, userId }, tx) {
+    // knowledge_gaps (issue #208) is keyed the same way — purge coherence for
+    // anyone whose below-floor searches were logged.
+    const { rowCount: knowledgeGaps } = await tx.query(
+      `DELETE FROM knowledge_gaps WHERE platform = $1 AND user_id = $2`,
+      [platform, userId],
+    );
+    return knowledgeGaps ?? 0;
+  },
+});

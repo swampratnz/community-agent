@@ -18,7 +18,7 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 process.env.AUTO_ANSWER_CHANNEL_IDS = 'auto-chan-1';
 
-const { Router } = await import('../src/router.js');
+const { Router, makeRouterDeps } = await import('../src/router.js');
 const { embed } = await import('../src/storage/embeddings.js');
 
 await embed('warmup').catch(() => {});
@@ -88,10 +88,15 @@ function makeReply(text: string): AgentReply {
 
 test('SECURITY: gated mode excludes an unregistered guest from auto-answer, exactly like it already excludes one from an addressed reply (issue #477)', async () => {
   let calls = 0;
-  const router = new Router(async () => {
-    calls += 1;
-    return makeReply('should never be sent to a gated guest');
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => {
+        calls += 1;
+        return makeReply('should never be sent to a gated guest');
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, sent, threadCalls, trigger } = makeAdapter();
   router.register(adapter);
 

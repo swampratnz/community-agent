@@ -32,6 +32,7 @@ import {
   LIST_PROJECTS_DEFAULT_LIMIT,
 } from '../../agent/tools.js';
 import { chunkText } from '../textChunk.js';
+import { bindDiscordCommand, COMMUNITY_COMMANDS } from '../../commands.js';
 
 /**
  * Discord caps a message (and an interaction reply/follow-up) at 2000 chars —
@@ -56,55 +57,16 @@ export interface SlashCommandDeps {
 
 /**
  * The five read-only guild commands (issue #744, CAPABILITY-IDEAS.md §C1;
- * /digest added by issue #841). Option name `query` is shared across /kb,
- * /projects, /whois to match the superseded acceptance criteria's
- * `/whois <query>` wording.
+ * /digest added by issue #841), now DERIVED from the shared command registry
+ * (`src/commands.ts`, agent-base plan §3 `commands` row): each entry's
+ * Discord half is bound below (`bindDiscordCommand`) and this function maps
+ * the registry's Discord-capable entries — in registry order, which is the
+ * exact order this function always returned — to their registration JSON.
+ * Option name `query` is shared across /kb, /projects, /whois to match the
+ * superseded acceptance criteria's `/whois <query>` wording.
  */
 export function buildSlashCommands() {
-  return [
-    new SlashCommandBuilder()
-      .setName('kb')
-      .setDescription('Search curated community knowledge (FAQs, rules, resources).')
-      .addStringOption((o) => o.setName('query').setDescription('Topic to look up').setRequired(true))
-      .toJSON(),
-    new SlashCommandBuilder()
-      .setName('projects')
-      .setDescription('Browse the member-declared project showcase.')
-      .addStringOption((o) =>
-        o.setName('query').setDescription('Optional topic/keyword to search by meaning').setRequired(false),
-      )
-      .addBooleanOption((o) =>
-        o
-          .setName('seeking_collaborators')
-          .setDescription('Only show projects whose owner is looking for collaborators')
-          .setRequired(false),
-      )
-      .addBooleanOption((o) =>
-        o
-          .setName('mine')
-          .setDescription('Only show your own shared projects — ignores query/seeking_collaborators')
-          .setRequired(false),
-      )
-      .toJSON(),
-    new SlashCommandBuilder()
-      .setName('whois')
-      .setDescription('Find members whose published interests match a topic.')
-      .addStringOption((o) =>
-        o
-          .setName('query')
-          .setDescription('Optional topic/keyword; omit to find members like you')
-          .setRequired(false),
-      )
-      .toJSON(),
-    new SlashCommandBuilder()
-      .setName('guidelines')
-      .setDescription("Show this community's guidelines/rules.")
-      .toJSON(),
-    new SlashCommandBuilder()
-      .setName('digest')
-      .setDescription("Pull this week's community digest on demand — topics, new knowledge, projects.")
-      .toJSON(),
-  ];
+  return COMMUNITY_COMMANDS.flatMap((command) => (command.discord ? [command.discord.build()] : []));
 }
 
 /**
@@ -351,19 +313,82 @@ async function handleDigest(interaction: ChatInputCommandInteraction, deps: Slas
   await replyEphemeral(interaction, message ?? 'Nothing to report right now.', deps);
 }
 
-/** Routes a chat-input interaction to its handler; every other interaction type is ignored. */
+/**
+ * Routes a chat-input interaction to its registry-bound handler; an unknown
+ * command name (or any other interaction type) is ignored, exactly like the
+ * old switch's default.
+ */
 export async function handleInteraction(interaction: Interaction, deps: SlashCommandDeps): Promise<void> {
   if (!interaction.isChatInputCommand()) return;
-  switch (interaction.commandName) {
-    case 'kb':
-      return handleKb(interaction, deps);
-    case 'projects':
-      return handleProjects(interaction, deps);
-    case 'whois':
-      return handleWhois(interaction, deps);
-    case 'guidelines':
-      return handleGuidelines(interaction, deps);
-    case 'digest':
-      return handleDigest(interaction, deps);
-  }
+  const command = COMMUNITY_COMMANDS.find((c) => c.name === interaction.commandName);
+  if (!command?.discord) return;
+  await command.discord.handle(interaction, deps);
 }
+
+// Bind each registry entry's Discord half (registration JSON + handler) at
+// module load — handlers above are hoisted function declarations, so every
+// binding is complete before buildSlashCommands()/handleInteraction() can be
+// called. Builders are byte-identical to the array buildSlashCommands()
+// previously constructed inline.
+bindDiscordCommand('kb', {
+  build: () =>
+    new SlashCommandBuilder()
+      .setName('kb')
+      .setDescription('Search curated community knowledge (FAQs, rules, resources).')
+      .addStringOption((o) => o.setName('query').setDescription('Topic to look up').setRequired(true))
+      .toJSON(),
+  handle: handleKb,
+});
+bindDiscordCommand('projects', {
+  build: () =>
+    new SlashCommandBuilder()
+      .setName('projects')
+      .setDescription('Browse the member-declared project showcase.')
+      .addStringOption((o) =>
+        o.setName('query').setDescription('Optional topic/keyword to search by meaning').setRequired(false),
+      )
+      .addBooleanOption((o) =>
+        o
+          .setName('seeking_collaborators')
+          .setDescription('Only show projects whose owner is looking for collaborators')
+          .setRequired(false),
+      )
+      .addBooleanOption((o) =>
+        o
+          .setName('mine')
+          .setDescription('Only show your own shared projects — ignores query/seeking_collaborators')
+          .setRequired(false),
+      )
+      .toJSON(),
+  handle: handleProjects,
+});
+bindDiscordCommand('whois', {
+  build: () =>
+    new SlashCommandBuilder()
+      .setName('whois')
+      .setDescription('Find members whose published interests match a topic.')
+      .addStringOption((o) =>
+        o
+          .setName('query')
+          .setDescription('Optional topic/keyword; omit to find members like you')
+          .setRequired(false),
+      )
+      .toJSON(),
+  handle: handleWhois,
+});
+bindDiscordCommand('guidelines', {
+  build: () =>
+    new SlashCommandBuilder()
+      .setName('guidelines')
+      .setDescription("Show this community's guidelines/rules.")
+      .toJSON(),
+  handle: handleGuidelines,
+});
+bindDiscordCommand('digest', {
+  build: () =>
+    new SlashCommandBuilder()
+      .setName('digest')
+      .setDescription("Pull this week's community digest on demand — topics, new knowledge, projects.")
+      .toJSON(),
+  handle: handleDigest,
+});

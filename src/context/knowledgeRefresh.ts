@@ -1,12 +1,8 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
-import {
-  latestKnowledgeUpdateAt,
-  recordBackgroundJobCost,
-  upsertGlobalKnowledgeByTitle,
-  usageStats,
-} from '../storage/repository.js';
+import { recordBackgroundJobCost, usageStats } from '../storage/repository/adminStats.js';
+import { latestKnowledgeUpdateAt, upsertGlobalKnowledgeByTitle } from '../storage/repository/knowledge.js';
 
 /**
  * Daily knowledge refresh: web-research a small FIXED set of fast-moving

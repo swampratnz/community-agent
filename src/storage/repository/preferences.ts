@@ -1,6 +1,7 @@
 import type { Platform } from '../../platforms/types.js';
 import { logger } from '../../logger.js';
 import { pool } from '../db.js';
+import { registerPurgeContributor } from '../lifecycle.js';
 
 /**
  * Standing per-member preferences: response style (issue #126) and language
@@ -92,3 +93,33 @@ export async function setLanguagePreference(
     [platform, userId, language],
   );
 }
+
+// --- Lifecycle registration (storage/lifecycle.ts) ---------------------------
+
+registerPurgeContributor({
+  name: 'response_style_prefs',
+  order: 70,
+  async purge({ platform, userId }, tx) {
+    // response_style_prefs (issue #126) is keyed the same way — purge coherence
+    // for anyone who opted into the plain-language preference.
+    const { rowCount: responseStyle } = await tx.query(
+      `DELETE FROM response_style_prefs WHERE platform = $1 AND user_id = $2`,
+      [platform, userId],
+    );
+    return responseStyle ?? 0;
+  },
+});
+
+registerPurgeContributor({
+  name: 'language_prefs',
+  order: 80,
+  async purge({ platform, userId }, tx) {
+    // language_prefs (issue #189) is keyed the same way — purge coherence for
+    // anyone who opted into a standing language preference.
+    const { rowCount: languagePreference } = await tx.query(
+      `DELETE FROM language_prefs WHERE platform = $1 AND user_id = $2`,
+      [platform, userId],
+    );
+    return languagePreference ?? 0;
+  },
+});

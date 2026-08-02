@@ -19,7 +19,7 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 
 const { config } = await import('../src/config.js');
-const { Router } = await import('../src/router.js');
+const { Router, makeRouterDeps } = await import('../src/router.js');
 
 function makeAdapter(): {
   adapter: PlatformAdapter;
@@ -81,41 +81,23 @@ test('SECURITY: REPEAT_QUESTION_ALERT_ENABLED off — respond() performs zero re
   const notifyCalls: { message: string; excludeUserId: string }[] = [];
   const clusterCalls: unknown[] = [];
   const router = new Router(
-    async () => ({ text: 'Here is what I found.', ok: true }),
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async (
-      _adapterFor: (platform: string) => PlatformAdapter | undefined,
-      message: string,
-      excludeUserId: string,
-    ) => {
-      notifyCalls.push({ message, excludeUserId });
-    },
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async (conversationIds: readonly string[] | null) => {
-      clusterCalls.push(conversationIds);
-      // Rigged to return a crossing cluster — proves the flag, not an empty
-      // result set, is what suppresses the alert.
-      return [{ representative: 'would have crossed the threshold', count: 99 }];
-    },
+    makeRouterDeps({
+      runTurn: async () => ({ text: 'Here is what I found.', ok: true }),
+      typingRefireMs: 20,
+      notifyAdminsFn: async (
+        _adapterFor: (platform: string) => PlatformAdapter | undefined,
+        message: string,
+        excludeUserId: string,
+      ) => {
+        notifyCalls.push({ message, excludeUserId });
+      },
+      recentQuestionClustersFn: async (conversationIds: readonly string[] | null) => {
+        clusterCalls.push(conversationIds);
+        // Rigged to return a crossing cluster — proves the flag, not an empty
+        // result set, is what suppresses the alert.
+        return [{ representative: 'would have crossed the threshold', count: 99 }];
+      },
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);

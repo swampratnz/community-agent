@@ -33,7 +33,7 @@ const AUTO_CHAN = `${RUN}-chan`;
 process.env.AUTO_ANSWER_CHANNEL_IDS = AUTO_CHAN;
 
 const { pool, closeDb } = await import('../src/storage/db.js');
-const { Router, CANCEL_TEXT } = await import('../src/router.js');
+const { Router, CANCEL_TEXT, makeRouterDeps } = await import('../src/router.js');
 const { registerPendingAction, hasPendingAction } = await import('../src/agent/pendingActions.js');
 const { embed } = await import('../src/storage/embeddings.js');
 
@@ -118,17 +118,22 @@ test('SECURITY: a CONFIRM typed inside the auto-answer thread executes the pendi
   const userId = `${RUN}-member-confirm-1`;
   // The agent turn registers a destructive pending action against the PARENT
   // channel (caller.conversationId), exactly as a real `forget_me` would.
-  const router = new Router(async (caller) => {
-    registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
-      description: `${RUN} delete your data`,
-      minTier: 'guest',
-      execute: async () => {
-        executed = true;
-        return 'Deleted.';
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async (caller) => {
+        registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
+          description: `${RUN} delete your data`,
+          minTier: 'guest',
+          execute: async () => {
+            executed = true;
+            return 'Deleted.';
+          },
+        });
+        return makeReply('Are you sure?');
       },
-    });
-    return makeReply('Are you sure?');
-  }, 20);
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, threadCalls, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -158,17 +163,22 @@ test('SECURITY: a CONFIRM typed inside the auto-answer thread executes the pendi
 test('SECURITY: a CANCEL typed inside the auto-answer thread aborts the parent-scoped pending action without executing it (issue #477)', async () => {
   let executed = false;
   const userId = `${RUN}-member-cancel-1`;
-  const router = new Router(async (caller) => {
-    registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
-      description: `${RUN} delete your data`,
-      minTier: 'guest',
-      execute: async () => {
-        executed = true;
-        return 'Deleted.';
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async (caller) => {
+        registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
+          description: `${RUN} delete your data`,
+          minTier: 'guest',
+          execute: async () => {
+            executed = true;
+            return 'Deleted.';
+          },
+        });
+        return makeReply('Are you sure?');
       },
-    });
-    return makeReply('Are you sure?');
-  }, 20);
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, sent, threadCalls, trigger } = makeAdapter();
   router.register(adapter);
 

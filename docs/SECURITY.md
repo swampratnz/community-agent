@@ -54,6 +54,17 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   model, so an injection can *request* an action but can never *complete*
   one. The actor's tier is **re-resolved at confirm time**: a role revoked
   inside the TTL invalidates the queued action.
+  Since the router split (agent-base Phase 1 item 7), this whole pre-turn
+  sequence is an explicit, named intercept chain (`src/routerIntercepts.ts`):
+  the **security spine** — block-list → role resolution → gated-guest gate →
+  inbound record → CONFIRM/CANCEL intercept → escalation-confirm → addressed
+  gate → pause → rate limit → daily budget → auto-answer reserve/barrier/
+  thread — is a frozen array the Router builds itself, with **no API that can
+  insert, remove or reorder a spine step**. Module-registered intercepts (the
+  ack/knowledge/repeat shortcuts, WhatsApp `!` commands) can only ever append
+  AFTER the spine, so nothing a module registers can run before or among
+  those checks. The exact spine order and the registration constraint are
+  pinned by `SECURITY:` tests in `tests/routerInterceptChain.test.ts`.
   The router deterministically re-emits the pending action's `description` as
   the trusted `⚠️ Pending:` notice a human reads before confirming, so
   `requireConfirm` strips newline/angle-bracket forgery characters
@@ -121,6 +132,47 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   instructs the model to treat recalled/tool-returned chat content as data,
   never instructions. This mitigates stored prompt injection; it does not
   eliminate it — see "Residual risks".
+- **The system prompt's security spine is base-owned** (agent-base Phase 1
+  item 8): `buildSystemPrompt` is a slot assembler (`src/agent/promptSpine.ts`
+  + `src/agent/systemPrompt.ts`) whose top-level slot order is a frozen base
+  constant. The injection-defence/RBAC clauses are base constants rendered at
+  hard-coded positions; a module registers CONTENT for a closed slot set
+  (charter, the behaviour-guideline chunks, web-search authority domains,
+  date grounding — plus the persona roster and the skills manifest via their
+  own registries), and **no registration API can insert, remove, reorder,
+  rename, or precede a spine clause** — an unknown slot name throws, and a
+  second registration throws instead of swapping content after boot. The
+  skills manifest re-asserts the never-`'all'` allowlist invariant at
+  registration and freezes the registered list; the persona roster is
+  append-only with exactly one immutable default. Pinned by `SECURITY:` tests
+  in `tests/systemPromptSlots.test.ts`; the assembled output itself is
+  byte-pinned per (role, policy, persona, day) by
+  `tests/systemPromptByteStability.test.ts`, protecting the prompt cache from
+  silent reassembly drift.
+- **The platform axis is type-open but registry-closed** (agent-base Phase 1
+  item 9): `Platform` is an open string now (`src/platforms/types.ts`)
+  instead of a closed `'discord' | 'whatsapp'` union, but no runtime trust
+  moved. The set of platforms that EXISTS is the registry
+  (`src/platforms/registry.ts` descriptors + `src/platforms/factories.ts`
+  adapter factories), and every `Platform` value still originates from an
+  adapter envelope, a DB row written from one, or a model-facing zod enum
+  that stays CLOSED by design (`platformArg`, the `link_member`/super-admin
+  enums) — message content can select among registered platforms, never mint
+  one. Dispatch fails closed: an unregistered platform has no adapter, no
+  access-mode entry that grants anything, and `normalizeMemberId` throws for
+  it (pinned by a `SECURITY:` test) rather than accepting an id shape nothing
+  vouches for. Per-platform tool availability is no longer hand-mirrored
+  folklore either: every `ToolDef.platforms` restriction must name the
+  adapter capability justifying it, and `assertToolAvailabilityConsistent`
+  (run at startup and under `SECURITY:` tests in
+  `tests/platformRegistry.test.ts`) requires the offered-platform set to
+  equal exactly the set of platforms whose registered adapters declare that
+  capability — a restriction can neither offer a tool where no provider can
+  execute it nor silently drop one from a platform that supports it (the
+  react_to_message deliberate-inclusion history, made structural). The
+  capability declarations themselves are shared consts the adapter classes
+  assign from, pinned against real instances (method presence) so they
+  cannot drift.
 - **Privileged targets are validated**: `moderate`/`announce`/`create_poll`/
   `end_poll`/`create_thread`/`archive_thread` refuse targets
   (conversations/users) the bot has never seen, so a manipulated admin turn

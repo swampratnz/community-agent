@@ -35,6 +35,7 @@ export const eventsTools = [
       '7pm" against the current NZ date yourself first; never pass relative or ambiguous text.',
     minTier: 'admin',
     platforms: ['discord'],
+    requiresCapability: 'create_event',
     readOnlyHint: false,
     schema: {
       name: z.string().min(1).max(EVENT_NAME_MAX_CHARS).describe('Event name/title'),
@@ -128,6 +129,7 @@ export const eventsTools = [
       'canceled — an event that is already Active, Completed, or Canceled is refused.',
     minTier: 'admin',
     platforms: ['discord'],
+    requiresCapability: 'cancel_event',
     readOnlyHint: false,
     schema: {
       eventId: z.string().describe("The scheduled event's id (see list_events)"),

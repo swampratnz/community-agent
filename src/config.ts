@@ -201,10 +201,14 @@ function buildConfig(env: ParsedEnv) {
     rbac: {
       superAdminDiscordIds: csv(env.SUPER_ADMIN_DISCORD_IDS),
       superAdminWhatsappNumbers: csv(env.SUPER_ADMIN_WHATSAPP_NUMBERS),
+      // Keyed by registered platform id; typed as an open string map since
+      // `Platform` opened (agent-base plan item 9) so `accessMode[platform]`
+      // stays indexable. Read only with adapter-envelope platforms, which
+      // always name one of the two keys built here.
       accessMode: {
         discord: env.ACCESS_MODE_DISCORD,
         whatsapp: env.ACCESS_MODE_WHATSAPP,
-      } as Record<'discord' | 'whatsapp', 'gated' | 'open'>,
+      } as Record<string, 'gated' | 'open'>,
     },
     contextBuilder: {
       enabled: env.CONTEXT_BUILDER_ENABLED ?? false,

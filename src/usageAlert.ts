@@ -10,6 +10,7 @@ import {
   type JobFailureTracker,
 } from './backgroundJobHealth.js';
 import { alertSuperAdmins as sendSuperAdminAlert } from './notifications.js';
+import type { JobSpec } from './jobs/types.js';
 import type { PlatformAdapter } from './platforms/types.js';
 
 type UsageAlertStats = Awaited<ReturnType<typeof usageStats>>;
@@ -123,3 +124,11 @@ export function startUsageAlert(adapters: readonly PlatformAdapter[]): ReturnTyp
 async function alertSuperAdmins(adapters: readonly PlatformAdapter[], message: string): Promise<void> {
   await sendSuperAdminAlert(adapters, message, { label: 'Usage alert', queueWhenDisconnected: true });
 }
+
+// Registry entry (see src/jobs/registry.ts) — bespoke hourly cadence, and the
+// gate mirrors startUsageAlert's own `if (!threshold) return null`.
+export const usageAlertJob: JobSpec = {
+  name: 'usage-alert',
+  enabled: (cfg) => cfg.behaviour.usageAlertDailyReplies > 0,
+  start: (adapters) => startUsageAlert(adapters),
+};

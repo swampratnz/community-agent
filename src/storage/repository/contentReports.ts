@@ -3,6 +3,7 @@ import { logger } from '../../logger.js';
 import { pool } from '../db.js';
 import { embed } from '../embeddings.js';
 import { QUESTION_CLUSTER_SIMILARITY_THRESHOLD, cosineSim } from './shared.js';
+import { registerPurgeContributor } from '../lifecycle.js';
 
 /**
  * Member-facing abuse/spam reports: intake, admin triage views, resolution, and
@@ -59,7 +60,7 @@ function mapContentReport(r: {
 }): ContentReport {
   return {
     id: Number(r.id),
-    platform: r.platform as Platform,
+    platform: r.platform,
     reporterUserId: r.reporter_user_id,
     reporterName: r.reporter_name,
     conversationId: r.conversation_id,
@@ -372,7 +373,7 @@ export async function countMaxTurnsFailures(
  * The JOIN to `interactions` (rather than a `meta` subquery) means a row
  * whose `interaction_id` is NULL — e.g. after the rated reply was purged via
  * `forget_me`/`purge_user_data`, which sets `answer_feedback.interaction_id`
- * to NULL on delete (schema.sql) — is excluded: with no interaction left to
+ * to NULL on delete (schema/25-answer-feedback.sql) — is excluded: with no interaction left to
  * join, there's nothing to classify as grounded or ungrounded.
  */
 export async function countGeneralUnhelpfulAnswers(
@@ -614,3 +615,24 @@ export async function listOwnReports(
   );
   return rows.map(mapContentReport);
 }
+
+// --- Lifecycle registration (storage/lifecycle.ts) ---------------------------
+
+registerPurgeContributor({
+  name: 'content_reports',
+  order: 20,
+  async purge({ platform, userId }, tx) {
+    const { rowCount: reports } = await tx.query(
+      `DELETE FROM content_reports WHERE platform = $1 AND reporter_user_id = $2`,
+      [platform, userId],
+    );
+    return reports ?? 0;
+  },
+  async summarize({ platform, userId }, db) {
+    const { rows: reportRows } = await db.query(
+      `SELECT count(*) AS n FROM content_reports WHERE platform = $1 AND reporter_user_id = $2`,
+      [platform, userId],
+    );
+    return { reportsFiled: Number(reportRows[0]?.n ?? 0) };
+  },
+});

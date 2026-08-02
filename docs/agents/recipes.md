@@ -58,7 +58,7 @@ The single most common change, and the one with the most gates.
 | `src/agent/tools.ts` | The tool definition, its input schema, and its **tier requirement**. |
 | `src/agent/core.ts` | Only if the tool needs a new gating rule — the tool surface is derived from the caller's tier here. |
 | `src/agent/pendingActions.ts` | **If the tool is destructive.** It must register a pending action for the router to execute after an explicit confirmation, never act directly. |
-| `src/agent/systemPrompt.ts` | Only if members need to be told the capability exists. |
+| `src/agent/communityPromptSections.ts` | Only if members need to be told the capability exists (the community prose sections; `systemPrompt.ts`/`promptSpine.ts` own assembly and the security spine). Any prompt-text change must regenerate `tests/fixtures/systemPromptByteStability.json` in the same diff. |
 | `tests/` + `tests/security-floor.json` | A `SECURITY:` test for the tier gate, plus the manifest bump in the **same diff**. |
 
 Two invariants that are not negotiable: a privileged tool **re-asserts the
@@ -90,9 +90,9 @@ unset is a silent breaking change for the running deployment.
 
 | File | Why |
 |---|---|
-| `src/storage/schema.sql` | Schema changes. **Every statement must be `IF NOT EXISTS`** — `migrate` is idempotent and re-runs on every deploy. |
+| `src/storage/schema/<NN-domain>.sql` | Schema changes go in the owning fragment (`migrate` concatenates them in `manifest.ts` order and replays the result as ONE query). **Every statement must be `IF NOT EXISTS`** — the replay is idempotent and re-runs on every deploy. A brand-new fragment must also be listed in `src/storage/schema/manifest.ts` (explicit array, never a glob — the sync test in `tests/schemaConstraintIdempotency.test.ts` fails otherwise). |
 | `src/storage/repository/<domain>.ts` | Put a new query in its **domain module** (`preferences`, `memberNotes`, …). `repository.ts` re-exports them, so callers still import from `repository.js`. Admin-facing reads are **conversation-scoped in SQL**, not by the caller. |
-| `src/storage/repository.ts` | Only for a domain not yet extracted (the split is incremental — audit L14). A brand-new domain module also needs its `docs/agents/module-map.md` entry in the same diff. |
+| `src/storage/repository.ts` | Pure `export *` barrel (the audit-L14 split is complete) — the only edit it ever takes is one new `export *` line for a brand-new domain module, which also needs its `docs/agents/module-map.md` entry in the same diff. |
 | `tests/repository.test.ts` | DB tests skip cleanly without `DATABASE_URL` and run in CI against a real `pgvector/pgvector:pg16` service. |
 
 Run `npm run migrate` before `npm test` locally, or the DB tests fail with
@@ -100,8 +100,9 @@ Run `npm run migrate` before `npm test` locally, or the DB tests fail with
 
 **Widening an enum `CHECK` (a new `kind`, `status`, …):** edit the existing
 `DROP CONSTRAINT IF EXISTS` / `ADD CONSTRAINT` pair's value list **in place**.
-Never append a second pair for the same constraint name. `migrate()` replays the
-entire file as one multi-statement query, so both pairs run in order on every
+Never append a second pair for the same constraint name — in any fragment.
+`migrate()` replays the entire fragment concatenation as one multi-statement
+query, so both pairs run in order on every
 future migration; the earlier, narrower one is validated against live rows, and
 a single row using a value only the later pair allows aborts it — rolling back
 the whole migration. This is not theoretical: stacked
@@ -118,8 +119,10 @@ one has it.
 
 | File | Why |
 |---|---|
-| `src/backgroundJobs.ts` | Register it via `startTrackedJob` so it is tracked, cost-accounted and health-monitored. |
+| `src/<job>.ts` (or `src/backgroundJobs.ts`) | The run function + `startX` starter via `startTrackedJob` (tracked, cost-accounted, health-monitored), and the module's exported `JobSpec`. |
+| `src/jobs/registry.ts` | Add the spec to `JOB_REGISTRY` (at the END — start order is pinned). `index.ts` needs no edit: it starts and stops whatever the registry holds. |
 | `src/config/<slice>.ts` + `src/config.ts` | Its enable flag and schedule (slice fragment + barrel surface). Background jobs are **opt-in**. |
+| `tests/jobsRegistry.test.ts` | Add the job's row (name, enabling env) to the table the registry-completeness test pins. |
 
 Cost and consecutive-failure alerting come free from registration — do not
 hand-roll either. A job that can fail repeatedly should say so once per outage,
@@ -130,8 +133,17 @@ which `backgroundJobHealth.ts` already handles.
 ## Add a member-facing notice
 
 There is a strong existing convention here: one small file per notice, holding
-the fixed text and (where the notice repeats) a **pure debounce helper** with no
-config, HTTP or DB imports, so it is directly unit-testable.
+(where the notice repeats) a **pure debounce helper** with no config, HTTP or
+DB imports, so it is directly unit-testable.
+
+The text itself now lives in the strings catalogue
+(`src/strings/notices.ts`): add one entry with the English base plus any
+`mi`/`plain` variants, and select it at the call site with
+`notice(id, { language, style })` — never re-encode the "'mi' beats 'plain'"
+precedence per site; the catalogue owns it (`src/strings/catalogue.ts`), and
+`tests/stringsCatalogue.test.ts` pins the semantics for every entry
+automatically. If other files need the value as a constant, export a derived
+const (`export const X = notice('id')`) the way `rateLimitNotice.ts` does.
 
 Copy the shape of `rateLimitNotice.ts` — `pauseNotice.ts`,
 `budgetCheckFailureNotice.ts` and `mutedRoleAlertNotice.ts` are all deliberate
@@ -149,6 +161,15 @@ the filter is a security bug, not a style issue.
 
 Keep pure wire helpers in their own files (`whatsapp/wire.ts`,
 `whatsapp/cloudWire.ts`) so they stay testable without a socket.
+
+Platforms are registered, not typed: adding one means a descriptor in
+`src/platforms/registry.ts` (id + `memberIdRules.ts`), a factory in
+`src/platforms/factories.ts` (constructor + declared tool-capability set),
+and — if any tool should be restricted to it — a `requiresCapability` on the
+ToolDef, which `assertToolAvailabilityConsistent` and
+`tests/platformRegistry.test.ts` check against the declared capabilities.
+Model-facing platform zod enums stay CLOSED; widen them only as a conscious
+security decision.
 
 ---
 

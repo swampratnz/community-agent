@@ -31,7 +31,7 @@ const skip = hasDb
   ? false
   : 'DATABASE_URL not set — skipping DB-integration tests (CLAUDE.md: exercise against a local Postgres 16 + pgvector)';
 
-const { Router } = await import('../src/router.js');
+const { Router, makeRouterDeps } = await import('../src/router.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { config } = await import('../src/config.js');
 
@@ -103,10 +103,15 @@ test('WHATSAPP_ARCHIVE_ALL_GROUPS archives a group that is on NO allowlist', { s
   assert.deepEqual(config.whatsapp.archiveGroupJids, [], 'precondition: allowlist deliberately empty');
 
   let turnCalls = 0;
-  const router = new Router(async (): Promise<AgentReply> => {
-    turnCalls += 1;
-    return { text: 'should never happen' };
-  }, 1_000_000);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async (): Promise<AgentReply> => {
+        turnCalls += 1;
+        return { text: 'should never happen' };
+      },
+      typingRefireMs: 1_000_000,
+    }),
+  );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -141,7 +146,12 @@ test(
     // The invariant the blanket flag must not erode. It widens WHICH GROUPS are
     // archived, never whether private 1:1 conversations are — `!msg.isDirect`
     // remains the outer gate in both the router and `inArchiveScope`.
-    const router = new Router(async (): Promise<AgentReply> => ({ text: 'nope' }), 1_000_000);
+    const router = new Router(
+      makeRouterDeps({
+        runTurn: async (): Promise<AgentReply> => ({ text: 'nope' }),
+        typingRefireMs: 1_000_000,
+      }),
+    );
     const { adapter, trigger } = makeAdapter();
     router.register(adapter);
 

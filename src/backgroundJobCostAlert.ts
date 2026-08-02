@@ -3,6 +3,7 @@ import { logger } from './logger.js';
 import { startTrackedJob } from './backgroundJobs.js';
 import { sumBackgroundJobCosts, type BackgroundJob } from './storage/repository.js';
 import { alertSuperAdmins as sendSuperAdminAlert } from './notifications.js';
+import type { JobSpec } from './jobs/types.js';
 import type { PlatformAdapter } from './platforms/types.js';
 
 /** The three background jobs that write `background_job_costs` rows (issue #401) — a fixed enum, never derived from anything dynamic. */
@@ -148,3 +149,10 @@ async function alertSuperAdmins(adapters: readonly PlatformAdapter[], message: s
     queueWhenDisconnected: false,
   });
 }
+
+// Registry entry (see src/jobs/registry.ts) — gate mirrors startBackgroundJobCostAlert's own flag.
+export const backgroundJobCostAlertJob: JobSpec = {
+  name: 'background-job-cost-alert',
+  enabled: (cfg) => cfg.backgroundJobCostAlert.enabled,
+  start: (adapters) => startBackgroundJobCostAlert(adapters),
+};

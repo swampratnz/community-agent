@@ -4,6 +4,7 @@ import { listAdminRoster, type AdminRosterEntry } from './storage/repository.js'
 import { startTrackedJob } from './backgroundJobs.js';
 import { initialUsageAlertTracker, stepUsageAlertTracker } from './usageAlert.js';
 import { alertSuperAdmins as sendSuperAdminAlert } from './notifications.js';
+import type { JobSpec } from './jobs/types.js';
 import type { PlatformAdapter } from './platforms/types.js';
 
 /**
@@ -69,6 +70,13 @@ export function startDepartedAdminAlert(
 ): ReturnType<typeof setInterval> | null {
   return startTrackedJob('departed-admin-alert', adapters, config.departedAdminAlert.enabled, runOnce);
 }
+
+// Registry entry (see src/jobs/registry.ts) — gate mirrors startDepartedAdminAlert's own flag.
+export const departedAdminAlertJob: JobSpec = {
+  name: 'departed-admin-alert',
+  enabled: (cfg) => cfg.departedAdminAlert.enabled,
+  start: (adapters) => startDepartedAdminAlert(adapters),
+};
 
 /**
  * Exported (issue #568) so `engagementAlert.ts`/`adminLeverageAlert.ts` can

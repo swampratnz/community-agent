@@ -142,7 +142,7 @@ test('SECURITY: JobHealthSnapshot never carries an error message or stack — re
   // for an error message to flow through, so this asserts the registry's
   // recorded shape has exactly those keys and nothing else, for every job.
   recordJobRun('docs-ingest', { consecutiveFailures: 3, alerted: true }, 100, null);
-  const snapshot = getJobHealthSnapshot()['docs-ingest']!;
+  const snapshot = getJobHealthSnapshot()['docs-ingest'];
   assert.deepEqual(
     new Set(Object.keys(snapshot)),
     new Set(['consecutiveFailures', 'alerted', 'lastRunAt', 'lastSuccessAt']),

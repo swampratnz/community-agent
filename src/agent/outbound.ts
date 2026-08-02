@@ -1,4 +1,5 @@
 import type { CodeAnswersPolicy } from '../storage/policies.js';
+import { notice } from '../strings/notices.js';
 
 /**
  * Outbound reply filter (DLP + behaviour policy), applied to every message
@@ -18,33 +19,12 @@ const SECRET_PATTERNS: RegExp[] = [
 const REDACTED = '[redacted]';
 const SNIPPET_MAX_LINES = 15;
 
-const CODE_OMITTED_NOTE =
-  '_[code omitted — this assistant does not write code for the community; try claude.ai or the API directly]_';
-const CODE_TRUNCATED_NOTE = (shown: number) =>
-  `\n_[snippet truncated to ${shown} lines — community policy; ask on claude.ai for full programs]_`;
-
-// Fixed, human-authored te reo Māori variants (issue #339), served instead of
-// CODE_OMITTED_NOTE/CODE_TRUNCATED_NOTE to a caller with a standing 'mi'
-// language_prefs row (getLanguagePreference, issue #189) — same trust level
-// as the English constants: no model call, no translation, no injection
-// surface. Mirrors the `_MI`-variant pattern established by #266/#300/#331/#333.
-const CODE_OMITTED_NOTE_MI =
-  '_[i whakakorehia te waehere — kāore tēnei kaiāwhina e tuhi waehere mō te hapori; whakamātauria a claude.ai, ' +
-  'te API rānei]_';
-const CODE_TRUNCATED_NOTE_MI = (shown: number) =>
-  `\n_[i poroa te tauira ki ${shown} rārangi — kaupapahere hapori; pātai atu i runga i a claude.ai mō ngā ` +
-  'papatono katoa]_';
-
-// Fixed, human-authored plain-language variants (issue #657, extending
-// #339's _MI pattern to the 'plain' response-style axis, mirroring #430's
-// precedent elsewhere), served instead of CODE_OMITTED_NOTE/
-// CODE_TRUNCATED_NOTE when the caller's language preference is NOT 'mi' and
-// their response style is 'plain' — same trust level as the English
-// constants: no model call, no translation, no injection surface.
-const CODE_OMITTED_NOTE_PLAIN =
-  '_[code removed — this assistant does not write code for the community; try claude.ai or the API instead]_';
-const CODE_TRUNCATED_NOTE_PLAIN = (shown: number) =>
-  `\n_[showing only the first ${shown} lines — community rule; ask on claude.ai for the full code]_`;
+// The code-policy note texts (English base, te reo Māori variant issue #339,
+// plain-language variant issue #657) live in the strings catalogue
+// (`strings/notices.ts`), which also owns the 'mi'-over-'plain' selection
+// precedence the two ternaries here used to encode. Same trust level as
+// before: fixed, human-authored text, no model call, no translation, no
+// injection surface beyond the interpolated line count.
 
 /**
  * Redact secrets. `knownSecrets` are exact runtime values (tokens, DB URLs)
@@ -70,23 +50,13 @@ export function redactSecrets(text: string, knownSecrets: readonly string[] = []
 export function applyCodePolicy(
   text: string,
   policy: CodeAnswersPolicy,
-  language?: 'mi',
-  style?: 'plain',
+  language?: string,
+  style?: string,
 ): string {
   if (policy === 'full') return text;
 
-  const omittedNote =
-    language === 'mi'
-      ? CODE_OMITTED_NOTE_MI
-      : style === 'plain'
-        ? CODE_OMITTED_NOTE_PLAIN
-        : CODE_OMITTED_NOTE;
-  const truncatedNote =
-    language === 'mi'
-      ? CODE_TRUNCATED_NOTE_MI
-      : style === 'plain'
-        ? CODE_TRUNCATED_NOTE_PLAIN
-        : CODE_TRUNCATED_NOTE;
+  const omittedNote = notice('codeOmittedNote', { language, style });
+  const truncatedNote = notice('codeTruncatedNote', { language, style });
 
   const out: string[] = [];
   let fenceHeader: string | null = null;
@@ -214,13 +184,18 @@ export function convertMarkdownForWhatsApp(text: string): string {
 
 export type OutboundPlatform = 'discord' | 'whatsapp';
 
+// `language`/`style` are OPEN strings (agent-base plan item 6): the caller's
+// standing preferences are passed raw, and `strings/notices.ts`'s registered
+// axes decide what they select — unregistered values mean the default text.
+// The DB-facing preference unions and the set_* tool input enums stay closed
+// (see strings/catalogue.ts's note on that tension).
 export function filterOutbound(
   text: string,
   policy: CodeAnswersPolicy,
   knownSecrets: readonly string[] = [],
   platform?: OutboundPlatform,
-  language?: 'mi',
-  style?: 'plain',
+  language?: string,
+  style?: string,
 ): string {
   const filtered = stripEmDashesOutsideCode(
     applyCodePolicy(redactSecrets(text, knownSecrets), policy, language, style),

@@ -168,7 +168,7 @@ test('runAgentTurn: AgentReply.knowledgeEntryId is set to the top-scoring qualif
 
   const reply = await runAgentTurn(makeCaller(), 'hello', makeAdapter().adapter);
 
-  assert.equal(reply.knowledgeEntryId, 101);
+  assert.equal(reply.turnState?.knowledgeEntryId, 101);
   assert.equal(reply.ok, true);
 });
 
@@ -178,7 +178,7 @@ test('runAgentTurn: AgentReply.knowledgeEntryId is absent when the turn makes no
 
   const reply = await runAgentTurn(makeCaller(), 'hello', makeAdapter().adapter);
 
-  assert.equal(reply.knowledgeEntryId, undefined);
+  assert.equal(reply.turnState?.knowledgeEntryId, undefined);
 });
 
 test('runAgentTurn: AgentReply.knowledgeEntryId is absent when the only knowledge_search hit falls below the relevance floor (issue #411, acceptance criterion 2)', async (t) => {
@@ -187,7 +187,7 @@ test('runAgentTurn: AgentReply.knowledgeEntryId is absent when the only knowledg
 
   const reply = await runAgentTurn(makeCaller(), 'hello', makeAdapter().adapter);
 
-  assert.equal(reply.knowledgeEntryId, undefined);
+  assert.equal(reply.turnState?.knowledgeEntryId, undefined);
 });
 
 test('runAgentTurn: a later knowledge_search call whose hits miss the floor does not clear an earlier qualifying id — last QUALIFYING call wins, not last call (issue #411, acceptance criterion 3)', async (t) => {
@@ -196,7 +196,11 @@ test('runAgentTurn: a later knowledge_search call whose hits miss the floor does
 
   const reply = await runAgentTurn(makeCaller(), 'hello', makeAdapter().adapter);
 
-  assert.equal(reply.knowledgeEntryId, 101, 'the below-floor second call must not clobber the first id');
+  assert.equal(
+    reply.turnState?.knowledgeEntryId,
+    101,
+    'the below-floor second call must not clobber the first id',
+  );
 });
 
 test('runAgentTurn: when two calls both qualify, the LAST qualifying call wins (issue #411, acceptance criterion 3)', async (t) => {
@@ -205,7 +209,7 @@ test('runAgentTurn: when two calls both qualify, the LAST qualifying call wins (
 
   const reply = await runAgentTurn(makeCaller(), 'hello', makeAdapter().adapter);
 
-  assert.equal(reply.knowledgeEntryId, 202);
+  assert.equal(reply.turnState?.knowledgeEntryId, 202);
 });
 
 test('SECURITY: runAgentTurn: AgentReply.knowledgeEntryId is absent when the turn ends in a thrown failure, even though a qualifying knowledge_search call happened first — never a stale id on a failed turn (issue #411, acceptance criterion 5)', async (t) => {
@@ -216,7 +220,7 @@ test('SECURITY: runAgentTurn: AgentReply.knowledgeEntryId is absent when the tur
 
   assert.equal(reply.ok, false, 'the simulated thrown failure must surface as a failed turn');
   assert.equal(
-    reply.knowledgeEntryId,
+    reply.turnState?.knowledgeEntryId,
     undefined,
     'a failed turn must never carry a knowledgeEntryId, even if a qualifying hit occurred before the failure',
   );
@@ -231,7 +235,7 @@ test('SECURITY: runAgentTurn: AgentReply.knowledgeEntryId is absent on an error_
   assert.equal(reply.ok, false);
   assert.equal(reply.maxTurnsExceeded, true);
   assert.equal(
-    reply.knowledgeEntryId,
+    reply.turnState?.knowledgeEntryId,
     undefined,
     'a max-turns failure must never carry a knowledgeEntryId, even if a qualifying hit occurred before it',
   );

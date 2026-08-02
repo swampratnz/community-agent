@@ -4,6 +4,7 @@ import { logger } from '../../logger.js';
 import { pool } from '../db.js';
 import { KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD } from './shared.js';
 import { embed } from '../embeddings.js';
+import { registerOnRosterLeave, registerPurgeContributor } from '../lifecycle.js';
 
 /**
  * Member-to-member discovery: published member interests (issue #634) and the
@@ -410,3 +411,74 @@ export async function recordHelperNotificationIfUnderCap(
   );
   return rows.length > 0;
 }
+
+// --- Lifecycle registration (storage/lifecycle.ts) ---------------------------
+
+registerPurgeContributor({
+  name: 'member_interests',
+  order: 150,
+  async purge({ platform, userId }, tx) {
+    // member_interests (issue #634) is keyed the same way — purge coherence
+    // for anyone who published interests via set_my_interests.
+    const { rowCount: memberInterests } = await tx.query(
+      `DELETE FROM member_interests WHERE platform = $1 AND user_id = $2`,
+      [platform, userId],
+    );
+    return memberInterests ?? 0;
+  },
+  async summarize({ platform, userId }, db) {
+    const { rows: interestRows } = await db.query(
+      `SELECT count(*) AS n FROM member_interests WHERE platform = $1 AND user_id = $2`,
+      [platform, userId],
+    );
+    return { interestsPublished: Number(interestRows[0]?.n ?? 0) };
+  },
+});
+
+registerPurgeContributor({
+  name: 'helper_notifications',
+  order: 170,
+  async purge({ platform, userId }, tx) {
+    // helper_notifications (issue #729, find_helper) is keyed on this
+    // identity in EITHER role — as the helper who was notified, or as the
+    // requester who triggered the notification — so both halves are deleted
+    // here, unlike most other purge contributors, which are keyed one way.
+    const { rowCount: helperNotifications } = await tx.query(
+      `DELETE FROM helper_notifications
+        WHERE (helper_platform = $1 AND helper_user_id = $2)
+           OR (requester_platform = $1 AND requester_user_id = $2)`,
+      [platform, userId],
+    );
+    return helperNotifications ?? 0;
+  },
+});
+
+// Departed-member cleanups (markRosterLeave, storage/repository/roster.ts):
+// published interests are the same "current member" premise as shared
+// projects (issue #634), and the find_helper handoff log rides along (issue
+// #729, EITHER role). Hook names are the table names — the roster-leave
+// failure log line interpolates them.
+registerOnRosterLeave({
+  name: 'member_interests',
+  order: 20,
+  async run({ platform, userId }) {
+    await pool.query(`DELETE FROM member_interests WHERE platform = $1 AND user_id = $2`, [platform, userId]);
+  },
+});
+
+registerOnRosterLeave({
+  name: 'helper_notifications',
+  order: 30,
+  async run({ platform, userId }) {
+    // helper_notifications (issue #729) rides along the same departure, in
+    // EITHER role — a departed member's find_helper handoff log (as helper
+    // or requester) shouldn't linger once member_interests/member_projects
+    // above are already gone for them.
+    await pool.query(
+      `DELETE FROM helper_notifications
+          WHERE (helper_platform = $1 AND helper_user_id = $2)
+             OR (requester_platform = $1 AND requester_user_id = $2)`,
+      [platform, userId],
+    );
+  },
+});

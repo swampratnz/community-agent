@@ -18,7 +18,7 @@ process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 process.env.ACCESS_MODE_DISCORD = 'open';
 
 const { pool, closeDb } = await import('../src/storage/db.js');
-const { Router } = await import('../src/router.js');
+const { Router, makeRouterDeps } = await import('../src/router.js');
 const { RATE_LIMIT_NOTICE_TEXT, RATE_LIMIT_NOTICE_TEXT_MI, RATE_LIMIT_NOTICE_TEXT_PLAIN } =
   await import('../src/rateLimitNotice.js');
 const { embed } = await import('../src/storage/embeddings.js');
@@ -96,13 +96,14 @@ const OVER_LIMIT_MESSAGE_COUNT = 9;
 
 test("router (rate-limited): a caller with a standing 'mi' language preference gets RATE_LIMIT_NOTICE_TEXT_MI, not the English default", async () => {
   const router = new Router(
-    async () => makeReply('ok'),
-    20,
-    async () => false, // not paused
-    undefined,
-    undefined,
-    async () => 0, // stub the daily-budget read so it can never trip and interfere with the rate-limit path under test
-    async () => 'mi',
+    makeRouterDeps({
+      runTurn: async () => makeReply('ok'),
+      typingRefireMs: 20,
+      checkPaused: async () => false,
+      countReplies: async () => 0,
+      // stub the daily-budget read so it can never trip and interfere with the rate-limit path under test
+      getLangPref: async () => 'mi',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -117,13 +118,14 @@ test("router (rate-limited): a caller with a standing 'mi' language preference g
 
 test("router (rate-limited): a caller with 'auto' (the default) still gets the English RATE_LIMIT_NOTICE_TEXT", async () => {
   const router = new Router(
-    async () => makeReply('ok'),
-    20,
-    async () => false, // not paused
-    undefined,
-    undefined,
-    async () => 0, // stub the daily-budget read so it can never trip and interfere with the rate-limit path under test
-    async () => 'auto',
+    makeRouterDeps({
+      runTurn: async () => makeReply('ok'),
+      typingRefireMs: 20,
+      checkPaused: async () => false,
+      countReplies: async () => 0,
+      // stub the daily-budget read so it can never trip and interfere with the rate-limit path under test
+      getLangPref: async () => 'auto',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -138,15 +140,16 @@ test("router (rate-limited): a caller with 'auto' (the default) still gets the E
 
 test('SECURITY: a getLanguagePreference failure on the rate-limit notice still sends the English default, never throws or drops the notice', async () => {
   const router = new Router(
-    async () => makeReply('ok'),
-    20,
-    async () => false, // not paused
-    undefined,
-    undefined,
-    async () => 0, // stub the daily-budget read so it can never trip and interfere with the rate-limit path under test
-    async () => {
-      throw new Error('language_prefs read boom');
-    },
+    makeRouterDeps({
+      runTurn: async () => makeReply('ok'),
+      typingRefireMs: 20,
+      checkPaused: async () => false,
+      countReplies: async () => 0,
+      // stub the daily-budget read so it can never trip and interfere with the rate-limit path under test
+      getLangPref: async () => {
+        throw new Error('language_prefs read boom');
+      },
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -162,16 +165,17 @@ test('SECURITY: a getLanguagePreference failure on the rate-limit notice still s
 test('router (rate-limited): the language-preference lookup runs at most once per debounce window, never once per shed message', async () => {
   let calls = 0;
   const router = new Router(
-    async () => makeReply('ok'),
-    20,
-    async () => false, // not paused
-    undefined,
-    undefined,
-    async () => 0, // stub the daily-budget read so it can never trip and interfere with the rate-limit path under test
-    async () => {
-      calls += 1;
-      return 'auto';
-    },
+    makeRouterDeps({
+      runTurn: async () => makeReply('ok'),
+      typingRefireMs: 20,
+      checkPaused: async () => false,
+      countReplies: async () => 0,
+      // stub the daily-budget read so it can never trip and interfere with the rate-limit path under test
+      getLangPref: async () => {
+        calls += 1;
+        return 'auto';
+      },
+    }),
   );
   const { adapter, trigger } = makeAdapter();
   router.register(adapter);
@@ -190,16 +194,14 @@ test('router (rate-limited): the language-preference lookup runs at most once pe
 
 test("router (rate-limited): a caller with a standing 'plain' response style (and 'auto' language) gets RATE_LIMIT_NOTICE_TEXT_PLAIN", async () => {
   const router = new Router(
-    async () => makeReply('ok'),
-    20,
-    async () => false, // not paused
-    undefined,
-    undefined,
-    async () => 0,
-    async () => 'auto',
-    undefined,
-    undefined,
-    async () => 'plain',
+    makeRouterDeps({
+      runTurn: async () => makeReply('ok'),
+      typingRefireMs: 20,
+      checkPaused: async () => false,
+      countReplies: async () => 0,
+      getLangPref: async () => 'auto',
+      getRespStyle: async () => 'plain',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -214,16 +216,14 @@ test("router (rate-limited): a caller with a standing 'plain' response style (an
 
 test("router (rate-limited): a caller with 'standard' response style still gets the English RATE_LIMIT_NOTICE_TEXT (byte-identical regression)", async () => {
   const router = new Router(
-    async () => makeReply('ok'),
-    20,
-    async () => false, // not paused
-    undefined,
-    undefined,
-    async () => 0,
-    async () => 'auto',
-    undefined,
-    undefined,
-    async () => 'standard',
+    makeRouterDeps({
+      runTurn: async () => makeReply('ok'),
+      typingRefireMs: 20,
+      checkPaused: async () => false,
+      countReplies: async () => 0,
+      getLangPref: async () => 'auto',
+      getRespStyle: async () => 'standard',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -238,16 +238,14 @@ test("router (rate-limited): a caller with 'standard' response style still gets 
 
 test("router (rate-limited): 'mi' takes precedence over 'plain' when both are set", async () => {
   const router = new Router(
-    async () => makeReply('ok'),
-    20,
-    async () => false, // not paused
-    undefined,
-    undefined,
-    async () => 0,
-    async () => 'mi',
-    undefined,
-    undefined,
-    async () => 'plain',
+    makeRouterDeps({
+      runTurn: async () => makeReply('ok'),
+      typingRefireMs: 20,
+      checkPaused: async () => false,
+      countReplies: async () => 0,
+      getLangPref: async () => 'mi',
+      getRespStyle: async () => 'plain',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -263,18 +261,16 @@ test("router (rate-limited): 'mi' takes precedence over 'plain' when both are se
 
 test('SECURITY: a getResponseStyle failure on the rate-limit notice still sends the English default, never throws or drops the notice', async () => {
   const router = new Router(
-    async () => makeReply('ok'),
-    20,
-    async () => false, // not paused
-    undefined,
-    undefined,
-    async () => 0,
-    async () => 'auto',
-    undefined,
-    undefined,
-    async () => {
-      throw new Error('response_style_prefs read boom');
-    },
+    makeRouterDeps({
+      runTurn: async () => makeReply('ok'),
+      typingRefireMs: 20,
+      checkPaused: async () => false,
+      countReplies: async () => 0,
+      getLangPref: async () => 'auto',
+      getRespStyle: async () => {
+        throw new Error('response_style_prefs read boom');
+      },
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);

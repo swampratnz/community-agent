@@ -3,6 +3,7 @@ import type { Platform } from '../../platforms/types.js';
 import { pool } from '../db.js';
 import { recordAdminAction } from './adminAudit.js';
 import type { Queryable } from './shared.js';
+import { onMemberRemovedHooks } from '../lifecycle.js';
 
 /**
  * Membership and identity: the three-tier RBAC rows in `community_users`, the
@@ -290,19 +291,15 @@ export async function removeMember(platform: Platform, userId: string): Promise<
       `DELETE FROM community_users WHERE platform = $1 AND platform_user_id = $2 AND role = 'member'`,
       [platform, userId],
     );
-    // SECURITY (issue #927, PR #929 review): project membership must not
-    // outlive community membership. `project_members` deliberately has no FK
-    // to `community_users` (it is keyed on the platform identity so visibility
-    // survives person-row merges), so nothing cascades on its own, and
-    // `visibleProjectIds` checks only that table — never tier. Without this
-    // delete, an admin who removes a member leaves their project access
-    // standing, and in an OPEN-MODE deployment the removed identity still
-    // reaches the agent at guest tier with MEMBER_TOOLS on its surface. Same
-    // rationale purgeSingleIdentity already hard-deletes these rows for.
-    await client.query(`DELETE FROM project_members WHERE platform = $1 AND user_id = $2`, [
-      platform,
-      userId,
-    ]);
+    // Dependent per-domain cleanups run INSIDE this transaction, between the
+    // community_users delete and the person-group dissolution, and PROPAGATE:
+    // a failed cleanup rolls the whole removal back. The founding hook is the
+    // project_members delete registered by projects.ts (SECURITY — see the
+    // registration there: project membership must not outlive community
+    // membership, issue #927 / PR #929 review).
+    for (const hook of onMemberRemovedHooks()) {
+      await hook({ platform, userId }, client);
+    }
     if (rows[0].person_id) await dissolveGroupIfUnderTwo(client, Number(rows[0].person_id));
     await client.query('COMMIT');
     return true;

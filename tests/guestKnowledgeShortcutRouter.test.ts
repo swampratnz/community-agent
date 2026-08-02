@@ -21,7 +21,7 @@ process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 process.env.GUEST_KNOWLEDGE_SHORTCUT_ENABLED = 'true';
 
 const { config } = await import('../src/config.js');
-const { Router } = await import('../src/router.js');
+const { Router, makeRouterDeps } = await import('../src/router.js');
 const { KNOWLEDGE_CONFLICT_CAVEAT_TEXT, KNOWLEDGE_STALE_NOTE_MI } = await import('../src/agent/tools.js');
 const { embed } = await import('../src/storage/embeddings.js');
 
@@ -117,15 +117,16 @@ test('config: GUEST_KNOWLEDGE_SHORTCUT_ENABLED=true is reflected in config.behav
 test('router (guest knowledge shortcut): a near-exact global match (>= threshold) replies with KB content + admin nudge, never runTurn or the static notice', async () => {
   const recorded: number[][] = [];
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a gated guest');
-    },
-    20,
-    undefined,
-    fixedHitSearch(0.95),
-    async (ids) => {
-      recorded.push(ids);
-    },
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a gated guest');
+      },
+      typingRefireMs: 20,
+      searchKnowledgeForShortcut: fixedHitSearch(0.95),
+      recordShortcutRetrieval: async (ids) => {
+        recorded.push(ids);
+      },
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -143,21 +144,17 @@ test('router (guest knowledge shortcut): a near-exact global match (>= threshold
 test('router (guest knowledge shortcut): a hit never records a shortcut_hits row — the "knowledge" kind counts the member-facing shortcut only (issue #440)', async () => {
   const calls: string[] = [];
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a gated guest');
-    },
-    20,
-    undefined,
-    fixedHitSearch(0.95),
-    async () => {},
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async (kind) => {
-      calls.push(kind);
-    },
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a gated guest');
+      },
+      typingRefireMs: 20,
+      searchKnowledgeForShortcut: fixedHitSearch(0.95),
+      recordShortcutRetrieval: async () => {},
+      recordShortcutHit: async (kind) => {
+        calls.push(kind);
+      },
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -170,17 +167,18 @@ test('router (guest knowledge shortcut): a hit never records a shortcut_hits row
 
 test('router (guest knowledge shortcut): a trusted hit with a source_url renders the deterministic citation line (issue #214)', async () => {
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a gated guest');
-    },
-    20,
-    undefined,
-    fixedHitSearch(0.95, {
-      sourceUrl: 'https://docs.anthropic.com/en/api/pricing',
-      sourceTitle: 'docs: api/pricing',
-      verifiedAt: new Date(),
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a gated guest');
+      },
+      typingRefireMs: 20,
+      searchKnowledgeForShortcut: fixedHitSearch(0.95, {
+        sourceUrl: 'https://docs.anthropic.com/en/api/pricing',
+        sourceTitle: 'docs: api/pricing',
+        verifiedAt: new Date(),
+      }),
+      recordShortcutRetrieval: async () => {},
     }),
-    async () => {},
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -197,19 +195,20 @@ test('router (guest knowledge shortcut): a trusted hit with a source_url renders
 
 test('router (guest knowledge shortcut): a hit flagged source_unreachable=true renders the "⚠️ link appears dead" caveat instead of "last verified" (issue #465)', async () => {
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a gated guest');
-    },
-    20,
-    undefined,
-    fixedHitSearch(0.95, {
-      sourceUrl: 'https://docs.anthropic.com/en/api/pricing',
-      sourceTitle: 'docs: api/pricing',
-      verifiedAt: new Date(),
-      sourceUnreachable: true,
-      sourceCheckedAt: new Date(),
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a gated guest');
+      },
+      typingRefireMs: 20,
+      searchKnowledgeForShortcut: fixedHitSearch(0.95, {
+        sourceUrl: 'https://docs.anthropic.com/en/api/pricing',
+        sourceTitle: 'docs: api/pricing',
+        verifiedAt: new Date(),
+        sourceUnreachable: true,
+        sourceCheckedAt: new Date(),
+      }),
+      recordShortcutRetrieval: async () => {},
     }),
-    async () => {},
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -228,13 +227,14 @@ test("SECURITY: router (guest knowledge shortcut): the lookup is scope-restricte
     return [];
   };
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a gated guest');
-    },
-    20,
-    undefined,
-    scopeSpy,
-    async () => {},
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a gated guest');
+      },
+      typingRefireMs: 20,
+      searchKnowledgeForShortcut: scopeSpy,
+      recordShortcutRetrieval: async () => {},
+    }),
   );
   const { adapter, trigger } = makeAdapter();
   router.register(adapter);
@@ -250,15 +250,17 @@ test("SECURITY: router (guest knowledge shortcut): the lookup is scope-restricte
 
 test('router (guest knowledge shortcut): a middling match below threshold falls through to the static gated notice', async () => {
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a gated guest');
-    },
-    20,
-    undefined,
-    fixedHitSearch(0.5), // above knowledge_search's 0.35 floor, below the 0.9 shortcut floor
-    async () => {
-      throw new Error('retrieval must not be recorded for a sub-threshold match');
-    },
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a gated guest');
+      },
+      typingRefireMs: 20,
+      searchKnowledgeForShortcut: fixedHitSearch(0.5),
+      // above knowledge_search's 0.35 floor, below the 0.9 shortcut floor
+      recordShortcutRetrieval: async () => {
+        throw new Error('retrieval must not be recorded for a sub-threshold match');
+      },
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -271,13 +273,14 @@ test('router (guest knowledge shortcut): a middling match below threshold falls 
 
 test('router (guest knowledge shortcut): no knowledge hits falls through to the static gated notice', async () => {
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a gated guest');
-    },
-    20,
-    undefined,
-    async () => [],
-    async () => {},
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a gated guest');
+      },
+      typingRefireMs: 20,
+      searchKnowledgeForShortcut: async () => [],
+      recordShortcutRetrieval: async () => {},
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -290,15 +293,16 @@ test('router (guest knowledge shortcut): no knowledge hits falls through to the 
 
 test('router (guest knowledge shortcut): a lookup failure falls through to the static gated notice rather than dropping the message', async () => {
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a gated guest');
-    },
-    20,
-    undefined,
-    async () => {
-      throw new Error('DB unreachable');
-    },
-    async () => {},
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a gated guest');
+      },
+      typingRefireMs: 20,
+      searchKnowledgeForShortcut: async () => {
+        throw new Error('DB unreachable');
+      },
+      recordShortcutRetrieval: async () => {},
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -314,18 +318,18 @@ test('router (guest knowledge shortcut): a lookup failure falls through to the s
 test("router (guest knowledge shortcut): a gated guest with a standing (possibly stale, ex-member) 'mi' preference gets both KNOWLEDGE_SHORTCUT_SUFFIX_MI and GUEST_KNOWLEDGE_SHORTCUT_NUDGE_MI, from a single lookup", async () => {
   let langCalls = 0;
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a gated guest');
-    },
-    20,
-    undefined,
-    fixedHitSearch(0.95),
-    async () => {},
-    undefined,
-    async () => {
-      langCalls += 1;
-      return 'mi';
-    },
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a gated guest');
+      },
+      typingRefireMs: 20,
+      searchKnowledgeForShortcut: fixedHitSearch(0.95),
+      recordShortcutRetrieval: async () => {},
+      getLangPref: async () => {
+        langCalls += 1;
+        return 'mi';
+      },
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -342,15 +346,15 @@ test("router (guest knowledge shortcut): a gated guest with a standing (possibly
 
 test("router (guest knowledge shortcut): a guest with 'auto' (the default) still gets today's English suffix + nudge, byte-identical", async () => {
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a gated guest');
-    },
-    20,
-    undefined,
-    fixedHitSearch(0.95),
-    async () => {},
-    undefined,
-    async () => 'auto',
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a gated guest');
+      },
+      typingRefireMs: 20,
+      searchKnowledgeForShortcut: fixedHitSearch(0.95),
+      recordShortcutRetrieval: async () => {},
+      getLangPref: async () => 'auto',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -364,17 +368,17 @@ test("router (guest knowledge shortcut): a guest with 'auto' (the default) still
 
 test('SECURITY: a getLanguagePreference failure on the guest knowledge shortcut still sends the English default, never throws or drops the reply', async () => {
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a gated guest');
-    },
-    20,
-    undefined,
-    fixedHitSearch(0.95),
-    async () => {},
-    undefined,
-    async () => {
-      throw new Error('language_prefs read boom');
-    },
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a gated guest');
+      },
+      typingRefireMs: 20,
+      searchKnowledgeForShortcut: fixedHitSearch(0.95),
+      recordShortcutRetrieval: async () => {},
+      getLangPref: async () => {
+        throw new Error('language_prefs read boom');
+      },
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -388,15 +392,15 @@ test('SECURITY: a getLanguagePreference failure on the guest knowledge shortcut 
 
 test('SECURITY: KNOWLEDGE_SHORTCUT_SUFFIX_MI and GUEST_KNOWLEDGE_SHORTCUT_NUDGE_MI are fixed, non-interpolated strings — byte-identical regardless of the served KB entry or caller', async () => {
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a gated guest');
-    },
-    20,
-    undefined,
-    fixedHitSearch(0.95, { content: 'A completely different pricing answer.' }),
-    async () => {},
-    undefined,
-    async () => 'mi',
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a gated guest');
+      },
+      typingRefireMs: 20,
+      searchKnowledgeForShortcut: fixedHitSearch(0.95, { content: 'A completely different pricing answer.' }),
+      recordShortcutRetrieval: async () => {},
+      getLangPref: async () => 'mi',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -424,15 +428,17 @@ test("router (guest knowledge shortcut): a gated guest with a standing 'mi' pref
   config.adminDigest.knowledgeStaleDays = 30;
   try {
     const router = new Router(
-      async () => {
-        throw new Error('runTurn must not be called for a gated guest');
-      },
-      20,
-      undefined,
-      fixedHitSearch(0.95, { updatedAt: new Date(Date.now() - 400 * 86_400_000) }),
-      async () => {},
-      undefined,
-      async () => 'mi',
+      makeRouterDeps({
+        runTurn: async () => {
+          throw new Error('runTurn must not be called for a gated guest');
+        },
+        typingRefireMs: 20,
+        searchKnowledgeForShortcut: fixedHitSearch(0.95, {
+          updatedAt: new Date(Date.now() - 400 * 86_400_000),
+        }),
+        recordShortcutRetrieval: async () => {},
+        getLangPref: async () => 'mi',
+      }),
     );
     const { adapter, sent, trigger } = makeAdapter();
     router.register(adapter);
@@ -452,15 +458,17 @@ test("router (guest knowledge shortcut): a stale entry with caller preference 'a
   config.adminDigest.knowledgeStaleDays = 30;
   try {
     const router = new Router(
-      async () => {
-        throw new Error('runTurn must not be called for a gated guest');
-      },
-      20,
-      undefined,
-      fixedHitSearch(0.95, { updatedAt: new Date(Date.now() - 400 * 86_400_000) }),
-      async () => {},
-      undefined,
-      async () => 'auto',
+      makeRouterDeps({
+        runTurn: async () => {
+          throw new Error('runTurn must not be called for a gated guest');
+        },
+        typingRefireMs: 20,
+        searchKnowledgeForShortcut: fixedHitSearch(0.95, {
+          updatedAt: new Date(Date.now() - 400 * 86_400_000),
+        }),
+        recordShortcutRetrieval: async () => {},
+        getLangPref: async () => 'auto',
+      }),
     );
     const { adapter, sent, trigger } = makeAdapter();
     router.register(adapter);
@@ -484,18 +492,20 @@ test('router (guest knowledge shortcut): getLangPref is called exactly once per 
   try {
     let langCalls = 0;
     const router = new Router(
-      async () => {
-        throw new Error('runTurn must not be called for a gated guest');
-      },
-      20,
-      undefined,
-      fixedHitSearch(0.95, { updatedAt: new Date(Date.now() - 400 * 86_400_000) }),
-      async () => {},
-      undefined,
-      async () => {
-        langCalls += 1;
-        return 'mi';
-      },
+      makeRouterDeps({
+        runTurn: async () => {
+          throw new Error('runTurn must not be called for a gated guest');
+        },
+        typingRefireMs: 20,
+        searchKnowledgeForShortcut: fixedHitSearch(0.95, {
+          updatedAt: new Date(Date.now() - 400 * 86_400_000),
+        }),
+        recordShortcutRetrieval: async () => {},
+        getLangPref: async () => {
+          langCalls += 1;
+          return 'mi';
+        },
+      }),
     );
     const { adapter, sent, trigger } = makeAdapter();
     router.register(adapter);
@@ -514,17 +524,19 @@ test('SECURITY: router (guest knowledge shortcut): a getLangPref rejection with 
   config.adminDigest.knowledgeStaleDays = 30;
   try {
     const router = new Router(
-      async () => {
-        throw new Error('runTurn must not be called for a gated guest');
-      },
-      20,
-      undefined,
-      fixedHitSearch(0.95, { updatedAt: new Date(Date.now() - 400 * 86_400_000) }),
-      async () => {},
-      undefined,
-      async () => {
-        throw new Error('language_prefs read boom');
-      },
+      makeRouterDeps({
+        runTurn: async () => {
+          throw new Error('runTurn must not be called for a gated guest');
+        },
+        typingRefireMs: 20,
+        searchKnowledgeForShortcut: fixedHitSearch(0.95, {
+          updatedAt: new Date(Date.now() - 400 * 86_400_000),
+        }),
+        recordShortcutRetrieval: async () => {},
+        getLangPref: async () => {
+          throw new Error('language_prefs read boom');
+        },
+      }),
     );
     const { adapter, sent, trigger } = makeAdapter();
     router.register(adapter);
@@ -542,15 +554,17 @@ test('SECURITY: router (guest knowledge shortcut): a getLangPref rejection with 
 
 test('router (guest knowledge shortcut): a member (non-guest) is completely unaffected by the guest-only flag', async () => {
   const router = new Router(
-    async () => ({ text: 'real answer' }),
-    20,
-    undefined,
-    fixedHitSearch(0.99), // would be an instant hit on the guest path — must never be consulted here
-    async () => {
-      throw new Error(
-        'retrieval must not be recorded — KNOWLEDGE_SHORTCUT_ENABLED (the member-tier flag) is unset in this file',
-      );
-    },
+    makeRouterDeps({
+      runTurn: async () => ({ text: 'real answer' }),
+      typingRefireMs: 20,
+      searchKnowledgeForShortcut: fixedHitSearch(0.99),
+      // would be an instant hit on the guest path — must never be consulted here
+      recordShortcutRetrieval: async () => {
+        throw new Error(
+          'retrieval must not be recorded — KNOWLEDGE_SHORTCUT_ENABLED (the member-tier flag) is unset in this file',
+        );
+      },
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -574,34 +588,17 @@ test('router (guest knowledge shortcut): a member (non-guest) is completely unaf
 test('SECURITY: router (guest knowledge shortcut): sendGuestKnowledgeShortcut never consults checkKnowledgeConflict — reply is byte-identical whether it would resolve true or false (issue #918)', async () => {
   const buildRouter = (checkKnowledgeConflict: CheckConflictFn) =>
     new Router(
-      async () => {
-        throw new Error('runTurn must not be called for a gated guest');
-      },
-      20,
-      undefined, // checkPaused
-      fixedHitSearch(0.95),
-      async () => {}, // recordShortcutRetrieval
-      undefined, // countReplies
-      undefined, // getLangPref
-      undefined, // checkLowRatedKnowledge
-      undefined, // getGatedNotice
-      undefined, // getRespStyle
-      undefined, // recordShortcutHit
-      undefined, // recordAccessRequestFn
-      undefined, // notifyAccessRequestFn
-      undefined, // notifyAdminsFn
-      undefined, // recordEscalatedGapFn
-      undefined, // markKnowledgeGapsAlertedFn
-      undefined, // markStaleKnowledgeAlertedFn
-      undefined, // getCommunityGuidelinesFn
-      undefined, // getCommunityGuidelinesMiFn
-      undefined, // searchMemberInterestsFn
-      undefined, // searchProjectsFn
-      undefined, // listRecentProjectsFn
-      undefined, // buildMemberDigestContentFn
-      undefined, // recentQuestionClustersFn
-      undefined, // searchMemberInterestsForSelfFn
-      checkKnowledgeConflict,
+      makeRouterDeps({
+        runTurn: async () => {
+          throw new Error('runTurn must not be called for a gated guest');
+        },
+        typingRefireMs: 20,
+        // checkPaused
+        searchKnowledgeForShortcut: fixedHitSearch(0.95),
+        recordShortcutRetrieval: async () => {},
+        // searchMemberInterestsForSelfFn
+        checkKnowledgeConflict: checkKnowledgeConflict,
+      }),
     );
 
   let calledWithTrue = false;

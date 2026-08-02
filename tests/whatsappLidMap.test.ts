@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 /**
- * Persisted WhatsApp LID -> phone mapping (schema.sql, docs/SECURITY.md §6b).
+ * Persisted WhatsApp LID -> phone mapping (src/storage/schema/70-whatsapp.sql,
+ * docs/SECURITY.md §6b).
  *
  * The adapter always learned this mapping, but only in an in-memory Map that
  * died with the process. Persisting it lets a LID be RESOLVED to a phone
@@ -62,7 +63,11 @@ test(
   async () => {
     const { rememberLidPhone, phoneForLid, forgetLidMappingsForPhone } =
       await import('../src/storage/repository/whatsappLidMap.js');
-    const { purgeUserData } = await import('../src/storage/repository/budgetsPrivacy.js');
+    // Via the BARREL, not budgetsPrivacy.js directly: purgeUserData now runs
+    // the registered PurgeContributor set (src/storage/lifecycle.ts), and the
+    // contributors register at module load of their owning domain files —
+    // which the barrel's `export *` lines are what load, same as production.
+    const { purgeUserData } = await import('../src/storage/repository.js');
     const lidA = `8${Date.now()}`.slice(0, 15);
     const lidB = `7${Date.now()}`.slice(0, 15);
     const phone = '64270000003';
@@ -117,7 +122,11 @@ test(
     // has been given a wrong answer about their own data.
     const { rememberLidPhone, forgetLidMappingsForPhone } =
       await import('../src/storage/repository/whatsappLidMap.js');
-    const { purgeUserData } = await import('../src/storage/repository/budgetsPrivacy.js');
+    // Via the BARREL, not budgetsPrivacy.js directly: purgeUserData now runs
+    // the registered PurgeContributor set (src/storage/lifecycle.ts), and the
+    // contributors register at module load of their owning domain files —
+    // which the barrel's `export *` lines are what load, same as production.
+    const { purgeUserData } = await import('../src/storage/repository.js');
     const phone = '64270000006';
     const lids = [`4${Date.now()}`.slice(0, 15), `3${Date.now()}`.slice(0, 15)];
     try {

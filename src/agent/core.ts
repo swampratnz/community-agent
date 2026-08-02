@@ -1,5 +1,3 @@
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import {
   query,
   type HookJSONOutput,
@@ -8,9 +6,11 @@ import {
 } from '@anthropic-ai/claude-agent-sdk';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
+import { notice } from '../strings/notices.js';
 import { atLeast, toolsForRole, type CallerContext } from '../auth/rbac.js';
 import { superAdminIds } from '../auth/roles.js';
 import type { AdapterLookup, IncomingMessage, Platform, PlatformAdapter } from '../platforms/types.js';
+import { KNOWN_PLATFORMS } from '../platforms/registry.js';
 import {
   clearClaudeSessionId,
   getClaudeSession,
@@ -20,10 +20,10 @@ import {
   searchMemory,
   setClaudeSessionId,
   type ConversationTailRow,
-  type CrossedKnowledgeGapCluster,
   type LanguagePreference,
   type ResponseStyle,
 } from '../storage/repository.js';
+import { finalizeTurnState, type TurnStateBag } from './turnState.js';
 import { getCodeAnswersPolicy } from '../storage/policies.js';
 import { queuePendingAlert } from '../pendingAlertQueue.js';
 import {
@@ -41,7 +41,11 @@ import {
   reserveWebSearchSlot,
   withWebSearchDedupLock,
 } from './webSearchGuard.js';
-import { ENABLED_SKILLS } from './enabledSkills.js';
+import { skillsManifest } from './skillsManifest.js';
+// Side-effect import: registers the community skills manifest ({skillsDir,
+// enabledSkills}) before any turn can read it. Phase 2 of the agent-base
+// plan replaces this with composition-root injection.
+import './enabledSkills.js';
 import {
   initialUsageLimitTracker,
   isUsageLimitFailure,
@@ -122,65 +126,20 @@ export interface AgentReply {
    */
   responseStyle?: ResponseStyle;
   /**
-   * Best-effort correlation with the most recent `knowledge_search` call in
-   * this turn that had a hit clear `KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD`
-   * (issue #411) — the id of that call's top-scoring hit, threaded from
-   * `TurnOutcome.knowledgeEntryId` via the same turn-scoped-ref pattern
-   * `buildToolServer` already uses. This is a correlation, not a guarantee:
-   * it names the last qualifying `knowledge_search` call in the turn, not
-   * necessarily the entry the model's final reply actually drew from.
-   * `undefined` whenever no call in the turn had a qualifying hit, or the
-   * turn didn't end in a genuine success (`TurnOutcome.ok === true`) — never
-   * a stale id left over from an earlier failed attempt. The router's normal
-   * outbound-recording path (router.ts) writes this into the same
-   * `meta.knowledgeEntryId` key the deterministic knowledge-shortcut path
-   * already stamps, so both paths feed the same admin aggregation
-   * (`list_low_rated_knowledge` / `list_answer_feedback`).
+   * Module signals surfaced by this turn's tools — the generic turn-state
+   * bag (agent-base plan §3) that replaced the five hardcoded community
+   * fields (`knowledgeEntryId`, `unhelpfulAnswerRated`, `humanHelpRequested`,
+   * `knowledgeGapCluster`, `staleKnowledgeAlertIds`). Threaded from
+   * `TurnOutcome.turnState`; set ONLY when the turn ended in genuine success
+   * (`TurnOutcome.ok === true`) AND a registered finalizer produced at least
+   * one key — never a stale value from an earlier failed attempt, exactly
+   * the contract every replaced field had. The KEYS are typed (and their
+   * per-key contracts documented) by module augmentation in ONE
+   * community-owned file, `agent/communityTurnState.ts`; consumed by the
+   * router's registered post-turn handlers, never read by (or acted on
+   * inside) any model-callable tool.
    */
-  knowledgeEntryId?: number;
-  /**
-   * `true` only when this turn's `rate_answer` call recorded a genuine
-   * `helpful: false` rating (issue #598), threaded from
-   * `TurnOutcome.unhelpfulAnswerRated` via the same turn-scoped-ref pattern
-   * as `knowledgeEntryId` above. `undefined` on a positive rating, an
-   * unrecorded call (`'no_recent_answer'`/`'rate_limited'`), no `rate_answer`
-   * call at all, or a turn that didn't end in genuine success (`ok !==
-   * true`). Consumed by the router's post-turn deterministic escalation
-   * branch — never read by, or acted on inside, any model-callable tool.
-   */
-  unhelpfulAnswerRated?: boolean;
-  /**
-   * `true` only when this turn's `request_human_help` call recorded a
-   * genuine ask (issue #808), threaded from `TurnOutcome.humanHelpRequested`
-   * via the same turn-scoped-ref pattern as `unhelpfulAnswerRated` above.
-   * `undefined` on a declined-by-cap call, no `request_human_help` call at
-   * all, or a turn that didn't end in genuine success (`ok !== true`).
-   * Consumed by the router's post-turn deterministic escalation branch —
-   * never read by, or acted on inside, any model-callable tool.
-   */
-  humanHelpRequested?: boolean;
-  /**
-   * Set only when this turn's `knowledge_search` below-floor-miss crossed
-   * `KNOWLEDGE_GAP_ALERT_THRESHOLD` for the first time (issue #650),
-   * threaded from `TurnOutcome.knowledgeGapCluster` via the same
-   * turn-scoped-ref pattern as `unhelpfulAnswerRated` above. `undefined`
-   * whenever the flag is off, no crossing occurred this turn, or the turn
-   * didn't end in genuine success (`ok !== true`). Consumed by the router's
-   * post-turn deterministic alert branch — never read by, or acted on
-   * inside, any model-callable tool.
-   */
-  knowledgeGapCluster?: CrossedKnowledgeGapCluster;
-  /**
-   * Ids of `knowledge_search` hits served this turn that were newly stale and
-   * unalerted at serve time (issue #701), threaded from
-   * `TurnOutcome.staleKnowledgeAlertIds` via the same turn-scoped-ref pattern
-   * as `knowledgeGapCluster` above. `undefined`/empty whenever the flag is
-   * off, no served hit was stale this turn, or the turn didn't end in genuine
-   * success (`ok !== true`). Consumed by the router's post-turn deterministic
-   * alert branch — never read by, or acted on inside, any model-callable
-   * tool.
-   */
-  staleKnowledgeAlertIds?: number[];
+  turnState?: Partial<TurnStateBag>;
 }
 
 /**
@@ -188,8 +147,7 @@ export interface AgentReply {
  * the router's pre-send backstop (issue #52) so a DB blip mid-turn produces
  * the same degraded reply as an agent-query failure — never silence.
  */
-export const INTERNAL_ERROR_REPLY =
-  'Sorry — I hit an internal error and could not complete that. Please try again.';
+export const INTERNAL_ERROR_REPLY = notice('internalErrorReply');
 
 /**
  * User-facing fallback when a turn exhausts `AGENT_MAX_TURNS` without
@@ -197,15 +155,14 @@ export const INTERNAL_ERROR_REPLY =
  * can replay the exact same, fixed, content-independent string on a cached
  * hit instead of duplicating it.
  */
-export const MAX_TURNS_REPLY =
-  'Sorry — that took more steps than I allow per message. Try breaking it into smaller questions.';
+export const MAX_TURNS_REPLY = notice('maxTurnsReply');
 
 /**
  * User-facing fallback for any other non-success `resultSubtype`. Hoisted
  * from an inline literal (issue #396) so it can gain an `_MI` counterpart
  * like its three siblings above.
  */
-export const TURN_FAILED_REPLY = 'Sorry — I could not complete that request. Please try again.';
+export const TURN_FAILED_REPLY = notice('turnFailedReply');
 
 // Fixed, human-authored te reo Māori variants (issue #396) of the four
 // runAgentTurn failure fallbacks above, served instead of the English
@@ -213,14 +170,11 @@ export const TURN_FAILED_REPLY = 'Sorry — I could not complete that request. P
 // (getLanguagePreference, issue #189) — same trust level as the English
 // constants: no model call, no translation, no injection surface. Mirrors
 // the `_MI`-variant pattern established by #266/#282/#300/#331/#363.
-export const INTERNAL_ERROR_REPLY_MI =
-  'Aroha mai — i pā mai he hapa o roto, kāore i oti i ahau tēnā mahi. Tēnā koa, whakamātauria anō.';
+export const INTERNAL_ERROR_REPLY_MI = notice('internalErrorReply', { language: 'mi' });
 
-export const MAX_TURNS_REPLY_MI =
-  'Aroha mai — he maha rawa ngā hipanga i hiahiatia mō tēnei karere. Whakamātauria te wāwāhi i tō ' +
-  'pātai kia iti ake ngā wāhanga.';
+export const MAX_TURNS_REPLY_MI = notice('maxTurnsReply', { language: 'mi' });
 
-export const TURN_FAILED_REPLY_MI = 'Aroha mai — kāore i oti i ahau tēnā tono. Tēnā koa, whakamātauria anō.';
+export const TURN_FAILED_REPLY_MI = notice('turnFailedReply', { language: 'mi' });
 
 /**
  * Lookup from an English fallback constant to its `_MI` counterpart, applied
@@ -243,12 +197,11 @@ const FALLBACK_REPLY_MI: Readonly<Record<string, string>> = {
 // 'mi' takes precedence over 'plain' (see FALLBACK_REPLY_PLAIN's use below).
 // Same trust level as the English constants: no model call, no translation,
 // no injection surface.
-export const INTERNAL_ERROR_REPLY_PLAIN = 'Sorry, something went wrong on my end. Please try again.';
+export const INTERNAL_ERROR_REPLY_PLAIN = notice('internalErrorReply', { style: 'plain' });
 
-export const MAX_TURNS_REPLY_PLAIN =
-  'Sorry, that was too many steps for me to finish in one go. Please split it into smaller questions.';
+export const MAX_TURNS_REPLY_PLAIN = notice('maxTurnsReply', { style: 'plain' });
 
-export const TURN_FAILED_REPLY_PLAIN = 'Sorry, I could not finish that. Please try again.';
+export const TURN_FAILED_REPLY_PLAIN = notice('turnFailedReply', { style: 'plain' });
 
 /**
  * Lookup from an English fallback constant to its `_PLAIN` counterpart,
@@ -274,11 +227,7 @@ interface TurnOutcome {
   modelUsage?: Record<string, number>;
   sessionId?: string;
   maxTurnsExceeded?: boolean;
-  knowledgeEntryId?: number;
-  unhelpfulAnswerRated?: boolean;
-  humanHelpRequested?: boolean;
-  knowledgeGapCluster?: CrossedKnowledgeGapCluster;
-  staleKnowledgeAlertIds?: number[];
+  turnState?: Partial<TurnStateBag>;
 }
 
 /**
@@ -301,24 +250,6 @@ export function filterFeatureFlaggedTools(tools: string[]): string[] {
   );
   return tools.filter((t) => !disabled.has(t));
 }
-
-/**
- * Repo-bundled Agent Skills plugin directory (issue #741), resolved the same
- * way migrate.ts locates schema.sql: relative to this file's own compiled
- * location, so it resolves to src/agent/skills in dev (tsx) and
- * dist/agent/skills in the built artifact (package.json's build script
- * copies it there, mirroring the existing schema.sql copy step). Contains
- * only a `.claude-plugin/plugin.json` manifest and static per-skill
- * `skills/<name>/SKILL.md` files (currently `prompt-review`,
- * `model-and-plan-selection` per issue #758, `agent-architecture-review` per
- * issue #755, `project-showcase` per issue #759, `claude-code-setup` per
- * issue #757, and `getting-started` per issue #776) — no
- * hooks/agents/commands/.mcp.json — so nothing beyond those
- * static markdown skill bodies is ever loadable from
- * it (pinned by a dedicated test).
- */
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const SKILLS_DIR = join(__dirname, 'skills');
 
 /**
  * Build the SDK query options for one turn. Extracted (and exported) so the
@@ -445,12 +376,18 @@ export function buildQueryOptions(
     ...(resumeSession ? { resume: resumeSession } : {}),
     // Don't load the host machine's ~/.claude config into the agent.
     settingSources: [] as [],
-    // Agent Skills (issue #741): loads exactly the repo-bundled skills
-    // plugin — never a runtime-derived path or allowlist. Unset/disabled,
-    // this object carries neither key at all (not empty-valued), so the
-    // returned options are byte-identical to pre-#741 behaviour.
+    // Agent Skills (issue #741): loads exactly the registered skills
+    // manifest — the repo-bundled plugin directory and the literal
+    // hand-written allowlist (enabledSkills.ts), with the never-'all'
+    // invariant enforced at registration by skillsManifest.ts — never a
+    // runtime-derived path or allowlist. Unset/disabled, this object carries
+    // neither key at all (not empty-valued), so the returned options are
+    // byte-identical to pre-#741 behaviour.
     ...(config.agentSkills.enabled
-      ? { plugins: [{ type: 'local' as const, path: SKILLS_DIR }], skills: [...ENABLED_SKILLS] }
+      ? {
+          plugins: [{ type: 'local' as const, path: skillsManifest().skillsDir }],
+          skills: [...skillsManifest().enabledSkills],
+        }
       : {}),
     ...(webSearch
       ? {
@@ -764,11 +701,7 @@ export async function runAgentTurn(
     maxTurnsExceeded: outcome.maxTurnsExceeded,
     languagePreference,
     responseStyle,
-    knowledgeEntryId: outcome.knowledgeEntryId,
-    unhelpfulAnswerRated: outcome.unhelpfulAnswerRated,
-    humanHelpRequested: outcome.humanHelpRequested,
-    knowledgeGapCluster: outcome.knowledgeGapCluster,
-    staleKnowledgeAlertIds: outcome.staleKnowledgeAlertIds,
+    turnState: outcome.turnState,
   };
 }
 
@@ -778,13 +711,10 @@ export async function runAgentTurn(
 // single rolling tracker).
 let usageLimitTracker = initialUsageLimitTracker();
 
-/**
- * Both members of the `Platform` union (`src/platforms/types.ts`) — fixed at
- * two today; a future third adapter only needs adding here. Mirrors
- * `tools.ts`'s `ALL_PLATFORMS` (issue #288); not shared across the two files
- * since that constant is module-private there.
- */
-const ALL_PLATFORMS: readonly Platform[] = ['discord', 'whatsapp'];
+// Every registered platform, derived from the platform registry (agent-base
+// plan item 9) — this used to be a hand-kept `['discord', 'whatsapp']` copy
+// mirroring tools/notify.ts's, back when `Platform` was a closed union.
+const ALL_PLATFORMS: readonly Platform[] = KNOWN_PLATFORMS;
 
 /**
  * Debounced super-admin DM when a turn fails on an upstream usage-limit/
@@ -906,17 +836,14 @@ async function execTurn(
   getAdapter?: AdapterLookup,
   image?: IncomingMessage['image'],
 ): Promise<TurnOutcome> {
-  // Turn-scoped ref (issue #411): the knowledge_search handler writes the
-  // top-scoring id of its most recent qualifying hit here; read back below
-  // only on the genuine-success path (never on a thrown-error or non-success
-  // result, so a fallback/error reply can never carry a stale correlation).
-  const turnState: ToolServerTurnState = {
-    lastKnowledgeHitId: null,
-    unhelpfulAnswerRated: false,
-    humanHelpRequested: false,
-    knowledgeGapCluster: null,
-    staleKnowledgeAlertIds: [],
-  };
+  // Turn-scoped ref (issue #411): tool handlers write their module's keys
+  // into this bag during the turn (agent/communityTurnState.ts documents
+  // today's five); finalized back below only on the genuine-success path
+  // (never on a thrown-error or non-success result, so a fallback/error
+  // reply can never carry a stale correlation). Starts EMPTY — every module
+  // key is optional, and the registered finalizer treats absent exactly like
+  // the old false/null/[] initializers.
+  const turnState: ToolServerTurnState = {};
   const toolServer = buildToolServer(caller, adapter, getAdapter, turnState);
 
   // Text of the assistant message currently being streamed. Reset per
@@ -1121,6 +1048,11 @@ async function execTurn(
 
   noteUsageLimitOutcome(false, adapter, caller.conversationId, getAdapter);
   const text = resultText.trim() || lastAssistantText.trim() || "I don't have a response for that.";
+  // Generic replacement for the old five hardcoded conditional spreads: the
+  // registered finalizers (agent/communityTurnState.ts) decide which keys
+  // surface; an empty bag writes no `turnState` key at all, preserving the
+  // absent-not-empty discipline of the fields it replaced.
+  const bag = finalizeTurnState(turnState);
   return {
     ok: true,
     resumeFailed: false,
@@ -1130,12 +1062,6 @@ async function execTurn(
     cacheCreationTokens,
     modelUsage,
     sessionId,
-    ...(turnState.lastKnowledgeHitId != null ? { knowledgeEntryId: turnState.lastKnowledgeHitId } : {}),
-    ...(turnState.unhelpfulAnswerRated ? { unhelpfulAnswerRated: true } : {}),
-    ...(turnState.humanHelpRequested ? { humanHelpRequested: true } : {}),
-    ...(turnState.knowledgeGapCluster ? { knowledgeGapCluster: turnState.knowledgeGapCluster } : {}),
-    ...(turnState.staleKnowledgeAlertIds && turnState.staleKnowledgeAlertIds.length > 0
-      ? { staleKnowledgeAlertIds: turnState.staleKnowledgeAlertIds }
-      : {}),
+    ...(Object.keys(bag).length > 0 ? { turnState: bag } : {}),
   };
 }

@@ -76,8 +76,19 @@ export interface ToolDef<Shape extends ZodRawShape> {
   description: string;
   /** Tier that gets the tool OFFERED (guest keeps the member surface, as today). */
   minTier: 'member' | 'admin' | 'super_admin';
-  /** Omit = all platforms. `['discord']` drops the tool from non-Discord surfaces via rbac.ts's derived platform filter. */
+  /** Omit = all platforms. `['discord']` drops the tool from non-Discord surfaces via rbac.ts's derived platform filter. Whenever set, `requiresCapability` must name the adapter capability justifying it. */
   platforms?: readonly Platform[];
+  /**
+   * Adapter capability id (an `AdminAction` kind or a feature-capability id
+   * like `react_to_message`) that justifies this tool's platform surface.
+   * `assertToolAvailabilityConsistent` (platforms/registry.ts) checks — at
+   * startup and under a `SECURITY:` test — that the platforms this def is
+   * offered on are EXACTLY those whose registered adapters declare the
+   * capability, so `platforms` is derived-and-verified, never hand-mirrored
+   * folklore. Omit for tools with no single capability (e.g. `moderate`,
+   * which feature-checks per action at runtime).
+   */
+  requiresCapability?: string;
   /** Evaluated per turn against the live config by core.ts's subtractive flag filter. Omit for unflagged tools. */
   featureFlag?: (cfg: Config) => boolean;
   readOnlyHint: boolean;

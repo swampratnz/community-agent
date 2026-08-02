@@ -30,7 +30,7 @@ process.env.DAILY_REPLY_BUDGET_WARN_REMAINING = '5';
 process.env.REPEAT_QUESTION_SHORTCUT_ENABLED = 'true';
 
 const { pool, closeDb } = await import('../src/storage/db.js');
-const { Router } = await import('../src/router.js');
+const { Router, makeRouterDeps } = await import('../src/router.js');
 const { DAILY_BUDGET_NOTICE_TEXT } = await import('../src/dailyBudgetNotice.js');
 const {
   DAILY_REPLY_BUDGET_WARNING_TEXT,
@@ -118,12 +118,12 @@ function countRepliesReturning(used: number): () => Promise<number> {
 
 test('router (daily budget warning): appended inside the window, stating the correct remaining count', async () => {
   const router = new Router(
-    async () => makeReply(`${RUN} the real answer`),
-    20,
-    async () => false, // not paused
-    undefined,
-    undefined,
-    countRepliesReturning(46), // remaining after this reply = 50 - (46 + 1) = 3
+    makeRouterDeps({
+      runTurn: async () => makeReply(`${RUN} the real answer`),
+      typingRefireMs: 20,
+      checkPaused: async () => false,
+      countReplies: countRepliesReturning(46),
+    }), // remaining after this reply = 50 - (46 + 1) = 3
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -136,12 +136,12 @@ test('router (daily budget warning): appended inside the window, stating the cor
 
 test('router (daily budget warning): the boundary remaining=DAILY_REPLY_BUDGET_WARN_REMAINING (5) still warns (inclusive upper bound)', async () => {
   const router = new Router(
-    async () => makeReply(`${RUN} boundary answer`),
-    20,
-    async () => false,
-    undefined,
-    undefined,
-    countRepliesReturning(44), // remaining = 50 - (44 + 1) = 5
+    makeRouterDeps({
+      runTurn: async () => makeReply(`${RUN} boundary answer`),
+      typingRefireMs: 20,
+      checkPaused: async () => false,
+      countReplies: countRepliesReturning(44),
+    }), // remaining = 50 - (44 + 1) = 5
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -153,12 +153,12 @@ test('router (daily budget warning): the boundary remaining=DAILY_REPLY_BUDGET_W
 
 test('router (daily budget warning): the boundary remaining=0 (last reply before the hard cutoff) still warns (inclusive lower bound)', async () => {
   const router = new Router(
-    async () => makeReply(`${RUN} last reply before cutoff`),
-    20,
-    async () => false,
-    undefined,
-    undefined,
-    countRepliesReturning(49), // remaining = 50 - (49 + 1) = 0 — the most urgent warning case
+    makeRouterDeps({
+      runTurn: async () => makeReply(`${RUN} last reply before cutoff`),
+      typingRefireMs: 20,
+      checkPaused: async () => false,
+      countReplies: countRepliesReturning(49),
+    }), // remaining = 50 - (49 + 1) = 0 — the most urgent warning case
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -175,12 +175,12 @@ test('router (daily budget warning): the boundary remaining=0 (last reply before
 
 test('router (daily budget warning): no warning outside the window (remaining > 5)', async () => {
   const router = new Router(
-    async () => makeReply(`${RUN} plenty left`),
-    20,
-    async () => false,
-    undefined,
-    undefined,
-    countRepliesReturning(40), // remaining = 50 - (40 + 1) = 9
+    makeRouterDeps({
+      runTurn: async () => makeReply(`${RUN} plenty left`),
+      typingRefireMs: 20,
+      checkPaused: async () => false,
+      countReplies: countRepliesReturning(40),
+    }), // remaining = 50 - (40 + 1) = 9
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -193,12 +193,12 @@ test('router (daily budget warning): no warning outside the window (remaining > 
 
 test('router (daily budget warning): the existing used >= limit hard-stop path is completely unchanged', async () => {
   const router = new Router(
-    async () => makeReply('should not be reached — over budget'),
-    20,
-    async () => false,
-    undefined,
-    undefined,
-    countRepliesReturning(LIMIT), // at the limit — no agent turn at all
+    makeRouterDeps({
+      runTurn: async () => makeReply('should not be reached — over budget'),
+      typingRefireMs: 20,
+      checkPaused: async () => false,
+      countReplies: countRepliesReturning(LIMIT),
+    }), // at the limit — no agent turn at all
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -215,12 +215,12 @@ test('router (daily budget warning): the existing used >= limit hard-stop path i
 
 test('router (daily budget warning): debounced once per rolling 24h — a second in-window message from the same caller gets no repeated warning', async () => {
   const router = new Router(
-    async (caller) => makeReply(`${RUN} answer for ${caller.userId}`),
-    20,
-    async () => false,
-    undefined,
-    undefined,
-    countRepliesReturning(46), // remaining = 3, in-window every call
+    makeRouterDeps({
+      runTurn: async (caller) => makeReply(`${RUN} answer for ${caller.userId}`),
+      typingRefireMs: 20,
+      checkPaused: async () => false,
+      countReplies: countRepliesReturning(46),
+    }), // remaining = 3, in-window every call
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -239,12 +239,12 @@ test('router (daily budget warning): debounced once per rolling 24h — a second
 
 test('router (daily budget warning): a distinct caller is warned independently of another caller already debounced', async () => {
   const router = new Router(
-    async (caller) => makeReply(`${RUN} answer for ${caller.userId}`),
-    20,
-    async () => false,
-    undefined,
-    undefined,
-    countRepliesReturning(46),
+    makeRouterDeps({
+      runTurn: async (caller) => makeReply(`${RUN} answer for ${caller.userId}`),
+      typingRefireMs: 20,
+      checkPaused: async () => false,
+      countReplies: countRepliesReturning(46),
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -263,12 +263,12 @@ test('router (daily budget warning): a distinct caller is warned independently o
 
 test('SECURITY: a super-admin caller never receives the warning even deep inside the window', async () => {
   const router = new Router(
-    async () => makeReply(`${RUN} super admin reply`),
-    20,
-    async () => false,
-    undefined,
-    undefined,
-    countRepliesReturning(49), // would be remaining=0 for a non-super-admin, but the daily-budget block is never entered for super_admin
+    makeRouterDeps({
+      runTurn: async () => makeReply(`${RUN} super admin reply`),
+      typingRefireMs: 20,
+      checkPaused: async () => false,
+      countReplies: countRepliesReturning(49),
+    }), // would be remaining=0 for a non-super-admin, but the daily-budget block is never entered for super_admin
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -285,12 +285,12 @@ test('SECURITY: a super-admin caller never receives the warning even deep inside
 
 test('router (daily budget warning): the underlying reply.text cache used by the repeat-question shortcut is unaffected (mirrors offerEscalation)', async () => {
   const router = new Router(
-    async () => makeReply(`${RUN} cached answer`),
-    20,
-    async () => false,
-    undefined,
-    undefined,
-    countRepliesReturning(46), // in-window on the first turn
+    makeRouterDeps({
+      runTurn: async () => makeReply(`${RUN} cached answer`),
+      typingRefireMs: 20,
+      checkPaused: async () => false,
+      countReplies: countRepliesReturning(46),
+    }), // in-window on the first turn
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -315,12 +315,12 @@ test('router (daily budget warning): the underlying reply.text cache used by the
 
 test("router (daily budget warning): a caller with a standing 'mi' language preference gets the _MI variant", async () => {
   const router = new Router(
-    async () => makeReply(`${RUN} kia ora`, { languagePreference: 'mi' }),
-    20,
-    async () => false,
-    undefined,
-    undefined,
-    countRepliesReturning(46),
+    makeRouterDeps({
+      runTurn: async () => makeReply(`${RUN} kia ora`, { languagePreference: 'mi' }),
+      typingRefireMs: 20,
+      checkPaused: async () => false,
+      countReplies: countRepliesReturning(46),
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -332,16 +332,13 @@ test("router (daily budget warning): a caller with a standing 'mi' language pref
 
 test("router (daily budget warning): a non-mi caller with a standing 'plain' response style gets the _PLAIN variant", async () => {
   const router = new Router(
-    async () => makeReply(`${RUN} plain reply`, { languagePreference: 'auto' }),
-    20,
-    async () => false,
-    undefined,
-    undefined,
-    countRepliesReturning(46),
-    undefined,
-    undefined,
-    undefined,
-    async () => 'plain',
+    makeRouterDeps({
+      runTurn: async () => makeReply(`${RUN} plain reply`, { languagePreference: 'auto' }),
+      typingRefireMs: 20,
+      checkPaused: async () => false,
+      countReplies: countRepliesReturning(46),
+      getRespStyle: async () => 'plain',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -353,16 +350,13 @@ test("router (daily budget warning): a non-mi caller with a standing 'plain' res
 
 test("router (daily budget warning): 'standard' response style (and no mi preference) still gets the English default variant", async () => {
   const router = new Router(
-    async () => makeReply(`${RUN} standard reply`, { languagePreference: 'auto' }),
-    20,
-    async () => false,
-    undefined,
-    undefined,
-    countRepliesReturning(46),
-    undefined,
-    undefined,
-    undefined,
-    async () => 'standard',
+    makeRouterDeps({
+      runTurn: async () => makeReply(`${RUN} standard reply`, { languagePreference: 'auto' }),
+      typingRefireMs: 20,
+      checkPaused: async () => false,
+      countReplies: countRepliesReturning(46),
+      getRespStyle: async () => 'standard',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);

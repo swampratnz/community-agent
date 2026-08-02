@@ -24,7 +24,7 @@ process.env.REPEAT_QUESTION_ALERT_RATE_LIMIT_PER_HOUR = '3';
 process.env.REPEAT_QUESTION_ALERT_COOLDOWN_MINUTES = '15';
 
 const { config } = await import('../src/config.js');
-const { Router } = await import('../src/router.js');
+const { Router, makeRouterDeps } = await import('../src/router.js');
 const { FRESHNESS_DAYS, CLUSTER_LIMIT } = await import('../src/adminDigest.js');
 
 type QuestionCluster = { representative: string; count: number };
@@ -99,40 +99,26 @@ function makeRouterWithSpies(
   const clusterCalls: (readonly string[] | null)[] = [];
   const clusterCallArgs: { conversationIds: readonly string[] | null; days?: number; limit?: number }[] = [];
   const router = new Router(
-    async () => ({ text: 'Here is what I found.', ok: true }),
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async (
-      _adapterFor: (platform: string) => PlatformAdapter | undefined,
-      message: string,
-      excludeUserId: string,
-    ) => {
-      notifyCalls.push({ message, excludeUserId });
-    },
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async (conversationIds: readonly string[] | null, days?: number, limit?: number) => {
-      clusterCalls.push(conversationIds);
-      clusterCallArgs.push({ conversationIds, days, limit });
-      return clustersFn(conversationIds, days, limit);
-    },
+    makeRouterDeps({
+      runTurn: async () => ({ text: 'Here is what I found.', ok: true }),
+      typingRefireMs: 20,
+      notifyAdminsFn: async (
+        _adapterFor: (platform: string) => PlatformAdapter | undefined,
+        message: string,
+        excludeUserId: string,
+      ) => {
+        notifyCalls.push({ message, excludeUserId });
+      },
+      recentQuestionClustersFn: async (
+        conversationIds: readonly string[] | null,
+        days?: number,
+        limit?: number,
+      ) => {
+        clusterCalls.push(conversationIds);
+        clusterCallArgs.push({ conversationIds, days, limit });
+        return clustersFn(conversationIds, days, limit);
+      },
+    }),
   );
   return { router, notifyCalls, clusterCalls, clusterCallArgs };
 }
@@ -200,39 +186,21 @@ test('router (repeat-question cluster alert): a reply that did not end in genuin
   const notifyCalls: { message: string; excludeUserId: string }[] = [];
   const clusterCalls: unknown[] = [];
   const router = new Router(
-    async () => ({ text: 'Sorry, something went wrong.', ok: false }),
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async (
-      _adapterFor: (platform: string) => PlatformAdapter | undefined,
-      message: string,
-      excludeUserId: string,
-    ) => {
-      notifyCalls.push({ message, excludeUserId });
-    },
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async (conversationIds: readonly string[] | null) => {
-      clusterCalls.push(conversationIds);
-      return [{ representative: 'would have crossed', count: 99 }];
-    },
+    makeRouterDeps({
+      runTurn: async () => ({ text: 'Sorry, something went wrong.', ok: false }),
+      typingRefireMs: 20,
+      notifyAdminsFn: async (
+        _adapterFor: (platform: string) => PlatformAdapter | undefined,
+        message: string,
+        excludeUserId: string,
+      ) => {
+        notifyCalls.push({ message, excludeUserId });
+      },
+      recentQuestionClustersFn: async (conversationIds: readonly string[] | null) => {
+        clusterCalls.push(conversationIds);
+        return [{ representative: 'would have crossed', count: 99 }];
+      },
+    }),
   );
   const { adapter, trigger } = makeAdapter();
   router.register(adapter);

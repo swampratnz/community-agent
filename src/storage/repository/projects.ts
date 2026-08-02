@@ -4,6 +4,7 @@ import { logger } from '../../logger.js';
 import { pool } from '../db.js';
 import { embed } from '../embeddings.js';
 import { KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD } from './shared.js';
+import { registerOnMemberRemoved, registerPurgeContributor } from '../lifecycle.js';
 
 /**
  * Projects (issue #927): a standing team's shared memory that follows the team
@@ -471,3 +472,61 @@ export async function listProjectSurfaces(
   );
   return rows.map((r) => ({ platform: r.platform as Platform, conversationId: r.conversation_id }));
 }
+
+// --- Lifecycle registration (storage/lifecycle.ts) ---------------------------
+
+registerPurgeContributor({
+  name: 'projects',
+  order: 190,
+  async purge({ platform, userId }, tx) {
+    // Projects (issue #927) are the ONE place erasure is deliberately partial,
+    // and the asymmetry is the point:
+    //
+    //  - `project_members` HARD-DELETEs. It is pure identity; nothing shared is
+    //    lost with it, and the person stops being able to reach the project.
+    //  - `project_notes` keeps the row and NULLs the authorship. A departing
+    //    member's forget_me must not silently gut a standing team's decisions
+    //    — that is an unrelated side effect of a privacy action, and the whole
+    //    reason the team's memory exists. Precedent: knowledge_candidates
+    //    nulls its link for reviewed rows rather than deleting them.
+    //
+    // DOCUMENTED RESIDUAL: nulling authorship removes the LINK, not personal
+    // information the note's own text may contain ("Chris is hosting"). The
+    // erasure is therefore partial by design. docs/SECURITY.md §25 says so;
+    // forget_me's own reply does NOT yet — it still promises unqualified
+    // deletion, which is issue #930. Until that lands, a member in a project
+    // is told more was erased than actually was.
+    //
+    // This exception is scoped to project content ONLY — the knowledge
+    // contributor's `DELETE FROM knowledge` is untouched, so ordinary knowledge
+    // the member authored still disappears exactly as before.
+    const { rowCount: projectMemberships } = await tx.query(
+      `DELETE FROM project_members WHERE platform = $1 AND user_id = $2`,
+      [platform, userId],
+    );
+    // Uncounted by design: an authorship-NULLing UPDATE erases a link, not a
+    // row, so it never joins the user-facing deletion total (the three
+    // breadcrumb UPDATEs in purgeSingleIdentity's epilogue are uncounted for
+    // the same reason).
+    await tx.query(
+      `UPDATE project_notes SET author_platform = NULL, author_user_id = NULL
+        WHERE author_platform = $1 AND author_user_id = $2`,
+      [platform, userId],
+    );
+    return projectMemberships ?? 0;
+  },
+});
+
+// SECURITY (issue #927, PR #929 review): project membership must not
+// outlive community membership. `project_members` deliberately has no FK
+// to `community_users` (it is keyed on the platform identity so visibility
+// survives person-row merges), so nothing cascades on its own, and
+// `visibleProjectIds` checks only that table — never tier. Without this
+// delete, an admin who removes a member leaves their project access
+// standing, and in an OPEN-MODE deployment the removed identity still
+// reaches the agent at guest tier with MEMBER_TOOLS on its surface. Same
+// rationale the purge contributor above hard-deletes these rows for. Runs
+// inside removeMember's transaction (storage/repository/members.ts).
+registerOnMemberRemoved(async ({ platform, userId }, tx) => {
+  await tx.query(`DELETE FROM project_members WHERE platform = $1 AND user_id = $2`, [platform, userId]);
+}, 10);

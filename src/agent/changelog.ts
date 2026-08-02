@@ -8,7 +8,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 /**
  * CHANGELOG.md is the maintained source of truth at the repo root. In a
  * production build tsc emits this module to `dist/agent/` and the build step
- * copies CHANGELOG.md to `dist/` (mirroring how schema.sql is bundled), so it
+ * copies CHANGELOG.md to `dist/` (mirroring how the schema fragments are bundled), so it
  * sits at `dist/CHANGELOG.md`. Under tsx (dev / tests) this runs from
  * `src/agent/` with the file still at the repo root. Try both layouts.
  */

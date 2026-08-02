@@ -1,4 +1,5 @@
 import { sanitizeName } from './util/sanitizeName.js';
+import { notice } from './strings/notices.js';
 import { logger } from './logger.js';
 import type { Platform } from './platforms/types.js';
 import { listAdminDisplayNames as listAdminDisplayNamesReal } from './storage/repository.js';
@@ -9,8 +10,7 @@ import { listAdminDisplayNames as listAdminDisplayNamesReal } from './storage/re
  * resolvable, so a fresh deploy or an admin roster with no stored/rostered
  * name never degrades into an empty-list sentence.
  */
-export const GATED_NOTICE =
-  'Kia ora! This assistant is member-only. Ask a community admin to add you as a member and I can help.';
+export const GATED_NOTICE = notice('gatedNotice');
 
 /**
  * Adversarial-review cap (issue #360 approval): a large admin roster must
@@ -65,12 +65,11 @@ export function renderGatedNotice(names: string[]): string {
  * (issue #480) is flag-gated and may not have fired for this request, so the
  * clause must stay true regardless of that config. See `appendWaitClauseMi`
  * (issue #716) for the te reo sibling, wired into `router.ts`'s `'mi'` branch.
+ * The clause template itself lives in the strings catalogue (agent-base plan
+ * item 6); this const is derived so import sites and pinned values stay
+ * byte-identical.
  */
-export function appendWaitClause(notice: string, waitDays?: number): string {
-  if (!waitDays || waitDays < 1) return notice;
-  const days = Math.floor(waitDays);
-  return `${notice} (You first asked ${days} day${days === 1 ? '' : 's'} ago — your request is on record.)`;
-}
+export const appendWaitClause = notice('gatedWaitClause');
 
 /**
  * Te reo Māori sibling of `appendWaitClause` (issue #716), appended by
@@ -82,12 +81,7 @@ export function appendWaitClause(notice: string, waitDays?: number): string {
  * Like `appendWaitClause`, the suffix interpolates only a plain integer day
  * count — no name or message content — so it carries no injection surface.
  */
-export function appendWaitClauseMi(notice: string, waitDays?: number): string {
-  if (!waitDays || waitDays < 1) return notice;
-  const days = Math.floor(waitDays);
-  const whenClause = days === 1 ? 'i te rā kotahi kua pahure' : `i ngā rā e ${days} kua pahure`;
-  return `${notice} (Nāu i pātai tuatahi mai ${whenClause} — kei te mau tonu tō tono.)`;
-}
+export const appendWaitClauseMi = notice('gatedWaitClause', { language: 'mi' });
 
 /**
  * Whole-day age of an access request's first-ever message (issue #591),

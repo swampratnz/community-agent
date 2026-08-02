@@ -1,11 +1,13 @@
 import type { Platform, PlatformAdapter } from '../../platforms/types.js';
 import { WindowClosedError } from '../../platforms/types.js';
+import { KNOWN_PLATFORMS } from '../../platforms/registry.js';
 import { atLeast } from '../../auth/tiers.js';
 import { resolveRole, superAdminIds } from '../../auth/roles.js';
 import { config } from '../../config.js';
 import { logger, hashId } from '../../logger.js';
 import { queuePendingAlert, type AlertPriority } from '../../pendingAlertQueue.js';
 import { manualWarnBlockedAlertText } from '../../moderation/moderator.js';
+import { notice } from '../../strings/notices.js';
 import {
   addWarning,
   countActiveWarnings,
@@ -17,11 +19,9 @@ import {
 } from '../../storage/repository.js';
 import { truncateForEcho } from './helpers.js';
 
-/**
- * Both members of the `Platform` union (`src/platforms/types.ts`) — fixed at
- * two today; a future third adapter only needs adding here.
- */
-const ALL_PLATFORMS: readonly Platform[] = ['discord', 'whatsapp'];
+// Every registered platform, derived from the platform registry (agent-base
+// plan item 9) — this used to be a hand-kept `['discord', 'whatsapp']` copy.
+const ALL_PLATFORMS: readonly Platform[] = KNOWN_PLATFORMS;
 
 /**
  * Shared per-recipient rejection handler for `notifySuperAdmins`/
@@ -195,32 +195,13 @@ export async function notifyAdmins(
   }
 }
 
-const MEMBER_APPROVED_MESSAGE =
-  "Kia ora! 👋 You've been approved — you're now a registered member of NZ Claude Community. " +
-  'Feel free to message the bot here anytime. Ask me "what can you do?" any time for a quick rundown.';
-
-/**
- * Fixed, human-authored te reo Māori counterpart (issue #331, same `_MI`
- * pattern as `community_guidelines`/#266, the Discord rejoin welcome/#282,
- * and the router's pause/rate-limit/budget notices/#300) — never a model
- * translation, so there's no paraphrase/drift risk on a fixed confirmation
- * string.
- */
-const MEMBER_APPROVED_MESSAGE_MI =
-  'Kia ora! 👋 Kua whakaaetia koe — kua noho mema rēhita koe o NZ Claude Community. ' +
-  'Whakapā mai ki ahau i ngā wā katoa. Pātai mai "what can you do?" i ngā wā katoa mō tētahi whakarāpopototanga poto.';
-
-/**
- * Fixed, human-authored plain-language counterpart (issue #657, extending
- * #430's `_PLAIN` pattern to this file), served instead of
- * `MEMBER_APPROVED_MESSAGE` when the caller's language preference is NOT
- * 'mi' and their response style is 'plain' — same trust level as the
- * English/`_MI` constants: no model call, no translation, no injection
- * surface.
- */
-const MEMBER_APPROVED_MESSAGE_PLAIN =
-  "Kia ora! 👋 You're now a member of NZ Claude Community. " +
-  'You can message the bot here anytime. Ask me "what can you do?" for a short list of things I can help with.';
+// The approval-DM texts (English base, te reo Māori counterpart issue #331 —
+// same `_MI` pattern as `community_guidelines`/#266 — and the plain-language
+// counterpart issue #657) live in the strings catalogue
+// (`strings/notices.ts` entries `memberApprovedMessage`/
+// `adminApprovedMessage`), which also owns the 'mi'-over-'plain' selection
+// precedence. Never a model translation, so there's no paraphrase/drift risk
+// on a fixed confirmation string.
 
 /**
  * Best-effort confirmation DM for a member grant. Fires only on an actual
@@ -257,17 +238,14 @@ export async function notifyMemberApproved(
 ): Promise<boolean> {
   if (wasAlreadyMember) return true;
   const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
-  let message = MEMBER_APPROVED_MESSAGE;
-  if (lang === 'mi') {
-    message = MEMBER_APPROVED_MESSAGE_MI;
-  } else {
-    // Only consulted once 'mi' is ruled out (it takes precedence), same
-    // nested-lookup shape router.ts uses at its own getRespStyle call sites
-    // (issue #430). Degrades to 'standard' (English) on any lookup failure,
-    // same #52 invariant as the language lookup above.
-    const style: ResponseStyle = await getRespStyle(platform, userId).catch(() => 'standard' as const);
-    if (style === 'plain') message = MEMBER_APPROVED_MESSAGE_PLAIN;
-  }
+  // Style is only consulted once 'mi' is ruled out (it takes precedence), same
+  // nested-lookup shape router.ts uses at its own getRespStyle call sites
+  // (issue #430) — no style DB read on the 'mi' path. Degrades to 'standard'
+  // (English) on any lookup failure, same #52 invariant as the language
+  // lookup above. Variant selection itself lives in strings/notices.ts.
+  const style: ResponseStyle | undefined =
+    lang === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
+  const message = notice('memberApprovedMessage', { language: lang, style });
   return adapter
     .sendDirectMessage(userId, message)
     .then(() => true)
@@ -283,30 +261,13 @@ export async function notifyMemberApproved(
 }
 
 /**
- * Static and templated deliberately (issue #201): `displayName` reaches
- * `grant_admin` as an untrusted tool argument, so it must never be
- * interpolated here — same no-interpolation shape as MEMBER_APPROVED_MESSAGE.
- * Points at community_info's existing admin-aware branch rather than
+ * The `adminApprovedMessage` catalogue entry is static and templated
+ * deliberately (issue #201): `displayName` reaches `grant_admin` as an
+ * untrusted tool argument, so it must never be interpolated into the DM —
+ * same no-interpolation shape as the `memberApprovedMessage` entry. It
+ * points at community_info's existing admin-aware branch rather than
  * enumerating ADMIN_TOOLS inline, so there's one place to keep in sync.
- */
-const ADMIN_APPROVED_MESSAGE =
-  "Kia ora! 👋 You've been promoted to admin on NZ Claude Community. " +
-  'Ask me "what can you do?" any time for a rundown, including your new admin tools.';
-
-/** Fixed te reo Māori counterpart of {@link ADMIN_APPROVED_MESSAGE} (issue #331). */
-const ADMIN_APPROVED_MESSAGE_MI =
-  'Kia ora! 👋 Kua whakapikitia koe hei kaiwhakahaere (admin) mō NZ Claude Community. ' +
-  'Pātai mai "what can you do?" i ngā wā katoa mō tētahi whakarāpopototanga, tae atu ki ō rākau whakahaere hou.';
-
-/**
- * Fixed, human-authored plain-language counterpart of {@link ADMIN_APPROVED_MESSAGE}
- * (issue #657, same pattern as {@link MEMBER_APPROVED_MESSAGE_PLAIN} above).
- */
-const ADMIN_APPROVED_MESSAGE_PLAIN =
-  "Kia ora! 👋 You're now an admin on NZ Claude Community. " +
-  'Ask me "what can you do?" for a rundown, including your new admin tools.';
-
-/**
+ *
  * Best-effort orientation DM for an admin grant, mirroring notifyMemberApproved's
  * shape exactly: fires only on an actual transition into admin
  * (`wasAlreadyAdmin` false) so re-running `grant_admin` on an existing admin
@@ -331,14 +292,10 @@ export async function notifyAdminApproved(
 ): Promise<boolean> {
   if (wasAlreadyAdmin) return true;
   const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
-  let message = ADMIN_APPROVED_MESSAGE;
-  if (lang === 'mi') {
-    message = ADMIN_APPROVED_MESSAGE_MI;
-  } else {
-    // Same nested getRespStyle shape as notifyMemberApproved above.
-    const style: ResponseStyle = await getRespStyle(platform, userId).catch(() => 'standard' as const);
-    if (style === 'plain') message = ADMIN_APPROVED_MESSAGE_PLAIN;
-  }
+  // Same nested getRespStyle shape as notifyMemberApproved above.
+  const style: ResponseStyle | undefined =
+    lang === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
+  const message = notice('adminApprovedMessage', { language: lang, style });
   return adapter
     .sendDirectMessage(userId, message)
     .then(() => true)

@@ -1,3 +1,7 @@
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { registerSkillsManifest } from './skillsManifest.js';
+
 /**
  * The explicit, hand-written Agent Skills allowlist (issue #741) — never
  * `'all'`, so a future skill file added to the skills directory needs a
@@ -26,3 +30,28 @@ export const ENABLED_SKILLS = [
   'claude-code-setup',
   'getting-started',
 ] as const;
+
+/**
+ * Repo-bundled Agent Skills plugin directory (issue #741), resolved the same
+ * way the schema manifest locates its fragments: relative to this file's own
+ * compiled location, so it resolves to src/agent/skills in dev (tsx) and
+ * dist/agent/skills in the built artifact (package.json's build script
+ * copies it there, mirroring the existing schema-fragments copy step).
+ * Contains only a `.claude-plugin/plugin.json` manifest and static per-skill
+ * `skills/<name>/SKILL.md` files — no hooks/agents/commands/.mcp.json — so
+ * nothing beyond those static markdown skill bodies is ever loadable from it
+ * (pinned by a dedicated test).
+ *
+ * Registered here as the community skills manifest (agent-base plan item 8):
+ * `skillsManifest.ts` owns the never-`'all'` invariant and core.ts reads the
+ * manifest instead of importing this list directly. The prompt-review
+ * SKILL.md in this directory and PROMPT_REVIEW_CLAUSE
+ * (communityPromptSections.ts) are a byte-identical pair — they move
+ * together, pinned by tests/agentSkillsEnabled.test.ts.
+ */
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+registerSkillsManifest({
+  skillsDir: join(__dirname, 'skills'),
+  enabledSkills: ENABLED_SKILLS,
+});

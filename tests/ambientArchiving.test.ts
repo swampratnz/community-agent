@@ -22,7 +22,7 @@ const skip = hasDb
   ? false
   : 'DATABASE_URL not set — skipping DB-integration tests (CLAUDE.md: exercise against a local Postgres 16 + pgvector)';
 
-const { Router } = await import('../src/router.js');
+const { Router, makeRouterDeps } = await import('../src/router.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { config } = await import('../src/config.js');
 const pgvector = (await import('pgvector/pg')).default;
@@ -117,10 +117,15 @@ test(
   { skip },
   async () => {
     let turnCalls = 0;
-    const router = new Router(async (): Promise<AgentReply> => {
-      turnCalls += 1;
-      return { text: 'should never happen' };
-    }, 1_000_000);
+    const router = new Router(
+      makeRouterDeps({
+        runTurn: async (): Promise<AgentReply> => {
+          turnCalls += 1;
+          return { text: 'should never happen' };
+        },
+        typingRefireMs: 1_000_000,
+      }),
+    );
     const { adapter, sent, trigger } = makeAdapter();
     router.register(adapter);
 
@@ -141,7 +146,12 @@ test(
   'SECURITY: archiving on — a guest DM to the bot is still never stored (the gated-DM guarantee survives)',
   { skip },
   async () => {
-    const router = new Router(async (): Promise<AgentReply> => ({ text: 'nope' }), 1_000_000);
+    const router = new Router(
+      makeRouterDeps({
+        runTurn: async (): Promise<AgentReply> => ({ text: 'nope' }),
+        typingRefireMs: 1_000_000,
+      }),
+    );
     const { adapter, trigger } = makeAdapter();
     router.register(adapter);
 
@@ -170,10 +180,15 @@ test(
   { skip },
   async () => {
     let turnCalls = 0;
-    const router = new Router(async (): Promise<AgentReply> => {
-      turnCalls += 1;
-      return { text: 'should never happen' };
-    }, 1_000_000);
+    const router = new Router(
+      makeRouterDeps({
+        runTurn: async (): Promise<AgentReply> => {
+          turnCalls += 1;
+          return { text: 'should never happen' };
+        },
+        typingRefireMs: 1_000_000,
+      }),
+    );
     const { adapter, sent, trigger } = makeAdapter();
     router.register(adapter);
 

@@ -1,5 +1,6 @@
 import type { Platform } from '../../platforms/types.js';
 import { pool } from '../db.js';
+import { registerPurgeContributor } from '../lifecycle.js';
 
 /**
  * Member-submitted bot-improvement suggestions (#46) — the queue admins triage
@@ -180,3 +181,24 @@ export async function resolveSuggestion(
     ? { platform: rows[0].platform as Platform, userId: rows[0].user_id, content: rows[0].content }
     : null;
 }
+
+// --- Lifecycle registration (storage/lifecycle.ts) ---------------------------
+
+registerPurgeContributor({
+  name: 'suggestions',
+  order: 50,
+  async purge({ platform, userId }, tx) {
+    const { rowCount: suggestions } = await tx.query(
+      `DELETE FROM suggestions WHERE platform = $1 AND user_id = $2`,
+      [platform, userId],
+    );
+    return suggestions ?? 0;
+  },
+  async summarize({ platform, userId }, db) {
+    const { rows: suggestionRows } = await db.query(
+      `SELECT count(*) AS n FROM suggestions WHERE platform = $1 AND user_id = $2`,
+      [platform, userId],
+    );
+    return { suggestionsFiled: Number(suggestionRows[0]?.n ?? 0) };
+  },
+});

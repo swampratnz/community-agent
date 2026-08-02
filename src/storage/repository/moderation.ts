@@ -1,5 +1,6 @@
 import type { Platform } from '../../platforms/types.js';
 import { pool } from '../db.js';
+import { registerPurgeContributor } from '../lifecycle.js';
 
 /**
  * Moderation state: auto-moderation strike counts, the bot-side WhatsApp block
@@ -373,7 +374,7 @@ function mapModerationAppeal(r: {
 }): ModerationAppeal {
   return {
     id: Number(r.id),
-    platform: r.platform as Platform,
+    platform: r.platform,
     userId: r.user_id,
     userName: r.user_name,
     reason: r.reason,
@@ -565,3 +566,40 @@ export async function appealResolutionBreakdown(
   }
   return breakdown;
 }
+
+// --- Lifecycle registration (storage/lifecycle.ts) ---------------------------
+
+registerPurgeContributor({
+  name: 'member_warnings',
+  order: 90,
+  async purge({ platform, userId }, tx) {
+    // member_warnings (auto-moderation strikes) are keyed on raw (platform,
+    // user_id) too — a purged user's warning history goes with them.
+    const { rowCount: warnings } = await tx.query(
+      `DELETE FROM member_warnings WHERE platform = $1 AND user_id = $2`,
+      [platform, userId],
+    );
+    return warnings ?? 0;
+  },
+});
+
+// blocked_users (issue #572) DELIBERATELY registers NO purge contributor,
+// unlike member_warnings above: forget_me/purge_user_data must never be a way
+// to route around an admin's block by erasing the row that enforces it,
+// including via a linked identity (SECURITY — the negative space is pinned by
+// tests/storageLifecycle.test.ts and the DB-backed purge test in
+// tests/repository.test.ts).
+
+registerPurgeContributor({
+  name: 'moderation_appeals',
+  order: 130,
+  async purge({ platform, userId }, tx) {
+    // moderation_appeals (issue #554) is keyed the same way — purge coherence
+    // for a member's own filed appeal(s), same treatment as member_warnings.
+    const { rowCount: moderationAppeals } = await tx.query(
+      `DELETE FROM moderation_appeals WHERE platform = $1 AND user_id = $2`,
+      [platform, userId],
+    );
+    return moderationAppeals ?? 0;
+  },
+});

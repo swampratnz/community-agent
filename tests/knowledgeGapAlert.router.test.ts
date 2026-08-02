@@ -20,7 +20,7 @@ process.env.KNOWLEDGE_GAP_ALERT_ENABLED = 'true';
 process.env.KNOWLEDGE_GAP_ALERT_RATE_LIMIT_PER_HOUR = '3';
 
 const { config } = await import('../src/config.js');
-const { Router } = await import('../src/router.js');
+const { Router, makeRouterDeps } = await import('../src/router.js');
 
 function makeAdapter(): {
   adapter: PlatformAdapter;
@@ -86,30 +86,20 @@ function makeRouterWithSpies(runTurn: Parameters<typeof Router>[0]) {
   const notifyCalls: { message: string; excludeUserId: string }[] = [];
   const markCalls: number[][] = [];
   const router = new Router(
-    runTurn,
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async (
-      _adapterFor: (platform: string) => PlatformAdapter | undefined,
-      message: string,
-      excludeUserId: string,
-    ) => {
-      notifyCalls.push({ message, excludeUserId });
-    },
-    undefined,
-    async (ids: readonly number[]) => {
-      markCalls.push([...ids]);
-    },
+    makeRouterDeps({
+      runTurn: runTurn,
+      typingRefireMs: 20,
+      notifyAdminsFn: async (
+        _adapterFor: (platform: string) => PlatformAdapter | undefined,
+        message: string,
+        excludeUserId: string,
+      ) => {
+        notifyCalls.push({ message, excludeUserId });
+      },
+      markKnowledgeGapsAlertedFn: async (ids: readonly number[]) => {
+        markCalls.push([...ids]);
+      },
+    }),
   );
   return { router, notifyCalls, markCalls };
 }
@@ -123,10 +113,12 @@ test('router (knowledge-gap cluster alert): a crossed cluster fires exactly one 
   const { router, notifyCalls, markCalls } = makeRouterWithSpies(async () => ({
     text: 'Here is what I found.',
     ok: true,
-    knowledgeGapCluster: {
-      representative: 'what time does the ferry to Waiheke leave on Saturdays',
-      count: 3,
-      rowIds: [101, 102, 103],
+    turnState: {
+      knowledgeGapCluster: {
+        representative: 'what time does the ferry to Waiheke leave on Saturdays',
+        count: 3,
+        rowIds: [101, 102, 103],
+      },
     },
   }));
   const { adapter, sent, trigger } = makeAdapter();
@@ -162,7 +154,7 @@ test('SECURITY: router (knowledge-gap cluster alert): the alert DM body is a str
   const { router, notifyCalls } = makeRouterWithSpies(async () => ({
     text: 'reply',
     ok: true,
-    knowledgeGapCluster: { representative: longQuery, count: 7, rowIds: [1] },
+    turnState: { knowledgeGapCluster: { representative: longQuery, count: 7, rowIds: [1] } },
   }));
   const { adapter, trigger } = makeAdapter();
   router.register(adapter);
@@ -188,7 +180,9 @@ test('SECURITY: router (knowledge-gap cluster alert): once KNOWLEDGE_GAP_ALERT_R
   const { router, notifyCalls, markCalls } = makeRouterWithSpies(async (_caller, prompt: string) => ({
     text: 'reply',
     ok: true,
-    knowledgeGapCluster: { representative: prompt, count: 3, rowIds: [Number(prompt.replace(/\D/g, ''))] },
+    turnState: {
+      knowledgeGapCluster: { representative: prompt, count: 3, rowIds: [Number(prompt.replace(/\D/g, ''))] },
+    },
   }));
   const { adapter, trigger } = makeAdapter();
   router.register(adapter);
@@ -215,7 +209,7 @@ test('router (knowledge-gap cluster alert): a fresh crossing after the rate wind
   const { router, notifyCalls } = makeRouterWithSpies(async (_caller, prompt: string) => ({
     text: 'reply',
     ok: true,
-    knowledgeGapCluster: { representative: prompt, count: 3, rowIds: [1] },
+    turnState: { knowledgeGapCluster: { representative: prompt, count: 3, rowIds: [1] } },
   }));
   const { adapter, trigger } = makeAdapter();
   router.register(adapter);

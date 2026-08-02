@@ -286,7 +286,7 @@ test("SECURITY: a job's registry entry after a failed run() never contains the c
   const timer = startDocsIngest([adapter], runOnce);
   try {
     await flush();
-    const snap = getJobHealthSnapshot()['docs-ingest']!;
+    const snap = getJobHealthSnapshot()['docs-ingest'];
     assert.deepEqual(
       new Set(Object.keys(snap)),
       new Set(['consecutiveFailures', 'alerted', 'lastRunAt', 'lastSuccessAt']),

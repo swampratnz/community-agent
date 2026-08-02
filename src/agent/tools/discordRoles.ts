@@ -37,6 +37,7 @@ export const discordRolesTools = [
       'permissions. Discord only. Admin only; requires confirmation.',
     minTier: 'admin',
     platforms: ['discord'],
+    requiresCapability: 'assign_community_role',
     readOnlyHint: false,
     schema: {
       userId: z.string().min(1).describe('Platform user id to assign the role to'),
@@ -74,6 +75,7 @@ export const discordRolesTools = [
       'assign_community_role. Discord only. Admin only; requires confirmation.',
     minTier: 'admin',
     platforms: ['discord'],
+    requiresCapability: 'remove_community_role',
     readOnlyHint: false,
     schema: {
       userId: z.string().min(1).describe('Platform user id to remove the role from'),
@@ -112,6 +114,7 @@ export const discordRolesTools = [
       'assign_community_role until an admin strips its permissions. Read-only. Admin only.',
     minTier: 'admin',
     platforms: ['discord'],
+    requiresCapability: 'list_assignable_roles',
     readOnlyHint: true,
     schema: {},
     handler: async (_args, { caller, adapter }) => {

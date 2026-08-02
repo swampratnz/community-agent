@@ -1,5 +1,6 @@
 import type { Platform } from '../../platforms/types.js';
 import { pool } from '../db.js';
+import { registerPurgeContributor } from '../lifecycle.js';
 
 /**
  * Durable completion-DM watches for the super-admin `dev_team_dispatch` tool.
@@ -69,3 +70,20 @@ export async function listUnnotifiedDevTeamWatches(): Promise<DevTeamWatch[]> {
 export async function markDevTeamWatchNotified(jobId: string): Promise<void> {
   await pool.query(`UPDATE dev_team_watches SET notified_at = now() WHERE job_id = $1`, [jobId]);
 }
+
+// --- Lifecycle registration (storage/lifecycle.ts) ---------------------------
+
+registerPurgeContributor({
+  name: 'dev_team_watches',
+  order: 120,
+  async purge({ platform, userId }, tx) {
+    // dev_team_watches (super-admin dev-team dispatches) is keyed on the same
+    // (platform, user id) identity — purge coherence for a requester's
+    // job-watch rows (which record the repo/mode/job id they dispatched).
+    const { rowCount: devTeamWatches } = await tx.query(
+      `DELETE FROM dev_team_watches WHERE requester_platform = $1 AND requester_user_id = $2`,
+      [platform, userId],
+    );
+    return devTeamWatches ?? 0;
+  },
+});
