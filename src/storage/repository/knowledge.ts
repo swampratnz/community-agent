@@ -4,6 +4,7 @@ import { logger } from '../../logger.js';
 import { pool } from '../db.js';
 import { embed } from '../embeddings.js';
 import { KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD } from './shared.js';
+import { pageKeyOf } from '../../context/docTitles.js';
 
 /**
  * The knowledge base: entries, their embeddings, semantic + lexical search,
@@ -1234,4 +1235,95 @@ export async function deleteProvenancedKnowledgeByTitles(
     [provenance, [...titles]],
   );
   return rowCount ?? 0;
+}
+
+/**
+ * Titles of curated (non-`auto`-provenance) knowledge entries created since
+ * `since` — the "new in the knowledge base" line of the weekly member
+ * digest. Reuses `listKnowledgeTopics`'s exact `created_by_role != 'auto'`
+ * apparent-authority boundary (issue #214) so an unreviewed, machine-
+ * researched entry can never appear in a member-facing surface either —
+ * only an admin-accepted `save_knowledge`/`accept_knowledge_candidate`/
+ * `update_knowledge` entry, or a trusted `'docs'` backfill, ever qualifies.
+ *
+ * `scope = 'global'` ONLY (PR #651 review) — this is a single public,
+ * guild-wide Discord post with no caller conversation to scope by, so
+ * unlike `listKnowledgeTopics`'s `scope IN ('global', $platform,
+ * $conversationId)` there is no caller-specific scope to widen into. An
+ * admin who scoped a curated entry to a specific channel or a WhatsApp-only
+ * conversation to keep it out of general circulation must never have its
+ * title broadcast here — the same reasoning the gated-guest knowledge
+ * shortcut's `scopeRestriction: 'global-only'` (issue #165) already applies
+ * when there's no meaningful caller scope. Null and blank titles are
+ * excluded, same as `listKnowledgeTopics`.
+ */
+export async function listCuratedKnowledgeCreatedSince(since: Date, limit: number): Promise<string[]> {
+  const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 10, 1), 50);
+  const { rows } = await pool.query<{ title: string }>(
+    `SELECT title FROM knowledge
+      WHERE created_at > $1
+        AND created_by_role != 'auto'
+        AND scope = 'global'
+        AND title IS NOT NULL
+        AND trim(title) != ''
+      ORDER BY created_at ASC
+      LIMIT $2`,
+    [since, clampedLimit],
+  );
+  return rows.map((r) => r.title);
+}
+
+/**
+ * Release/deprecation watcher (issue #733): docsIngest already fetches,
+ * diffs, and stores Anthropic's release-notes/model-deprecation pages
+ * weekly under `created_by_role = 'docs'`, but discards the "which page
+ * changed" signal after the run. This surfaces it for the member digest
+ * without a new fetch, source, or provenance value — purely a read over
+ * rows docsIngest already wrote.
+ *
+ * Filters on `updated_at` (not `created_at` like `listCuratedKnowledgeCreatedSince`
+ * above) so an EXISTING page edited in place — docsIngest's `updated` outcome,
+ * e.g. `release-notes/overview` gaining a new entry — is caught, not just
+ * brand-new pages.
+ *
+ * `created_by_role != 'auto'` reuses the exact same quarantine-exclusion
+ * filter as `listCuratedKnowledgeCreatedSince` above (never `= 'docs'`
+ * specifically) so a future auto-refresh path can never reach this surface
+ * even via a colliding title — the quarantine boundary, not a narrower
+ * docs-only allowlist, is what's load-bearing here.
+ *
+ * `pathPrefixes` are matched against the same `docs: <path>` title prefix
+ * `docsIngest.ts`'s `titleForUrl` already produces (config-fixed values,
+ * never chat/user-derived — same trust level `docsIngest`'s own
+ * `excludePaths` already has). One page can produce several changed chunks
+ * in a week (e.g. `release-notes/overview › section`); grouping by
+ * `pageKeyOf` (docsIngest's own page-grouping helper, reused verbatim so the
+ * two stay in lockstep) reports each page once, keeping its most-recently
+ * updated chunk's `source_url`.
+ */
+export async function listReleaseWatchUpdatesSince(
+  since: Date,
+  pathPrefixes: readonly string[],
+  limit: number,
+): Promise<Array<{ pageTitle: string; sourceUrl: string | null }>> {
+  if (pathPrefixes.length === 0) return [];
+  const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 10, 1), 50);
+  const likePatterns = pathPrefixes.map((p) => `docs: ${p}%`);
+  const { rows } = await pool.query<{ title: string; source_url: string | null }>(
+    `SELECT title, source_url FROM knowledge
+      WHERE updated_at > $1
+        AND created_by_role != 'auto'
+        AND scope = 'global'
+        AND title IS NOT NULL
+        AND trim(title) != ''
+        AND title LIKE ANY($2)
+      ORDER BY updated_at DESC`,
+    [since, likePatterns],
+  );
+  const byPage = new Map<string, { pageTitle: string; sourceUrl: string | null }>();
+  for (const row of rows) {
+    const page = pageKeyOf(row.title);
+    if (!byPage.has(page)) byPage.set(page, { pageTitle: page, sourceUrl: row.source_url });
+  }
+  return [...byPage.values()].slice(0, clampedLimit);
 }

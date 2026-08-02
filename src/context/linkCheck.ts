@@ -5,7 +5,7 @@ import {
   latestKnowledgeSourceCheckAt,
   listKnowledgeSourceUrls,
   recordKnowledgeSourceCheck,
-} from '../storage/repository.js';
+} from '../storage/repository/knowledge.js';
 
 /**
  * Knowledge link-rot check (issue #448): a weekly opt-in background job that

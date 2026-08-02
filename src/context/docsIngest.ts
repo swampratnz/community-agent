@@ -2,15 +2,18 @@ import { config } from '../config.js';
 import { logger } from '../logger.js';
 import {
   clearDocsIngestUrlFailures,
-  deleteProvenancedKnowledgeByTitles,
-  latestKnowledgeUpdateAtByProvenance,
   listDocsIngestUrlFailures,
-  listGlobalKnowledgeTitlesByProvenance,
   markDocsIngestUrlsReported,
   recordDocsIngestUrlFailures,
-  syncGlobalKnowledgeByProvenance,
   type DocsIngestUrlFailure,
-} from '../storage/repository.js';
+} from '../storage/repository/docsIngestFailures.js';
+import {
+  deleteProvenancedKnowledgeByTitles,
+  latestKnowledgeUpdateAtByProvenance,
+  listGlobalKnowledgeTitlesByProvenance,
+  syncGlobalKnowledgeByProvenance,
+} from '../storage/repository/knowledge.js';
+import { pageKeyOf } from './docTitles.js';
 
 /**
  * Docs ingest: backfill Anthropic's official developer docs into the knowledge
@@ -96,19 +99,6 @@ export function filterExcludedUrls(urls: string[], excludePaths: readonly string
     const path = docPathOf(u);
     return !excludePaths.some((p) => path === p || path.startsWith(`${p}/`));
   });
-}
-
-/**
- * The page a chunk title belongs to — the `titleForUrl(...)` prefix, with the
- * ` › section` and ` (part N)`/` #N` suffixes stripped. Used to decide, at prune
- * time, whether a stored chunk's PAGE still exists in the index (robust to a
- * page 404-ing on a given run).
- */
-export function pageKeyOf(chunkTitle: string): string {
-  return chunkTitle
-    .split(' › ')[0]
-    .replace(/ \(part \d+\)$/, '')
-    .replace(/ #\d+$/, '');
 }
 
 /**

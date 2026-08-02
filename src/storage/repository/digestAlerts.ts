@@ -8,11 +8,6 @@ import { pool } from '../db.js';
  * sections are the same mechanism repeated per digest/alert, not independent
  * domains.
  *
- * The member-facing weekly digest guard is deliberately NOT here: it contains a
- * function using `pageKeyOf` from context/docsIngest.ts, which itself imports
- * from repository.ts — routing that through a submodule would deepen an
- * existing import cycle, so it stays put until that is addressed on purpose.
- *
  * Extracted verbatim from repository.ts (see its header for why the split
  * exists); `repository.ts` re-exports everything here, so every existing import
  * site is unchanged.
@@ -339,4 +334,30 @@ export async function getLastAdminLeverageAlertRate(): Promise<number | null> {
     `SELECT last_rate FROM admin_leverage_alert_sends WHERE id = 1`,
   );
   return rows.length > 0 && rows[0].last_rate !== null ? Number(rows[0].last_rate) : null;
+}
+
+// --- Member-facing weekly digest freshness guard (issue #645) --------------
+
+/**
+ * True if the single-row, guild-wide `member_digest_sends` guard was
+ * stamped within the last `days` — the restart-safe check `src/memberDigest.ts`
+ * uses so a redeploy mid-week can't double-post, mirroring
+ * `wasEngagementAlertSentRecently`'s shape exactly (no identity to key on;
+ * one post to one configured channel).
+ */
+export async function wasMemberDigestSentRecently(days: number): Promise<boolean> {
+  const { rows } = await pool.query(
+    `SELECT 1 FROM member_digest_sends
+      WHERE id = 1 AND sent_at > now() - ($1 || ' days')::interval`,
+    [days],
+  );
+  return rows.length > 0;
+}
+
+/** Record that the weekly member digest was just posted. Always the same `id = 1` row, so this is an upsert. */
+export async function recordMemberDigestSent(): Promise<void> {
+  await pool.query(
+    `INSERT INTO member_digest_sends (id, sent_at) VALUES (1, now())
+     ON CONFLICT (id) DO UPDATE SET sent_at = now()`,
+  );
 }
