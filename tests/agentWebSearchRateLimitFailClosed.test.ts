@@ -16,8 +16,8 @@ test('SECURITY: AC-5 — a thrown error inside the WebSearch rate-limit check fa
   // reserveWebSearchSlot, which is replaced with one that always throws, so
   // this exercises buildQueryOptions's own fail-closed try/catch rather than
   // any unverifiable SDK default behaviour on a hook exception.
-  const real = await import('../src/agent/tools.js');
-  t.mock.module('../src/agent/tools.js', {
+  const real = await import('../src/agent/webSearchGuard.js');
+  t.mock.module('../src/agent/webSearchGuard.js', {
     namedExports: {
       ...real,
       reserveWebSearchSlot: () => {

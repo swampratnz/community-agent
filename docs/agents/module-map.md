@@ -36,6 +36,7 @@ is marked **🔒**. Changes there need a `SECURITY:` test (see
 - `src/agent/skills/` — 🔒 One `SKILL.md` per Agent Skill, plus the plugin manifest. Loaded only when `AGENT_SKILLS_ENABLED`, and only the hand-written `ENABLED_SKILLS` allowlist in `core.ts` — never derived from request content.
 - `src/agent/systemPrompt.ts` — 🔒 Assembles the system prompt: security guidelines, persona voice rules, and the NZ-date grounding. Voice rules never override the security section above them.
 - `src/agent/tools.ts` — 🔒 Every tool implementation plus its tier requirement. By far the largest file in the repo; find your tool by name before reading anything else.
+- `src/agent/webSearchGuard.ts` — 🔒 The WebSearch PreToolUse guard: per-conversation hourly volume cap, exact-then-embedding query dedup, and the per-conversation lock keeping check-then-record atomic. Fail-closed by contract — a thrown `embed()` denies the call.
 - `src/auth/` — 🔒 Identity and role resolution: tiers come from env plus the `community_users` table, never from message content. Three files, all small and worth reading in full.
 - `src/backgroundJobCostAlert.ts` — Alerts super admins when background-job spend crosses a configured threshold, so an expensive job cannot run up cost unnoticed.
 - `src/backgroundJobHealth.ts` — Pure consecutive-failure debounce tracker for scheduled jobs, so one outage produces one alert rather than an alert per tick.
@@ -77,7 +78,8 @@ is marked **🔒**. Changes there need a `SECURITY:` test (see
 - `src/storage/repository/whatsappLidMap.ts` — 🔒 Durable WhatsApp LID -> phone mapping. A LID is a privacy id that looks like a number but matches no one; persisting what the adapter learns from real envelopes lets a LID be resolved rather than refused. PII — erased by `forget_me`/`purge_user_data`. See docs/SECURITY.md §6b.
 - `src/usageAlert.ts` — Usage-threshold alerting to super admins with a debounce tracker shared by several other alert modules.
 - `src/usageCostDigest.ts` — The periodic cost digest (spend, cache hit rate) sent to super admins.
-- `src/util/` — Shared leaf helpers with no dependencies of their own: NZ-timezone rendering for member-facing times, the `shouldNotifyAfterWindow` notice debounce every debounced notice module re-exports, and the display-name sanitiser below.
+- `src/util/` — Shared leaf helpers with no dependencies of their own: NZ-timezone rendering, the `shouldNotifyAfterWindow` notice debounce, the rate-reservation primitives, and the display-name sanitiser (see entries below).
+- `src/util/rateReservation.ts` — 🔒 The three in-memory rate-cap primitives (sliding window, UTC calendar day, per-key cooldown) behind every tool/adapter reservation cap. Reservations are never refunded on failure, so induced-failure retries can't bypass a cap.
 - `src/util/sanitizeName.ts` — 🔒 Neutralises attacker-controlled display names (bracket stripping, whitespace/NEL collapse, hard truncation) before they are interpolated anywhere the model or another member reads them. Every rendered name goes through here.
 - `src/voiceLanguageCaveatNotice.ts` — Fixed caveat DM for a te reo Māori speaker sending a voice note, because the transcription model is English-only and would otherwise fail silently.
 

@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 // embedding-similarity half of the WebSearch dedup check must still fail
 // closed (deny), extending #412 AC-5 / #589's fail-closed guarantee to the
 // new code path — isDuplicateWebSearchQuery deliberately does NOT catch a
-// thrown embed() itself (see its doc comment in tools.ts), relying on the
+// thrown embed() itself (see its doc comment in webSearchGuard.ts), relying on the
 // SAME outer try/catch in core.ts's PreToolUse hook that
 // tests/agentWebSearchDedupFailClosed.test.ts already pins for a thrown
 // isDuplicateWebSearchQuery. This file exercises that same outer catch via

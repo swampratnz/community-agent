@@ -31,6 +31,7 @@
     "tests/noticeDebounce.test.ts",
     "tests/notifications.test.ts",
     "tests/projectScope.test.ts",
+    "tests/rateReservation.test.ts",
     "tests/sanitizeName.test.ts",
     "tests/schemaConstraintIdempotency.test.ts",
     "tests/usageCostDigest.test.ts",
