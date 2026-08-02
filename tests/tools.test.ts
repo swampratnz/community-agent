@@ -10238,7 +10238,9 @@ test(
 );
 
 test("SECURITY: the knowledge_search tool handler never calls notifyAdmins directly — a real-time alert (issue #650) may only fire from router.ts reading the turn-scoped flag post-turn, mirroring rate_answer's own invariant (issue #598)", () => {
-  const source = readFileSync(new URL('../src/agent/tools.ts', import.meta.url), 'utf8');
+  // The handler moved from the tools.ts closure into the knowledgeMember
+  // ToolDef domain (docs/TOOL-REGISTRY-DESIGN.md §3); same body, new home.
+  const source = readFileSync(new URL('../src/agent/tools/knowledgeMember.ts', import.meta.url), 'utf8');
   const start = source.indexOf("'knowledge_search',");
   const end = source.indexOf("'list_knowledge_topics',");
   assert.notEqual(start, -1, 'knowledge_search tool definition not found');

@@ -1279,3 +1279,21 @@ export const platformArg = z
   .describe(
     'Target platform. Defaults to the platform you are messaging from; set explicitly (e.g. "whatsapp" while on Discord) to manage a user on the other platform. Cross-platform management requires super admin.',
   );
+
+/**
+ * Shared by `forget_me` and `purge_user_data`'s CONFIRM prompt and
+ * post-confirm reply (issue #930), so the two can't drift the way the
+ * original "delete ALL of X's stored data" wording did once #929 made
+ * project-note retention (docs/SECURITY.md §25) the one partial-erasure
+ * exception in this codebase. States all three facts an erasure claim has to
+ * convey when the target is a project member: membership is deleted and
+ * access ends immediately on every platform; project notes they authored are
+ * KEPT with the authorship link removed; and removing that link does not
+ * scrub personal information the note's own text may contain, so a note that
+ * names them still names them after erasure. Deliberately generic — never
+ * enumerates project names — since the CONFIRM prompt fires at the exact
+ * moment someone is asserting a privacy right and reciting project names into
+ * a possibly-public conversation would itself be a small exposure.
+ */
+export const PROJECT_NOTE_RETENTION_NOTICE =
+  "if they're in a project, membership is deleted immediately on every platform, but any project notes they wrote are kept with the authorship link removed — that removes the link only, not personal information the note's own text may contain, so a note naming them still names them";

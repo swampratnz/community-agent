@@ -1,5 +1,16 @@
 import type { ZodRawShape } from 'zod';
 import type { ToolDef } from './types.js';
+import { infoTools } from './info.js';
+import { knowledgeMemberTools } from './knowledgeMember.js';
+import { memoryTools } from './memory.js';
+import { selfServiceTools } from './selfService.js';
+import { reportsMemberTools } from './reportsMember.js';
+import { feedbackTools } from './feedback.js';
+import { prefsTools } from './prefs.js';
+import { reactionsTools } from './reactions.js';
+import { socialTools } from './social.js';
+import { digestMemberTools } from './digestMember.js';
+import { projectNotesTools } from './projectNotes.js';
 import { devTeamTools } from './devTeam.js';
 import { imageGenTools } from './imageGen.js';
 
@@ -13,7 +24,21 @@ import { imageGenTools } from './imageGen.js';
  * that the registry's metadata never disagrees with those hand arrays.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export const TOOL_REGISTRY: readonly ToolDef<any>[] = [...devTeamTools, ...imageGenTools];
+export const TOOL_REGISTRY: readonly ToolDef<any>[] = [
+  ...infoTools,
+  ...knowledgeMemberTools,
+  ...memoryTools,
+  ...selfServiceTools,
+  ...reportsMemberTools,
+  ...feedbackTools,
+  ...prefsTools,
+  ...reactionsTools,
+  ...socialTools,
+  ...digestMemberTools,
+  ...projectNotesTools,
+  ...devTeamTools,
+  ...imageGenTools,
+];
 
 /** Bare snake_case names of every registry tool, in registration order. */
 export function registryToolNames(): string[] {
