@@ -32,7 +32,7 @@ import {
   renderMemoryContext,
   renderRequesterTag,
 } from './systemPrompt.js';
-import { selectPersona } from './personas.js';
+import { selectPersona } from './personaRegistry.js';
 import { buildToolServer, type ToolServerTurnState } from './tools.js';
 import { flaggedToolPredicates } from './tools/index.js';
 import {
@@ -42,10 +42,6 @@ import {
   withWebSearchDedupLock,
 } from './webSearchGuard.js';
 import { skillsManifest } from './skillsManifest.js';
-// Side-effect import: registers the community skills manifest ({skillsDir,
-// enabledSkills}) before any turn can read it. Phase 2 of the agent-base
-// plan replaces this with composition-root injection.
-import './enabledSkills.js';
 import {
   initialUsageLimitTracker,
   isUsageLimitFailure,

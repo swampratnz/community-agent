@@ -2,20 +2,9 @@ import type { CallerContext } from '../auth/rbac.js';
 import type { ConversationTailRow, MemoryHit } from '../storage/repository.js';
 import { config } from '../config.js';
 import { memoryHitJumpLink } from './discordLink.js';
-import { getPersona, type Persona } from './personas.js';
+import { getPersona, type Persona } from './personaRegistry.js';
 import { sanitizeName } from '../util/sanitizeName.js';
 import { buildGuidelinesBlock, promptSections, WEB_SEARCH_UNTRUSTED_NOTE } from './promptSpine.js';
-// Side-effect import: registers the community prompt sections into
-// promptSpine.ts's slot set before anything here can render. Phase 2 of the
-// agent-base plan replaces this with composition-root injection; for now it
-// guarantees every existing import site of buildSystemPrompt keeps working
-// unchanged.
-import './communityPromptSections.js';
-
-// Re-exported from its new community-owned home (it moves WITH
-// skills/prompt-review/SKILL.md — agent-base plan item 8) so existing
-// importers and tests keep their import path.
-export { PROMPT_REVIEW_CLAUSE } from './communityPromptSections.js';
 
 /**
  * Global voice rules that apply under EVERY persona and never override the

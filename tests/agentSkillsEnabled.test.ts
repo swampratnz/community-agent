@@ -3,6 +3,11 @@ import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+// Community content registrations (prompt sections + persona roster) — the
+// composition-root contract: src/index.ts registers these in production, so
+// tests that assemble prompts register them explicitly here.
+import '../src/agent/communityPromptSections.js';
+import '../src/agent/personas.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it. This file's whole
@@ -134,7 +139,7 @@ test('flag on: the assembled system prompt no longer contains the prompt-review 
 // their equality (the "flag on" test above only checks the checklist is
 // ABSENT, not that the replacement matches).
 test('PROMPT_REVIEW_CLAUSE is byte-identical to the prompt-review SKILL.md body (no fork between flag states)', async () => {
-  const { PROMPT_REVIEW_CLAUSE } = await import('../src/agent/systemPrompt.js');
+  const { PROMPT_REVIEW_CLAUSE } = await import('../src/agent/communityPromptSections.js');
   const skillPath = join(
     dirname(fileURLToPath(import.meta.url)),
     '..',

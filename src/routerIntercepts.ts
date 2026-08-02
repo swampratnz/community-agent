@@ -1,5 +1,5 @@
 import type { IncomingMessage, PlatformAdapter } from './platforms/types.js';
-import type { Tier } from './auth/rbac.js';
+import type { Tier } from './auth/tiers.js';
 import type { AgentReply } from './agent/core.js';
 import type { Router } from './router.js';
 

@@ -1,5 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// Community content registrations (prompt sections + persona roster) — the
+// composition-root contract: src/index.ts registers these in production, so
+// tests that assemble prompts register them explicitly here.
+import '../src/agent/communityPromptSections.js';
+import '../src/agent/personas.js';
 
 // systemPrompt.js loads config.ts, which validates env at import time — set a
 // dummy env before dynamically importing anything that pulls it in.

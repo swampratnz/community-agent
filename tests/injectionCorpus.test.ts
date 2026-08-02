@@ -4,6 +4,11 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import type { MemoryHit } from '../src/storage/repository.js';
 import type { CallerContext } from '../src/auth/rbac.js';
+// Community content registrations (prompt sections + persona roster) — the
+// composition-root contract: src/index.ts registers these in production, so
+// tests that assemble prompts register them explicitly here.
+import '../src/agent/communityPromptSections.js';
+import '../src/agent/personas.js';
 
 // Deterministic, model-free adversarial-corpus gate (issue #227). Drives a
 // curated corpus of hostile inputs through the REAL construction/filter

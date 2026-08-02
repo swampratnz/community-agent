@@ -1,7 +1,7 @@
 import { config } from '../config.js';
 import { getMemberRole } from '../storage/repository.js';
 import type { Platform } from '../platforms/types.js';
-import type { Tier } from './rbac.js';
+import type { Tier } from './tiers.js';
 
 /**
  * Resolve a user's tier: env-bootstrapped super admins first, then the

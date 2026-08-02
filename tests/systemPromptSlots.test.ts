@@ -1,6 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { CommunityPromptSections } from '../src/agent/promptSpine.js';
+// Community content registrations (prompt sections + persona roster) — the
+// composition-root contract: src/index.ts registers these in production, so
+// tests that assemble prompts register them explicitly here.
+import '../src/agent/communityPromptSections.js';
+import '../src/agent/personas.js';
 
 // The slot-assembler security contract (agent-base plan item 8): the system
 // prompt's security spine is base-owned, renders at its fixed positions

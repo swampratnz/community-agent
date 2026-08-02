@@ -1,5 +1,15 @@
 import { config } from './config.js';
 import { logger } from './logger.js';
+// Side-effect imports: the community content registrations (prompt sections
+// into promptSpine.ts's slot set, the persona roster into personaRegistry.ts,
+// the skills manifest into skillsManifest.ts). They live HERE, at the
+// composition root, so the base modules that consume them (systemPrompt.ts,
+// core.ts) no longer import community content themselves — each registry
+// fails closed if its module never loaded. Must stay above anything that
+// could run a turn.
+import './agent/communityPromptSections.js';
+import './agent/personas.js';
+import './agent/enabledSkills.js';
 import { installCrashHandlers } from './crashHandlers.js';
 import { configureSubscriptionAuth } from './agent/auth.js';
 import { Router } from './router.js';

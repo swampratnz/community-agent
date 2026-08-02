@@ -4,7 +4,7 @@ import type { AdapterLookup, Platform, PlatformAdapter } from '../../platforms/t
 import type { CallerContext } from '../../auth/rbac.js';
 import type { Config } from '../../config.js';
 import type { getLanguagePreference } from '../../storage/repository.js';
-import type { ToolServerTurnState } from '../tools.js';
+import type { ToolServerTurnState } from '../turnState.js';
 
 /**
  * What an MCP tool handler resolves to — derived from the SDK's own
