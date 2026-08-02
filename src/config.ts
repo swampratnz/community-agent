@@ -1,4 +1,4 @@
-import { isAbsolute } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { config as loadEnv } from 'dotenv';
 import { z } from 'zod';
 
@@ -1580,3 +1580,20 @@ export const config = {
 } as const;
 
 export type Config = typeof config;
+
+/**
+ * Absolute paths of THIS deployment's on-disk secrets: the bot's `.env` and
+ * the WhatsApp auth dir (which may be configured relative — the default
+ * `./whatsapp-auth` — so it resolves against cwd). Injected into
+ * `media/grokImage.ts`'s kernel deny-list (issue #225's sandbox): the config
+ * module owns what counts as a secret on disk, and the image-gen client just
+ * denies whatever list it is handed — it has no knowledge of this bot's
+ * secret layout. Parameterised (with production defaults) so tests can pin
+ * the resolution rules without touching real env.
+ */
+export function onDiskSecretPaths(
+  cwd: string = process.cwd(),
+  authDir: string = config.whatsapp.authDir,
+): string[] {
+  return [join(cwd, '.env'), isAbsolute(authDir) ? authDir : join(cwd, authDir)];
+}

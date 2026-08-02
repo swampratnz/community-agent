@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join } from 'node:path';
+import { join } from 'node:path';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 
@@ -80,21 +80,14 @@ export function sandboxBreached(stdout: string, token: string): boolean {
 export const SANDBOX_PROFILE = 'imagegen';
 
 /**
- * Absolute paths grok must be KERNEL-denied from reading during image gen: the
- * bot's `.env` and WhatsApp auth dir (its on-disk secrets), plus a dedicated
- * probe path the self-check uses. Derived from the bot's OWN cwd + config so
- * the deny policy travels with the deployment. `authDir` may be relative
- * (config default `./whatsapp-auth`) — resolve it against cwd.
+ * The dedicated probe path the sandbox self-check plants its token in —
+ * always appended to whatever secret-paths list the caller injects, so the
+ * self-check below always has a KNOWN deny-listed path to probe regardless
+ * of what the deployment's secrets are. Under the bot's own cwd (in
+ * ReadWritePaths). Exported so a test can pin it lands in the deny list.
  */
-export function sandboxDenyPaths(
-  cwd: string,
-  authDir: string,
-): { envPath: string; authPath: string; probePath: string } {
-  return {
-    envPath: join(cwd, '.env'),
-    authPath: isAbsolute(authDir) ? authDir : join(cwd, authDir),
-    probePath: join(cwd, '.grok-image-sandbox-probe'),
-  };
+export function sandboxProbePath(cwd: string): string {
+  return join(cwd, '.grok-image-sandbox-probe');
 }
 
 /**
@@ -139,15 +132,18 @@ ${deny}
  *     generation pays the extra grok call.
  */
 let sandboxReady: Promise<void> | null = null;
-function ensureSandboxReady(): Promise<void> {
+function ensureSandboxReady(secretPaths: readonly string[]): Promise<void> {
   if (!sandboxReady) {
     sandboxReady = (async () => {
       const home = process.env.HOME;
       if (!home) throw new Error('HOME is not set; cannot configure the grok image sandbox.');
-      const { envPath, authPath, probePath } = sandboxDenyPaths(process.cwd(), config.whatsapp.authDir);
+      // First caller's list wins for the process lifetime — same once-per-
+      // process semantics as before the list was injectable, and production
+      // has exactly one call site (generate_image in agent/tools.ts).
+      const probePath = sandboxProbePath(process.cwd());
       await writeFile(
         join(home, '.grok', 'sandbox.toml'),
-        buildSandboxToml([envPath, authPath, probePath]),
+        buildSandboxToml([...secretPaths, probePath]),
         'utf8',
       );
 
@@ -193,7 +189,8 @@ function ensureSandboxReady(): Promise<void> {
  * SECURITY POSTURE (see docs/SECURITY.md) — host-verified controls:
  *  - `--sandbox imagegen`: a custom profile (written by `ensureSandboxReady`)
  *    whose bubblewrap-enforced `deny` list KERNEL-blocks reads of the bot's
- *    secrets (`.env`, WhatsApp auth), and whose `restrict_network` blocks
+ *    secrets (the caller-injected secret-paths list — see `onDiskSecretPaths` in
+ *    `config.ts`), and whose `restrict_network` blocks
  *    child-process network (no exfil). grok REFUSES TO START if bubblewrap is
  *    missing or a deny path can't be bound, so it fails closed. Verified on the
  *    host: a read of `.env` under this profile is kernel-denied (`read_file`
@@ -222,14 +219,14 @@ function ensureSandboxReady(): Promise<void> {
  * `--output-format json`, load the image, and delete the session directory.
  * Throws on timeout, non-zero exit, or if no recognisable image is produced.
  */
-export async function generateImage(prompt: string): Promise<GeneratedImage> {
+export async function generateImage(prompt: string, secretPaths: readonly string[]): Promise<GeneratedImage> {
   const cwd = await mkdtemp(join(tmpdir(), 'grokimg-'));
   // `/imagine` is grok's image-generation skill; the prompt is its description.
   const instruction = `/imagine ${prompt}`;
   let sessionDir: string | undefined;
   try {
     // Write the deny profile + fail closed if the kernel sandbox isn't containing.
-    await ensureSandboxReady();
+    await ensureSandboxReady(secretPaths);
     const stdout = await runGrok(instruction, cwd);
     const sessionId = parseSessionId(stdout);
     if (!sessionId) throw new Error('Grok returned no session id; cannot locate the image.');
@@ -292,7 +289,7 @@ async function locateSessionImage(
  *    tool calls (e.g. shell / file write) instead of running them.
  *  - `--sandbox imagegen`: our custom profile (written by `ensureSandboxReady`),
  *    whose bubblewrap-enforced `deny` list kernel-blocks reads of the bot's
- *    secrets (`.env`, WhatsApp auth) and whose `restrict_network` blocks
+ *    secrets (the caller-injected secret-paths list) and whose `restrict_network` blocks
  *    child-process network. Verified on the host that a read of `.env` is
  *    kernel-denied while `/imagine` still generates. (The built-in `strict`
  *    profile's landlock read-restriction does NOT actually block reads here — so
