@@ -136,15 +136,18 @@ ownership rules:
   escalation comment carries the agent's final summary so an unresolved conflict
   says WHICH files couldn't be reconciled instead of the old opaque "incompatible
   or needs a workflows change". Both resolution paths (the deterministic
-  floor-only fast path and the full agent) **re-run `npm run migrate:ci` AFTER
+  floor-only fast path and the full agent) **re-run migrate AFTER
   merging main**, because the merge can bring migrations the pre-merge migrate
   didn't have — without it the DB-backed `test:security` fails on a stale schema
   (`column/relation ... does not exist`) and the resolver falsely escalated
-  `needs-human` on a non-issue. `migrate:ci` is a thin wrapper that supplies the
-  dummy `CLAUDE_CODE_OAUTH_TOKEN` config.ts requires (migrate never calls Claude,
-  so the dummy is safe); a bare `npm run migrate` throws in the agent's shell
-  where that var is unset. Keeping it a plain `npm run …` means the existing
-  `Bash(npm:*)` grant covers it, not a fragile exact-match command. One attempt
+  `needs-human` on a non-issue. Since the config split, migrate's import chain
+  validates only the storage boot slice (`src/config/boot.ts`: db+log), so a
+  bare `npm run migrate` works with just `DATABASE_URL` set — it no longer
+  exits(1) demanding `CLAUDE_CODE_OAUTH_TOKEN` (config validation exits(1)
+  rather than throwing). `migrate:ci` remains as a compatibility alias
+  (workflows still call it; its dummy token is now inert). Keeping it a plain
+  `npm run …` means the existing `Bash(npm:*)` grant covers it, not a fragile
+  exact-match command. One attempt
   per conflict: a
   failed resolution escalates `needs-human`, and the eligibility filter skips
   `needs-human` PRs so it never thrashes. Same push guardrails as autofix

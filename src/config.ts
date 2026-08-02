@@ -1,21 +1,21 @@
 import { isAbsolute, join } from 'node:path';
-import { config as loadEnv } from 'dotenv';
 import { z } from 'zod';
+import { emptyStringsToUndefined, normalizedEnv, type EnvRefinement } from './config/env.js';
+import { alertsRefinements, alertsSlice } from './config/alerts.js';
+import { behaviourRefinements, behaviourSlice } from './config/behaviour.js';
+import { dbSection, dbSlice } from './config/db.js';
+import { discordSlice } from './config/discord.js';
+import { integrationsRefinements, integrationsSlice } from './config/integrations.js';
+import { knowledgeSlice } from './config/knowledge.js';
+import { llmSlice } from './config/llm.js';
+import { logSection, logSlice } from './config/log.js';
+import { moderationSlice } from './config/moderation.js';
+import { rbacSlice } from './config/rbac.js';
+import { whatsappRefinements, whatsappSlice } from './config/whatsapp.js';
 
-loadEnv({ quiet: true });
-
-// dotenv (and shell `set -a; . ./.env`) load a blank `KEY=` line as the empty
-// string, not as absent. For every optional/coerced field that means "unset"
-// silently becomes "0" or an invalid enum value instead of the intended
-// default. Normalise blank values to undefined up front so optional env vars
-// behave the same whether they're commented out or left empty.
-export function emptyStringsToUndefined(env: NodeJS.ProcessEnv): Record<string, string | undefined> {
-  const result: Record<string, string | undefined> = {};
-  for (const [key, value] of Object.entries(env)) {
-    result[key] = value === '' ? undefined : value;
-  }
-  return result;
-}
+// The blank-env normaliser lives in config/env.ts (shared with the boot path);
+// re-exported here so existing importers keep working unchanged.
+export { emptyStringsToUndefined };
 
 /** Parse a comma-separated env var into a trimmed, non-empty string array. */
 function csv(value: string | undefined): string[] {
@@ -26,1277 +26,318 @@ function csv(value: string | undefined): string[] {
     .filter((s) => s.length > 0);
 }
 
+// The full environment schema, composed from the per-domain slice fragments
+// in src/config/ — each var's zod chain (and its doc comment) lives with its
+// domain there; this barrel only merges, cross-checks, and parses.
 const EnvSchema = z.object({
-  // LLM / Claude
-  CLAUDE_CODE_OAUTH_TOKEN: z
-    .string()
-    .min(1, 'CLAUDE_CODE_OAUTH_TOKEN is required (run `claude setup-token`)'),
-  AGENT_MODEL: z.string().default('claude-sonnet-5'),
-  // Optional per-tier override of AGENT_MODEL for member/guest turns (issue
-  // #382), mirroring AGENT_MAX_TURNS_MEMBER's role-tiering pattern applied to
-  // model choice instead of loop depth. Unconstrained string, same validation
-  // as AGENT_MODEL — no artificial model allow-list to maintain. Unset/empty
-  // = opt-out: every role resolves to AGENT_MODEL, byte-identical to today.
-  AGENT_MODEL_MEMBER: z.string().optional(),
-  // Optional override of AGENT_MODEL for the two tool-less, single-turn,
-  // fixed-format background classifier/extractor query() calls (issue #394):
-  // classifyAbuseWithLlm (src/moderation/moderator.ts) and summarizeCluster
-  // (src/context/builder.ts). Unlike AGENT_MODEL_MEMBER (keyed to caller
-  // role), these call sites have no caller role — one runs against ambient
-  // chat text, the other in an unattended weekly job — so this is a separate
-  // knob, same unconstrained-string validation, same unset/empty = opt-out
-  // posture. researchTopic (src/context/knowledgeRefresh.ts) is deliberately
-  // NOT covered: it's multi-turn, uses WebSearch, and produces free-text
-  // knowledge-base content where model strength plausibly matters.
-  AGENT_MODEL_CLASSIFIER: z.string().optional(),
-  // Optional fallback model(s) for the main agent turn (issue #738,
-  // docs/CAPABILITY-IDEAS.md §B3): passed straight through to the SDK's own
-  // Options.fallbackModel, which the SDK retries the primary model against
-  // fresh at the start of every turn (a temporary overload never permanently
-  // demotes the session). Accepts a comma-separated list per the SDK's own
-  // accepted shape — this repo does no parsing of it, just forwards the
-  // string. Same unconstrained-string, unset-means-opt-out shape as
-  // AGENT_MODEL_MEMBER/AGENT_MODEL_CLASSIFIER — no artificial model
-  // allow-list to maintain. Unset (default): buildQueryOptions omits
-  // fallbackModel entirely, byte-identical to today.
-  AGENT_MODEL_FALLBACK: z.string().optional(),
-  AGENT_MAX_TURNS: z.coerce.number().int().positive().default(12),
-  // Lower agentic-loop ceiling for member/guest turns (issue #347):
-  // MEMBER_TOOLS is a much narrower surface than admin+'s (no WebSearch, no
-  // moderation/curation tool chains), so the highest-volume, lowest-trust
-  // tier gets a tighter worst-case cost/blast-radius bound than
-  // AGENT_MAX_TURNS. admin/super_admin are unaffected — they keep
-  // AGENT_MAX_TURNS unchanged.
-  AGENT_MAX_TURNS_MEMBER: z.coerce.number().int().positive().default(6),
-  // Per-conversation rolling-hour cap on WebSearch invocations for admin+
-  // turns (issue #412) — WebSearch is the one metered, real-cost built-in
-  // Claude Code tool the bot grants (admin+ only, see buildQueryOptions), and
-  // unlike the bot's own MCP tools it was previously bounded only by the
-  // shared AGENT_MAX_TURNS loop-depth ceiling, not by a per-conversation cap
-  // like the four sibling reserve*Slot levers (create_poll/end_poll/
-  // create_thread/warn_user/announce). Generous default: a legitimate
-  // multi-step admin research turn never approaches it; the goal is a
-  // backstop against runaway/injected repetition across many turns in an
-  // hour, not throttling normal use.
-  AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR: z.coerce.number().int().positive().default(20),
-  // Query-level dedup for admin+ WebSearch (issue #589): the rate cap above
-  // bounds worst-case call VOLUME but never inspects the query, so an
-  // agentic turn can reformulate and re-fire the same search — a second
-  // metered call plus its redundant result tokens re-entering context, for
-  // no new information. Denies an exact repeat (normalized: trimmed,
-  // whitespace-collapsed, casefolded) of one of the last
-  // AGENT_WEB_SEARCH_DEDUP_HISTORY_SIZE queries within this rolling window,
-  // scoped per conversation. Low-risk defaults: short window + small history
-  // so a legitimate multi-topic research turn can't plausibly be blocked.
-  AGENT_WEB_SEARCH_DEDUP_WINDOW_SECONDS: z.coerce.number().int().positive().default(300),
-  AGENT_WEB_SEARCH_DEDUP_HISTORY_SIZE: z.coerce.number().int().positive().default(3),
-  // Embedding-similarity dedup (issue #706, the growth path #589 itself
-  // named): once the exact-match check above misses, a near-paraphrase of a
-  // recent query ("NZ contractor tax rules" vs "New Zealand tax rules for
-  // contractors") is still denied if its embed()-cosine-similarity against
-  // any windowed history entry meets this floor. Same default/validation
-  // shape as KNOWLEDGE_SHORTCUT_THRESHOLD, the precedent this mirrors.
-  AGENT_WEB_SEARCH_DEDUP_SIMILARITY_THRESHOLD: z.coerce.number().min(0).max(1).default(0.9),
-  // Wires the SDK's Agent Skills mechanism (issue #741): when on,
-  // buildQueryOptions (agent/core.ts) adds 'Skill' to the base tools array
-  // and loads the repo-bundled agent/skills/ plugin directory (the skills
-  // named in agent/enabledSkills.ts, never 'all' — six of them as of
-  // #755/#757/#758/#759; that list is the single source, so do not restate it
-  // here, which is exactly how the feature_flags label went stale), and the #635
-  // prompt-review checklist moves out of the always-on GUIDELINES
-  // system-prompt block into skills/prompt-review/SKILL.md — a lower
-  // per-turn cached-prefix token count for the overwhelming majority of
-  // turns that never invoke it. `claude-code-setup` (issue #757) is a new
-  // on-demand skill with no GUIDELINES counterpart to move, so this flag
-  // gates only its availability, not any always-on token cost. Off by
-  // default, same convention as every other opt-in flag here; while off,
-  // the prompt-review checklist stays inline in GUIDELINES exactly as
-  // before, so there is no configuration in which that capability is
-  // absent — claude-code-setup simply isn't loadable until the flag is on.
-  AGENT_SKILLS_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-
-  // Discord
-  DISCORD_BOT_TOKEN: z.string().min(1),
-  DISCORD_GUILD_ID: z.string().min(1),
-  DISCORD_ALLOWED_CHANNEL_IDS: z.string().optional(),
-  // Welcome message for new server joiners; off unless explicitly enabled.
-  DISCORD_WELCOME_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // Fallback text channel to post the welcome in if the DM fails (e.g. DMs closed).
-  DISCORD_WELCOME_CHANNEL_ID: z.string().optional(),
-  // Auto-enroll (issue #605): on every non-bot Discord join, grant standing
-  // member-tier `community_users` access instead of leaving the joiner a
-  // gated guest until an admin runs `add_member`. A genuine RBAC-posture
-  // change (see .env.example) — off by default.
-  DISCORD_AUTO_ENROLL_MEMBERS: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // Ambient archiving (issue #48): store EVERY message in allowed guild
-  // channels — including from gated-mode guests — not just messages that
-  // address the bot. A deliberate privacy-posture change; requires visible
-  // community notice BEFORE enabling (see SECURITY.md). Off by default.
-  DISCORD_ARCHIVE_ALL_MESSAGES: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // Cosmetic/community Discord roles (issue #232) — e.g. "verified builder",
-  // regional tags — the bot may assign/remove via assign_community_role /
-  // remove_community_role. Comma-separated Discord role ids, curated by a
-  // human; strictly orthogonal to the bot's own RBAC tiers (see
-  // docs/SECURITY.md). Unset/empty = feature fully off (both tools refuse
-  // every roleId). This allowlist is necessary but NOT sufficient on its
-  // own: a role's permission bitfield is re-checked live at assign time
-  // (src/platforms/discord/adapter.ts), since it can change after curation.
-  DISCORD_ASSIGNABLE_ROLES: z.string().optional(),
-  // Guild-scoped Discord slash commands (issue #744): /kb, /projects, /whois,
-  // /guidelines — zero-model-call, ephemeral reads over existing tool-handler
-  // repository functions, registered on ClientReady. Off by default, same
-  // convention as the other shortcut flags above; see docs/ARCHITECTURE.md.
-  DISCORD_SLASH_COMMANDS_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // Auto-answer mode (issue #477): operator-curated allowlist of Discord
-  // channel ids where a top-level human post that does NOT address the bot
-  // still gets an answer, contained in a thread on that post — the router's
-  // summon gate (`!addressedToBot && !isDirect`) is relaxed for exactly these
-  // channels, nothing else. Unset/empty = feature fully off, byte-identical
-  // to today (no post that isn't addressed/direct ever produces a reply).
-  // Discord-only by design (WhatsApp/Baileys auto-answer carries separate
-  // ToS/ban risk — a different proposal, see docs/SECURITY.md).
-  AUTO_ANSWER_CHANNEL_IDS: z.string().optional(),
-  // Per-channel rolling-hour cap on auto-answers (sliding window, mirroring
-  // agent/tools.ts's reserveAnnounceSlot/ANNOUNCE_RATE_LIMIT_PER_HOUR shape)
-  // — bounds the flood/cost risk of this new untrusted-input path. Unlike
-  // ANNOUNCE_RATE_LIMIT_PER_HOUR this is operator-tunable: an allowlisted
-  // channel's traffic varies far more than the admin-only announce tool's.
-  // Never applies to an addressed/mention reply in the same channel.
-  AUTO_ANSWER_RATE_LIMIT_PER_HOUR: z.coerce.number().int().positive().default(10),
-  // Auto-moderation (Discord): scan every message for bad language / abuse,
-  // warn the member, and after MODERATION_STRIKE_LIMIT active strikes assign a
-  // muted role that blocks posting until an admin clears their warnings. Off by
-  // default — enabling it is a privacy-posture change (every message is
-  // scanned) and requires the bot to have Manage Roles + Manage Channels (see
-  // SECURITY.md). Admins and super admins are never warned or muted.
-  DISCORD_MODERATION_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // Comma-separated bad-language / slur terms, matched case-insensitively as
-  // whole words on every scanned message (Stage 1, zero token cost). Unset =
-  // a small built-in default list (see src/moderation/wordlist.ts).
-  MODERATION_BAD_WORDS: z.string().optional(),
-  // Active strikes at which the member is muted (blocked from posting).
-  MODERATION_STRIKE_LIMIT: z.coerce.number().int().positive().default(3),
-  // Optional rolling window (days): only strikes newer than this count toward
-  // MODERATION_STRIKE_LIMIT. Unset = unbounded (today's behaviour — every
-  // uncleared strike counts forever, no matter its age). Never auto-unmutes:
-  // an already-muted member stays muted until an admin runs `clear_warnings`,
-  // even if their strikes age out of the window. The leave/rejoin re-mute
-  // check deliberately IGNORES this window (anti-evasion — otherwise leaving
-  // and waiting out the window would bypass clear_warnings; docs/SECURITY.md).
-  MODERATION_STRIKE_WINDOW_DAYS: z.coerce.number().int().positive().optional(),
-  // Discord role the bot creates (if missing) and assigns to block posting;
-  // per-channel overwrites deny it Send Messages. Removed when an admin clears.
-  MODERATION_MUTED_ROLE_NAME: z.string().default('Muted'),
-  // Private admin channel the bot creates (if missing) and posts warning /
-  // block alerts to; locked to admins by permission overwrites.
-  MODERATION_ADMIN_CHANNEL_NAME: z.string().default('mod-alerts'),
-  // Stage 2 (opt-in, OFF by default): escalate messages NOT caught by the
-  // wordlist to an LLM abuse classifier — one Claude call per escalated message
-  // on the shared Max pool, so enable deliberately. Stage 1 (wordlist) runs
-  // regardless whenever moderation is enabled.
-  MODERATION_LLM_ABUSE_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // Per-caller cooldown (hours) on appeal_moderation (issue #496) — a member
-  // with an active warning/mute can ask admins to double-check it, at most
-  // once per window. In-memory/best-effort for the MVP (no new table): a
-  // restart merely permits one extra appeal DM, harmless for a non-
-  // destructive notification.
-  MODERATION_APPEAL_COOLDOWN_HOURS: z.coerce.number().int().positive().default(24),
-  // Guild-wide rolling-hour cap on postAdminAlert calls from Moderator.scan()
-  // (issue #517) — every other admin-notification path already has one
-  // (ESCALATION_RATE_LIMIT_PER_HOUR, ACCESS_REQUEST_ALERT_RATE_LIMIT_PER_HOUR,
-  // AUTO_ANSWER_RATE_LIMIT_PER_HOUR, WARN_USER_RATE_LIMIT_PER_HOUR); mod-alerts
-  // was the sole exception, so a raid/flood could bury the one alert channel
-  // whose entire purpose is carrying moderation signal. Default generous
-  // enough that normal traffic never engages it. Never gates enforcement
-  // (addWarning/muteUser/warnUser/warnInChannel) — only the admin-channel
-  // notification, see src/moderation/moderator.ts.
-  MODERATION_ALERT_RATE_LIMIT_PER_HOUR: z.coerce.number().int().positive().default(30),
-  // Image generation via the host Grok Build CLI (uses its SuperGrok
-  // subscription login — no API key). OFF by default; admin/super-admin only.
-  IMAGE_GEN_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // Path to the `grok` binary (installed + logged in on the host).
-  GROK_BIN: z.string().default('grok'),
-  // Hard timeout for a single image generation (ms).
-  IMAGE_GEN_TIMEOUT_MS: z.coerce.number().int().positive().default(180_000),
-  // Max images one admin can generate per rolling calendar day (abuse cap on
-  // top of the per-user in-flight guard). 0 = unlimited.
-  IMAGE_GEN_DAILY_LIMIT: z.coerce.number().int().min(0).default(25),
-
-  // --- GitHub issue filing (suggest_issue) ---------------------------------
-  // Lets a SUPER ADMIN file an issue on the repo straight from chat. OFF by
-  // default. GITHUB_ISSUE_TOKEN must be a FINE-GRAINED PAT scoped to
-  // `Issues: write` on GITHUB_ISSUE_REPO ONLY (never the
-  // CLAUDE_CODE_OAUTH_TOKEN) — see docs/SECURITY.md + docs/DEPLOYMENT.md. This
-  // is the bot's only GitHub egress / write credential.
-  GITHUB_ISSUE_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  GITHUB_ISSUE_REPO: z
-    .string()
-    .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, 'GITHUB_ISSUE_REPO must be "owner/repo"')
-    .default('swampratnz/community-agent'),
-  GITHUB_ISSUE_TOKEN: z.string().optional(),
-  // Labels applied to every filed issue (comma-separated). Default
-  // `community-feedback` so it enters the research pipeline as evidence rather
-  // than a proposal that skips adversarial review (see docs/PIPELINE.md).
-  GITHUB_ISSUE_LABELS: z.string().default('community-feedback'),
-  // Max issues one super admin can file per rolling calendar day. 0 = unlimited.
-  GITHUB_ISSUE_DAILY_LIMIT: z.coerce.number().int().min(0).default(10),
-
-  // --- Dev-team dispatch service (super-admin dev_team_* tools) -------------
-  // Lets a SUPER ADMIN drive a remote "dev-team" build service over the
-  // tailnet straight from chat: dispatch an assess/deliver job, poll its
-  // status, and fetch the result; a background poller DMs the requester when a
-  // (~20 min) run finishes. OFF by default; super-admin only (see
-  // docs/SECURITY.md + src/agent/tools.ts). DEV_TEAM_AUTH_TOKEN is the bearer
-  // token the client sends on every request except GET /health — a credential,
-  // so it's kept out of logs and added to runtimeSecrets().
-  DEV_TEAM_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // The dev-team service base URL. Deliberately allows http:// as well as
-  // https:// — this is a tailnet-INTERNAL endpoint (e.g.
-  // http://ubuntudevagent:8738) reached only over the WireGuard-encrypted,
-  // device-authenticated Tailscale network, which already provides transport
-  // confidentiality/authentication. Do NOT add a `.startsWith('https://')`
-  // guard here the way DOCS_INGEST_INDEX_URL/STATUS_CHECK_API_URL do: those
-  // point at the public internet, this does not, and forcing https on a
-  // tailnet service with no public CA-signed cert would just break the feature.
-  DEV_TEAM_ENDPOINT_URL: z.string().url().optional(),
-  DEV_TEAM_AUTH_TOKEN: z.string().optional(),
-  // How often the completion-DM poller re-checks unnotified job watches. A
-  // finished run's requester is DMed within roughly this interval. Kept small
-  // (a fast, cheap tailnet GET), default 1 minute.
-  DEV_TEAM_WATCH_POLL_MINUTES: z.coerce.number().int().positive().max(60).default(1),
-  // Rolling calendar-day cap on dev_team_dispatch calls per super admin
-  // (0 = unlimited). Same shape as GITHUB_ISSUE_DAILY_LIMIT: dispatch costs
-  // real money and ~20 min of the shared dev-team box per call, and assess
-  // deliberately has no CONFIRM gate, so an injected instruction reaching a
-  // super-admin turn must not be able to fire it unboundedly.
-  DEV_TEAM_DAILY_LIMIT: z.coerce.number().int().min(0).default(10),
-
-  // WhatsApp
-  WHATSAPP_PROVIDER: z.enum(['baileys', 'cloud', 'disabled']).default('baileys'),
-  WHATSAPP_AUTH_DIR: z.string().default('./whatsapp-auth'),
-  WHATSAPP_ALLOWED_JIDS: z.string().optional(),
-  // Cap on consecutive Baileys reconnect attempts before the adapter STOPS
-  // retrying (issue: the 2026-07-29 405 outage). The backoff is
-  // 3s·2^(n-1) capped at 5 min, so the default 20 spends roughly an hour
-  // retrying — long enough to ride out a genuine transient outage, far short
-  // of the 73 attempts over ~6 h that the unbounded loop actually ran.
-  //
-  // Why cap at all: a 405 is WhatsApp REFUSING the connection, not a network
-  // blip, and docs/SECURITY.md treats Baileys ToS/ban exposure as a real risk
-  // — indefinitely hammering a server that is actively rejecting us is the
-  // wrong posture. Giving up is also more visible than looping forever: the
-  // adapter stays disconnected, so health.ts's existing sustained-disconnect
-  // alert keeps notifying super admins.
-  //
-  // `0` means unlimited, preserving the old behaviour as an escape hatch for
-  // an operator who would rather retry forever than restart by hand.
-  WHATSAPP_MAX_RECONNECT_ATTEMPTS: z.coerce.number().int().min(0).default(20),
-  // Welcome message posted to a group on group-participants.update (Baileys
-  // only); off unless explicitly enabled.
-  WHATSAPP_WELCOME_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // Minimum gap between welcome posts to the same group, so a burst of
-  // sequential joins can't turn the bot into a per-join spammer.
-  WHATSAPP_WELCOME_COOLDOWN_MINUTES: z.coerce.number().int().positive().default(180),
-  // Ambient archiving parity for WhatsApp groups (issue #103, extends #48):
-  // an explicit per-group opt-in allowlist — narrower than Discord's single
-  // all-channels flag, since WhatsApp groups have no "public channel"
-  // convention and each requires its own posted notice before its JID is
-  // added here (see SECURITY.md). Unset/empty = feature fully off, zero
-  // behaviour change. 1:1 DMs are never archived for gated guests regardless.
-  WHATSAPP_ARCHIVE_GROUP_JIDS: z.string().optional(),
-  // Blanket ambient archiving for EVERY group Dave is in, present and future —
-  // the WhatsApp counterpart to DISCORD_ARCHIVE_ALL_MESSAGES, and a deliberate
-  // reversal of the per-group allowlist's original rationale (issue #103,
-  // docs/SECURITY.md): that allowlist existed because adding a JID by hand WAS
-  // the operator's assertion that the group's notice had been posted. A blanket
-  // flag removes that per-group step, so the notice obligation moves entirely
-  // onto the operator — turning this on is an assertion that every group the
-  // bot is in has been told, including groups it is added to later.
-  //
-  // Off by default, and it does NOT widen what is archived beyond groups:
-  // `!msg.isDirect` still gates the write, so a guest's 1:1 DM is never stored
-  // regardless of this flag (pinned by a SECURITY: test).
-  WHATSAPP_ARCHIVE_ALL_GROUPS: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // Voice-note transcription (Baileys only). A super admin's voice message is
-  // transcribed locally (transformers.js Whisper, no external API/key — same
-  // model-download pattern as embeddings) and the transcript is actioned as if
-  // typed. OFF by default; SUPER-ADMIN ONLY is enforced in the adapter before
-  // any media download (see docs/SECURITY.md). Requires ffmpeg on the host.
-  WHATSAPP_VOICE_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  WHATSAPP_VOICE_MODEL: z.string().default('Xenova/whisper-base.en'),
-  // Voice notes longer than this are ignored WITHOUT downloading — bounds the
-  // per-note CPU/latency of local transcription.
-  WHATSAPP_VOICE_MAX_SECONDS: z.coerce.number().int().positive().default(120),
-  // Minimum tier eligible for voice transcription (issue #507). Defaults to
-  // 'super_admin' — byte-identical to the original super-admin-only gate,
-  // which stays a pure isSuperAdmin env check with no DB call. Lowering this
-  // opens on-demand local Whisper inference to a larger, less-trusted
-  // population; pair with WHATSAPP_VOICE_RATE_LIMIT_PER_HOUR (see
-  // docs/SECURITY.md §13).
-  WHATSAPP_VOICE_MIN_ROLE: z.enum(['super_admin', 'admin', 'member', 'guest']).default('super_admin'),
-  // Rolling hourly cap on transcribed voice notes per sender (0 = unlimited,
-  // matching this repo's "0/unset = off" convention). Only bites once an
-  // operator lowers WHATSAPP_VOICE_MIN_ROLE below 'super_admin' — bounds the
-  // resource-exhaustion surface a much larger population could otherwise hit.
-  WHATSAPP_VOICE_RATE_LIMIT_PER_HOUR: z.coerce.number().int().min(0).default(0),
-
-  // Discord counterpart to WHATSAPP_VOICE_* above (issue #732): transcribes a
-  // native Discord voice-message bubble (an attachment reporting
-  // `duration_secs`) via the exact same local, offline transformers.js
-  // Whisper pipeline — no new dependency, network call, or cost centre.
-  // Independently configurable from the WhatsApp knobs since a guild's risk
-  // profile (public-ish, larger membership) differs from a single WhatsApp
-  // number. OFF by default; SUPER-ADMIN ONLY at the default minRole, enforced
-  // in the adapter before any attachment is fetched (see docs/SECURITY.md).
-  DISCORD_VOICE_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  DISCORD_VOICE_MODEL: z.string().default('Xenova/whisper-base.en'),
-  // Voice messages longer than this are ignored WITHOUT fetching the
-  // attachment — bounds the per-message CPU/latency of local transcription.
-  DISCORD_VOICE_MAX_SECONDS: z.coerce.number().int().positive().default(120),
-  // Minimum tier eligible for voice transcription. Defaults to 'super_admin' —
-  // the pure isSuperAdmin env check with no DB call — mirroring
-  // WHATSAPP_VOICE_MIN_ROLE's conservative default.
-  DISCORD_VOICE_MIN_ROLE: z.enum(['super_admin', 'admin', 'member', 'guest']).default('super_admin'),
-  // Rolling hourly cap on transcribed voice messages per sender (0 =
-  // unlimited). Only bites once an operator lowers DISCORD_VOICE_MIN_ROLE
-  // below 'super_admin' — bounds the resource-exhaustion surface a larger,
-  // less-trusted guild population could otherwise hit.
-  DISCORD_VOICE_RATE_LIMIT_PER_HOUR: z.coerce.number().int().min(0).default(0),
-
-  // Discord image-attachment input (issue #783, CAPABILITY-IDEAS.md §A1): a
-  // single image attachment (screenshot, stack trace, billing page) is
-  // base64-encoded and passed to query() as an image content block alongside
-  // the turn's text, so the model can ground its answer in what was actually
-  // shown rather than whatever caption (or nothing) was typed. OFF by
-  // default. Unlike DISCORD_VOICE_* above — which only ever produces ordinary
-  // `text` that flows through the same moderation/injection handling every
-  // typed message gets — an image is a genuinely NEW untrusted-input class:
-  // text rendered inside an image is interpreted model-side and is invisible
-  // to moderator.scan and every other inbound filter, defended only by the
-  // explicit systemPrompt.ts clause (no sanitizer can inspect model-side
-  // image interpretation). So IMAGE_INPUT_MIN_ROLE defaults to 'super_admin'
-  // — a deliberate correction of CAPABILITY-IDEAS.md's own draft text
-  // ('member+'), matching the same conservative-default precedent
-  // DISCORD_VOICE_MIN_ROLE/WHATSAPP_VOICE_MIN_ROLE already established
-  // (see the comment above WHATSAPP_VOICE_MIN_ROLE).
-  IMAGE_INPUT_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  IMAGE_INPUT_MIN_ROLE: z.enum(['super_admin', 'admin', 'member', 'guest']).default('super_admin'),
-  // Comfortably inside the Anthropic API's own per-image limit; refused
-  // WITHOUT fetching, bounding per-turn download/encode cost.
-  IMAGE_INPUT_MAX_BYTES: z.coerce.number().int().positive().default(5_000_000),
-  // Rolling calendar-day cap per sender (0 = unlimited), checked BEFORE any
-  // attachment fetch — same shape and discipline as IMAGE_GEN_DAILY_LIMIT/
-  // DEV_TEAM_DAILY_LIMIT, bounding the real per-image multimodal token cost a
-  // single caller could otherwise run up.
-  IMAGE_INPUT_DAILY_LIMIT_PER_USER: z.coerce.number().int().min(0).default(10),
-
-  // WhatsApp (Baileys only) counterpart to IMAGE_INPUT_* above (issue #879):
-  // mirrors Discord's #783 image-attachment input onto BaileysAdapter,
-  // reusing the exact same untrusted-input class and residual-risk story —
-  // see the comment above IMAGE_INPUT_ENABLED for why the conservative
-  // 'super_admin' default matters here too. WHATSAPP_-prefixed and fully
-  // independent of the unprefixed Discord flags above, mirroring the
-  // existing DISCORD_VOICE_*/WHATSAPP_VOICE_* split rather than the unified
-  // IMAGE_INPUT_* shape, so an operator can enable/tune each platform's
-  // rollout separately.
-  WHATSAPP_IMAGE_INPUT_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  WHATSAPP_IMAGE_INPUT_MIN_ROLE: z.enum(['super_admin', 'admin', 'member', 'guest']).default('super_admin'),
-  // Same default as IMAGE_INPUT_MAX_BYTES — comfortably inside the Anthropic
-  // API's own per-image limit; refused WITHOUT downloading.
-  WHATSAPP_IMAGE_INPUT_MAX_BYTES: z.coerce.number().int().positive().default(5_000_000),
-  // Same default as IMAGE_INPUT_DAILY_LIMIT_PER_USER, checked BEFORE any
-  // download — bounds the real per-image multimodal token cost a single
-  // sender could otherwise run up.
-  WHATSAPP_IMAGE_INPUT_DAILY_LIMIT_PER_USER: z.coerce.number().int().min(0).default(10),
-
-  // RBAC: super admins are env-bootstrapped (never grantable via chat).
-  SUPER_ADMIN_DISCORD_IDS: z.string().optional(),
-  SUPER_ADMIN_WHATSAPP_NUMBERS: z.string().optional(),
-  // Access mode per platform: 'gated' = only registered members get replies.
-  ACCESS_MODE_DISCORD: z.enum(['gated', 'open']).default('gated'),
-  ACCESS_MODE_WHATSAPP: z.enum(['gated', 'open']).default('gated'),
-  WHATSAPP_CLOUD_PHONE_NUMBER_ID: z.string().optional(),
-  WHATSAPP_CLOUD_ACCESS_TOKEN: z.string().optional(),
-  WHATSAPP_CLOUD_VERIFY_TOKEN: z.string().optional(),
-  WHATSAPP_CLOUD_APP_SECRET: z.string().optional(),
-  WHATSAPP_CLOUD_WEBHOOK_PORT: z.coerce.number().int().positive().default(8080),
-  // First-contact welcome for the Cloud API (issue #255): the Cloud API has
-  // no group-join event to hook (WHATSAPP_WELCOME_ENABLED is Baileys-only),
-  // so this fires off a sender's own first-ever inbound message instead
-  // (detected via isKnownConversation). Off by default, matching every other
-  // opt-in welcome surface in this repo.
-  WHATSAPP_CLOUD_WELCOME_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // WhatsApp Cloud API counterpart to WHATSAPP_IMAGE_INPUT_* above (issue
-  // #891): closes the last silent-drop gap on the docs' own recommended
-  // production WhatsApp path, mirroring Baileys' #879 gate order and
-  // conservative-default rationale (see the comment above IMAGE_INPUT_ENABLED)
-  // adapted to the Cloud webhook shape. WHATSAPP_CLOUD_-prefixed and fully
-  // independent of both WHATSAPP_IMAGE_INPUT_* (Baileys) and IMAGE_INPUT_*
-  // (Discord) — an operator enables/tunes each platform's rollout separately.
-  WHATSAPP_CLOUD_IMAGE_INPUT_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  WHATSAPP_CLOUD_IMAGE_INPUT_MIN_ROLE: z
-    .enum(['super_admin', 'admin', 'member', 'guest'])
-    .default('super_admin'),
-  // Same default as WHATSAPP_IMAGE_INPUT_MAX_BYTES — comfortably inside the
-  // Anthropic API's own per-image limit. Unlike Baileys' `fileLength` (present
-  // on the message itself, pre-download), Meta's Cloud webhook `image` object
-  // carries no byte size, so this is enforced once the media-URL resolve call
-  // reports `file_size` — strictly BEFORE the separate byte-download call.
-  WHATSAPP_CLOUD_IMAGE_INPUT_MAX_BYTES: z.coerce.number().int().positive().default(5_000_000),
-  // Same default as WHATSAPP_IMAGE_INPUT_DAILY_LIMIT_PER_USER, checked before
-  // any Graph media call — bounds the real per-image multimodal token cost a
-  // single sender could otherwise run up.
-  WHATSAPP_CLOUD_IMAGE_INPUT_DAILY_LIMIT_PER_USER: z.coerce.number().int().min(0).default(10),
-
-  // WhatsApp Cloud API counterpart to WHATSAPP_VOICE_* above (issue #910):
-  // closes the last silent-drop gap on the docs' own recommended production
-  // WhatsApp path for voice, mirroring the #891 image-parity shape and this
-  // adapter's own image gate order adapted to voice. WHATSAPP_CLOUD_-prefixed
-  // and fully independent of both WHATSAPP_VOICE_* (Baileys) and
-  // DISCORD_VOICE_* — an operator enables/tunes each platform's rollout
-  // separately. OFF by default; SUPER-ADMIN ONLY at the default minRole,
-  // enforced in the adapter before any Graph API call.
-  WHATSAPP_CLOUD_VOICE_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  WHATSAPP_CLOUD_VOICE_MODEL: z.string().default('Xenova/whisper-base.en'),
-  // Unlike Baileys' `audio.seconds` (present on the message itself,
-  // pre-download), Meta's Cloud webhook `audio` object carries no duration at
-  // all — the same gap #891 hit for image `file_size`. So this is a BYTE cap,
-  // not a seconds cap, enforced once the media-URL resolve call reports
-  // `file_size` — strictly BEFORE the separate byte-download call — mirroring
-  // WHATSAPP_CLOUD_IMAGE_INPUT_MAX_BYTES exactly. A "duration from webhook"
-  // cap is unimplementable on this adapter (see issue #910's adversarial
-  // review); this replaces it with the enforceable equivalent.
-  WHATSAPP_CLOUD_VOICE_MAX_BYTES: z.coerce.number().int().positive().default(10_000_000),
-  // Minimum tier eligible for voice transcription. Defaults to 'super_admin'
-  // — the pure isSuperAdmin env check with no DB call — mirroring
-  // WHATSAPP_VOICE_MIN_ROLE/WHATSAPP_CLOUD_IMAGE_INPUT_MIN_ROLE's
-  // conservative default.
-  WHATSAPP_CLOUD_VOICE_MIN_ROLE: z.enum(['super_admin', 'admin', 'member', 'guest']).default('super_admin'),
-  // Rolling hourly cap on transcribed voice notes per sender (0 = unlimited).
-  // Only bites once an operator lowers WHATSAPP_CLOUD_VOICE_MIN_ROLE below
-  // 'super_admin' — bounds the resource-exhaustion surface a larger,
-  // less-trusted population could otherwise hit. Reserved under its own
-  // `whatsapp-cloud:${senderId}` key prefix (see reserveVoiceTranscriptionSlot)
-  // so it never shares Baileys' hourly quota.
-  WHATSAPP_CLOUD_VOICE_RATE_LIMIT_PER_HOUR: z.coerce.number().int().min(0).default(0),
-
-  // Database
-  DATABASE_URL: z.string().min(1),
-  EMBEDDING_MODEL: z.string().default('Xenova/all-MiniLM-L6-v2'),
-  EMBEDDING_DIM: z.coerce.number().int().positive().default(384),
-  // Pool-level query/connection bounds (issue #502): `pg`'s own default for
-  // all three is "wait forever," so a stuck lock wait, stalled network
-  // round-trip, or slow autovacuum on the single shared `pool` (every hot
-  // path, including /healthz's own `healthcheck()`) can wedge every
-  // connection with no ceiling. On by default (not opt-in) — these are pure
-  // safety hardening with no happy-path behaviour change, sized well above
-  // any legitimate query this codebase runs. STATEMENT_TIMEOUT is enforced
-  // server-side (a session parameter Postgres itself cancels the query on);
-  // QUERY_TIMEOUT is the client-side mirror (bounds an in-flight query even
-  // if the server-side timer never starts, e.g. a stalled network
-  // round-trip); CONNECT_TIMEOUT bounds how long a caller waits to
-  // acquire/establish a connection before failing instead of queuing
-  // forever. A timeout firing surfaces as an ordinary rejection through the
-  // exact same #52 degrade-gracefully `.catch()` paths already in
-  // storage/repository.ts — this doesn't touch that logic, it just makes
-  // sure a hang eventually becomes the rejection that logic already
-  // handles.
-  DB_STATEMENT_TIMEOUT_MS: z.coerce.number().int().positive().default(15_000),
-  DB_QUERY_TIMEOUT_MS: z.coerce.number().int().positive().default(15_000),
-  DB_CONNECT_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
-
-  // Behaviour
-  MEMORY_TOP_K: z.coerce.number().int().nonnegative().default(6),
-  // Cosine-similarity floor for automatic memory recall and remember_search
-  // (issue #474), mirroring KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD's shape but
-  // kept separate and tunable rather than hardcoded, since memory recall has
-  // no eval fixture yet to derive a production-safe always-on default from.
-  // Default 0 = no floor (byte-identical to today's behaviour), matching this
-  // repo's convention for opt-in knobs (e.g. KNOWLEDGE_CANDIDATE_STALE_DAYS).
-  MEMORY_RELEVANCE_THRESHOLD: z.coerce.number().min(0).max(1).default(0),
-  // Max agent replies per user per rolling 24h (0 = unlimited).
-  DAILY_REPLY_LIMIT_PER_USER: z.coerce.number().int().nonnegative().default(50),
-  // Session hygiene: start a fresh Claude session past either cap.
-  SESSION_MAX_TURNS: z.coerce.number().int().positive().default(30),
-  SESSION_MAX_AGE_HOURS: z.coerce.number().positive().default(24),
-  // Fresh-session continuity: when a turn can't resume a prior session
-  // (rollover past either cap above, a cleared session, or a failed resume),
-  // backfill this many of the conversation's most recent messages into the
-  // first turn as quarantined reference context — otherwise the bot goes
-  // amnesiac mid-conversation, with only semantic recall (keyed on the
-  // CURRENT message text) to reconstruct what was just said. 0 = disabled.
-  SESSION_ROLLOVER_TAIL_COUNT: z.coerce.number().int().nonnegative().default(10),
-  // Wall-clock ceiling on a single Agent SDK `query()` turn (issue #826): a
-  // hung iteration (network partition, wedged CLI subprocess) never rejects,
-  // so nothing but a race against this timer unblocks it — and because turns
-  // are serialised per conversation (router.ts's enqueue()), an unbounded
-  // hang here wedges that conversation's entire chain, not just one reply.
-  // Same "a .catch() only fires on rejection" gap #502 closed for the DB pool
-  // (DB_QUERY_TIMEOUT_MS). Default must stay strictly greater than
-  // IMAGE_GEN_TIMEOUT_MS (180_000): image generation is a tool call that runs
-  // *inside* this turn loop, so an outer ceiling at or below the inner tool's
-  // own timeout would kill a legitimately in-flight image-gen turn first.
-  AGENT_TURN_TIMEOUT_MS: z.coerce.number().int().positive().default(300_000),
-  // Ceiling on the member's own message text reaching the paid model call
-  // (runAgentTurn's local `userText` copy only — never `msg.text` itself, so
-  // archiving/classification/echo still see the full original). 0 = disabled
-  // (byte-identical to today's unbounded behaviour). 8,000 chars (~2,000
-  // tokens) is generous for a real snippet while bounding a pasted log/code
-  // dump, which otherwise inflates one turn's cost and, via session resume,
-  // the cached prefix every subsequent turn re-reads.
-  MAX_INCOMING_MESSAGE_CHARS: z.coerce.number().int().nonnegative().default(8_000),
-  // Age-based purge of raw `interactions` content. Unset/0 = disabled (no
-  // behaviour change on upgrade). knowledge/admin_audit/sessions are never
-  // touched by this — see storage/repository.ts:purgeOldInteractions.
-  INTERACTION_RETENTION_DAYS: z.coerce.number().int().nonnegative().default(0),
-  // Age-based purge of `server_roster` rows for members who have LEFT
-  // (left_at IS NOT NULL). Unset/0 = disabled (no behaviour change on
-  // upgrade). Currently-present members (left_at IS NULL) are never touched
-  // regardless of this setting — see storage/repository.ts:purgeDepartedRoster.
-  ROSTER_DEPARTED_RETENTION_DAYS: z.coerce.number().int().nonnegative().default(0),
-  // Age-based purge of PENDING `access_requests` rows that have gone quiet
-  // (issue #939). Unset/0 = disabled (no behaviour change on upgrade). Clock
-  // runs off last_requested_at, so a guest who is still asking is never
-  // purged; an approved requester's row is already deleted on add_member.
-  // See storage/repository.ts:purgeOldAccessRequests.
-  ACCESS_REQUEST_RETENTION_DAYS: z.coerce.number().int().nonnegative().default(0),
-  // Sustained platform disconnect -> one debounced super-admin DM alert.
-  HEALTH_ALERT_AFTER_MINUTES: z.coerce.number().positive().default(5),
-  // Proactive super-admin alert when rolling-24h outbound reply count
-  // reaches this threshold — a coarse proxy for shared Max-pool draw (short
-  // vs long replies draw differently; tune to your traffic). Unset/0 =
-  // disabled (no timer, no behaviour change on upgrade).
-  USAGE_ALERT_DAILY_REPLIES: z.coerce.number().int().nonnegative().default(0),
-  // Debounced super-admin DM when an agent turn fails on an upstream Claude
-  // usage-limit/overload condition (issue #131) — distinct from usage-alert's
-  // proactive threshold on successful replies. Off by default, consistent
-  // with this repo's convention for new proactive DMs.
-  UPSTREAM_LIMIT_ALERT_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // Proactive super-admin alert (issue #472) when listAdminRoster() shows one
-  // or more current admins have left the server/group but still hold
-  // admin-tier privilege via DM — closes #428's own named deferred growth
-  // path from passive (list_admins, pull) to active (DM, push). Off by
-  // default, consistent with this repo's convention for new proactive DMs.
-  DEPARTED_ADMIN_ALERT_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // Real-time admin alert (issue #480) fired the moment a gated guest's
-  // FIRST-EVER addressed message creates a fresh `access_requests` row — the
-  // discrete-event complement to the weekly digest's passive
-  // `pendingAccessRequests` count, same "push what was pullable" precedent as
-  // `notifyReportFiled` (#90). Router-only side effect off
-  // `recordAccessRequest`'s insert-vs-update `RETURNING` value; never routed
-  // through the agent/model loop. Off by default, consistent with this repo's
-  // convention for new proactive DMs.
-  ACCESS_REQUEST_ALERT_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // Weekly super-admin cost-trend DM (issue #578): compares this week's
-  // usageStats(7) total against last week's persisted total and DMs the
-  // signed delta. Complementary to USAGE_ALERT_DAILY_REPLIES's reactive
-  // volume latch — this always reports the trend on a weekly cadence. Off by
-  // default, consistent with this repo's convention for new proactive DMs.
-  USAGE_COST_DIGEST_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // Proactive super-admin DM when a background job's (moderation_llm/
-  // context_builder/knowledge_refresh) trailing-24h cost spikes far above its
-  // own trailing 7-day daily average (issue #610) — the one aggregate in
-  // usage_stats' backgroundCostByJob breakdown with zero proactive push. Off
-  // by default, consistent with this repo's convention for new proactive DMs.
-  BACKGROUND_JOB_COST_ALERT_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // A job alerts only when BOTH hold: today's cost exceeds multiplier ×
-  // (trailing 7-day total ÷ 7) for that job, AND exceeds the absolute floor
-  // below. The floor stops a job going from $0.01 to $0.05 (technically 5×)
-  // from paging anyone over noise.
-  BACKGROUND_JOB_COST_ALERT_MULTIPLIER: z.coerce.number().positive().default(3),
-  BACKGROUND_JOB_COST_ALERT_MIN_USD: z.coerce.number().positive().default(1),
-  // Proactive super-admin alert (issue #568) pushing engagement_stats' (issue
-  // #419) guild-wide engagement percentage on a weekly cadence — closes the
-  // same pull-only gap #472/#480 closed for other super-admin-only signals.
-  // Off by default, consistent with this repo's convention for new proactive
-  // DMs.
-  ENGAGEMENT_ALERT_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // Proactive super-admin alert (issue #785) pushing adminActivitySummary()'
-  // (issue #488) per-actor admin_audit rollup, aggregated into a weekly
-  // actions-per-admin rate — closes the same pull-only gap #472/#568 closed
-  // for other super-admin-only signals, moving VISION's "Admin leverage"
-  // north star from pull (the on-demand admin_activity tool) to push. Off
-  // by default, consistent with this repo's convention for new proactive
-  // DMs.
-  ADMIN_LEVERAGE_ALERT_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // Real-time admin nudge (issue #650) fired the moment a knowledge-gap
-  // cluster (recordKnowledgeGap + recentKnowledgeGapClusters, issue #208)
-  // crosses KNOWLEDGE_GAP_ALERT_THRESHOLD unresolved, not-yet-alerted rows —
-  // the "asked N times, never confidently answered → worth a FAQ?" signal
-  // promoted from the weekly digest's bare count to an instant, rate-limited
-  // notifyAdmins DM, same promote-to-instant-DM precedent as #479/#480. Off
-  // by default, consistent with this repo's convention for new proactive DMs.
-  KNOWLEDGE_GAP_ALERT_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // Cluster size (unresolved, unalerted rows) that triggers the alert.
-  KNOWLEDGE_GAP_ALERT_THRESHOLD: z.coerce.number().int().positive().default(3),
-  // Guild-wide rolling-hour cap on knowledge-gap-cluster alerts, same
-  // sliding-window shape as ACCESS_REQUEST_ALERT_RATE_LIMIT_PER_HOUR — bounds
-  // worst-case admin DM volume from an organic or adversarial query burst.
-  // Once exhausted within the trailing hour, a further threshold crossing is
-  // still recorded (and still counted by the weekly digest) but does not
-  // notify; the row is left unalerted so it can retry once the window frees.
-  KNOWLEDGE_GAP_ALERT_RATE_LIMIT_PER_HOUR: z.coerce.number().int().positive().default(5),
-  // Real-time admin nudge (issue #701) fired the moment a served
-  // knowledge_search hit or knowledge shortcut is stale (isKnowledgeStale)
-  // and unalerted since its last edit (stale_alerted_at IS NULL OR
-  // stale_alerted_at < updated_at) — the per-entry counterpart to the weekly
-  // digest's bare staleKnowledgeCount, promoted to an instant, rate-limited
-  // notifyAdmins DM, identical mechanism shape to KNOWLEDGE_GAP_ALERT_ENABLED
-  // above (#650). Off by default, consistent with this repo's convention for
-  // new proactive DMs.
-  KNOWLEDGE_STALE_ALERT_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // Guild-wide rolling-hour cap on stale-knowledge alerts, same sliding-window
-  // shape as KNOWLEDGE_GAP_ALERT_RATE_LIMIT_PER_HOUR. Unlike that sibling cap,
-  // once exhausted within the trailing hour the served row is still
-  // stale_alerted_at-stamped (see markStaleKnowledgeAlerted's doc comment) so
-  // a rate-limited entry does not retry-storm on every subsequent serve.
-  KNOWLEDGE_STALE_ALERT_RATE_LIMIT_PER_HOUR: z.coerce.number().int().positive().default(5),
-  // Real-time admin nudge (issue #887) for the third and last signal #650
-  // explicitly deferred: a plain "members keep asking near-identical things"
-  // cluster (recentQuestionClusters, already consumed by the weekly digest
-  // and the on-demand question_digest tool) crossing
-  // REPEAT_QUESTION_ALERT_THRESHOLD in a single conversation, promoted from
-  // weekly-digest-only to an instant, rate-limited notifyAdmins DM — same
-  // promote-to-instant-DM shape as KNOWLEDGE_GAP_ALERT_ENABLED (#650) and
-  // KNOWLEDGE_STALE_ALERT_ENABLED (#701). Off by default, consistent with
-  // this repo's convention for new proactive DMs.
-  REPEAT_QUESTION_ALERT_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // Cluster size (matching recentQuestionClusters' own count) that triggers
-  // the alert. Same default as KNOWLEDGE_GAP_ALERT_THRESHOLD.
-  REPEAT_QUESTION_ALERT_THRESHOLD: z.coerce.number().int().positive().default(3),
-  // Guild-wide rolling-hour cap on repeat-question-cluster alerts, identical
-  // sliding-window shape to KNOWLEDGE_GAP_ALERT_RATE_LIMIT_PER_HOUR. Once
-  // exhausted within the trailing hour, a further crossed cluster still does
-  // not notify, but the underlying weekly-digest/question_digest signal is
-  // unaffected — this cap only ever drops the extra DM, never data.
-  REPEAT_QUESTION_ALERT_RATE_LIMIT_PER_HOUR: z.coerce.number().int().positive().default(5),
-  // Per-conversation cooldown, in minutes, between recentQuestionClusters
-  // checks (issue #887). Unlike KNOWLEDGE_GAP_ALERT/KNOWLEDGE_STALE_ALERT,
-  // whose triggering events are cheap pre-bounded inserts/flags,
-  // recentQuestionClusters scans and clusters every addressed-to-bot inbound
-  // message in its window — running it on every turn would scale query
-  // volume with raw message volume. This cooldown also doubles as the
-  // anti-repeat mechanism (no persisted per-cluster alerted_at, since
-  // `interactions` has no stable cluster identity to stamp): once a
-  // conversation has been checked, whether or not it alerted, it can't be
-  // checked again until the cooldown elapses.
-  REPEAT_QUESTION_ALERT_COOLDOWN_MINUTES: z.coerce.number().int().positive().default(15),
-  // Weekly member-facing digest post (issue #645): widens the audience of
-  // already-admin-visible k-floored `context_digests` topics + curated
-  // "new in the knowledge base" titles to a Discord channel, so a member who
-  // missed the week can see what was discussed without asking. Off by
-  // default — no timer, no send, byte-identical to today when unset (same
-  // convention as every other proactive push above). MEMBER_DIGEST_CHANNEL_ID
-  // is config-set only — never model- or message-supplied — and is the
-  // Discord channel the weekly post targets.
-  MEMBER_DIGEST_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  MEMBER_DIGEST_CHANNEL_ID: z.string().optional(),
-  // Independent k-anonymity floor for the member digest (PR #651 review):
-  // this surface is a public Discord channel, more exposed than either
-  // existing `context_digests` consumer (admin-only `list_context_digests`,
-  // and the export's own CONTEXT_EXPORT_MIN_DISTINCT_USERS), so it gets its
-  // own floor rather than inheriting whichever value CONTEXT_BUILDER_MIN_
-  // DISTINCT_USERS happens to be configured with. Same >=2, default 3 as
-  // the export's floor.
-  MEMBER_DIGEST_MIN_DISTINCT_USERS: z.coerce.number().int().min(2).default(3),
-  // Opt-in "can someone help with X" member-to-member handoff (issue #729):
-  // set_helper_availability/find_helper, the active-side consumer of #634's
-  // member_interests/who_is_into. Off by default — both tools are dropped
-  // from allowedTools entirely (never merely refused), byte-identical to
-  // today for any deployment that doesn't set this, same convention as every
-  // other tool-gating flag (ToolDef.featureFlag, filtered in agent/core.ts).
-  FIND_HELPER_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // Guild-wide rolling-hour cap on access-request alerts (issue #480), same
-  // sliding-window shape as ANNOUNCE_RATE_LIMIT_PER_HOUR/
-  // AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR — bounds worst-case admin DM volume
-  // under a raid or a channel getting linked somewhere. Once exhausted within
-  // the trailing hour, further first-time requests are still recorded in
-  // `access_requests` (visible via list_access_requests/the digest) but do
-  // not notify; a fresh hour resumes notifying.
-  ACCESS_REQUEST_ALERT_RATE_LIMIT_PER_HOUR: z.coerce.number().int().positive().default(10),
-  // Offline context builder (issue #51): distills stored interactions into
-  // durable context_digests on a ~daily cadence. Off by default; when on,
-  // each run makes AT MOST CONTEXT_BUILDER_MAX_SUMMARIES short tool-less
-  // model calls (hard cap enforced in code) and is skipped entirely while
-  // the usage-alert threshold is breached.
-  CONTEXT_BUILDER_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  CONTEXT_BUILDER_WINDOW_DAYS: z.coerce.number().int().positive().max(30).default(1),
-  CONTEXT_BUILDER_MAX_SUMMARIES: z.coerce.number().int().positive().max(20).default(5),
-  // k-floor: a cluster needs at least this many distinct authors to be
-  // digested, so a digest can't become a one-person profile. Never below 2.
-  CONTEXT_BUILDER_MIN_DISTINCT_USERS: z.coerce.number().int().min(2).default(3),
-  // Knowledge-candidate generation (issue #102, the deferred half of #51):
-  // rides the existing builder run's per-digest summarisation call — no new
-  // job, no extra model call, so the documented CONTEXT_BUILDER_MAX_SUMMARIES
-  // worst case is unchanged with this on. Off by default, and off whenever
-  // the builder itself is off. Candidates are review-gated (admin-only,
-  // accept_knowledge_candidate) — this flag only controls whether they're
-  // ever drafted.
-  CONTEXT_CANDIDATES_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // Close the answered-question -> knowledge-base loop (issue #726,
-  // CAPABILITY-IDEAS.md §D2): when a member rates a helpful:true, UNGROUNDED
-  // reply (no meta->>'knowledgeEntryId'), rate_answer drafts a
-  // knowledge_candidates row from the preceding question/answer via the SAME
-  // createKnowledgeTip/candidateTopicAlreadyReviewed/findKnowledgeCoveringTopic
-  // path suggest_knowledge (#633) uses — no new table, rate-limit constant, or
-  // model call. Off by default, same convention as every other opt-in
-  // behavioural flag above; disabled, rate_answer is byte-identical to today.
-  KNOWLEDGE_ANSWER_CANDIDATE_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // Daily knowledge refresh: a scheduled job web-researches a small fixed set
-  // of fast-moving Claude/Anthropic topics and writes the briefings straight
-  // into the knowledge base (one upserted entry per topic, clearly marked
-  // auto-generated). OFF by default. NOTE: unlike knowledge candidates, this
-  // path has NO human review gate — auto entries are labelled as machine-
-  // researched/unverified precisely because of that (see docs/SECURITY.md).
-  KNOWLEDGE_REFRESH_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // Max agentic turns for one topic's web-research call (bounds cost).
-  KNOWLEDGE_REFRESH_MAX_TURNS: z.coerce.number().int().positive().max(30).default(10),
-  // Docs ingest: backfill Anthropic's official docs into the knowledge base as
-  // RAG chunks (provenance 'docs'), refreshed ~weekly with a content diff so
-  // only changed sections re-embed. OFF by default. Reads ONE fixed official
-  // source over HTTPS (the llms.txt index → per-page .md); no model in the loop.
-  DOCS_INGEST_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // The official machine-readable docs index (llms.txt). Fixed default; override
-  // only if Anthropic moves it.
-  DOCS_INGEST_INDEX_URL: z
-    .string()
-    .url()
-    .startsWith('https://', 'DOCS_INGEST_INDEX_URL must be https')
-    .default('https://platform.claude.com/llms.txt'),
-  // Safety caps so a bloated index can't run away (pages fetched, chunks written).
-  DOCS_INGEST_MAX_PAGES: z.coerce.number().int().positive().max(5000).default(2500),
-  DOCS_INGEST_MAX_CHUNKS: z.coerce.number().int().positive().max(60000).default(20000),
-  // Concurrent page fetches — kept small to be polite to the docs host.
-  DOCS_INGEST_CONCURRENCY: z.coerce.number().int().positive().max(16).default(5),
-  // Doc-path prefixes to EXCLUDE from ingest (comma-separated, matched against
-  // the page path, e.g. "api/go"). Default drops the auto-generated per-language
-  // SDK/CLI reference — ~90% of the corpus by volume and near-useless for a chat
-  // bot — keeping the conceptual guides + core API. Set empty to ingest all.
-  DOCS_INGEST_EXCLUDE_PATHS: z
-    .string()
-    .default('api/go,api/csharp,api/java,api/python,api/typescript,api/ruby,api/php,api/cli,api/compliance'),
-  // Dead-URL skipping (issue #611, the growth path #613 deferred): after this
-  // many CONSECUTIVE runs in which a page URL fails to fetch, it is reported
-  // once and then skipped instead of being re-fetched every run — the upstream
-  // index habitually lists a tranche of pages that don't exist. 0 disables the
-  // skipping entirely (every listed page is fetched every run, as before).
-  // Default 3 is deliberately conservative: the job runs ~weekly, so a URL must
-  // fail for ~3 weeks before it is skipped at all.
-  DOCS_INGEST_DEAD_URL_RUNS: z.coerce.number().int().min(0).max(100).default(3),
-  // How long a skipped (dead) URL stays skipped before ONE re-probe. This is
-  // what makes the skip self-healing: if upstream restores the page, the next
-  // re-probe succeeds, its failure row is deleted, and it returns to the normal
-  // fetch set with no operator action. Never 0 — a 0-day cooldown would re-probe
-  // every run and defeat the point.
-  DOCS_INGEST_DEAD_URL_RECHECK_DAYS: z.coerce.number().int().positive().max(365).default(30),
-  // Release/deprecation watcher (issue #733): surface docsIngest's own
-  // weekly diff of Anthropic release-notes/model-deprecation pages in the
-  // member digest, instead of discarding the "which page changed" signal.
-  // No new fetch — purely a read over rows docsIngest already wrote.
-  // Inert (permanently-empty section) unless DOCS_INGEST_ENABLED is also on.
-  RELEASE_WATCH_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // Doc-path prefixes to INCLUDE (comma-separated, matched against the same
-  // page path docsIngest computes). Default is the exact release-notes/
-  // model-whats-new/model-deprecations prefixes confirmed live against
-  // Anthropic's docs index at proposal time; adjustable if Anthropic
-  // restructures the docs site.
-  RELEASE_WATCH_DOC_PATHS: z
-    .string()
-    .default('release-notes,about-claude/models/whats-new,about-claude/model-deprecations'),
-  // Knowledge link-rot check (issue #448): a weekly background job HEAD-checks
-  // every knowledge entry's sourceUrl and flags dead citations for admin
-  // review (list_knowledge sourceUnreachable filter). OFF by default, matching
-  // every other opt-in background poll in this repo. No model in the loop —
-  // see src/context/linkCheck.ts for the SSRF-hardened fetch/classify logic.
-  KNOWLEDGE_LINK_CHECK_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // Anthropic status check (issue #206): poll Anthropic's own public status
-  // page on a background timer and expose the cached result via the
-  // member-tier check_status tool, so "is this me or an Anthropic incident"
-  // gets an authoritative answer without widening WebSearch (admin+ only)
-  // to every member. OFF by default, matching every other opt-in background
-  // poll in this repo. No model in the fetch/parse loop.
-  STATUS_CHECK_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // Anthropic's official Statuspage summary endpoint. Fixed default; override
-  // only if Anthropic moves it. Same https-only enforcement as
-  // DOCS_INGEST_INDEX_URL — this is a config default, never user/chat-supplied.
-  STATUS_CHECK_API_URL: z
-    .string()
-    .url()
-    .startsWith('https://', 'STATUS_CHECK_API_URL must be https')
-    .default('https://status.claude.com/api/v2/summary.json'),
-  // How often to re-poll. A member's turn only ever reads the in-memory
-  // cache — it never triggers a live fetch.
-  STATUS_CHECK_POLL_MINUTES: z.coerce.number().int().positive().max(1440).default(5),
-  // Anonymised community-context export (issue #53): render digests into a
-  // file the research loop can read. Off by default. The export applies its
-  // own k-floor and PII scrub — see src/context/export.ts and SECURITY.md for
-  // the egress boundary.
-  //
-  // The default path is untracked/git-ignored (issue #108): the *committed*
-  // docs/COMMUNITY-CONTEXT.md is a human artefact (#53), refreshed only by a
-  // human running `npm run export:context` — pointed at the docs file if they
-  // want to overwrite it — and reviewing + committing the result. If this
-  // defaulted to a tracked path, the in-process exporter would dirty a
-  // tracked file on the server after every producing builder run, and
-  // scripts/redeploy.sh's clean-tree check would then permanently abort the
-  // nightly redeploy.
-  CONTEXT_EXPORT_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  CONTEXT_EXPORT_WINDOW_DAYS: z.coerce.number().int().positive().max(90).default(30),
-  CONTEXT_EXPORT_MIN_DISTINCT_USERS: z.coerce.number().int().min(2).default(3),
-  CONTEXT_EXPORT_PATH: z.string().default('var/community-context.md'),
-  // Weekly proactive per-admin DM digest of recurring-question clusters in
-  // their own scoped conversations (issue #97) — a push companion to the
-  // on-demand `question_digest` tool. Off by default (no timer, no extra
-  // queries). Recipients are `community_users` admins only; super admins keep
-  // the on-demand tool instead (see storage/repository.ts:listAdmins).
-  ADMIN_DIGEST_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // Week-over-week trend suffix on every digest count (issue #497). Off by
-  // default: when unset, `getLastDigestCounts` is never called and no digest
-  // line ever gains a trend suffix — output stays byte-identical to today.
-  // The `last_counts` snapshot itself is still written every run regardless
-  // of this flag (see adminDigest.ts), so flipping it on is retroactively
-  // useful from the very next weekly tick.
-  ADMIN_DIGEST_TRENDS_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // Fifth admin-digest signal (issue #199): nudge admins toward knowledge
-  // entries neither edited nor retrieved in this many days. Unset/0 =
-  // disabled (no extra query, no behaviour change on upgrade), matching the
-  // "0 disabled, else a sane minimum" convention of
-  // INTERACTION_RETENTION_DAYS/ROSTER_DEPARTED_RETENTION_DAYS above.
-  KNOWLEDGE_STALE_DAYS: z.coerce.number().int().nonnegative().default(0),
-  // Absolute content-age ceiling (issue #380): fires regardless of retrieval
-  // activity, closing the gap where a popular entry's `last_retrieved_at`
-  // resets KNOWLEDGE_STALE_DAYS's clock forever. Unset/0 = disabled, same
-  // convention as KNOWLEDGE_STALE_DAYS. OR-ed into the exact same shared
-  // `isKnowledgeStale` predicate — not a second staleness concept.
-  KNOWLEDGE_STALE_MAX_AGE_DAYS: z.coerce.number().int().nonnegative().default(0),
-  // Review-queue age signal for `knowledge_candidates` (issue #398) — a
-  // separate concern from KNOWLEDGE_STALE_DAYS/KNOWLEDGE_STALE_MAX_AGE_DAYS
-  // above (content-freshness of *accepted* knowledge): this flags a
-  // never-reviewed *pending* candidate, whose `hasQueuedCandidateForTopic`
-  // dedup guard otherwise locks its topic out of re-drafting forever with no
-  // signal. Own knob, own (lower) floor — candidates should turn over in
-  // days/weeks, not the months KNOWLEDGE_STALE_DAYS tolerates. Unset/0 =
-  // disabled, same "0 disabled, else a sane minimum" convention.
-  KNOWLEDGE_CANDIDATE_STALE_DAYS: z.coerce.number().int().nonnegative().default(0),
-  // Skip the agent turn entirely for pure acknowledgements ("thanks", "👍")
-  // with no other content — sends one static reply instead. Off by default;
-  // an operator opts in after confirming the canned reply tone fits their
-  // community. See src/ackClassifier.ts.
-  ACK_SHORTCUT_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // Skip the agent turn entirely when a message near-exactly matches an
-  // existing knowledge entry — replies with that entry's content directly
-  // instead of spawning a query() turn. Off by default; see src/router.ts
-  // and docs/ARCHITECTURE.md "Known cost/latency characteristic".
-  KNOWLEDGE_SHORTCUT_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // Cosine-similarity floor for the knowledge shortcut above — deliberately
-  // much stricter than KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD (0.35, the
-  // `knowledge_search` tool's "worth mentioning" floor): this bar gates an
-  // unsupervised full-turn skip, not a suggestion the model can hedge on, so
-  // it must only fire on a near-exact match. Tuned against
-  // tests/fixtures/knowledgeEval.json's negativeQueries.
-  KNOWLEDGE_SHORTCUT_THRESHOLD: z.coerce.number().min(0).max(1).default(0.9),
-  // Member-facing low-rated-answer caveat (issue #337): when serving a
-  // knowledge entry via the member knowledge shortcut, append a fixed
-  // caveat clause if the entry's global unhelpfulCount is at/above this
-  // threshold. Unset/0 = disabled (no extra query, byte-identical output),
-  // matching the KNOWLEDGE_STALE_DAYS opt-in convention above. When set, it
-  // must be >= 2 — refined below — so a single rater can never trigger it.
-  KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL: z.coerce.number().int().nonnegative().default(0),
-  // Cap on how many titles `list_knowledge_topics` (issue #437) returns in
-  // one reply — a member-facing browse tool, unlike KNOWLEDGE_STALE_DAYS'
-  // opt-in-at-0 convention this is always-on with a sane default, matching
-  // EVENTS_LIST_LIMIT's "cap KB growth never produces an unbounded reply"
-  // reasoning but env-configurable per the approved proposal.
-  KNOWLEDGE_TOPICS_LIST_LIMIT: z.coerce.number().int().positive().default(50),
-  // Extend the knowledge shortcut above to gated guests (issue #165),
-  // restricted to `scope='global'` entries only, before the static "ask an
-  // admin" pointer. Reuses KNOWLEDGE_SHORTCUT_THRESHOLD — no separate knob to
-  // tune. Off by default: with it unset, the gated-guest path is
-  // byte-for-byte unchanged. See src/router.ts.
-  GUEST_KNOWLEDGE_SHORTCUT_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // Skip the agent turn entirely when the SAME caller (platform + conversation
-  // + user) sends the exact same whitespace-normalized text twice within a
-  // short window (double-tap/impatient-resend/client retry) — replies with
-  // the cached answer from the first turn instead of spawning a second
-  // query() turn. Off by default; see src/router.ts (issue #259).
-  REPEAT_QUESTION_SHORTCUT_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // Sibling to REPEAT_QUESTION_SHORTCUT_ENABLED (issue #306): skip the agent
-  // turn entirely when the SAME caller sends the exact same whitespace-
-  // normalized text twice within REPEAT_SHORTCUT_WINDOW_MS of a turn that
-  // failed on `error_max_turns` — replies with the same canned max-turns
-  // message instead of spending a second full (guaranteed-to-repeat)
-  // AGENT_MAX_TURNS budget. Deliberately a separate flag/map from the
-  // success-only #259 shortcut. Off by default; see src/router.ts.
-  REPEAT_MAX_TURNS_SHORTCUT_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // WhatsApp-only, zero-model-call text commands (issue #859) — the WhatsApp
-  // counterpart to Discord's slash commands (DISCORD_SLASH_COMMANDS_ENABLED
-  // above), re-keyed for a platform with no native command UI: `!whois
-  // <query>`, `!projects [query]`, `!guidelines`, `!digest`. `!kb` is
-  // deliberately not added — KNOWLEDGE_SHORTCUT_ENABLED already gives
-  // WhatsApp an equivalent. Off by default, same convention as the other
-  // shortcut flags above; checked in Router.handle() alongside them. See
-  // src/router.ts and docs/ARCHITECTURE.md.
-  WHATSAPP_TEXT_COMMANDS_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // Real-time admin escalation after a max-turns failure (issue #479): when a
-  // turn ends with `reply.maxTurnsExceeded === true`, append a "reply yes to
-  // flag this for a community admin" offer to the fixed MAX_TURNS_REPLY/_MI
-  // fallback and register a matching pending entry (same caller-key/TTL shape
-  // as `lastMaxTurnsFailure` above). A confirmed "yes"/"y"/"āe" within the
-  // window notifies every `listAdmins()` row via `notifyAdmins` — entirely
-  // router-level, never routed through the model. Off by default; see
-  // src/router.ts.
-  ESCALATION_TO_ADMIN_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // Push-side complement to #444's pull-only `my_data` budget figure (issue
-  // #511): once a non-super-admin caller's remaining daily replies fall to
-  // DAILY_REPLY_BUDGET_WARN_REMAINING or fewer, append one fixed line to the
-  // real reply naming the remaining count, debounced to once per rolling 24h
-  // (mirrors budgetNotified's window). Off by default: with it unset, the
-  // reply is byte-identical to today's for every used/limit combination. See
-  // src/router.ts.
-  DAILY_REPLY_BUDGET_WARN_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // How many replies remain (inclusive) before the warning above fires.
-  // Always a positive count — unlike the "0 disabled" knobs above, disabling
-  // this feature is DAILY_REPLY_BUDGET_WARN_ENABLED=false, not a 0 here.
-  DAILY_REPLY_BUDGET_WARN_REMAINING: z.coerce.number().int().positive().default(5),
-  // Auto-retract the bot's own reply when the member deletes the message it
-  // answered (issue #575) — a native platform delete/revoke event, server-
-  // side plumbing only, never model-reachable. Off by default: with it
-  // unset, deleting a message the bot replied to leaves the reply untouched
-  // and calls no adapter deletion method (byte-identical to today). See
-  // src/replyRetraction.ts, src/router.ts, and the Discord/WhatsApp Baileys
-  // adapters' delete/revoke listeners.
-  AUTO_RETRACT_REPLY_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
-  // How long shutdown() waits for in-flight per-conversation turns to settle
-  // before proceeding to adapter.stop()/closeDb() (issue #210). Comfortably
-  // inside systemd's default 90s TimeoutStopSec for community-agent.service
-  // (see docs/DEPLOYMENT.md), so a normal restart never needs tuning this.
-  SHUTDOWN_DRAIN_TIMEOUT_MS: z.coerce.number().int().positive().default(20_000),
-  // /healthz + /readyz endpoints (native http, no auth). Unset = disabled.
-  HEALTH_PORT: z.coerce.number().int().positive().optional(),
-  // Interface the health server binds to. Defaults to loopback so the
-  // unauthenticated endpoint is NOT reachable off-box unless the operator
-  // deliberately fronts it with a reverse proxy or sets 0.0.0.0 (issue #220).
-  HEALTH_HOST: z.string().min(1).default('127.0.0.1'),
-  LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'silent']).default('info'),
-  LOG_PRETTY: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true'),
+  ...llmSlice,
+  ...discordSlice,
+  ...moderationSlice,
+  ...integrationsSlice,
+  ...whatsappSlice,
+  ...rbacSlice,
+  ...dbSlice,
+  ...behaviourSlice,
+  ...alertsSlice,
+  ...knowledgeSlice,
+  ...logSlice,
 });
 
-// Retention must stay well clear of the active-conversation window
-// (SESSION_MAX_AGE_HOURS) so a low value can't silently gut memory recall
-// for users still mid-conversation.
-const MIN_INTERACTION_RETENTION_DAYS = 7;
+type ParsedEnv = z.infer<typeof EnvSchema>;
 
-// list_roster's churn windows ("joined/left this week") are 7 days; a 30-day
-// floor comfortably preserves that pulse while still bounding retention.
-const MIN_ROSTER_DEPARTED_RETENTION_DAYS = 30;
+// Slice-LOCAL refinements travel with their slice as data (see EnvRefinement)
+// and are applied to the merged schema here. Each one's predicate only sees
+// its own slice's keys by construction.
+const sliceRefinements: EnvRefinement<ParsedEnv>[] = [
+  ...whatsappRefinements,
+  ...behaviourRefinements,
+  ...alertsRefinements,
+  ...integrationsRefinements,
+];
 
-// A pending access request is a person waiting on a human decision, so the
-// floor is set by how long admins can plausibly take to make one, not by how
-// fast the data could be dropped. 30 days matches the roster floor and keeps
-// this comfortably clear of the admin digest's own nag horizon — enabling
-// retention must never delete a backlog out from under the digest that exists
-// to surface it. It also bounds `oldestAccessRequestAgeDays` from above (see
-// its doc comment), which is only honest if the bound is generous.
-const MIN_ACCESS_REQUEST_RETENTION_DAYS = 30;
-
-// A threshold below a month would flag entries an admin just as plausibly
-// hasn't gotten around to re-checking yet rather than ones that are stale.
-const MIN_KNOWLEDGE_STALE_DAYS = 30;
-
-// 3x KNOWLEDGE_STALE_DAYS's own floor: this ceiling must fire even for
-// content still in active use, so it needs a generous grace period, not a
-// twitchy one.
-const MIN_KNOWLEDGE_STALE_MAX_AGE_DAYS = 90;
-
-// Deliberately below MIN_KNOWLEDGE_STALE_DAYS (30): a review queue should
-// turn over far sooner than curated knowledge goes stale, so this is its own,
-// lower floor rather than a reuse of that constant.
-const MIN_KNOWLEDGE_CANDIDATE_STALE_DAYS = 14;
-
-// A single rater must never be able to trigger the member-facing low-rated
-// caveat (issue #337) — the effective minimum is 2 so the signal always
-// reflects more than one identifiable person's opinion.
-const MIN_KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL = 2;
-
-const EnvSchemaChecked = EnvSchema.refine(
-  (e) =>
-    e.WHATSAPP_PROVIDER !== 'cloud' ||
-    (e.WHATSAPP_CLOUD_PHONE_NUMBER_ID &&
-      e.WHATSAPP_CLOUD_ACCESS_TOKEN &&
-      e.WHATSAPP_CLOUD_VERIFY_TOKEN &&
-      e.WHATSAPP_CLOUD_APP_SECRET),
-  {
-    message:
-      'WHATSAPP_PROVIDER=cloud requires WHATSAPP_CLOUD_PHONE_NUMBER_ID, WHATSAPP_CLOUD_ACCESS_TOKEN, ' +
-      'WHATSAPP_CLOUD_VERIFY_TOKEN, and WHATSAPP_CLOUD_APP_SECRET',
-    path: ['WHATSAPP_PROVIDER'],
-  },
-)
-  .refine(
-    (e) =>
-      e.INTERACTION_RETENTION_DAYS === 0 || e.INTERACTION_RETENTION_DAYS >= MIN_INTERACTION_RETENTION_DAYS,
-    {
-      message: `INTERACTION_RETENTION_DAYS must be 0 (disabled) or at least ${MIN_INTERACTION_RETENTION_DAYS}`,
-      path: ['INTERACTION_RETENTION_DAYS'],
-    },
-  )
-  .refine(
-    (e) =>
-      e.ROSTER_DEPARTED_RETENTION_DAYS === 0 ||
-      e.ROSTER_DEPARTED_RETENTION_DAYS >= MIN_ROSTER_DEPARTED_RETENTION_DAYS,
-    {
-      message: `ROSTER_DEPARTED_RETENTION_DAYS must be 0 (disabled) or at least ${MIN_ROSTER_DEPARTED_RETENTION_DAYS}`,
-      path: ['ROSTER_DEPARTED_RETENTION_DAYS'],
-    },
-  )
-  .refine(
-    (e) =>
-      e.ACCESS_REQUEST_RETENTION_DAYS === 0 ||
-      e.ACCESS_REQUEST_RETENTION_DAYS >= MIN_ACCESS_REQUEST_RETENTION_DAYS,
-    {
-      message: `ACCESS_REQUEST_RETENTION_DAYS must be 0 (disabled) or at least ${MIN_ACCESS_REQUEST_RETENTION_DAYS}`,
-      path: ['ACCESS_REQUEST_RETENTION_DAYS'],
-    },
-  )
-  .refine((e) => e.KNOWLEDGE_STALE_DAYS === 0 || e.KNOWLEDGE_STALE_DAYS >= MIN_KNOWLEDGE_STALE_DAYS, {
-    message: `KNOWLEDGE_STALE_DAYS must be 0 (disabled) or at least ${MIN_KNOWLEDGE_STALE_DAYS}`,
-    path: ['KNOWLEDGE_STALE_DAYS'],
-  })
-  .refine(
-    (e) =>
-      e.KNOWLEDGE_STALE_MAX_AGE_DAYS === 0 ||
-      e.KNOWLEDGE_STALE_MAX_AGE_DAYS >= MIN_KNOWLEDGE_STALE_MAX_AGE_DAYS,
-    {
-      message: `KNOWLEDGE_STALE_MAX_AGE_DAYS must be 0 (disabled) or at least ${MIN_KNOWLEDGE_STALE_MAX_AGE_DAYS}`,
-      path: ['KNOWLEDGE_STALE_MAX_AGE_DAYS'],
-    },
-  )
-  .refine(
-    (e) =>
-      e.KNOWLEDGE_STALE_MAX_AGE_DAYS === 0 ||
-      e.KNOWLEDGE_STALE_DAYS === 0 ||
-      e.KNOWLEDGE_STALE_MAX_AGE_DAYS >= e.KNOWLEDGE_STALE_DAYS,
-    {
-      // The absolute ceiling should never be shorter than the
-      // popularity-aware window when both are set, or the two would fight
-      // rather than compose.
-      message: 'KNOWLEDGE_STALE_MAX_AGE_DAYS must not be smaller than a nonzero KNOWLEDGE_STALE_DAYS',
-      path: ['KNOWLEDGE_STALE_MAX_AGE_DAYS'],
-    },
-  )
-  .refine(
-    (e) =>
-      e.KNOWLEDGE_CANDIDATE_STALE_DAYS === 0 ||
-      e.KNOWLEDGE_CANDIDATE_STALE_DAYS >= MIN_KNOWLEDGE_CANDIDATE_STALE_DAYS,
-    {
-      message: `KNOWLEDGE_CANDIDATE_STALE_DAYS must be 0 (disabled) or at least ${MIN_KNOWLEDGE_CANDIDATE_STALE_DAYS}`,
-      path: ['KNOWLEDGE_CANDIDATE_STALE_DAYS'],
-    },
-  )
+const EnvSchemaChecked = sliceRefinements
+  .reduce((schema, r) => schema.refine(r.check, r.params), EnvSchema)
   .refine((e) => e.AGENT_TURN_TIMEOUT_MS > e.IMAGE_GEN_TIMEOUT_MS, {
-    // The turn ceiling is the OUTER bound around a whole turn; image
-    // generation is an inner tool call with its own timeout. Set the outer
-    // one at or below the inner one and a legitimately in-flight image-gen
-    // turn is killed before its own timeout can fire — the exact bug class
-    // the 300_000 default was chosen to avoid (issue #826 review). Pinning
-    // only the shipped default in a unit test does not stop an operator
-    // tightening AGENT_TURN_TIMEOUT_MS in .env and silently reintroducing
-    // it, so fail fast at startup, same as the KNOWLEDGE_STALE_MAX_AGE_DAYS
-    // vs KNOWLEDGE_STALE_DAYS pairing above.
+    // The one CROSS-slice refine (behaviour vs integrations), so it lives
+    // here rather than with either slice. The turn ceiling is the OUTER bound
+    // around a whole turn; image generation is an inner tool call with its
+    // own timeout. Set the outer one at or below the inner one and a
+    // legitimately in-flight image-gen turn is killed before its own timeout
+    // can fire — the exact bug class the 300_000 default was chosen to avoid
+    // (issue #826 review). Pinning only the shipped default in a unit test
+    // does not stop an operator tightening AGENT_TURN_TIMEOUT_MS in .env and
+    // silently reintroducing it, so fail fast at startup, same as the
+    // KNOWLEDGE_STALE_MAX_AGE_DAYS vs KNOWLEDGE_STALE_DAYS pairing.
     message:
       'AGENT_TURN_TIMEOUT_MS must be strictly greater than IMAGE_GEN_TIMEOUT_MS, or the outer turn ceiling can kill an in-flight image-generation tool call before its own timeout fires',
     path: ['AGENT_TURN_TIMEOUT_MS'],
-  })
-  .refine(
-    (e) =>
-      e.KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL === 0 ||
-      e.KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL >= MIN_KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL,
-    {
-      message: `KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL must be 0 (disabled) or at least ${MIN_KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL}`,
-      path: ['KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL'],
-    },
-  )
-  .refine((e) => !e.IMAGE_GEN_ENABLED || isAbsolute(e.GROK_BIN), {
-    // A bare `grok` is PATH-resolved; a writable PATH entry could shadow it with
-    // a hostile binary run as the service user (see docs/SECURITY.md §8). Fail
-    // fast when the feature is on rather than trusting the deploy to get it right.
-    message: 'GROK_BIN must be an absolute path when IMAGE_GEN_ENABLED=true (avoids PATH hijack)',
-    path: ['GROK_BIN'],
-  })
-  .refine((e) => !e.GITHUB_ISSUE_ENABLED || Boolean(e.GITHUB_ISSUE_TOKEN), {
-    // No point enabling the tool without a credential — fail fast at startup
-    // rather than at the first super-admin who tries to file an issue.
-    message: 'GITHUB_ISSUE_TOKEN is required when GITHUB_ISSUE_ENABLED=true',
-    path: ['GITHUB_ISSUE_TOKEN'],
-  })
-  .refine(
-    (e) => !e.DEV_TEAM_ENABLED || (Boolean(e.DEV_TEAM_ENDPOINT_URL) && Boolean(e.DEV_TEAM_AUTH_TOKEN)),
-    {
-      // Both the endpoint and the bearer token are required to talk to the
-      // service — fail fast at startup rather than at the first super-admin who
-      // tries to dispatch a job.
-      message: 'DEV_TEAM_ENDPOINT_URL and DEV_TEAM_AUTH_TOKEN are both required when DEV_TEAM_ENABLED=true',
-      path: ['DEV_TEAM_ENABLED'],
-    },
-  );
+  });
 
-const parsed = EnvSchemaChecked.safeParse(emptyStringsToUndefined(process.env));
+/** Shape the parsed env into the exported config object (single source of its shape). */
+function buildConfig(env: ParsedEnv) {
+  return {
+    llm: {
+      oauthToken: env.CLAUDE_CODE_OAUTH_TOKEN,
+      model: env.AGENT_MODEL,
+      memberModel: env.AGENT_MODEL_MEMBER,
+      classifierModel: env.AGENT_MODEL_CLASSIFIER,
+      fallbackModel: env.AGENT_MODEL_FALLBACK,
+      maxTurns: env.AGENT_MAX_TURNS,
+      memberMaxTurns: env.AGENT_MAX_TURNS_MEMBER,
+      webSearchRateLimitPerHour: env.AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR,
+      webSearchDedupWindowSeconds: env.AGENT_WEB_SEARCH_DEDUP_WINDOW_SECONDS,
+      webSearchDedupHistorySize: env.AGENT_WEB_SEARCH_DEDUP_HISTORY_SIZE,
+      webSearchDedupSimilarityThreshold: env.AGENT_WEB_SEARCH_DEDUP_SIMILARITY_THRESHOLD,
+    },
+    agentSkills: {
+      enabled: env.AGENT_SKILLS_ENABLED ?? false,
+    },
+    discord: {
+      botToken: env.DISCORD_BOT_TOKEN,
+      guildId: env.DISCORD_GUILD_ID,
+      allowedChannelIds: csv(env.DISCORD_ALLOWED_CHANNEL_IDS),
+      welcome: {
+        enabled: env.DISCORD_WELCOME_ENABLED ?? false,
+        channelId: env.DISCORD_WELCOME_CHANNEL_ID,
+      },
+      autoEnrollMembers: env.DISCORD_AUTO_ENROLL_MEMBERS ?? false,
+      archiveAllMessages: env.DISCORD_ARCHIVE_ALL_MESSAGES ?? false,
+      assignableRoleIds: csv(env.DISCORD_ASSIGNABLE_ROLES),
+      slashCommandsEnabled: env.DISCORD_SLASH_COMMANDS_ENABLED ?? false,
+      autoAnswerChannelIds: csv(env.AUTO_ANSWER_CHANNEL_IDS),
+      autoAnswerRateLimitPerHour: env.AUTO_ANSWER_RATE_LIMIT_PER_HOUR,
+      voice: {
+        enabled: env.DISCORD_VOICE_ENABLED ?? false,
+        model: env.DISCORD_VOICE_MODEL,
+        maxSeconds: env.DISCORD_VOICE_MAX_SECONDS,
+        minRole: env.DISCORD_VOICE_MIN_ROLE,
+        rateLimitPerHour: env.DISCORD_VOICE_RATE_LIMIT_PER_HOUR,
+      },
+      image: {
+        enabled: env.IMAGE_INPUT_ENABLED ?? false,
+        minRole: env.IMAGE_INPUT_MIN_ROLE,
+        maxBytes: env.IMAGE_INPUT_MAX_BYTES,
+        dailyLimitPerUser: env.IMAGE_INPUT_DAILY_LIMIT_PER_USER,
+      },
+    },
+    moderation: {
+      enabled: env.DISCORD_MODERATION_ENABLED ?? false,
+      badWords: csv(env.MODERATION_BAD_WORDS),
+      strikeLimit: env.MODERATION_STRIKE_LIMIT,
+      strikeWindowDays: env.MODERATION_STRIKE_WINDOW_DAYS,
+      mutedRoleName: env.MODERATION_MUTED_ROLE_NAME,
+      adminChannelName: env.MODERATION_ADMIN_CHANNEL_NAME,
+      llmAbuseEnabled: env.MODERATION_LLM_ABUSE_ENABLED ?? false,
+      appealCooldownHours: env.MODERATION_APPEAL_COOLDOWN_HOURS,
+      alertRateLimitPerHour: env.MODERATION_ALERT_RATE_LIMIT_PER_HOUR,
+    },
+    github: {
+      enabled: env.GITHUB_ISSUE_ENABLED ?? false,
+      repo: env.GITHUB_ISSUE_REPO,
+      token: env.GITHUB_ISSUE_TOKEN,
+      labels: csv(env.GITHUB_ISSUE_LABELS),
+      dailyLimit: env.GITHUB_ISSUE_DAILY_LIMIT,
+    },
+    imageGen: {
+      enabled: env.IMAGE_GEN_ENABLED ?? false,
+      grokBin: env.GROK_BIN,
+      timeoutMs: env.IMAGE_GEN_TIMEOUT_MS,
+      dailyLimit: env.IMAGE_GEN_DAILY_LIMIT,
+    },
+    devTeam: {
+      enabled: env.DEV_TEAM_ENABLED ?? false,
+      endpointUrl: env.DEV_TEAM_ENDPOINT_URL,
+      authToken: env.DEV_TEAM_AUTH_TOKEN,
+      watchPollMinutes: env.DEV_TEAM_WATCH_POLL_MINUTES,
+      dailyLimit: env.DEV_TEAM_DAILY_LIMIT,
+    },
+    whatsapp: {
+      provider: env.WHATSAPP_PROVIDER,
+      authDir: env.WHATSAPP_AUTH_DIR,
+      allowedJids: csv(env.WHATSAPP_ALLOWED_JIDS),
+      maxReconnectAttempts: env.WHATSAPP_MAX_RECONNECT_ATTEMPTS,
+      welcome: {
+        enabled: env.WHATSAPP_WELCOME_ENABLED ?? false,
+        cooldownMinutes: env.WHATSAPP_WELCOME_COOLDOWN_MINUTES,
+      },
+      archiveGroupJids: csv(env.WHATSAPP_ARCHIVE_GROUP_JIDS),
+      archiveAllGroups: env.WHATSAPP_ARCHIVE_ALL_GROUPS ?? false,
+      voice: {
+        enabled: env.WHATSAPP_VOICE_ENABLED ?? false,
+        model: env.WHATSAPP_VOICE_MODEL,
+        maxSeconds: env.WHATSAPP_VOICE_MAX_SECONDS,
+        minRole: env.WHATSAPP_VOICE_MIN_ROLE,
+        rateLimitPerHour: env.WHATSAPP_VOICE_RATE_LIMIT_PER_HOUR,
+      },
+      image: {
+        enabled: env.WHATSAPP_IMAGE_INPUT_ENABLED ?? false,
+        minRole: env.WHATSAPP_IMAGE_INPUT_MIN_ROLE,
+        maxBytes: env.WHATSAPP_IMAGE_INPUT_MAX_BYTES,
+        dailyLimitPerUser: env.WHATSAPP_IMAGE_INPUT_DAILY_LIMIT_PER_USER,
+      },
+      cloud: {
+        phoneNumberId: env.WHATSAPP_CLOUD_PHONE_NUMBER_ID,
+        accessToken: env.WHATSAPP_CLOUD_ACCESS_TOKEN,
+        verifyToken: env.WHATSAPP_CLOUD_VERIFY_TOKEN,
+        appSecret: env.WHATSAPP_CLOUD_APP_SECRET,
+        webhookPort: env.WHATSAPP_CLOUD_WEBHOOK_PORT,
+        welcomeEnabled: env.WHATSAPP_CLOUD_WELCOME_ENABLED ?? false,
+        image: {
+          enabled: env.WHATSAPP_CLOUD_IMAGE_INPUT_ENABLED ?? false,
+          minRole: env.WHATSAPP_CLOUD_IMAGE_INPUT_MIN_ROLE,
+          maxBytes: env.WHATSAPP_CLOUD_IMAGE_INPUT_MAX_BYTES,
+          dailyLimitPerUser: env.WHATSAPP_CLOUD_IMAGE_INPUT_DAILY_LIMIT_PER_USER,
+        },
+        voice: {
+          enabled: env.WHATSAPP_CLOUD_VOICE_ENABLED ?? false,
+          model: env.WHATSAPP_CLOUD_VOICE_MODEL,
+          maxBytes: env.WHATSAPP_CLOUD_VOICE_MAX_BYTES,
+          minRole: env.WHATSAPP_CLOUD_VOICE_MIN_ROLE,
+          rateLimitPerHour: env.WHATSAPP_CLOUD_VOICE_RATE_LIMIT_PER_HOUR,
+        },
+      },
+    },
+    db: dbSection(env),
+    rbac: {
+      superAdminDiscordIds: csv(env.SUPER_ADMIN_DISCORD_IDS),
+      superAdminWhatsappNumbers: csv(env.SUPER_ADMIN_WHATSAPP_NUMBERS),
+      accessMode: {
+        discord: env.ACCESS_MODE_DISCORD,
+        whatsapp: env.ACCESS_MODE_WHATSAPP,
+      } as Record<'discord' | 'whatsapp', 'gated' | 'open'>,
+    },
+    contextBuilder: {
+      enabled: env.CONTEXT_BUILDER_ENABLED ?? false,
+      windowDays: env.CONTEXT_BUILDER_WINDOW_DAYS,
+      maxSummaries: env.CONTEXT_BUILDER_MAX_SUMMARIES,
+      minDistinctUsers: env.CONTEXT_BUILDER_MIN_DISTINCT_USERS,
+    },
+    knowledgeRefresh: {
+      enabled: env.KNOWLEDGE_REFRESH_ENABLED ?? false,
+      maxTurns: env.KNOWLEDGE_REFRESH_MAX_TURNS,
+    },
+    docsIngest: {
+      enabled: env.DOCS_INGEST_ENABLED ?? false,
+      indexUrl: env.DOCS_INGEST_INDEX_URL,
+      maxPages: env.DOCS_INGEST_MAX_PAGES,
+      maxChunks: env.DOCS_INGEST_MAX_CHUNKS,
+      concurrency: env.DOCS_INGEST_CONCURRENCY,
+      excludePaths: csv(env.DOCS_INGEST_EXCLUDE_PATHS),
+      deadUrlRuns: env.DOCS_INGEST_DEAD_URL_RUNS,
+      deadUrlRecheckDays: env.DOCS_INGEST_DEAD_URL_RECHECK_DAYS,
+    },
+    knowledgeLinkCheck: {
+      enabled: env.KNOWLEDGE_LINK_CHECK_ENABLED ?? false,
+    },
+    statusCheck: {
+      enabled: env.STATUS_CHECK_ENABLED ?? false,
+      apiUrl: env.STATUS_CHECK_API_URL,
+      pollMinutes: env.STATUS_CHECK_POLL_MINUTES,
+    },
+    contextCandidates: {
+      enabled: env.CONTEXT_CANDIDATES_ENABLED ?? false,
+    },
+    knowledgeAnswerCandidate: {
+      enabled: env.KNOWLEDGE_ANSWER_CANDIDATE_ENABLED ?? false,
+    },
+    contextExport: {
+      enabled: env.CONTEXT_EXPORT_ENABLED ?? false,
+      windowDays: env.CONTEXT_EXPORT_WINDOW_DAYS,
+      minDistinctUsers: env.CONTEXT_EXPORT_MIN_DISTINCT_USERS,
+      path: env.CONTEXT_EXPORT_PATH,
+    },
+    adminDigest: {
+      enabled: env.ADMIN_DIGEST_ENABLED ?? false,
+      trendsEnabled: env.ADMIN_DIGEST_TRENDS_ENABLED ?? false,
+      knowledgeStaleDays: env.KNOWLEDGE_STALE_DAYS,
+      knowledgeStaleMaxAgeDays: env.KNOWLEDGE_STALE_MAX_AGE_DAYS,
+      knowledgeCandidateStaleDays: env.KNOWLEDGE_CANDIDATE_STALE_DAYS,
+    },
+    departedAdminAlert: {
+      enabled: env.DEPARTED_ADMIN_ALERT_ENABLED ?? false,
+    },
+    engagementAlert: {
+      enabled: env.ENGAGEMENT_ALERT_ENABLED ?? false,
+    },
+    adminLeverageAlert: {
+      enabled: env.ADMIN_LEVERAGE_ALERT_ENABLED ?? false,
+    },
+    knowledgeGapAlert: {
+      enabled: env.KNOWLEDGE_GAP_ALERT_ENABLED ?? false,
+      threshold: env.KNOWLEDGE_GAP_ALERT_THRESHOLD,
+      rateLimitPerHour: env.KNOWLEDGE_GAP_ALERT_RATE_LIMIT_PER_HOUR,
+    },
+    knowledgeStaleAlert: {
+      enabled: env.KNOWLEDGE_STALE_ALERT_ENABLED ?? false,
+      rateLimitPerHour: env.KNOWLEDGE_STALE_ALERT_RATE_LIMIT_PER_HOUR,
+    },
+    repeatQuestionAlert: {
+      enabled: env.REPEAT_QUESTION_ALERT_ENABLED ?? false,
+      threshold: env.REPEAT_QUESTION_ALERT_THRESHOLD,
+      rateLimitPerHour: env.REPEAT_QUESTION_ALERT_RATE_LIMIT_PER_HOUR,
+      cooldownMinutes: env.REPEAT_QUESTION_ALERT_COOLDOWN_MINUTES,
+    },
+    accessRequestAlert: {
+      enabled: env.ACCESS_REQUEST_ALERT_ENABLED ?? false,
+      rateLimitPerHour: env.ACCESS_REQUEST_ALERT_RATE_LIMIT_PER_HOUR,
+    },
+    usageCostDigest: {
+      enabled: env.USAGE_COST_DIGEST_ENABLED ?? false,
+    },
+    backgroundJobCostAlert: {
+      enabled: env.BACKGROUND_JOB_COST_ALERT_ENABLED ?? false,
+      multiplier: env.BACKGROUND_JOB_COST_ALERT_MULTIPLIER,
+      minUsd: env.BACKGROUND_JOB_COST_ALERT_MIN_USD,
+    },
+    memberDigest: {
+      enabled: env.MEMBER_DIGEST_ENABLED ?? false,
+      channelId: env.MEMBER_DIGEST_CHANNEL_ID,
+      minDistinctUsers: env.MEMBER_DIGEST_MIN_DISTINCT_USERS,
+    },
+    releaseWatch: {
+      enabled: env.RELEASE_WATCH_ENABLED ?? false,
+      docPaths: csv(env.RELEASE_WATCH_DOC_PATHS),
+    },
+    findHelper: {
+      enabled: env.FIND_HELPER_ENABLED ?? false,
+    },
+    behaviour: {
+      memoryTopK: env.MEMORY_TOP_K,
+      memoryRelevanceThreshold: env.MEMORY_RELEVANCE_THRESHOLD,
+      dailyReplyLimitPerUser: env.DAILY_REPLY_LIMIT_PER_USER,
+      sessionMaxTurns: env.SESSION_MAX_TURNS,
+      sessionMaxAgeHours: env.SESSION_MAX_AGE_HOURS,
+      sessionRolloverTailCount: env.SESSION_ROLLOVER_TAIL_COUNT,
+      agentTurnTimeoutMs: env.AGENT_TURN_TIMEOUT_MS,
+      maxIncomingMessageChars: env.MAX_INCOMING_MESSAGE_CHARS,
+      interactionRetentionDays: env.INTERACTION_RETENTION_DAYS,
+      rosterDepartedRetentionDays: env.ROSTER_DEPARTED_RETENTION_DAYS,
+      accessRequestRetentionDays: env.ACCESS_REQUEST_RETENTION_DAYS,
+      healthAlertAfterMinutes: env.HEALTH_ALERT_AFTER_MINUTES,
+      healthPort: env.HEALTH_PORT,
+      healthHost: env.HEALTH_HOST,
+      usageAlertDailyReplies: env.USAGE_ALERT_DAILY_REPLIES,
+      upstreamLimitAlertEnabled: env.UPSTREAM_LIMIT_ALERT_ENABLED ?? false,
+      ackShortcutEnabled: env.ACK_SHORTCUT_ENABLED ?? false,
+      knowledgeShortcutEnabled: env.KNOWLEDGE_SHORTCUT_ENABLED ?? false,
+      knowledgeShortcutThreshold: env.KNOWLEDGE_SHORTCUT_THRESHOLD,
+      knowledgeLowRatedCaveatMinUnhelpful: env.KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL,
+      knowledgeTopicsListLimit: env.KNOWLEDGE_TOPICS_LIST_LIMIT,
+      guestKnowledgeShortcutEnabled: env.GUEST_KNOWLEDGE_SHORTCUT_ENABLED ?? false,
+      repeatQuestionShortcutEnabled: env.REPEAT_QUESTION_SHORTCUT_ENABLED ?? false,
+      repeatMaxTurnsShortcutEnabled: env.REPEAT_MAX_TURNS_SHORTCUT_ENABLED ?? false,
+      whatsappTextCommandsEnabled: env.WHATSAPP_TEXT_COMMANDS_ENABLED ?? false,
+      escalationToAdminEnabled: env.ESCALATION_TO_ADMIN_ENABLED ?? false,
+      dailyReplyBudgetWarnEnabled: env.DAILY_REPLY_BUDGET_WARN_ENABLED ?? false,
+      dailyReplyBudgetWarnRemaining: env.DAILY_REPLY_BUDGET_WARN_REMAINING,
+      autoRetractReplyEnabled: env.AUTO_RETRACT_REPLY_ENABLED ?? false,
+      shutdownDrainTimeoutMs: env.SHUTDOWN_DRAIN_TIMEOUT_MS,
+    },
+    log: logSection(env),
+  } as const;
+}
+
+const parsed = EnvSchemaChecked.safeParse(normalizedEnv);
 if (!parsed.success) {
   // Fail fast with a readable message rather than crashing deep inside a module.
   console.error('Invalid environment configuration:');
@@ -1306,280 +347,29 @@ if (!parsed.success) {
   process.exit(1);
 }
 
-const env = parsed.data;
-
-export const config = {
-  llm: {
-    oauthToken: env.CLAUDE_CODE_OAUTH_TOKEN,
-    model: env.AGENT_MODEL,
-    memberModel: env.AGENT_MODEL_MEMBER,
-    classifierModel: env.AGENT_MODEL_CLASSIFIER,
-    fallbackModel: env.AGENT_MODEL_FALLBACK,
-    maxTurns: env.AGENT_MAX_TURNS,
-    memberMaxTurns: env.AGENT_MAX_TURNS_MEMBER,
-    webSearchRateLimitPerHour: env.AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR,
-    webSearchDedupWindowSeconds: env.AGENT_WEB_SEARCH_DEDUP_WINDOW_SECONDS,
-    webSearchDedupHistorySize: env.AGENT_WEB_SEARCH_DEDUP_HISTORY_SIZE,
-    webSearchDedupSimilarityThreshold: env.AGENT_WEB_SEARCH_DEDUP_SIMILARITY_THRESHOLD,
-  },
-  agentSkills: {
-    enabled: env.AGENT_SKILLS_ENABLED ?? false,
-  },
-  discord: {
-    botToken: env.DISCORD_BOT_TOKEN,
-    guildId: env.DISCORD_GUILD_ID,
-    allowedChannelIds: csv(env.DISCORD_ALLOWED_CHANNEL_IDS),
-    welcome: {
-      enabled: env.DISCORD_WELCOME_ENABLED ?? false,
-      channelId: env.DISCORD_WELCOME_CHANNEL_ID,
-    },
-    autoEnrollMembers: env.DISCORD_AUTO_ENROLL_MEMBERS ?? false,
-    archiveAllMessages: env.DISCORD_ARCHIVE_ALL_MESSAGES ?? false,
-    assignableRoleIds: csv(env.DISCORD_ASSIGNABLE_ROLES),
-    slashCommandsEnabled: env.DISCORD_SLASH_COMMANDS_ENABLED ?? false,
-    autoAnswerChannelIds: csv(env.AUTO_ANSWER_CHANNEL_IDS),
-    autoAnswerRateLimitPerHour: env.AUTO_ANSWER_RATE_LIMIT_PER_HOUR,
-    voice: {
-      enabled: env.DISCORD_VOICE_ENABLED ?? false,
-      model: env.DISCORD_VOICE_MODEL,
-      maxSeconds: env.DISCORD_VOICE_MAX_SECONDS,
-      minRole: env.DISCORD_VOICE_MIN_ROLE,
-      rateLimitPerHour: env.DISCORD_VOICE_RATE_LIMIT_PER_HOUR,
-    },
-    image: {
-      enabled: env.IMAGE_INPUT_ENABLED ?? false,
-      minRole: env.IMAGE_INPUT_MIN_ROLE,
-      maxBytes: env.IMAGE_INPUT_MAX_BYTES,
-      dailyLimitPerUser: env.IMAGE_INPUT_DAILY_LIMIT_PER_USER,
-    },
-  },
-  moderation: {
-    enabled: env.DISCORD_MODERATION_ENABLED ?? false,
-    badWords: csv(env.MODERATION_BAD_WORDS),
-    strikeLimit: env.MODERATION_STRIKE_LIMIT,
-    strikeWindowDays: env.MODERATION_STRIKE_WINDOW_DAYS,
-    mutedRoleName: env.MODERATION_MUTED_ROLE_NAME,
-    adminChannelName: env.MODERATION_ADMIN_CHANNEL_NAME,
-    llmAbuseEnabled: env.MODERATION_LLM_ABUSE_ENABLED ?? false,
-    appealCooldownHours: env.MODERATION_APPEAL_COOLDOWN_HOURS,
-    alertRateLimitPerHour: env.MODERATION_ALERT_RATE_LIMIT_PER_HOUR,
-  },
-  github: {
-    enabled: env.GITHUB_ISSUE_ENABLED ?? false,
-    repo: env.GITHUB_ISSUE_REPO,
-    token: env.GITHUB_ISSUE_TOKEN,
-    labels: csv(env.GITHUB_ISSUE_LABELS),
-    dailyLimit: env.GITHUB_ISSUE_DAILY_LIMIT,
-  },
-  imageGen: {
-    enabled: env.IMAGE_GEN_ENABLED ?? false,
-    grokBin: env.GROK_BIN,
-    timeoutMs: env.IMAGE_GEN_TIMEOUT_MS,
-    dailyLimit: env.IMAGE_GEN_DAILY_LIMIT,
-  },
-  devTeam: {
-    enabled: env.DEV_TEAM_ENABLED ?? false,
-    endpointUrl: env.DEV_TEAM_ENDPOINT_URL,
-    authToken: env.DEV_TEAM_AUTH_TOKEN,
-    watchPollMinutes: env.DEV_TEAM_WATCH_POLL_MINUTES,
-    dailyLimit: env.DEV_TEAM_DAILY_LIMIT,
-  },
-  whatsapp: {
-    provider: env.WHATSAPP_PROVIDER,
-    authDir: env.WHATSAPP_AUTH_DIR,
-    allowedJids: csv(env.WHATSAPP_ALLOWED_JIDS),
-    maxReconnectAttempts: env.WHATSAPP_MAX_RECONNECT_ATTEMPTS,
-    welcome: {
-      enabled: env.WHATSAPP_WELCOME_ENABLED ?? false,
-      cooldownMinutes: env.WHATSAPP_WELCOME_COOLDOWN_MINUTES,
-    },
-    archiveGroupJids: csv(env.WHATSAPP_ARCHIVE_GROUP_JIDS),
-    archiveAllGroups: env.WHATSAPP_ARCHIVE_ALL_GROUPS ?? false,
-    voice: {
-      enabled: env.WHATSAPP_VOICE_ENABLED ?? false,
-      model: env.WHATSAPP_VOICE_MODEL,
-      maxSeconds: env.WHATSAPP_VOICE_MAX_SECONDS,
-      minRole: env.WHATSAPP_VOICE_MIN_ROLE,
-      rateLimitPerHour: env.WHATSAPP_VOICE_RATE_LIMIT_PER_HOUR,
-    },
-    image: {
-      enabled: env.WHATSAPP_IMAGE_INPUT_ENABLED ?? false,
-      minRole: env.WHATSAPP_IMAGE_INPUT_MIN_ROLE,
-      maxBytes: env.WHATSAPP_IMAGE_INPUT_MAX_BYTES,
-      dailyLimitPerUser: env.WHATSAPP_IMAGE_INPUT_DAILY_LIMIT_PER_USER,
-    },
-    cloud: {
-      phoneNumberId: env.WHATSAPP_CLOUD_PHONE_NUMBER_ID,
-      accessToken: env.WHATSAPP_CLOUD_ACCESS_TOKEN,
-      verifyToken: env.WHATSAPP_CLOUD_VERIFY_TOKEN,
-      appSecret: env.WHATSAPP_CLOUD_APP_SECRET,
-      webhookPort: env.WHATSAPP_CLOUD_WEBHOOK_PORT,
-      welcomeEnabled: env.WHATSAPP_CLOUD_WELCOME_ENABLED ?? false,
-      image: {
-        enabled: env.WHATSAPP_CLOUD_IMAGE_INPUT_ENABLED ?? false,
-        minRole: env.WHATSAPP_CLOUD_IMAGE_INPUT_MIN_ROLE,
-        maxBytes: env.WHATSAPP_CLOUD_IMAGE_INPUT_MAX_BYTES,
-        dailyLimitPerUser: env.WHATSAPP_CLOUD_IMAGE_INPUT_DAILY_LIMIT_PER_USER,
-      },
-      voice: {
-        enabled: env.WHATSAPP_CLOUD_VOICE_ENABLED ?? false,
-        model: env.WHATSAPP_CLOUD_VOICE_MODEL,
-        maxBytes: env.WHATSAPP_CLOUD_VOICE_MAX_BYTES,
-        minRole: env.WHATSAPP_CLOUD_VOICE_MIN_ROLE,
-        rateLimitPerHour: env.WHATSAPP_CLOUD_VOICE_RATE_LIMIT_PER_HOUR,
-      },
-    },
-  },
-  db: {
-    url: env.DATABASE_URL,
-    embeddingModel: env.EMBEDDING_MODEL,
-    embeddingDim: env.EMBEDDING_DIM,
-    statementTimeoutMs: env.DB_STATEMENT_TIMEOUT_MS,
-    queryTimeoutMs: env.DB_QUERY_TIMEOUT_MS,
-    connectTimeoutMs: env.DB_CONNECT_TIMEOUT_MS,
-  },
-  rbac: {
-    superAdminDiscordIds: csv(env.SUPER_ADMIN_DISCORD_IDS),
-    superAdminWhatsappNumbers: csv(env.SUPER_ADMIN_WHATSAPP_NUMBERS),
-    accessMode: {
-      discord: env.ACCESS_MODE_DISCORD,
-      whatsapp: env.ACCESS_MODE_WHATSAPP,
-    } as Record<'discord' | 'whatsapp', 'gated' | 'open'>,
-  },
-  contextBuilder: {
-    enabled: env.CONTEXT_BUILDER_ENABLED ?? false,
-    windowDays: env.CONTEXT_BUILDER_WINDOW_DAYS,
-    maxSummaries: env.CONTEXT_BUILDER_MAX_SUMMARIES,
-    minDistinctUsers: env.CONTEXT_BUILDER_MIN_DISTINCT_USERS,
-  },
-  knowledgeRefresh: {
-    enabled: env.KNOWLEDGE_REFRESH_ENABLED ?? false,
-    maxTurns: env.KNOWLEDGE_REFRESH_MAX_TURNS,
-  },
-  docsIngest: {
-    enabled: env.DOCS_INGEST_ENABLED ?? false,
-    indexUrl: env.DOCS_INGEST_INDEX_URL,
-    maxPages: env.DOCS_INGEST_MAX_PAGES,
-    maxChunks: env.DOCS_INGEST_MAX_CHUNKS,
-    concurrency: env.DOCS_INGEST_CONCURRENCY,
-    excludePaths: csv(env.DOCS_INGEST_EXCLUDE_PATHS),
-    deadUrlRuns: env.DOCS_INGEST_DEAD_URL_RUNS,
-    deadUrlRecheckDays: env.DOCS_INGEST_DEAD_URL_RECHECK_DAYS,
-  },
-  knowledgeLinkCheck: {
-    enabled: env.KNOWLEDGE_LINK_CHECK_ENABLED ?? false,
-  },
-  statusCheck: {
-    enabled: env.STATUS_CHECK_ENABLED ?? false,
-    apiUrl: env.STATUS_CHECK_API_URL,
-    pollMinutes: env.STATUS_CHECK_POLL_MINUTES,
-  },
-  contextCandidates: {
-    enabled: env.CONTEXT_CANDIDATES_ENABLED ?? false,
-  },
-  knowledgeAnswerCandidate: {
-    enabled: env.KNOWLEDGE_ANSWER_CANDIDATE_ENABLED ?? false,
-  },
-  contextExport: {
-    enabled: env.CONTEXT_EXPORT_ENABLED ?? false,
-    windowDays: env.CONTEXT_EXPORT_WINDOW_DAYS,
-    minDistinctUsers: env.CONTEXT_EXPORT_MIN_DISTINCT_USERS,
-    path: env.CONTEXT_EXPORT_PATH,
-  },
-  adminDigest: {
-    enabled: env.ADMIN_DIGEST_ENABLED ?? false,
-    trendsEnabled: env.ADMIN_DIGEST_TRENDS_ENABLED ?? false,
-    knowledgeStaleDays: env.KNOWLEDGE_STALE_DAYS,
-    knowledgeStaleMaxAgeDays: env.KNOWLEDGE_STALE_MAX_AGE_DAYS,
-    knowledgeCandidateStaleDays: env.KNOWLEDGE_CANDIDATE_STALE_DAYS,
-  },
-  departedAdminAlert: {
-    enabled: env.DEPARTED_ADMIN_ALERT_ENABLED ?? false,
-  },
-  engagementAlert: {
-    enabled: env.ENGAGEMENT_ALERT_ENABLED ?? false,
-  },
-  adminLeverageAlert: {
-    enabled: env.ADMIN_LEVERAGE_ALERT_ENABLED ?? false,
-  },
-  knowledgeGapAlert: {
-    enabled: env.KNOWLEDGE_GAP_ALERT_ENABLED ?? false,
-    threshold: env.KNOWLEDGE_GAP_ALERT_THRESHOLD,
-    rateLimitPerHour: env.KNOWLEDGE_GAP_ALERT_RATE_LIMIT_PER_HOUR,
-  },
-  knowledgeStaleAlert: {
-    enabled: env.KNOWLEDGE_STALE_ALERT_ENABLED ?? false,
-    rateLimitPerHour: env.KNOWLEDGE_STALE_ALERT_RATE_LIMIT_PER_HOUR,
-  },
-  repeatQuestionAlert: {
-    enabled: env.REPEAT_QUESTION_ALERT_ENABLED ?? false,
-    threshold: env.REPEAT_QUESTION_ALERT_THRESHOLD,
-    rateLimitPerHour: env.REPEAT_QUESTION_ALERT_RATE_LIMIT_PER_HOUR,
-    cooldownMinutes: env.REPEAT_QUESTION_ALERT_COOLDOWN_MINUTES,
-  },
-  accessRequestAlert: {
-    enabled: env.ACCESS_REQUEST_ALERT_ENABLED ?? false,
-    rateLimitPerHour: env.ACCESS_REQUEST_ALERT_RATE_LIMIT_PER_HOUR,
-  },
-  usageCostDigest: {
-    enabled: env.USAGE_COST_DIGEST_ENABLED ?? false,
-  },
-  backgroundJobCostAlert: {
-    enabled: env.BACKGROUND_JOB_COST_ALERT_ENABLED ?? false,
-    multiplier: env.BACKGROUND_JOB_COST_ALERT_MULTIPLIER,
-    minUsd: env.BACKGROUND_JOB_COST_ALERT_MIN_USD,
-  },
-  memberDigest: {
-    enabled: env.MEMBER_DIGEST_ENABLED ?? false,
-    channelId: env.MEMBER_DIGEST_CHANNEL_ID,
-    minDistinctUsers: env.MEMBER_DIGEST_MIN_DISTINCT_USERS,
-  },
-  releaseWatch: {
-    enabled: env.RELEASE_WATCH_ENABLED ?? false,
-    docPaths: csv(env.RELEASE_WATCH_DOC_PATHS),
-  },
-  findHelper: {
-    enabled: env.FIND_HELPER_ENABLED ?? false,
-  },
-  behaviour: {
-    memoryTopK: env.MEMORY_TOP_K,
-    memoryRelevanceThreshold: env.MEMORY_RELEVANCE_THRESHOLD,
-    dailyReplyLimitPerUser: env.DAILY_REPLY_LIMIT_PER_USER,
-    sessionMaxTurns: env.SESSION_MAX_TURNS,
-    sessionMaxAgeHours: env.SESSION_MAX_AGE_HOURS,
-    sessionRolloverTailCount: env.SESSION_ROLLOVER_TAIL_COUNT,
-    agentTurnTimeoutMs: env.AGENT_TURN_TIMEOUT_MS,
-    maxIncomingMessageChars: env.MAX_INCOMING_MESSAGE_CHARS,
-    interactionRetentionDays: env.INTERACTION_RETENTION_DAYS,
-    rosterDepartedRetentionDays: env.ROSTER_DEPARTED_RETENTION_DAYS,
-    accessRequestRetentionDays: env.ACCESS_REQUEST_RETENTION_DAYS,
-    healthAlertAfterMinutes: env.HEALTH_ALERT_AFTER_MINUTES,
-    healthPort: env.HEALTH_PORT,
-    healthHost: env.HEALTH_HOST,
-    usageAlertDailyReplies: env.USAGE_ALERT_DAILY_REPLIES,
-    upstreamLimitAlertEnabled: env.UPSTREAM_LIMIT_ALERT_ENABLED ?? false,
-    ackShortcutEnabled: env.ACK_SHORTCUT_ENABLED ?? false,
-    knowledgeShortcutEnabled: env.KNOWLEDGE_SHORTCUT_ENABLED ?? false,
-    knowledgeShortcutThreshold: env.KNOWLEDGE_SHORTCUT_THRESHOLD,
-    knowledgeLowRatedCaveatMinUnhelpful: env.KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL,
-    knowledgeTopicsListLimit: env.KNOWLEDGE_TOPICS_LIST_LIMIT,
-    guestKnowledgeShortcutEnabled: env.GUEST_KNOWLEDGE_SHORTCUT_ENABLED ?? false,
-    repeatQuestionShortcutEnabled: env.REPEAT_QUESTION_SHORTCUT_ENABLED ?? false,
-    repeatMaxTurnsShortcutEnabled: env.REPEAT_MAX_TURNS_SHORTCUT_ENABLED ?? false,
-    whatsappTextCommandsEnabled: env.WHATSAPP_TEXT_COMMANDS_ENABLED ?? false,
-    escalationToAdminEnabled: env.ESCALATION_TO_ADMIN_ENABLED ?? false,
-    dailyReplyBudgetWarnEnabled: env.DAILY_REPLY_BUDGET_WARN_ENABLED ?? false,
-    dailyReplyBudgetWarnRemaining: env.DAILY_REPLY_BUDGET_WARN_REMAINING,
-    autoRetractReplyEnabled: env.AUTO_RETRACT_REPLY_ENABLED ?? false,
-    shutdownDrainTimeoutMs: env.SHUTDOWN_DRAIN_TIMEOUT_MS,
-  },
-  log: {
-    level: env.LOG_LEVEL,
-    pretty: env.LOG_PRETTY ?? false,
-  },
-} as const;
+export const config = buildConfig(parsed.data);
 
 export type Config = typeof config;
+
+/**
+ * Pure variant of the singleton parse above for tests/tooling: validates the
+ * GIVEN env (blank-normalised the same way, but no dotenv load and no
+ * process.exit) against the full merged schema and returns a Config-shaped
+ * object. On failure it THROWS one Error whose message aggregates every
+ * issue, mirroring the console output of the fail-fast path.
+ */
+export function loadConfig(env: NodeJS.ProcessEnv): Config {
+  const result = EnvSchemaChecked.safeParse(emptyStringsToUndefined(env));
+  if (!result.success) {
+    throw new Error(
+      [
+        'Invalid environment configuration:',
+        ...result.error.issues.map((issue) => `  - ${issue.path.join('.')}: ${issue.message}`),
+      ].join('\n'),
+    );
+  }
+  return buildConfig(result.data);
+}
 
 /**
  * Absolute paths of THIS deployment's on-disk secrets: the bot's `.env` and

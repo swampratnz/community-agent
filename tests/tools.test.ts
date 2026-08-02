@@ -1,7 +1,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { ENABLED_SKILLS } from '../src/agent/enabledSkills.js';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import type { AdapterLookup, Platform, PlatformAdapter, UpcomingEvent } from '../src/platforms/types.js';
 import { formatNzEventTime } from '../src/util/nzTime.js';
 
@@ -9075,7 +9075,17 @@ function assertFeatureFlagEnvVarsCovered(envVars: string[], map: readonly { envV
 }
 
 test('feature_flags: FEATURE_FLAG_MAP covers every *_ENABLED env var in config.ts (issue #559 anti-drift pin)', () => {
-  const configSource = readFileSync(new URL('../src/config.ts', import.meta.url), 'utf8');
+  // The env schema moved into per-domain slices under src/config/ (the barrel
+  // keeps the composed `config` literal) — same assertions, scanned across
+  // the barrel plus every slice so a flag added in either place is counted.
+  const configDir = new URL('../src/config/', import.meta.url);
+  const configSource = [
+    readFileSync(new URL('../src/config.ts', import.meta.url), 'utf8'),
+    ...readdirSync(configDir)
+      .filter((f) => f.endsWith('.ts'))
+      .sort()
+      .map((f) => readFileSync(new URL(f, configDir), 'utf8')),
+  ].join('\n');
   const envVars = extractEnabledEnvVars(configSource);
   assert.equal(
     envVars.length,

@@ -269,16 +269,29 @@ const TONE_CALIBRATION_CLAUSE = `
   tone.
 `.trim();
 
-const GUIDELINES = [
-  GUIDELINES_TEMPLATE,
-  ...(config.agentSkills.enabled ? [] : [PROMPT_REVIEW_CLAUSE]),
-  AUTHORIZATION_NOTE,
-  TONE_CALIBRATION_CLAUSE,
-  ...(config.discord.image.enabled || config.whatsapp.image.enabled || config.whatsapp.cloud.image.enabled
-    ? [IMAGE_INPUT_CLAUSE]
-    : []),
-  GUIDELINES_TAIL,
-].join('\n');
+/**
+ * Assembled at CALL time (from buildSystemPrompt), not module scope: a
+ * module-scope constant captured `config.agentSkills.enabled` and the three
+ * image-input flags at import, freezing whatever the config module happened
+ * to say when THIS module first loaded. Resolving the flags per call reads
+ * the live config instead; the output stays byte-identical for every flag
+ * combination (pinned by the systemPrompt tests and the five per-process
+ * flag test files), and byte-stability per (role, policy, persona, day) is
+ * unchanged — the flags never vary within a process, so prompt caching is
+ * unaffected.
+ */
+function guidelines(): string {
+  return [
+    GUIDELINES_TEMPLATE,
+    ...(config.agentSkills.enabled ? [] : [PROMPT_REVIEW_CLAUSE]),
+    AUTHORIZATION_NOTE,
+    TONE_CALIBRATION_CLAUSE,
+    ...(config.discord.image.enabled || config.whatsapp.image.enabled || config.whatsapp.cloud.image.enabled
+      ? [IMAGE_INPUT_CLAUSE]
+      : []),
+    GUIDELINES_TAIL,
+  ].join('\n');
+}
 
 const PLAIN_LANGUAGE_STYLE = `
 This requester has asked for plain-language replies (set_response_style):
@@ -383,7 +396,7 @@ export function buildSystemPrompt(
     COMMUNITY_CHARTER,
     // Security guidelines come BEFORE the persona/voice so the model treats
     // them as higher-precedence than any character flavour.
-    GUIDELINES,
+    guidelines(),
     `Persona:\n${persona.voice}`,
     HUMAN_STYLE,
     `Context:\n- Platform: ${caller.platform}\n- Conversation: ${caller.conversationId}\n- Current date (NZ): ${formatNzDate(now)}`,

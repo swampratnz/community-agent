@@ -27,6 +27,7 @@
   "include": [
     "src/**/*.ts",
     "tests/backgroundJobCostAlert.test.ts",
+    "tests/configSlices.test.ts",
     "tests/memberDigest.test.ts",
     "tests/noticeDebounce.test.ts",
     "tests/notifications.test.ts",

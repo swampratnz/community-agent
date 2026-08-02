@@ -76,7 +76,8 @@ refuses a PR that lowers the floor versus its base.
 
 | File | Why |
 |---|---|
-| `src/config.ts` | The zod schema — the single source of truth, and what fails loudly on a bad deploy. |
+| `src/config/<slice>.ts` | The var's zod chain + doc comment, in its domain slice (llm, discord, whatsapp, alerts, behaviour, …). Slice-local floors/refinements live here too. |
+| `src/config.ts` | The composition barrel — surface the parsed var in the `config` object literal, or nothing reads it. Still what fails loudly on a bad deploy. |
 | `.env.example` | So an operator can discover the setting. Never a real value. |
 | `docs/DEPLOYMENT.md` | If an operator has to do something about it. |
 
@@ -118,7 +119,7 @@ one has it.
 | File | Why |
 |---|---|
 | `src/backgroundJobs.ts` | Register it via `startTrackedJob` so it is tracked, cost-accounted and health-monitored. |
-| `src/config.ts` | Its enable flag and schedule. Background jobs are **opt-in**. |
+| `src/config/<slice>.ts` + `src/config.ts` | Its enable flag and schedule (slice fragment + barrel surface). Background jobs are **opt-in**. |
 
 Cost and consecutive-failure alerting come free from registration — do not
 hand-roll either. A job that can fail repeatedly should say so once per outage,

@@ -1,20 +1,23 @@
 import pg from 'pg';
 import pgvector from 'pgvector/pg';
-import { config } from '../config.js';
+import { bootConfig } from '../config/boot.js';
 import { logger } from '../logger.js';
 
 const { Pool } = pg;
 
+// Reads the BOOT config slice (db+log only), not the full barrel, so the
+// storage spine (this file, migrate.ts) never demands the app-level required
+// vars (CLAUDE_CODE_OAUTH_TOKEN/DISCORD_*) migrate has no use for.
 export const pool = new Pool({
-  connectionString: config.db.url,
+  connectionString: bootConfig.db.url,
   max: 10,
   idleTimeoutMillis: 30_000,
   // Bound every query/connection on the pool (issue #502) so a stuck lock
   // wait, stalled network round-trip, or slow autovacuum can't wedge every
   // connection forever — see config.ts for the rationale behind each knob.
-  statement_timeout: config.db.statementTimeoutMs,
-  query_timeout: config.db.queryTimeoutMs,
-  connectionTimeoutMillis: config.db.connectTimeoutMs,
+  statement_timeout: bootConfig.db.statementTimeoutMs,
+  query_timeout: bootConfig.db.queryTimeoutMs,
+  connectionTimeoutMillis: bootConfig.db.connectTimeoutMs,
 });
 
 pool.on('error', (err) => {

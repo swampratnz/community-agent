@@ -1,9 +1,12 @@
 import { createHash } from 'node:crypto';
 import { pino } from 'pino';
-import { config } from './config.js';
+import { bootConfig } from './config/boot.js';
 
+// Reads the BOOT config slice (db+log only), not the full barrel: the logger
+// sits on migrate's import chain, and pulling the whole schema in here is
+// what used to make `npm run migrate` demand CLAUDE_CODE_OAUTH_TOKEN et al.
 export const logger = pino({
-  level: config.log.level,
+  level: bootConfig.log.level,
   redact: {
     // Never let secrets leak into logs.
     paths: [
@@ -18,7 +21,7 @@ export const logger = pino({
     ],
     censor: '[redacted]',
   },
-  ...(config.log.pretty
+  ...(bootConfig.log.pretty
     ? {
         transport: {
           target: 'pino-pretty',
