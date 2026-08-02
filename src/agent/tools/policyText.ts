@@ -1,6 +1,10 @@
 import { z } from 'zod';
 import { assertAtLeast } from '../../auth/tiers.js';
-import { updatePolicy } from '../../storage/policies.js';
+import { updatePolicy } from '../../storage/policyStore.js';
+// The community policy keys this file writes are registered by policies.ts
+// at its import time — load it so a direct import of this module can't hit
+// policyStore's unknown-key throw.
+import '../../storage/policies.js';
 import { text } from './helpers.js';
 import { defineTool } from './types.js';
 

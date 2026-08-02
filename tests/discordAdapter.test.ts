@@ -32,7 +32,7 @@ const { DiscordAdapter, WELCOME_MESSAGE, WELCOME_MESSAGE_OPEN } =
   await import('../src/platforms/discord/adapter.js');
 const { config } = await import('../src/config.js');
 const { pool } = await import('../src/storage/db.js');
-const { resetPolicyCacheForTests } = await import('../src/storage/policies.js');
+const { resetPolicyCacheForTests } = await import('../src/storage/policyStore.js');
 const { logger } = await import('../src/logger.js');
 const { VOICE_LANGUAGE_CAVEAT_TEXT_MI } = await import('../src/voiceLanguageCaveatNotice.js');
 

@@ -10,7 +10,8 @@ import type { AlertPriority } from '../../pendingAlertQueue.js';
 import { filterOutbound } from '../../agent/outbound.js';
 import { runtimeSecrets } from '../../agent/secrets.js';
 import { reserveImageInputDaily, reserveVoiceTranscriptionSlot } from '../../agent/rateReservers.js';
-import { getCodeAnswersPolicy, getCommunityGuidelines, getWelcomeMessage } from '../../storage/policies.js';
+import { getCodeAnswersPolicy } from '../../storage/policyStore.js';
+import { getCommunityGuidelines, getWelcomeMessage } from '../../storage/policies.js';
 import {
   blockUser,
   getLanguagePreference,

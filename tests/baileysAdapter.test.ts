@@ -28,7 +28,7 @@ const {
 const { config } = await import('../src/config.js');
 const { pool } = await import('../src/storage/db.js');
 const { logger } = await import('../src/logger.js');
-const { resetPolicyCacheForTests } = await import('../src/storage/policies.js');
+const { resetPolicyCacheForTests } = await import('../src/storage/policyStore.js');
 const { buildToolServer } = await import('../src/agent/tools.js');
 const { toolsForRole, ADMIN_TOOLS, SUPER_ADMIN_TOOLS } = await import('../src/auth/rbac.js');
 const { VOICE_LANGUAGE_CAVEAT_TEXT_MI } = await import('../src/voiceLanguageCaveatNotice.js');

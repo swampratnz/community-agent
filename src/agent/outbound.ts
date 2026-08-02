@@ -1,4 +1,4 @@
-import type { CodeAnswersPolicy } from '../storage/policies.js';
+import type { CodeAnswersPolicy } from '../storage/policyStore.js';
 import { notice } from '../strings/catalogue.js';
 
 /**

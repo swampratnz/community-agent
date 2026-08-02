@@ -17,7 +17,7 @@ process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 const { DiscordAdapter } = await import('../src/platforms/discord/adapter.js');
 const { config } = await import('../src/config.js');
 const { pool } = await import('../src/storage/db.js');
-const { resetPolicyCacheForTests } = await import('../src/storage/policies.js');
+const { resetPolicyCacheForTests } = await import('../src/storage/policyStore.js');
 const { handleInteraction, buildSlashCommands, registerSlashCommands } =
   await import('../src/platforms/discord/slashCommands.js');
 const { buildMemberDigestContent } = await import('../src/memberDigest.js');

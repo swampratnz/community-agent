@@ -19,7 +19,7 @@ import {
   usageStats,
   engagementStats,
 } from '../../storage/repository.js';
-import { updatePolicy } from '../../storage/policies.js';
+import { updatePolicy } from '../../storage/policyStore.js';
 import { redactSecrets } from '../outbound.js';
 import { createIssue } from '../../github/issues.js';
 import { triggerRedeploy } from '../redeploy.js';

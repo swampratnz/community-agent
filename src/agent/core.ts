@@ -24,7 +24,7 @@ import {
   type ResponseStyle,
 } from '../storage/repository.js';
 import { finalizeTurnState, type TurnStateBag } from './turnState.js';
-import { getCodeAnswersPolicy } from '../storage/policies.js';
+import { getCodeAnswersPolicy } from '../storage/policyStore.js';
 import { queuePendingAlert } from '../pendingAlertQueue.js';
 import {
   buildSystemPrompt,

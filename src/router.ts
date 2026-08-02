@@ -37,7 +37,8 @@ import {
   sweepExpiredPendingActions,
   takePendingAction,
 } from './agent/pendingActions.js';
-import { isPaused, getCommunityGuidelines, getCommunityGuidelinesMi } from './storage/policies.js';
+import { isPaused } from './storage/policyStore.js';
+import { getCommunityGuidelines, getCommunityGuidelinesMi } from './storage/policies.js';
 import { recordReplyMapping } from './replyRetraction.js';
 import { queuePendingAlert } from './pendingAlertQueue.js';
 import {

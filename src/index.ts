@@ -3,14 +3,16 @@ import { logger } from './logger.js';
 // Side-effect imports: the community content registrations (prompt sections
 // into promptSpine.ts's slot set, the persona roster into personaRegistry.ts,
 // the skills manifest into skillsManifest.ts, the notice pack into
-// strings/catalogue.ts). They live HERE, at the composition root, so the
-// base modules that consume them (systemPrompt.ts, core.ts) no longer import
-// community content themselves — each registry fails closed if its module
-// never loaded. Must stay above anything that could run a turn — the notice
-// pack in particular must land before any import whose subtree evaluates a
-// notice consumer (router.ts, agent/core.ts and the leaf notice modules
-// derive exported consts from `notice()` at their own module scope).
+// strings/catalogue.ts, the community policy keys into storage/policyStore.ts).
+// They live HERE, at the composition root, so the base modules that consume
+// them (systemPrompt.ts, core.ts) no longer import community content
+// themselves — each registry fails closed if its module never loaded. Must
+// stay above anything that could run a turn — the notice pack in particular
+// must land before any import whose subtree evaluates a notice consumer
+// (router.ts, agent/core.ts and the leaf notice modules derive exported
+// consts from `notice()` at their own module scope).
 import './strings/notices.js';
+import './storage/policies.js';
 import './agent/communityPromptSections.js';
 import './agent/personas.js';
 import './agent/enabledSkills.js';

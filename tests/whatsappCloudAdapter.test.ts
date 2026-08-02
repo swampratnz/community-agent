@@ -31,7 +31,7 @@ const {
 } = await import('../src/platforms/whatsapp/cloudAdapter.js');
 const { config } = await import('../src/config.js');
 const { pool } = await import('../src/storage/db.js');
-const { resetPolicyCacheForTests } = await import('../src/storage/policies.js');
+const { resetPolicyCacheForTests } = await import('../src/storage/policyStore.js');
 const { buildToolServer } = await import('../src/agent/tools.js');
 
 /**

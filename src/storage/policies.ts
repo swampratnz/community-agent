@@ -1,58 +1,19 @@
-import { logger } from '../logger.js';
-import { getPolicyValue, setPolicyValue } from './repository.js';
+import { readPolicy, registerPolicyKeys } from './policyStore.js';
 
 /**
- * Runtime policies set by super admins via the set_policy / pause tools.
- * Values live in the `policies` table; reads are cached briefly so the hot
- * message path doesn't hit the DB for every message.
+ * The community-owned policy keys — the content half of the policy store,
+ * paired with the base mechanism in `policyStore.ts` (cache, writer, base
+ * keys). Registration happens at THIS module's import time, and the four
+ * typed accessors below are the only readers of these keys, so loading any
+ * of them loads the registration first — no separate ordering to get wrong.
  */
 
-export type CodeAnswersPolicy = 'off' | 'snippets' | 'full';
-
-export const POLICY_KEYS = [
-  'code_answers',
-  'paused',
-  'community_guidelines',
-  'community_guidelines_mi',
-  'welcome_message',
-  'welcome_message_mi',
-] as const;
-export type PolicyKey = (typeof POLICY_KEYS)[number];
-
-const DEFAULTS: Record<PolicyKey, unknown> = {
-  code_answers: 'snippets',
-  paused: false,
+registerPolicyKeys({
   community_guidelines: null,
   community_guidelines_mi: null,
   welcome_message: null,
   welcome_message_mi: null,
-};
-
-const CACHE_TTL_MS = 30_000;
-const cache = new Map<PolicyKey, { value: unknown; expires: number }>();
-
-async function readPolicy(key: PolicyKey): Promise<unknown> {
-  const hit = cache.get(key);
-  if (hit && hit.expires > Date.now()) return hit.value;
-  let value: unknown = null;
-  try {
-    value = await getPolicyValue(key);
-  } catch (err) {
-    logger.warn({ err, key }, 'Policy read failed; using default');
-  }
-  const resolved = value ?? DEFAULTS[key];
-  cache.set(key, { value: resolved, expires: Date.now() + CACHE_TTL_MS });
-  return resolved;
-}
-
-export async function getCodeAnswersPolicy(): Promise<CodeAnswersPolicy> {
-  const v = await readPolicy('code_answers');
-  return v === 'off' || v === 'full' ? v : 'snippets';
-}
-
-export async function isPaused(): Promise<boolean> {
-  return (await readPolicy('paused')) === true;
-}
+});
 
 /**
  * The current community guidelines text, or null if never set (or cleared
@@ -98,14 +59,4 @@ export async function getWelcomeMessage(): Promise<string | null> {
 export async function getWelcomeMessageMi(): Promise<string | null> {
   const v = await readPolicy('welcome_message_mi');
   return typeof v === 'string' && v.length > 0 ? v : null;
-}
-
-export async function updatePolicy(key: PolicyKey, value: unknown, updatedBy: string): Promise<void> {
-  await setPolicyValue(key, value, updatedBy);
-  cache.set(key, { value, expires: Date.now() + CACHE_TTL_MS });
-}
-
-/** Test-only reset of the in-memory policy cache between test cases. */
-export function resetPolicyCacheForTests(): void {
-  cache.clear();
 }

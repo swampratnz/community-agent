@@ -39,12 +39,8 @@ import {
   VOICE_LANGUAGE_CAVEAT_TEXT_MI,
   shouldNotify as shouldNotifyVoiceLanguageCaveat,
 } from '../../voiceLanguageCaveatNotice.js';
-import {
-  getCodeAnswersPolicy,
-  getCommunityGuidelines,
-  getWelcomeMessage,
-  getWelcomeMessageMi,
-} from '../../storage/policies.js';
+import { getCodeAnswersPolicy } from '../../storage/policyStore.js';
+import { getCommunityGuidelines, getWelcomeMessage, getWelcomeMessageMi } from '../../storage/policies.js';
 import { createModerator, type ModerationEnforcer, type Moderator } from '../../moderation/index.js';
 import { atLeast } from '../../auth/rbac.js';
 import { isSuperAdmin, resolveRole, superAdminIds } from '../../auth/roles.js';

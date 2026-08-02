@@ -16,7 +16,8 @@ import { logger, hashId } from '../../logger.js';
 import { filterOutbound } from '../../agent/outbound.js';
 import { runtimeSecrets } from '../../agent/secrets.js';
 import { reserveVoiceTranscriptionSlot, reserveImageInputDaily } from '../../agent/rateReservers.js';
-import { getCodeAnswersPolicy, getCommunityGuidelines, getWelcomeMessage } from '../../storage/policies.js';
+import { getCodeAnswersPolicy } from '../../storage/policyStore.js';
+import { getCommunityGuidelines, getWelcomeMessage } from '../../storage/policies.js';
 import {
   blockUser,
   deleteInteractionByMessageId,

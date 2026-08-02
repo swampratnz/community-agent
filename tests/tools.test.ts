@@ -151,13 +151,9 @@ const pgvector = (await import('pgvector/pg')).default;
 const { cancelPendingAction, hasPendingAction, takePendingAction } =
   await import('../src/agent/pendingActions.js');
 const { config } = await import('../src/config.js');
-const {
-  getCommunityGuidelines,
-  getCommunityGuidelinesMi,
-  getWelcomeMessage,
-  getWelcomeMessageMi,
-  resetPolicyCacheForTests,
-} = await import('../src/storage/policies.js');
+const { getCommunityGuidelines, getCommunityGuidelinesMi, getWelcomeMessage, getWelcomeMessageMi } =
+  await import('../src/storage/policies.js');
+const { resetPolicyCacheForTests } = await import('../src/storage/policyStore.js');
 const { MEMBER_TOOLS, ADMIN_TOOLS, SUPER_ADMIN_TOOLS } = await import('../src/auth/rbac.js');
 const { superAdminIds } = await import('../src/auth/roles.js');
 const { WhatsAppCloudAdapter, WindowClosedError } = await import('../src/platforms/whatsapp/cloudAdapter.js');
