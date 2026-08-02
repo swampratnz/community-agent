@@ -3,6 +3,7 @@ import type { Platform } from '../../platforms/types.js';
 import { logger } from '../../logger.js';
 import { pool } from '../db.js';
 import { embed } from '../embeddings.js';
+import { registerOnRosterLeave, registerPurgeContributor } from '../lifecycle.js';
 
 /**
  * Member projects — the self-declared project showcase behind share_project /
@@ -476,3 +477,75 @@ function mapMemberProjectRow(r: {
     createdAt: r.created_at,
   };
 }
+
+// --- Lifecycle registration (storage/lifecycle.ts) ---------------------------
+
+registerPurgeContributor({
+  name: 'member_projects',
+  order: 140,
+  async purge({ platform, userId }, tx) {
+    // member_projects (issue #646) is keyed the same way — purge coherence for
+    // anyone who shared a project via share_project.
+    const { rowCount: memberProjects } = await tx.query(
+      `DELETE FROM member_projects WHERE platform = $1 AND user_id = $2`,
+      [platform, userId],
+    );
+    return memberProjects ?? 0;
+  },
+  async summarize({ platform, userId }, db) {
+    const { rows: projectRows } = await db.query(
+      `SELECT count(*) AS n FROM member_projects WHERE platform = $1 AND user_id = $2 AND removed_at IS NULL`,
+      [platform, userId],
+    );
+    return { projectsShared: Number(projectRows[0]?.n ?? 0) };
+  },
+});
+
+registerPurgeContributor({
+  name: 'project_connection_requests',
+  order: 180,
+  async purge({ platform, userId }, tx) {
+    // project_connection_requests (issue #840, request_project_connection) is
+    // keyed on this identity in EITHER role — as the project owner who
+    // received a request, or as the requester who sent one — same two-sided
+    // shape as helper_notifications.
+    const { rowCount: projectConnectionRequests } = await tx.query(
+      `DELETE FROM project_connection_requests
+        WHERE (owner_platform = $1 AND owner_user_id = $2)
+           OR (requester_platform = $1 AND requester_user_id = $2)`,
+      [platform, userId],
+    );
+    return projectConnectionRequests ?? 0;
+  },
+});
+
+// Departed-member cleanups (markRosterLeave, storage/repository/roster.ts):
+// shared projects are PUBLISHED artifacts whose premise is "a current member
+// of this community built this" — they go with the member automatically on
+// departure (issue #646), and the connection-request log rides along (issue
+// #840, EITHER role). Hook names are the table names — the roster-leave
+// failure log line interpolates them.
+registerOnRosterLeave({
+  name: 'member_projects',
+  order: 10,
+  async run({ platform, userId }) {
+    await pool.query(`DELETE FROM member_projects WHERE platform = $1 AND user_id = $2`, [platform, userId]);
+  },
+});
+
+registerOnRosterLeave({
+  name: 'project_connection_requests',
+  order: 40,
+  async run({ platform, userId }) {
+    // project_connection_requests (issue #840) rides along the same
+    // departure, in EITHER role — a departed member's connection-request log
+    // (as project owner or as requester) shouldn't linger once
+    // member_projects above is already gone for them.
+    await pool.query(
+      `DELETE FROM project_connection_requests
+          WHERE (owner_platform = $1 AND owner_user_id = $2)
+             OR (requester_platform = $1 AND requester_user_id = $2)`,
+      [platform, userId],
+    );
+  },
+});

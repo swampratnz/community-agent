@@ -9,6 +9,7 @@ import {
   saveKnowledge,
   type KnowledgeDuplicateMatch,
 } from './knowledge.js';
+import { registerPurgeContributor } from '../lifecycle.js';
 
 /**
  * The knowledge_candidates queue (#102): machine- and member-drafted entries
@@ -546,3 +547,25 @@ export async function recentInboundForClustering(
       embedding: r.embedding as number[],
     }));
 }
+
+// --- Lifecycle registration (storage/lifecycle.ts) ---------------------------
+
+registerPurgeContributor({
+  name: 'knowledge_candidates',
+  order: 160,
+  async purge({ platform, userId }, tx) {
+    // Member-sourced knowledge_candidates rows (issue #633, suggest_knowledge)
+    // — matched on source_platform/source_user_id, in EVERY status (pending
+    // AND accepted/declined), unlike the digest-invalidation delete the purge
+    // prologue runs (which only removes a still-pending MACHINE row and leaves
+    // an accepted one's accountability trail intact). A member's own attributed
+    // submission is their data to erase regardless of review status; rows
+    // with source_user_id IS NULL (machine-drafted) never match this
+    // predicate, so they're untouched.
+    const { rowCount: knowledgeTips } = await tx.query(
+      `DELETE FROM knowledge_candidates WHERE source_platform = $1 AND source_user_id = $2`,
+      [platform, userId],
+    );
+    return knowledgeTips ?? 0;
+  },
+});

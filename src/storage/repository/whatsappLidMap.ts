@@ -20,6 +20,7 @@
 // ---------------------------------------------------------------------------
 import { pool } from '../db.js';
 import type { Queryable } from './shared.js';
+import { registerPurgeContributor } from '../lifecycle.js';
 
 /**
  * Record (or refresh) a LID -> phone mapping learned from a real message
@@ -76,3 +77,25 @@ export async function forgetLidMappingsForPhone(phone: string, db: Queryable = p
   const { rowCount } = await db.query(`DELETE FROM whatsapp_lid_map WHERE phone = $1`, [phone]);
   return rowCount ?? 0;
 }
+
+// --- Lifecycle registration (storage/lifecycle.ts) ---------------------------
+
+registerPurgeContributor({
+  name: 'whatsapp_lid_map',
+  order: 200,
+  async purge({ platform, userId }, tx) {
+    // WhatsApp LID -> phone mapping (schema/70-whatsapp.sql, docs/SECURITY.md §6b). This
+    // row de-anonymises a privacy id, so it is squarely personal data and must
+    // not survive an erasure request. Keyed on the PHONE because that is what
+    // `userId` is for a WhatsApp identity, and one person can accumulate more
+    // than one LID over time. Deleted, not nulled: unlike a project note there
+    // is nothing shared to preserve here, it is pure identity.
+    // Delegates to `forgetLidMappingsForPhone` rather than inlining the DELETE,
+    // so there is ONE deletion path: a second copy here would silently drift
+    // the day someone adds a predicate or an audit trail to one and not the
+    // other, and that drift would be a PII-retention bug, not a cosmetic one
+    // (PR #935 review). `tx` is passed so the erasure commits or rolls back
+    // atomically with the rest of the purge transaction.
+    return platform === 'whatsapp' ? await forgetLidMappingsForPhone(userId, tx) : 0;
+  },
+});

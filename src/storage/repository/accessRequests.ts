@@ -1,6 +1,7 @@
 import type { Platform } from '../../platforms/types.js';
 import { pool } from '../db.js';
 import type { Queryable } from './shared.js';
+import { registerPurgeContributor } from '../lifecycle.js';
 
 /**
  * Gated-mode pending access-request queue: who has asked for access, how long
@@ -172,3 +173,30 @@ export async function oldestAccessRequestAgeDays(): Promise<number | null> {
   const ageDays = rows[0]?.age_days;
   return ageDays === null || ageDays === undefined ? null : Number(ageDays);
 }
+
+// --- Lifecycle registration (storage/lifecycle.ts) ---------------------------
+
+registerPurgeContributor({
+  name: 'access_requests',
+  order: 210,
+  async purge({ platform, userId }, tx) {
+    // access_requests (issue #939). Previously the ONLY route out of this
+    // table was `clearAccessRequest` on approval, so someone who asked for
+    // access and was never added had their display name — and on WhatsApp
+    // their phone number, since that IS the user id there — retained
+    // indefinitely with no erasure path and no expiry. docs/SECURITY.md named
+    // it a metadata-only exception to guest invisibility, which is true of its
+    // CONTENT but was never a licence to keep the identity forever.
+    //
+    // Delegates to `clearAccessRequest` with the purge transaction's client,
+    // for the same one-deletion-path reason as the LID mapping contributor
+    // rather than inlining a second DELETE here.
+    //
+    // Deleting a PENDING request cannot be an end-run around moderation, which
+    // is why this is safe where `blocked_users` deliberately is not: an
+    // access_requests row grants nothing and gates nothing — it is a queue
+    // entry. Someone who erases it and asks again simply reappears in the
+    // queue as a fresh request.
+    return clearAccessRequest(platform, userId, tx);
+  },
+});

@@ -1,9 +1,7 @@
 import type { Platform } from '../../platforms/types.js';
 import { pool } from '../db.js';
-import { invalidateDigestsForInteractions } from './shared.js';
+import { runInteractionsInvalidated, runPurgeContributors, runPurgeSummaries } from '../lifecycle.js';
 import { resolveLinkedIdentities } from './members.js';
-import { forgetLidMappingsForPhone } from './whatsappLidMap.js';
-import { clearAccessRequest } from './accessRequests.js';
 import { getResponseStyle, type ResponseStyle } from './preferences.js';
 
 /**
@@ -86,168 +84,38 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
     const messages = deletedInteractions.length;
     // Deletion coherence (issues #51/#102): a context digest whose summary was
     // built over any purged interaction is invalidated outright — the next
-    // builder run regenerates the topic without this person's signal. Shared
-    // with the delete/edit-honouring path via `invalidateDigestsForInteractions`.
-    const candidates = await invalidateDigestsForInteractions(
+    // builder run regenerates the topic without this person's signal. Runs via
+    // the interactions-invalidated hooks (storage/lifecycle.ts) — the base
+    // digest sweep `invalidateDigestsForInteractions` is registered first —
+    // awaited and PROPAGATING inside this transaction, so a failed
+    // invalidation still aborts the purge. Shared with the delete/edit-
+    // honouring path, which runs the same hooks .catch(warn)-isolated.
+    const candidates = await runInteractionsInvalidated(
       deletedInteractions.map((r) => Number(r.id)),
       client,
     );
-    // knowledge has no platform column, so this keys on source_user_id alone.
-    // Safe because Discord snowflakes (17-20 digits) and WhatsApp E.164 numbers
-    // (7-15 digits) can't collide as strings (enforced by normalizeMemberId), so
-    // this never touches another platform's user. If that validation loosens, add
-    // a platform column to knowledge and filter on it here.
-    const { rowCount: knowledge } = await client.query(`DELETE FROM knowledge WHERE source_user_id = $1`, [
-      userId,
-    ]);
-    const { rowCount: reports } = await client.query(
-      `DELETE FROM content_reports WHERE platform = $1 AND reporter_user_id = $2`,
-      [platform, userId],
-    );
-    const { rowCount: roster } = await client.query(
-      `DELETE FROM server_roster WHERE platform = $1 AND user_id = $2`,
-      [platform, userId],
-    );
-    const { rowCount: notes } = await client.query(
-      `DELETE FROM member_notes WHERE platform = $1 AND user_id = $2`,
-      [platform, userId],
-    );
-    const { rowCount: suggestions } = await client.query(
-      `DELETE FROM suggestions WHERE platform = $1 AND user_id = $2`,
-      [platform, userId],
-    );
-    // admin_digest_sends (issue #97) is keyed on the same (platform, user id)
-    // identity — purge coherence for an offboarded admin.
-    const { rowCount: digestSends } = await client.query(
-      `DELETE FROM admin_digest_sends WHERE platform = $1 AND platform_user_id = $2`,
-      [platform, userId],
-    );
-    // response_style_prefs (issue #126) is keyed the same way — purge coherence
-    // for anyone who opted into the plain-language preference.
-    const { rowCount: responseStyle } = await client.query(
-      `DELETE FROM response_style_prefs WHERE platform = $1 AND user_id = $2`,
-      [platform, userId],
-    );
-    // language_prefs (issue #189) is keyed the same way — purge coherence for
-    // anyone who opted into a standing language preference.
-    const { rowCount: languagePreference } = await client.query(
-      `DELETE FROM language_prefs WHERE platform = $1 AND user_id = $2`,
-      [platform, userId],
-    );
-    // member_warnings (auto-moderation strikes) are keyed on raw (platform,
-    // user_id) too — a purged user's warning history goes with them.
-    const { rowCount: warnings } = await client.query(
-      `DELETE FROM member_warnings WHERE platform = $1 AND user_id = $2`,
-      [platform, userId],
-    );
-    // blocked_users (issue #572) is DELIBERATELY NOT purged here, unlike
-    // member_warnings above: forget_me/purge_user_data must never be a way to
-    // route around an admin's block by erasing the row that enforces it,
-    // including via a linked identity (SECURITY).
-    // answer_feedback (issue #118) rows this identity submitted AS RATER go
-    // with them, same as suggestions/reports above. A row where this identity
-    // was only the RECIPIENT of the rated answer is not deleted here — its
-    // interaction_id is nulled automatically by the interactions delete above
-    // via the table's ON DELETE SET NULL foreign key, leaving the rater's own
-    // helpful/unhelpful signal intact.
-    const { rowCount: answerFeedback } = await client.query(
-      `DELETE FROM answer_feedback WHERE platform = $1 AND user_id = $2`,
-      [platform, userId],
-    );
-    // knowledge_gaps (issue #208) is keyed the same way — purge coherence for
-    // anyone whose below-floor searches were logged.
-    const { rowCount: knowledgeGaps } = await client.query(
-      `DELETE FROM knowledge_gaps WHERE platform = $1 AND user_id = $2`,
-      [platform, userId],
-    );
-    // dev_team_watches (super-admin dev-team dispatches) is keyed on the same
-    // (platform, user id) identity — purge coherence for a requester's
-    // job-watch rows (which record the repo/mode/job id they dispatched).
-    const { rowCount: devTeamWatches } = await client.query(
-      `DELETE FROM dev_team_watches WHERE requester_platform = $1 AND requester_user_id = $2`,
-      [platform, userId],
-    );
-    // moderation_appeals (issue #554) is keyed the same way — purge coherence
-    // for a member's own filed appeal(s), same treatment as member_warnings.
-    const { rowCount: moderationAppeals } = await client.query(
-      `DELETE FROM moderation_appeals WHERE platform = $1 AND user_id = $2`,
-      [platform, userId],
-    );
-    // member_projects (issue #646) is keyed the same way — purge coherence for
-    // anyone who shared a project via share_project.
-    const { rowCount: memberProjects } = await client.query(
-      `DELETE FROM member_projects WHERE platform = $1 AND user_id = $2`,
-      [platform, userId],
-    );
-    // member_interests (issue #634) is keyed the same way — purge coherence
-    // for anyone who published interests via set_my_interests.
-    const { rowCount: memberInterests } = await client.query(
-      `DELETE FROM member_interests WHERE platform = $1 AND user_id = $2`,
-      [platform, userId],
-    );
-    // Member-sourced knowledge_candidates rows (issue #633, suggest_knowledge)
-    // — matched on source_platform/source_user_id, in EVERY status (pending
-    // AND accepted/declined), unlike the digest-invalidation delete above
-    // (which only removes a still-pending MACHINE row and leaves an accepted
-    // one's accountability trail intact). A member's own attributed
-    // submission is their data to erase regardless of review status; rows
-    // with source_user_id IS NULL (machine-drafted) never match this
-    // predicate, so they're untouched.
-    const { rowCount: knowledgeTips } = await client.query(
-      `DELETE FROM knowledge_candidates WHERE source_platform = $1 AND source_user_id = $2`,
-      [platform, userId],
-    );
-    // helper_notifications (issue #729, find_helper) is keyed on this
-    // identity in EITHER role — as the helper who was notified, or as the
-    // requester who triggered the notification — so both halves are deleted
-    // here, unlike every other table above which is keyed one way.
-    const { rowCount: helperNotifications } = await client.query(
-      `DELETE FROM helper_notifications
-        WHERE (helper_platform = $1 AND helper_user_id = $2)
-           OR (requester_platform = $1 AND requester_user_id = $2)`,
-      [platform, userId],
-    );
-    // project_connection_requests (issue #840, request_project_connection) is
-    // keyed on this identity in EITHER role — as the project owner who
-    // received a request, or as the requester who sent one — same two-sided
-    // shape as helper_notifications above.
-    const { rowCount: projectConnectionRequests } = await client.query(
-      `DELETE FROM project_connection_requests
-        WHERE (owner_platform = $1 AND owner_user_id = $2)
-           OR (requester_platform = $1 AND requester_user_id = $2)`,
-      [platform, userId],
-    );
+    // Every remaining per-table statement of this transaction lives with its
+    // owning domain module as a registered PurgeContributor
+    // (storage/lifecycle.ts), run here inside the SAME client/transaction.
+    // ORDER IS PINNED: each contributor carries an explicit `order` chosen so
+    // the statement sequence is exactly the sequence the old inline code ran —
+    // knowledge → content_reports → server_roster → member_notes →
+    // suggestions → admin_digest_sends → response_style_prefs →
+    // language_prefs → member_warnings → answer_feedback → knowledge_gaps →
+    // dev_team_watches → moderation_appeals → member_projects →
+    // member_interests → knowledge_candidates → helper_notifications →
+    // project_connection_requests → projects → whatsapp_lid_map →
+    // access_requests — pinned by tests/storageLifecycle.test.ts. Each
+    // contributor returns its counted deletions; the sum feeds the same
+    // user-facing total as before.
+    //
+    // blocked_users (issue #572) deliberately has NO contributor, unlike
+    // member_warnings: forget_me/purge_user_data must never be a way to route
+    // around an admin's block by erasing the row that enforces it, including
+    // via a linked identity (SECURITY — tests/storageLifecycle.test.ts pins
+    // the registry's negative space too).
+    const contributed = await runPurgeContributors({ platform, userId }, client);
 
-    // Projects (issue #927) are the ONE place erasure is deliberately partial,
-    // and the asymmetry is the point:
-    //
-    //  - `project_members` HARD-DELETEs. It is pure identity; nothing shared is
-    //    lost with it, and the person stops being able to reach the project.
-    //  - `project_notes` keeps the row and NULLs the authorship. A departing
-    //    member's forget_me must not silently gut a standing team's decisions
-    //    — that is an unrelated side effect of a privacy action, and the whole
-    //    reason the team's memory exists. Precedent: knowledge_candidates
-    //    nulls its link for reviewed rows rather than deleting them.
-    //
-    // DOCUMENTED RESIDUAL: nulling authorship removes the LINK, not personal
-    // information the note's own text may contain ("Chris is hosting"). The
-    // erasure is therefore partial by design. docs/SECURITY.md §25 says so;
-    // forget_me's own reply does NOT yet — it still promises unqualified
-    // deletion, which is issue #930. Until that lands, a member in a project
-    // is told more was erased than actually was.
-    //
-    // This exception is scoped to project content ONLY — the
-    // `DELETE FROM knowledge` above is untouched, so ordinary knowledge the
-    // member authored still disappears exactly as before.
-    const { rowCount: projectMemberships } = await client.query(
-      `DELETE FROM project_members WHERE platform = $1 AND user_id = $2`,
-      [platform, userId],
-    );
-    await client.query(
-      `UPDATE project_notes SET author_platform = NULL, author_user_id = NULL
-        WHERE author_platform = $1 AND author_user_id = $2`,
-      [platform, userId],
-    );
     // Same rule for the project's own creator breadcrumb: the project outlives
     // its creator's erasure, unowned rather than deleted.
     //
@@ -261,69 +129,12 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
     // access is `project_members`, which IS platform-qualified above. Fixing it
     // properly needs a platform column on all three, which is a repo-wide
     // change, not a project-local one.
-    // WhatsApp LID -> phone mapping (schema/70-whatsapp.sql, docs/SECURITY.md §6b). This
-    // row de-anonymises a privacy id, so it is squarely personal data and must
-    // not survive an erasure request. Keyed on the PHONE because that is what
-    // `userId` is for a WhatsApp identity, and one person can accumulate more
-    // than one LID over time. Deleted, not nulled: unlike a project note there
-    // is nothing shared to preserve here, it is pure identity.
-    // Delegates to the domain module rather than inlining the DELETE, so there
-    // is ONE deletion path: a second copy here would silently drift the day
-    // someone adds a predicate or an audit trail to one and not the other, and
-    // that drift would be a PII-retention bug, not a cosmetic one (PR #935
-    // review). `client` is passed so the erasure commits or rolls back
-    // atomically with the rest of this transaction.
-    const lidMappings = platform === 'whatsapp' ? await forgetLidMappingsForPhone(userId, client) : 0;
-
-    // access_requests (issue #939). Previously the ONLY route out of this
-    // table was `clearAccessRequest` on approval, so someone who asked for
-    // access and was never added had their display name — and on WhatsApp
-    // their phone number, since that IS the user id there — retained
-    // indefinitely with no erasure path and no expiry. docs/SECURITY.md named
-    // it a metadata-only exception to guest invisibility, which is true of its
-    // CONTENT but was never a licence to keep the identity forever.
-    //
-    // Delegates to `clearAccessRequest` with this transaction's `client`, for
-    // the same one-deletion-path reason as the LID mapping above rather than
-    // inlining a second DELETE here.
-    //
-    // Deleting a PENDING request cannot be an end-run around moderation, which
-    // is why this is safe where `blocked_users` deliberately is not: an
-    // access_requests row grants nothing and gates nothing — it is a queue
-    // entry. Someone who erases it and asks again simply reappears in the
-    // queue as a fresh request.
-    const accessRequests = await clearAccessRequest(platform, userId, client);
-
     await client.query(`UPDATE projects SET created_by = NULL WHERE created_by = $1`, [userId]);
     await client.query(`UPDATE project_members SET added_by = NULL WHERE added_by = $1`, [userId]);
     await client.query(`UPDATE project_surfaces SET bound_by = NULL WHERE bound_by = $1`, [userId]);
 
     await client.query('COMMIT');
-    return (
-      (messages ?? 0) +
-      (projectMemberships ?? 0) +
-      (knowledge ?? 0) +
-      (reports ?? 0) +
-      (roster ?? 0) +
-      (notes ?? 0) +
-      (suggestions ?? 0) +
-      (digestSends ?? 0) +
-      (responseStyle ?? 0) +
-      (languagePreference ?? 0) +
-      (warnings ?? 0) +
-      candidates +
-      (answerFeedback ?? 0) +
-      (knowledgeGaps ?? 0) +
-      (devTeamWatches ?? 0) +
-      (moderationAppeals ?? 0) +
-      (memberProjects ?? 0) +
-      (memberInterests ?? 0) +
-      (knowledgeTips ?? 0) +
-      (helperNotifications ?? 0) +
-      (projectConnectionRequests ?? 0) +
-      lidMappings +
-      accessRequests
-    );
+    return messages + candidates + contributed;
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     throw err;
@@ -411,37 +222,18 @@ export async function getMyDataSummary(platform: Platform, userId: string): Prom
     ownMessages += Number(interactionRows[0]?.own_messages ?? 0);
     repliesToThem += Number(interactionRows[0]?.replies_to_them ?? 0);
 
-    // knowledge has no platform column (see purgeSingleIdentity above), so
-    // this keys on source_user_id alone, same as the DELETE it reconciles with.
-    const { rows: knowledgeRows } = await pool.query(
-      `SELECT count(*) AS n FROM knowledge WHERE source_user_id = $1`,
-      [identity.userId],
-    );
-    knowledgeEntries += Number(knowledgeRows[0]?.n ?? 0);
-
-    const { rows: reportRows } = await pool.query(
-      `SELECT count(*) AS n FROM content_reports WHERE platform = $1 AND reporter_user_id = $2`,
-      [identity.platform, identity.userId],
-    );
-    reportsFiled += Number(reportRows[0]?.n ?? 0);
-
-    const { rows: suggestionRows } = await pool.query(
-      `SELECT count(*) AS n FROM suggestions WHERE platform = $1 AND user_id = $2`,
-      [identity.platform, identity.userId],
-    );
-    suggestionsFiled += Number(suggestionRows[0]?.n ?? 0);
-
-    const { rows: projectRows } = await pool.query(
-      `SELECT count(*) AS n FROM member_projects WHERE platform = $1 AND user_id = $2 AND removed_at IS NULL`,
-      [identity.platform, identity.userId],
-    );
-    projectsShared += Number(projectRows[0]?.n ?? 0);
-
-    const { rows: interestRows } = await pool.query(
-      `SELECT count(*) AS n FROM member_interests WHERE platform = $1 AND user_id = $2`,
-      [identity.platform, identity.userId],
-    );
-    interestsPublished += Number(interestRows[0]?.n ?? 0);
+    // The per-table counts come from the SAME contributors the purge runs
+    // (storage/lifecycle.ts): `summarize()` exists on exactly the tables this
+    // summary has always reported — knowledge, content_reports, suggestions,
+    // member_projects, member_interests — and the deliberate omissions above
+    // simply register no summarize (tests/storageLifecycle.test.ts pins the
+    // set), so the two surfaces can never drift apart per-table again.
+    const counts = await runPurgeSummaries(identity, pool);
+    knowledgeEntries += counts.knowledgeEntries ?? 0;
+    reportsFiled += counts.reportsFiled ?? 0;
+    suggestionsFiled += counts.suggestionsFiled ?? 0;
+    projectsShared += counts.projectsShared ?? 0;
+    interestsPublished += counts.interestsPublished ?? 0;
   }
 
   return {
@@ -465,6 +257,12 @@ export async function getMyDataSummary(platform: Platform, userId: string): Prom
  * (governed separately by SESSION_MAX_TURNS/_AGE_HOURS), or `admin_audit`
  * (accountability trail, retained deliberately — see SECURITY.md). Returns
  * the number of rows deleted, for operator-visible logging.
+ *
+ * Deliberately does NOT run the interactions-invalidated hooks
+ * (storage/lifecycle.ts) — matching its pre-registry behaviour: age-based
+ * retention is not an erasure request, and context digests are the distilled
+ * layer that is MEANT to outlive the raw rows it was built from. Only the
+ * delete/edit honouring paths and the privacy purge demand digest coherence.
  */
 export async function purgeOldInteractions(days: number): Promise<number> {
   const { rowCount } = await pool.query(

@@ -1,5 +1,6 @@
 import type { Platform } from '../../platforms/types.js';
 import { pool } from '../db.js';
+import { registerPurgeContributor } from '../lifecycle.js';
 
 /**
  * Digest and alert bookkeeping: the freshness guards and trend snapshots that
@@ -361,3 +362,19 @@ export async function recordMemberDigestSent(): Promise<void> {
      ON CONFLICT (id) DO UPDATE SET sent_at = now()`,
   );
 }
+
+// --- Lifecycle registration (storage/lifecycle.ts) ---------------------------
+
+registerPurgeContributor({
+  name: 'admin_digest_sends',
+  order: 60,
+  async purge({ platform, userId }, tx) {
+    // admin_digest_sends (issue #97) is keyed on the same (platform, user id)
+    // identity — purge coherence for an offboarded admin.
+    const { rowCount: digestSends } = await tx.query(
+      `DELETE FROM admin_digest_sends WHERE platform = $1 AND platform_user_id = $2`,
+      [platform, userId],
+    );
+    return digestSends ?? 0;
+  },
+});

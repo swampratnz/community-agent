@@ -1,5 +1,6 @@
 import type { Platform } from '../../platforms/types.js';
 import { pool } from '../db.js';
+import { registerPurgeContributor } from '../lifecycle.js';
 
 /**
  * Admin-curated, person-scoped notes (issue #45). Deliberately NOT part of
@@ -75,3 +76,17 @@ export async function deleteMemberNote(id: number): Promise<boolean> {
   const { rowCount } = await pool.query(`DELETE FROM member_notes WHERE id = $1`, [id]);
   return (rowCount ?? 0) > 0;
 }
+
+// --- Lifecycle registration (storage/lifecycle.ts) ---------------------------
+
+registerPurgeContributor({
+  name: 'member_notes',
+  order: 40,
+  async purge({ platform, userId }, tx) {
+    const { rowCount: notes } = await tx.query(
+      `DELETE FROM member_notes WHERE platform = $1 AND user_id = $2`,
+      [platform, userId],
+    );
+    return notes ?? 0;
+  },
+});

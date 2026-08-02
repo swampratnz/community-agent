@@ -4,7 +4,12 @@ import { logger } from '../../logger.js';
 import { pool } from '../db.js';
 import { embed } from '../embeddings.js';
 import { config } from '../../config.js';
-import { invalidateDigestsForInteractions } from './shared.js';
+import { onInteractionsInvalidatedHooks } from '../lifecycle.js';
+// Side-effect import: guarantees the base digest-coherence sweep
+// (shared.ts's invalidateDigestsForInteractions) is registered as the first
+// interactions-invalidated hook even for a consumer that imports this module
+// directly rather than through the barrel.
+import './shared.js';
 
 /**
  * The raw interaction archive: recording every message (with its embedding),
@@ -323,9 +328,14 @@ export async function deleteInteractionByMessageId(
     [platform, conversationId, messageId],
   );
   if (rows.length > 0) {
-    await invalidateDigestsForInteractions(rows.map((r) => Number(r.id))).catch((err) =>
-      logger.warn({ err }, 'Digest invalidation after message delete failed'),
-    );
+    // Interactions-invalidated hooks (storage/lifecycle.ts) — the base digest
+    // sweep first. Each hook is awaited individually and .catch(warn)-isolated:
+    // a failed invalidation is logged, never propagated (the purge path runs
+    // the same hooks propagating inside its transaction instead).
+    const ids = rows.map((r) => Number(r.id));
+    for (const hook of onInteractionsInvalidatedHooks()) {
+      await hook(ids).catch((err) => logger.warn({ err }, 'Digest invalidation after message delete failed'));
+    }
   }
   return rows.length;
 }
@@ -358,9 +368,12 @@ export async function updateInteractionByMessageId(
     [platform, conversationId, messageId, content, embedding ? pgvector.toSql(embedding) : null],
   );
   if (rows.length > 0) {
-    await invalidateDigestsForInteractions(rows.map((r) => Number(r.id))).catch((err) =>
-      logger.warn({ err }, 'Digest invalidation after message edit failed'),
-    );
+    // Same hooks as the delete path above — deliberately fired on EDIT too:
+    // the digest's summary was distilled from the pre-edit content.
+    const ids = rows.map((r) => Number(r.id));
+    for (const hook of onInteractionsInvalidatedHooks()) {
+      await hook(ids).catch((err) => logger.warn({ err }, 'Digest invalidation after message edit failed'));
+    }
   }
   return rows.length > 0;
 }

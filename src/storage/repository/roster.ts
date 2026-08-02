@@ -1,6 +1,7 @@
 import type { Platform } from '../../platforms/types.js';
 import { logger } from '../../logger.js';
 import { pool } from '../db.js';
+import { onRosterLeaveHooks, registerPurgeContributor } from '../lifecycle.js';
 
 /**
  * Server-roster persistence: who is currently in the guild, join/leave
@@ -49,7 +50,12 @@ export async function upsertRosterMember(input: {
  * request), both are PUBLISHED artifacts whose premise is "a current member
  * of this community built/is into this" — once they've left, showing them to
  * remaining members as if they were still around is misleading, so they go
- * with them automatically, same as each feature's stated lifecycle.
+ * with them automatically, same as each feature's stated lifecycle. The
+ * cleanups are registered per-domain (storage/lifecycle.ts, from
+ * memberProjects.ts/memberDiscovery.ts), run in their pinned order with NO
+ * transaction — matching the old inline behaviour: each hook is awaited
+ * individually and `.catch(warn)`-isolated with its own per-table log line,
+ * and `left` is returned unconditionally either way.
  */
 export async function markRosterLeave(platform: Platform, userId: string): Promise<boolean> {
   const { rowCount } = await pool.query(
@@ -59,38 +65,11 @@ export async function markRosterLeave(platform: Platform, userId: string): Promi
   );
   const left = (rowCount ?? 0) > 0;
   if (left) {
-    await pool
-      .query(`DELETE FROM member_projects WHERE platform = $1 AND user_id = $2`, [platform, userId])
-      .catch((err) => logger.warn({ err, platform }, 'Roster-leave member_projects cleanup failed'));
-    await pool
-      .query(`DELETE FROM member_interests WHERE platform = $1 AND user_id = $2`, [platform, userId])
-      .catch((err) => logger.warn({ err, platform }, 'Roster-leave member_interests cleanup failed'));
-    // helper_notifications (issue #729) rides along the same departure, in
-    // EITHER role — a departed member's find_helper handoff log (as helper
-    // or requester) shouldn't linger once member_interests/member_projects
-    // above are already gone for them.
-    await pool
-      .query(
-        `DELETE FROM helper_notifications
-          WHERE (helper_platform = $1 AND helper_user_id = $2)
-             OR (requester_platform = $1 AND requester_user_id = $2)`,
-        [platform, userId],
-      )
-      .catch((err) => logger.warn({ err, platform }, 'Roster-leave helper_notifications cleanup failed'));
-    // project_connection_requests (issue #840) rides along the same
-    // departure, in EITHER role — a departed member's connection-request log
-    // (as project owner or as requester) shouldn't linger once
-    // member_projects above is already gone for them.
-    await pool
-      .query(
-        `DELETE FROM project_connection_requests
-          WHERE (owner_platform = $1 AND owner_user_id = $2)
-             OR (requester_platform = $1 AND requester_user_id = $2)`,
-        [platform, userId],
-      )
-      .catch((err) =>
-        logger.warn({ err, platform }, 'Roster-leave project_connection_requests cleanup failed'),
-      );
+    for (const hook of onRosterLeaveHooks()) {
+      await hook
+        .run({ platform, userId })
+        .catch((err) => logger.warn({ err, platform }, `Roster-leave ${hook.name} cleanup failed`));
+    }
   }
   return left;
 }
@@ -257,3 +236,17 @@ export async function purgeDepartedRoster(days: number): Promise<number> {
   );
   return rowCount ?? 0;
 }
+
+// --- Lifecycle registration (storage/lifecycle.ts) ---------------------------
+
+registerPurgeContributor({
+  name: 'server_roster',
+  order: 30,
+  async purge({ platform, userId }, tx) {
+    const { rowCount: roster } = await tx.query(
+      `DELETE FROM server_roster WHERE platform = $1 AND user_id = $2`,
+      [platform, userId],
+    );
+    return roster ?? 0;
+  },
+});

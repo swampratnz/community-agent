@@ -1,5 +1,6 @@
 import type { Platform } from '../../platforms/types.js';
 import { pool } from '../db.js';
+import { registerPurgeContributor } from '../lifecycle.js';
 
 /**
  * Member ratings of the bot's own answers (#118): the rate_answer signal, its
@@ -594,3 +595,23 @@ export async function answerFeedbackOriginSummary(
     addressed: { helpful: Number(r.addressed_helpful), unhelpful: Number(r.addressed_unhelpful) },
   };
 }
+
+// --- Lifecycle registration (storage/lifecycle.ts) ---------------------------
+
+registerPurgeContributor({
+  name: 'answer_feedback',
+  order: 100,
+  async purge({ platform, userId }, tx) {
+    // answer_feedback (issue #118) rows this identity submitted AS RATER go
+    // with them, same as suggestions/reports above. A row where this identity
+    // was only the RECIPIENT of the rated answer is not deleted here — its
+    // interaction_id is nulled automatically by the purge's interactions delete
+    // via the table's ON DELETE SET NULL foreign key, leaving the rater's own
+    // helpful/unhelpful signal intact.
+    const { rowCount: answerFeedback } = await tx.query(
+      `DELETE FROM answer_feedback WHERE platform = $1 AND user_id = $2`,
+      [platform, userId],
+    );
+    return answerFeedback ?? 0;
+  },
+});
