@@ -57,8 +57,8 @@ const {
   defaultContextBuilderRun,
   defaultKnowledgeLinkCheckRun,
 } = await import('../src/backgroundJobs.js');
-const { startRetentionPurge } = await import('../src/interactionRetention.js');
-const { startRosterRetentionPurge } = await import('../src/rosterRetention.js');
+const { startRetentionPurge } = await import('../src/retention.js');
+const { startRosterRetentionPurge } = await import('../src/retention.js');
 const { startAdminDigest } = await import('../src/adminDigest.js');
 const { startDepartedAdminAlert } = await import('../src/departedAdminAlert.js');
 const { startUsageCostDigest } = await import('../src/usageCostDigest.js');

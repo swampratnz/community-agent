@@ -5,9 +5,11 @@ import { configureSubscriptionAuth } from './agent/auth.js';
 import { Router } from './router.js';
 import { closeDb, healthcheck } from './storage/db.js';
 import { verifyEmbeddingDim } from './storage/repository.js';
-import { startRetentionPurge } from './interactionRetention.js';
-import { startRosterRetentionPurge } from './rosterRetention.js';
-import { startAccessRequestRetentionPurge } from './accessRequestRetention.js';
+import {
+  startAccessRequestRetentionPurge,
+  startRetentionPurge,
+  startRosterRetentionPurge,
+} from './retention.js';
 import {
   startContextBuilder,
   startKnowledgeRefresh,
