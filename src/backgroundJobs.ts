@@ -64,9 +64,9 @@ export const BACKGROUND_JOB_FAILURE_ALERT_THRESHOLD = 3;
  * `notifications.ts` fan-out `usageAlert.ts`/`health.ts` already use once
  * the threshold is reached.
  *
- * Exported (issue #291) so the two retention purges (src/interactionRetention.ts,
- * src/rosterRetention.ts) can wire through the same tracker/alert plumbing
- * from their own files, instead of duplicating it.
+ * Exported (issue #291) so the retention purges (src/retention.ts) can wire
+ * through the same tracker/alert plumbing from their own file, instead of
+ * duplicating it.
  */
 export function startTrackedJob(
   jobName: BackgroundJobName,

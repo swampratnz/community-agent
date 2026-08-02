@@ -18,7 +18,7 @@ process.env.ROSTER_DEPARTED_RETENTION_DAYS = '0';
 process.env.ACCESS_REQUEST_RETENTION_DAYS = '30';
 
 const { config } = await import('../src/config.js');
-const { startAccessRequestRetentionPurge } = await import('../src/accessRequestRetention.js');
+const { startAccessRequestRetentionPurge } = await import('../src/retention.js');
 
 test(
   'startAccessRequestRetentionPurge: creates a timer on its OWN gate, with both the interaction and roster ' +

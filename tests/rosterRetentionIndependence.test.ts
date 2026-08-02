@@ -15,7 +15,7 @@ process.env.INTERACTION_RETENTION_DAYS = '0';
 process.env.ROSTER_DEPARTED_RETENTION_DAYS = '30';
 
 const { config } = await import('../src/config.js');
-const { startRosterRetentionPurge } = await import('../src/rosterRetention.js');
+const { startRosterRetentionPurge } = await import('../src/retention.js');
 
 test(
   'startRosterRetentionPurge: creates a timer when ROSTER_DEPARTED_RETENTION_DAYS is set, even though ' +

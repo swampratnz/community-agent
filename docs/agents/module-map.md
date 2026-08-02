@@ -23,7 +23,6 @@ is marked **🔒**. Changes there need a `SECURITY:` test (see
 
 <!-- module-map:begin -->
 
-- `src/accessRequestRetention.ts` — Scheduled purge of pending access requests whose requester has gone quiet, the third retention sweep beside interactions and roster; the clock runs off the LAST request, so an open request is never swept.
 - `src/ackClassifier.ts` — Deterministic "is this just 'thanks'?" classifier; lets the router skip a whole agent turn (and its cost) on a pure acknowledgement.
 - `src/adminDigest.ts` — Builds and sends the periodic admin digest: moderation, engagement, feedback and cost summaries for admins, scoped to their own conversations.
 - `src/adminLeverageAlert.ts` — Weekly super-admin push of `adminActivitySummary`'s actions-per-admin rate, the pull-to-push complement of the on-demand `admin_activity` tool.
@@ -55,7 +54,6 @@ is marked **🔒**. Changes there need a `SECURITY:` test (see
 - `src/health.ts` — The HTTP health server (`/healthz`) and the adapter/DB probes behind it.
 - `src/healthState.ts` — Pure health logic (disconnect debounce, payload shape), kept import-free of config and HTTP so it is directly unit-testable.
 - `src/index.ts` — Process entry point: loads config, wires adapters, storage, moderation and background jobs, and owns startup/shutdown ordering.
-- `src/interactionRetention.ts` — Scheduled purge of interaction rows past the retention window — the enforcement half of the retention promise in SECURITY.md.
 - `src/logger.ts` — The pino logger plus the hashing helper used to keep identifiers out of logs.
 - `src/media/` — Local-only media handling: Whisper voice transcription for WhatsApp notes and the Grok image-generation client. Audio is transcribed on-host, never shipped to a third party.
 - `src/memberDigest.ts` — The member-facing digest of recent community activity, built from PII-scrubbed aggregates rather than raw messages.
@@ -68,7 +66,7 @@ is marked **🔒**. Changes there need a `SECURITY:` test (see
 - `src/platforms/types.ts` — 🔒 The `IncomingMessage` / `PlatformAdapter` contract every adapter normalises into. Identity fields here are the only trusted source of who is speaking.
 - `src/rateLimitNotice.ts` — Pure debounce for the per-user rate-limit notice, so a burst of over-limit messages yields exactly one notice.
 - `src/replyRetraction.ts` — In-memory, TTL'd, size-capped map from an inbound message to the bot's reply, so a reply can be retracted when the prompt that caused it is deleted.
-- `src/rosterRetention.ts` — Scheduled purge of departed-member roster rows, the roster counterpart to interaction retention.
+- `src/retention.ts` — All three age-based retention sweeps (interactions per SECURITY.md's promise, departed roster rows, stale pending access requests) as one parameterised daily job; each purge is gated only on its own days config, so disabling one never suppresses another.
 - `src/router.ts` — 🔒 The hot path: every inbound message lands here. Rate limits, budgets, tier resolution, confirm handling, moderation and the agent call are all sequenced in this file.
 - `src/status/` — Anthropic status-page check behind the "is it me or is Anthropic down?" answer, with its own cache so a common question costs nothing.
 - `src/storage/` — 🔒 Postgres + pgvector: the pool, schema/migrations, local embeddings, runtime policies, and the repository that owns every query. Admin-facing reads are conversation-scoped in SQL here.
