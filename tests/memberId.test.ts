@@ -26,6 +26,19 @@ test('rejects a Discord snowflake registered as WhatsApp', () => {
   );
 });
 
+test('SECURITY: an unregistered platform is refused — member-id validation fails closed now that Platform is an open string', () => {
+  // Since agent-base plan item 9, normalizeMemberId dispatches over the
+  // platform registry's per-adapter rules. A platform string nothing
+  // registered must throw (naming the registered platforms), never fall
+  // through to some default shape check — an id no platform vouches for
+  // could otherwise be minted into an identity row that can never match a
+  // real sender (the same principle as the LID bound below).
+  assert.throws(
+    () => normalizeMemberId('telegram', '64273938855'),
+    /Unknown platform "telegram".*registered platforms: discord, whatsapp/s,
+  );
+});
+
 test('rejects non-numeric ids', () => {
   assert.throws(() => normalizeMemberId('whatsapp', 'not-a-number'), /expected digits only/);
   assert.throws(() => normalizeMemberId('discord', '1234abcd'), /expected digits only/);

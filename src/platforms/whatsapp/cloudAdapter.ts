@@ -162,9 +162,27 @@ export const WHATSAPP_CLOUD_TEXT_PACK: AdapterTextPack = {
  * Requires WHATSAPP_CLOUD_PHONE_NUMBER_ID, _ACCESS_TOKEN, _VERIFY_TOKEN, and
  * _APP_SECRET (see config.ts). Set WHATSAPP_PROVIDER=cloud to select it.
  */
+/** Every `AdminAction` kind this adapter's `performAdminAction` implements — hoisted to a module const so the factory registry (agent-base plan item 9) can declare it without an instance. */
+export const WHATSAPP_CLOUD_ADMIN_CAPABILITIES: ReadonlySet<string> = new Set([
+  'warn_user',
+  'block_user',
+  'unblock_user',
+]);
+
+/**
+ * The Cloud adapter's declared tool-capability set (agent-base plan item 9):
+ * the admin capabilities above plus `react_to_message` for the optional
+ * `reactToMessage` method (issue #528). See baileysAdapter.ts's counterpart
+ * for how the WhatsApp platform-level union is built and pinned.
+ */
+export const WHATSAPP_CLOUD_TOOL_CAPABILITIES: ReadonlySet<string> = new Set([
+  ...WHATSAPP_CLOUD_ADMIN_CAPABILITIES,
+  'react_to_message',
+]);
+
 export class WhatsAppCloudAdapter implements PlatformAdapter {
   readonly platform = 'whatsapp' as const;
-  readonly adminCapabilities = new Set(['warn_user', 'block_user', 'unblock_user']);
+  readonly adminCapabilities = WHATSAPP_CLOUD_ADMIN_CAPABILITIES;
 
   constructor(private readonly textPack: AdapterTextPack = WHATSAPP_CLOUD_TEXT_PACK) {}
 

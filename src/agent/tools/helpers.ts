@@ -1273,7 +1273,14 @@ export function formatDevTeamJobResult(r: JobResult): string {
   return parts.join('\n');
 }
 
-/** Optional `platform` argument shared by the membership tools. */
+/**
+ * Optional `platform` argument shared by the membership tools. CLOSED enum
+ * by design, and it stays closed even though `Platform` itself opened to a
+ * string (agent-base plan item 9): this is a MODEL-facing input, and the
+ * model must be able to select among registered platforms but never mint a
+ * new one — the same closed-unions-at-the-untrusted-boundary treatment as
+ * `set_language_preference`'s input enum (items 5/6).
+ */
 export const platformArg = z
   .enum(['discord', 'whatsapp'])
   .optional()

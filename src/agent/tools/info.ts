@@ -201,6 +201,7 @@ export const infoTools = [
       "Discord's own Scheduled Events (the read counterpart to create_event). Discord-only.",
     minTier: 'member',
     platforms: ['discord'],
+    requiresCapability: 'list_events',
     readOnlyHint: true,
     schema: {},
     handler: async (_args, { caller, adapter }) => {

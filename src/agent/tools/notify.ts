@@ -1,5 +1,6 @@
 import type { Platform, PlatformAdapter } from '../../platforms/types.js';
 import { WindowClosedError } from '../../platforms/types.js';
+import { KNOWN_PLATFORMS } from '../../platforms/registry.js';
 import { atLeast } from '../../auth/tiers.js';
 import { resolveRole, superAdminIds } from '../../auth/roles.js';
 import { config } from '../../config.js';
@@ -18,11 +19,9 @@ import {
 } from '../../storage/repository.js';
 import { truncateForEcho } from './helpers.js';
 
-/**
- * Both members of the `Platform` union (`src/platforms/types.ts`) — fixed at
- * two today; a future third adapter only needs adding here.
- */
-const ALL_PLATFORMS: readonly Platform[] = ['discord', 'whatsapp'];
+// Every registered platform, derived from the platform registry (agent-base
+// plan item 9) — this used to be a hand-kept `['discord', 'whatsapp']` copy.
+const ALL_PLATFORMS: readonly Platform[] = KNOWN_PLATFORMS;
 
 /**
  * Shared per-recipient rejection handler for `notifySuperAdmins`/

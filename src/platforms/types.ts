@@ -10,10 +10,52 @@
  * never from message content.
  */
 
-export type Platform = 'discord' | 'whatsapp';
+/**
+ * Platform identifier — an OPEN string (agent-base plan item 9), no longer
+ * the closed `'discord' | 'whatsapp'` union that was duplicated across
+ * core.ts/tools metadata/zod enums. The set of platforms that actually
+ * exists in a deployment is the registry (`src/platforms/registry.ts`:
+ * `PLATFORM_DESCRIPTORS` + `src/platforms/factories.ts`: `ADAPTER_FACTORIES`)
+ * — adding a platform is a registration, not a type edit fanned out across
+ * the codebase.
+ *
+ * Opening the TYPE does not open any runtime trust boundary. Every value
+ * that flows through a `Platform`-typed position still originates from one
+ * of exactly three registration-validated sources, never from message
+ * content:
+ *   1. an adapter's own `platform` field (a fixed literal on each adapter
+ *      class, checked against its factory registration at composition time);
+ *   2. a DB `platform` column, which only ever stores values written from
+ *      source 1 or 3;
+ *   3. a model-facing tool argument, where the zod schema stays a CLOSED
+ *      enum by design (`platformArg` in tools/helpers.ts, the
+ *      `link_member`/super-admin enums) — the model can select among known
+ *      platforms but can never mint a new one.
+ */
+export type Platform = string;
 
 /** Permission tier. Defined here to keep types.ts dependency-free. */
 export type Tier = 'super_admin' | 'admin' | 'member' | 'guest';
+
+/**
+ * Per-platform member-id validation heuristics (agent-base plan item 9):
+ * what shape a *membership target id* must have on this platform, owned by
+ * the platform's own lightweight rules module
+ * (`discord/memberIdRules.ts` / `whatsapp/memberIdRules.ts`) and looked up
+ * through the registry — `src/auth/memberId.ts` is now a thin dispatcher
+ * over these, so its import sites and error behaviour are unchanged.
+ * Defined here (not in registry.ts) so the rules modules can implement the
+ * contract without a type-level cycle back through the registry.
+ */
+export interface PlatformMemberIdRules {
+  /**
+   * Validate and normalise a membership target id for this platform.
+   * Throws with an actionable message on a mismatch; returns the
+   * normalised id otherwise. Must never accept an id whose shape belongs
+   * to a different platform (issue #78's cross-platform filing bug).
+   */
+  normalizeMemberId(rawId: string): string;
+}
 
 /** A message received from a platform, normalised to a common shape. */
 export interface IncomingMessage {

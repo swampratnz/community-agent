@@ -160,27 +160,45 @@ export const DISCORD_TEXT_PACK: AdapterTextPack = {
   warnUserDmPrefixMi: WARN_USER_DM_PREFIX_MI,
 };
 
+/** Every `AdminAction` kind this adapter's `performAdminAction` implements — hoisted to a module const so the factory registry (agent-base plan item 9) can declare it without an instance. */
+export const DISCORD_ADMIN_CAPABILITIES: ReadonlySet<string> = new Set([
+  'timeout_user',
+  'kick_user',
+  'ban_user',
+  'unban_user',
+  'delete_message',
+  'warn_user',
+  'unmute_user',
+  'mute_user',
+  'assign_community_role',
+  'remove_community_role',
+  'list_assignable_roles',
+  'create_poll',
+  'end_poll',
+  'create_thread',
+  'archive_thread',
+  'create_event',
+  'cancel_event',
+]);
+
+/**
+ * Discord's declared tool-capability set (agent-base plan item 9): the admin
+ * capabilities above plus the feature-capability ids for the optional
+ * adapter methods tools key on (`reactToMessage` / `listUpcomingEvents`).
+ * `assertToolAvailabilityConsistent` checks every ToolDef platform
+ * restriction against this, and the `SECURITY:` platform-registry test pins
+ * the declaration against the real instance (method presence), so it cannot
+ * drift from what the adapter actually implements.
+ */
+export const DISCORD_TOOL_CAPABILITIES: ReadonlySet<string> = new Set([
+  ...DISCORD_ADMIN_CAPABILITIES,
+  'react_to_message',
+  'list_events',
+]);
+
 export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
   readonly platform = 'discord' as const;
-  readonly adminCapabilities = new Set([
-    'timeout_user',
-    'kick_user',
-    'ban_user',
-    'unban_user',
-    'delete_message',
-    'warn_user',
-    'unmute_user',
-    'mute_user',
-    'assign_community_role',
-    'remove_community_role',
-    'list_assignable_roles',
-    'create_poll',
-    'end_poll',
-    'create_thread',
-    'archive_thread',
-    'create_event',
-    'cancel_event',
-  ]);
+  readonly adminCapabilities = DISCORD_ADMIN_CAPABILITIES;
 
   private readonly client: Client;
   private handler: MessageHandler | null = null;

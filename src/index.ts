@@ -7,10 +7,9 @@ import { closeDb, healthcheck } from './storage/db.js';
 import { verifyEmbeddingDim } from './storage/repository.js';
 import { startRegisteredJobs, stopRegisteredJobs } from './jobs/registry.js';
 import { startHealthServer } from './health.js';
-import type { PlatformAdapter } from './platforms/types.js';
-import { DiscordAdapter } from './platforms/discord/adapter.js';
-import { BaileysAdapter } from './platforms/whatsapp/baileysAdapter.js';
-import { WhatsAppCloudAdapter } from './platforms/whatsapp/cloudAdapter.js';
+import { assertToolAvailabilityConsistent } from './platforms/registry.js';
+import { ADAPTER_FACTORIES, createConfiguredAdapters } from './platforms/factories.js';
+import { TOOL_REGISTRY } from './agent/tools/index.js';
 
 async function main(): Promise<void> {
   logger.info('Starting Community Agent');
@@ -29,19 +28,17 @@ async function main(): Promise<void> {
   await verifyEmbeddingDim(config.db.embeddingDim);
   logger.info('Database reachable, embedding dimension verified');
 
-  // 3. Build platform adapters from config.
+  // 3. Build platform adapters via the factory registry (agent-base plan
+  //    item 9) — construction order and the WhatsApp provider switch are
+  //    unchanged, they just live in src/platforms/factories.ts now. First,
+  //    the capability invariant: every tool's platform restriction must be
+  //    consistent with what the registered adapters declare they can do, so
+  //    a drifted restriction fails the deploy loudly instead of silently
+  //    offering (or hiding) a tool somewhere wrong.
+  assertToolAvailabilityConsistent(TOOL_REGISTRY, ADAPTER_FACTORIES);
+
   const router = new Router();
-  const adapters: PlatformAdapter[] = [];
-
-  adapters.push(new DiscordAdapter());
-
-  if (config.whatsapp.provider === 'baileys') {
-    adapters.push(new BaileysAdapter());
-  } else if (config.whatsapp.provider === 'cloud') {
-    adapters.push(new WhatsAppCloudAdapter());
-  } else {
-    logger.warn('WhatsApp provider disabled');
-  }
+  const adapters = createConfiguredAdapters();
 
   for (const adapter of adapters) {
     router.register(adapter);

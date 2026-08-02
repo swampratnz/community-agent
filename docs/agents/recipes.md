@@ -162,6 +162,15 @@ the filter is a security bug, not a style issue.
 Keep pure wire helpers in their own files (`whatsapp/wire.ts`,
 `whatsapp/cloudWire.ts`) so they stay testable without a socket.
 
+Platforms are registered, not typed: adding one means a descriptor in
+`src/platforms/registry.ts` (id + `memberIdRules.ts`), a factory in
+`src/platforms/factories.ts` (constructor + declared tool-capability set),
+and — if any tool should be restricted to it — a `requiresCapability` on the
+ToolDef, which `assertToolAvailabilityConsistent` and
+`tests/platformRegistry.test.ts` check against the declared capabilities.
+Model-facing platform zod enums stay CLOSED; widen them only as a conscious
+security decision.
+
 ---
 
 ## Change the pipeline itself

@@ -374,7 +374,7 @@ function mapModerationAppeal(r: {
 }): ModerationAppeal {
   return {
     id: Number(r.id),
-    platform: r.platform as Platform,
+    platform: r.platform,
     userId: r.user_id,
     userName: r.user_name,
     reason: r.reason,

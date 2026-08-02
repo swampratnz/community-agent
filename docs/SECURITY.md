@@ -149,6 +149,30 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   byte-pinned per (role, policy, persona, day) by
   `tests/systemPromptByteStability.test.ts`, protecting the prompt cache from
   silent reassembly drift.
+- **The platform axis is type-open but registry-closed** (agent-base Phase 1
+  item 9): `Platform` is an open string now (`src/platforms/types.ts`)
+  instead of a closed `'discord' | 'whatsapp'` union, but no runtime trust
+  moved. The set of platforms that EXISTS is the registry
+  (`src/platforms/registry.ts` descriptors + `src/platforms/factories.ts`
+  adapter factories), and every `Platform` value still originates from an
+  adapter envelope, a DB row written from one, or a model-facing zod enum
+  that stays CLOSED by design (`platformArg`, the `link_member`/super-admin
+  enums) — message content can select among registered platforms, never mint
+  one. Dispatch fails closed: an unregistered platform has no adapter, no
+  access-mode entry that grants anything, and `normalizeMemberId` throws for
+  it (pinned by a `SECURITY:` test) rather than accepting an id shape nothing
+  vouches for. Per-platform tool availability is no longer hand-mirrored
+  folklore either: every `ToolDef.platforms` restriction must name the
+  adapter capability justifying it, and `assertToolAvailabilityConsistent`
+  (run at startup and under `SECURITY:` tests in
+  `tests/platformRegistry.test.ts`) requires the offered-platform set to
+  equal exactly the set of platforms whose registered adapters declare that
+  capability — a restriction can neither offer a tool where no provider can
+  execute it nor silently drop one from a platform that supports it (the
+  react_to_message deliberate-inclusion history, made structural). The
+  capability declarations themselves are shared consts the adapter classes
+  assign from, pinned against real instances (method presence) so they
+  cannot drift.
 - **Privileged targets are validated**: `moderate`/`announce`/`create_poll`/
   `end_poll`/`create_thread`/`archive_thread` refuse targets
   (conversations/users) the bot has never seen, so a manipulated admin turn

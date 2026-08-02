@@ -148,15 +148,31 @@ export function stepWelcomeCooldown(
  * Link the number once with `npm run whatsapp:link`, then this adapter reuses
  * the stored credentials in WHATSAPP_AUTH_DIR.
  */
+/** Every `AdminAction` kind this adapter's `performAdminAction` implements — hoisted to a module const so the factory registry (agent-base plan item 9) can declare it without an instance. */
+export const BAILEYS_ADMIN_CAPABILITIES: ReadonlySet<string> = new Set([
+  'warn_user',
+  'kick_user',
+  'delete_message',
+  'block_user',
+  'unblock_user',
+]);
+
+/**
+ * Baileys' declared tool-capability set (agent-base plan item 9): the admin
+ * capabilities above plus `react_to_message` for the optional
+ * `reactToMessage` method (issue #495). The WhatsApp PLATFORM declaration in
+ * `factories.ts` is the union of this and the Cloud adapter's set; the
+ * `SECURITY:` platform-registry test pins each provider's declaration
+ * against the real instance so it cannot drift.
+ */
+export const BAILEYS_TOOL_CAPABILITIES: ReadonlySet<string> = new Set([
+  ...BAILEYS_ADMIN_CAPABILITIES,
+  'react_to_message',
+]);
+
 export class BaileysAdapter implements PlatformAdapter {
   readonly platform = 'whatsapp' as const;
-  readonly adminCapabilities = new Set([
-    'warn_user',
-    'kick_user',
-    'delete_message',
-    'block_user',
-    'unblock_user',
-  ]);
+  readonly adminCapabilities = BAILEYS_ADMIN_CAPABILITIES;
 
   private sock: WASocket | null = null;
   private handler: MessageHandler | null = null;

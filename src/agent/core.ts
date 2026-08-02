@@ -10,6 +10,7 @@ import { notice } from '../strings/notices.js';
 import { atLeast, toolsForRole, type CallerContext } from '../auth/rbac.js';
 import { superAdminIds } from '../auth/roles.js';
 import type { AdapterLookup, IncomingMessage, Platform, PlatformAdapter } from '../platforms/types.js';
+import { KNOWN_PLATFORMS } from '../platforms/registry.js';
 import {
   clearClaudeSessionId,
   getClaudeSession,
@@ -710,13 +711,10 @@ export async function runAgentTurn(
 // single rolling tracker).
 let usageLimitTracker = initialUsageLimitTracker();
 
-/**
- * Both members of the `Platform` union (`src/platforms/types.ts`) — fixed at
- * two today; a future third adapter only needs adding here. Mirrors
- * `tools.ts`'s `ALL_PLATFORMS` (issue #288); not shared across the two files
- * since that constant is module-private there.
- */
-const ALL_PLATFORMS: readonly Platform[] = ['discord', 'whatsapp'];
+// Every registered platform, derived from the platform registry (agent-base
+// plan item 9) — this used to be a hand-kept `['discord', 'whatsapp']` copy
+// mirroring tools/notify.ts's, back when `Platform` was a closed union.
+const ALL_PLATFORMS: readonly Platform[] = KNOWN_PLATFORMS;
 
 /**
  * Debounced super-admin DM when a turn fails on an upstream usage-limit/

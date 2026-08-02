@@ -60,7 +60,7 @@ function mapContentReport(r: {
 }): ContentReport {
   return {
     id: Number(r.id),
-    platform: r.platform as Platform,
+    platform: r.platform,
     reporterUserId: r.reporter_user_id,
     reporterName: r.reporter_name,
     conversationId: r.conversation_id,

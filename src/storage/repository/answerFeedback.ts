@@ -54,7 +54,7 @@ function mapAnswerFeedback(r: {
 }): AnswerFeedback {
   return {
     id: Number(r.id),
-    platform: r.platform as Platform,
+    platform: r.platform,
     conversationId: r.conversation_id,
     userId: r.user_id,
     interactionId: r.interaction_id != null ? Number(r.interaction_id) : null,
