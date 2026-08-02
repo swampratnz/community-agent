@@ -39,6 +39,7 @@
     "tests/schemaConstraintIdempotency.test.ts",
     "tests/schemaFragmentEquivalence.test.ts",
     "tests/storageLifecycle.test.ts",
+    "tests/stringsCatalogue.test.ts",
     "tests/toolRegistry.test.ts",
     "tests/usageCostDigest.test.ts",
     "tests/whoIsIntoBrowseEmbedCount.test.ts"

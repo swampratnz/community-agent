@@ -6,8 +6,12 @@
 // moved byte-verbatim — prod-schema continuity: migrate() replays the
 // concatenation over the already-applied production schema, so a reworded
 // statement could diverge the replay. The numbering gap is deliberate:
-// 00–27 base, 50–53 community, 70 adapter — later phases pull the bands apart
-// into per-module registrations.
+// 00–27 base, 50–54 community, 70 adapter — later phases pull the bands apart
+// into per-module registrations. 54-language-prefs.sql is the `language_prefs`
+// table moved out of 17-prefs.sql (plan item 6): its 'mi' CHECK is community
+// content, so it lives in the community band — safe to reorder because the
+// table has no FK deps and every statement is IF NOT EXISTS, so the replay
+// over an already-migrated prod schema is unchanged.
 //
 // Concatenation ORDER is load-bearing (set_updated_at() before the triggers
 // that use it, referenced tables before their FKs, ALTERs after their CREATE),
@@ -44,6 +48,7 @@ export const SCHEMA_FRAGMENTS = [
   '51-projects.sql',
   '52-dev-team.sql',
   '53-docs-ingest.sql',
+  '54-language-prefs.sql',
   '70-whatsapp.sql',
 ] as const;
 

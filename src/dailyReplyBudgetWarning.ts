@@ -9,20 +9,27 @@
  * computed integer, never member text, so it carries no injection surface.
  */
 
-export const DAILY_REPLY_BUDGET_WARNING_TEXT = (remaining: number) =>
-  `\n\n(You have ${remaining} repl${remaining === 1 ? 'y' : 'ies'} left today.)`;
+import { notice } from './strings/notices.js';
+
+// The template itself lives in the strings catalogue (agent-base plan item
+// 6); these consts are derived so every existing import site and pinned test
+// value stays byte-identical.
+export const DAILY_REPLY_BUDGET_WARNING_TEXT = notice('dailyReplyBudgetWarning');
 
 // Fixed, human-authored te reo Māori variant (issue #300's precedent), served
 // instead of DAILY_REPLY_BUDGET_WARNING_TEXT to a caller with a standing 'mi'
 // language_prefs row — same trust level as the English variant: no model
 // call, no translation, no injection surface beyond the interpolated integer.
-export const DAILY_REPLY_BUDGET_WARNING_TEXT_MI = (remaining: number) =>
-  `\n\n(E ${remaining} ō whakautu e toe ana māu i tēnei rā.)`;
+export const DAILY_REPLY_BUDGET_WARNING_TEXT_MI = notice('dailyReplyBudgetWarning', {
+  language: 'mi',
+});
 
 // Fixed, human-authored plain-language variant (issue #430's precedent),
 // served instead of DAILY_REPLY_BUDGET_WARNING_TEXT to a caller with a
 // standing 'plain' response-style preference whose language preference is
 // NOT 'mi' — 'mi' takes precedence over 'plain', matching every other
-// notice pair in this codebase.
-export const DAILY_REPLY_BUDGET_WARNING_TEXT_PLAIN = (remaining: number) =>
-  `\n\n(You have ${remaining} left today.)`;
+// notice pair in this codebase (the precedence itself now lives in
+// strings/catalogue.ts).
+export const DAILY_REPLY_BUDGET_WARNING_TEXT_PLAIN = notice('dailyReplyBudgetWarning', {
+  style: 'plain',
+});

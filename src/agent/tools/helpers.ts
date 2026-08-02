@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { Platform } from '../../platforms/types.js';
 import { config } from '../../config.js';
+import { notice } from '../../strings/notices.js';
 import { sanitizeName } from '../../util/sanitizeName.js';
 import { untrustedEntryContent } from '../systemPrompt.js';
 import { ENABLED_SKILLS } from '../enabledSkills.js';
@@ -108,8 +109,7 @@ export interface KnowledgeCitationInfo {
  * tests specifically so this can never regress into leaking an aggregate
  * number.
  */
-export const KNOWLEDGE_LOW_RATED_CAVEAT_TEXT =
-  'other members found this unhelpful — you can flag it too with rate_answer';
+export const KNOWLEDGE_LOW_RATED_CAVEAT_TEXT = notice('knowledgeLowRatedCaveat');
 
 /**
  * Fixed, human-authored te reo Māori variant of `KNOWLEDGE_LOW_RATED_CAVEAT_TEXT`
@@ -119,8 +119,9 @@ export const KNOWLEDGE_LOW_RATED_CAVEAT_TEXT =
  * SECURITY: exact string-equality is asserted in tests, same convention as
  * `KNOWLEDGE_LOW_RATED_CAVEAT_TEXT` itself.
  */
-export const KNOWLEDGE_LOW_RATED_CAVEAT_TEXT_MI =
-  'i kitea e ētahi atu mema he kore-āwhina tēnei — ka taea hoki e koe te tohu mā te rate_answer';
+export const KNOWLEDGE_LOW_RATED_CAVEAT_TEXT_MI = notice('knowledgeLowRatedCaveat', {
+  language: 'mi',
+});
 
 /**
  * Fixed, human-authored te reo Māori variant of the `'may be outdated'`
@@ -131,7 +132,7 @@ export const KNOWLEDGE_LOW_RATED_CAVEAT_TEXT_MI =
  * model call. SECURITY: exact string-equality is asserted in tests, same
  * convention as `KNOWLEDGE_LOW_RATED_CAVEAT_TEXT`.
  */
-export const KNOWLEDGE_STALE_NOTE_MI = 'tērā pea kua tawhito';
+export const KNOWLEDGE_STALE_NOTE_MI = notice('knowledgeStaleNote', { language: 'mi' });
 
 /**
  * Fixed, deterministic trailing line appended to a `knowledge_search` reply
@@ -217,10 +218,10 @@ export function formatKnowledgeCitationNote(
       maxAgeDays,
     )
   ) {
-    notes.push(lang === 'mi' ? KNOWLEDGE_STALE_NOTE_MI : 'may be outdated');
+    notes.push(notice('knowledgeStaleNote', { language: lang }));
   }
   if (lowRatedCaveat) {
-    notes.push(lang === 'mi' ? KNOWLEDGE_LOW_RATED_CAVEAT_TEXT_MI : KNOWLEDGE_LOW_RATED_CAVEAT_TEXT);
+    notes.push(notice('knowledgeLowRatedCaveat', { language: lang }));
   }
   return notes.length > 0 ? ` (${notes.join(' · ')})` : '';
 }

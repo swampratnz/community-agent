@@ -133,8 +133,17 @@ which `backgroundJobHealth.ts` already handles.
 ## Add a member-facing notice
 
 There is a strong existing convention here: one small file per notice, holding
-the fixed text and (where the notice repeats) a **pure debounce helper** with no
-config, HTTP or DB imports, so it is directly unit-testable.
+(where the notice repeats) a **pure debounce helper** with no config, HTTP or
+DB imports, so it is directly unit-testable.
+
+The text itself now lives in the strings catalogue
+(`src/strings/notices.ts`): add one entry with the English base plus any
+`mi`/`plain` variants, and select it at the call site with
+`notice(id, { language, style })` — never re-encode the "'mi' beats 'plain'"
+precedence per site; the catalogue owns it (`src/strings/catalogue.ts`), and
+`tests/stringsCatalogue.test.ts` pins the semantics for every entry
+automatically. If other files need the value as a constant, export a derived
+const (`export const X = notice('id')`) the way `rateLimitNotice.ts` does.
 
 Copy the shape of `rateLimitNotice.ts` — `pauseNotice.ts`,
 `budgetCheckFailureNotice.ts` and `mutedRoleAlertNotice.ts` are all deliberate

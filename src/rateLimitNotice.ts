@@ -5,23 +5,25 @@
  * over-limit messages produces exactly one notice per episode.
  */
 
-export const RATE_LIMIT_NOTICE_TEXT =
-  "You're sending messages a bit fast — please wait a moment and try again.";
+import { notice } from './strings/notices.js';
+
+// The text itself lives in the strings catalogue (agent-base plan item 6);
+// these consts are derived so every existing import site and pinned test
+// value stays byte-identical.
+export const RATE_LIMIT_NOTICE_TEXT = notice('rateLimitNotice');
 
 // Fixed, human-authored te reo Māori variant (issue #300), served instead of
 // RATE_LIMIT_NOTICE_TEXT to a caller with a standing 'mi' language_prefs row
 // (getLanguagePreference, issue #189) — same trust level as the English
 // constant: no model call, no translation, no injection surface.
-export const RATE_LIMIT_NOTICE_TEXT_MI =
-  'Kei te tere rawa āu karere — tēnā koa, tatari mō tētahi wā poto ka whakamātau anō ai.';
+export const RATE_LIMIT_NOTICE_TEXT_MI = notice('rateLimitNotice', { language: 'mi' });
 
 // Fixed, human-authored plain-language variant (issue #430), served instead
 // of RATE_LIMIT_NOTICE_TEXT to a caller with a standing 'plain' response-style
 // preference (getResponseStyle, issue #126) whose language preference is
-// NOT 'mi' — 'mi' takes precedence over 'plain' (see router.ts). Same trust
-// level as the English constant: no model call, no translation, no injection
-// surface.
-export const RATE_LIMIT_NOTICE_TEXT_PLAIN =
-  "You're sending messages too fast. Please wait a bit, then try again.";
+// NOT 'mi' — 'mi' takes precedence over 'plain' (see strings/catalogue.ts,
+// which now owns that precedence). Same trust level as the English constant:
+// no model call, no translation, no injection surface.
+export const RATE_LIMIT_NOTICE_TEXT_PLAIN = notice('rateLimitNotice', { style: 'plain' });
 
 export { shouldNotifyAfterWindow as shouldNotifyRateLimited } from './util/noticeDebounce.js';

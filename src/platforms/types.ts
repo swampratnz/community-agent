@@ -72,26 +72,56 @@ export interface OutgoingMessage {
   conversationId: string;
   text: string;
   /**
-   * Set only on the router's real-agent-turn main reply (issue #339) when the
-   * caller has a standing `language_preference` of `'mi'` — picks the `_MI`
-   * variant of the outbound code-policy note. Every other send path
-   * (`sendDirectMessage`, poll question/answers, thread name/description,
-   * announce, warn) never sets this and stays English-only, by construction.
+   * Opaque render-variant hint: the caller's standing language preference,
+   * as an OPEN string (agent-base plan item 6 — no longer a closed `'mi'`
+   * union on the platform contract). Adapters never interpret it; they
+   * thread it into `filterOutbound`, where the strings catalogue's
+   * REGISTERED axes (`strings/notices.ts`: `'mi'` today) decide what it
+   * selects — an unregistered value renders the default text. Set only on
+   * the router's real-agent-turn main reply (issue #339); every other send
+   * path (`sendDirectMessage`, poll question/answers, thread
+   * name/description, announce, warn) never sets this and stays
+   * English-only, by construction. The DB-facing `LanguagePreference` union
+   * and the `set_language_preference` tool's input enum stay CLOSED — see
+   * strings/catalogue.ts's note on that tension.
    */
-  language?: 'mi';
+  language?: string;
   /**
-   * Set only on the router's real-agent-turn main reply (issue #657) when the
-   * caller has a standing `response_style_prefs` of `'plain'` — picks the
-   * `_PLAIN` variant of the outbound code-policy note. `filterOutbound`/
-   * `applyCodePolicy` already prioritise `language: 'mi'` over this
-   * internally, so a caller with both set is unaffected by the order these
-   * two fields are set in. Every other send path stays English-only, by
-   * construction, same as `language` above.
+   * Opaque render-variant hint for the response-style axis (issue #657),
+   * open on the same terms as `language` above (`'plain'` is the one
+   * registered style today). `filterOutbound`/the strings catalogue
+   * prioritise a registered `language` over this internally, so a caller
+   * with both set is unaffected by the order these two fields are set in.
+   * Every other send path stays English-only, by construction, same as
+   * `language` above.
    */
-  style?: 'plain';
+  style?: string;
 }
 
 export type MessageHandler = (message: IncomingMessage) => Promise<void> | void;
+
+/**
+ * Community-owned fixed texts an adapter sends on its own initiative
+ * (agent-base plan item 6, the `textPacks` extension point): the join
+ * welcome and the manual `warn_user` DM shell. Injected as an optional
+ * constructor parameter on each adapter with that adapter's historical
+ * constants as the default pack, so today's deployments are byte-identical
+ * and a future module can swap the pack without forking the adapter. Every
+ * value is a fixed, operator/developer-authored literal — never runtime
+ * input — and everything an adapter builds from it still leaves through the
+ * adapter's own outbound filter (`filtered()`), so an injected pack gains no
+ * new egress path.
+ */
+export interface AdapterTextPack {
+  /** Join welcome fallback when no admin-configured welcome_message policy is set. */
+  welcomeMessage: string;
+  /** Welcome fallback when this platform's access mode is 'open' (issue #351). */
+  welcomeMessageOpen: string;
+  /** Fixed shell prefixed to a manual `warn_user` DM — the admin's reason is appended verbatim. */
+  warnUserDmPrefix: string;
+  /** Fixed, human-authored te reo Māori variant of `warnUserDmPrefix` (issue #618). */
+  warnUserDmPrefixMi: string;
+}
 
 /**
  * Looks up the live adapter for a platform other than the one the current

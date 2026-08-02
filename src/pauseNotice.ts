@@ -7,21 +7,25 @@
  * is enough to reassure a member the bot isn't broken.
  */
 
-export const PAUSE_NOTICE_TEXT = 'The assistant is temporarily paused — please try again later.';
+import { notice } from './strings/notices.js';
+
+// The text itself lives in the strings catalogue (agent-base plan item 6);
+// these consts are derived so every existing import site and pinned test
+// value stays byte-identical.
+export const PAUSE_NOTICE_TEXT = notice('pauseNotice');
 
 // Fixed, human-authored te reo Māori variant (issue #300), served instead of
 // PAUSE_NOTICE_TEXT to a caller with a standing 'mi' language_prefs row
 // (getLanguagePreference, issue #189) — same trust level as the English
 // constant: no model call, no translation, no injection surface.
-export const PAUSE_NOTICE_TEXT_MI =
-  'Kua whakatārewahia te kaiāwhina mō tētahi wā poto — tēnā koa, tukua he wā.';
+export const PAUSE_NOTICE_TEXT_MI = notice('pauseNotice', { language: 'mi' });
 
 // Fixed, human-authored plain-language variant (issue #430), served instead
 // of PAUSE_NOTICE_TEXT to a caller with a standing 'plain' response-style
 // preference (getResponseStyle, issue #126) whose language preference is NOT
-// 'mi' — 'mi' takes precedence over 'plain' (see router.ts). Same trust level
-// as the English constant: no model call, no translation, no injection
-// surface.
-export const PAUSE_NOTICE_TEXT_PLAIN = 'The assistant is paused right now. Please try again later.';
+// 'mi' — 'mi' takes precedence over 'plain' (see strings/catalogue.ts, which
+// now owns that precedence). Same trust level as the English constant: no
+// model call, no translation, no injection surface.
+export const PAUSE_NOTICE_TEXT_PLAIN = notice('pauseNotice', { style: 'plain' });
 
 export { shouldNotifyAfterWindow as shouldNotifyPaused } from './util/noticeDebounce.js';

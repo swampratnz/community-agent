@@ -36,6 +36,7 @@ import { chunkText } from '../textChunk.js';
 import {
   paramString,
   WindowClosedError,
+  type AdapterTextPack,
   type AdminAction,
   type IncomingMessage,
   type MessageHandler,
@@ -140,6 +141,20 @@ export const WHATSAPP_CLOUD_WELCOME_MESSAGE_OPEN =
   'time for a quick rundown.';
 
 /**
+ * The default injected text pack (agent-base plan item 6, `AdapterTextPack`
+ * in ../types.ts): exactly today's constants, so a constructor that passes
+ * nothing is byte-identical to the pre-pack behaviour. A future module can
+ * swap the pack via the constructor; whatever it injects still leaves
+ * through this adapter's `filtered()` send paths.
+ */
+export const WHATSAPP_CLOUD_TEXT_PACK: AdapterTextPack = {
+  welcomeMessage: WHATSAPP_CLOUD_WELCOME_MESSAGE,
+  welcomeMessageOpen: WHATSAPP_CLOUD_WELCOME_MESSAGE_OPEN,
+  warnUserDmPrefix: WARN_USER_DM_PREFIX,
+  warnUserDmPrefixMi: WARN_USER_DM_PREFIX_MI,
+};
+
+/**
  * WhatsApp via the official Meta Business Cloud API. ToS-compliant
  * alternative to {@link BaileysAdapter}: no linked-device session to ban,
  * webhook-driven, 1:1 messaging only (no group/moderation surface).
@@ -150,6 +165,8 @@ export const WHATSAPP_CLOUD_WELCOME_MESSAGE_OPEN =
 export class WhatsAppCloudAdapter implements PlatformAdapter {
   readonly platform = 'whatsapp' as const;
   readonly adminCapabilities = new Set(['warn_user', 'block_user', 'unblock_user']);
+
+  constructor(private readonly textPack: AdapterTextPack = WHATSAPP_CLOUD_TEXT_PACK) {}
 
   private handler: MessageHandler | null = null;
   private server: Server | null = null;
@@ -710,8 +727,8 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
       if (await isKnownConversation('whatsapp', from)) return;
       const defaultWelcomeMessage =
         config.rbac.accessMode.whatsapp === 'open'
-          ? WHATSAPP_CLOUD_WELCOME_MESSAGE_OPEN
-          : WHATSAPP_CLOUD_WELCOME_MESSAGE;
+          ? this.textPack.welcomeMessageOpen
+          : this.textPack.welcomeMessage;
       const welcomeMessage = (await getWelcomeMessage()) ?? defaultWelcomeMessage;
       const guidelines = await getCommunityGuidelines();
       const welcomeText = guidelines
@@ -731,7 +748,7 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
    * site (via `sendText`'s default) omits both, so their output stays
    * English-only by construction (never `_MI`/`_PLAIN`).
    */
-  private async filtered(text: string, language?: 'mi', style?: 'plain'): Promise<string> {
+  private async filtered(text: string, language?: string, style?: string): Promise<string> {
     return filterOutbound(text, await getCodeAnswersPolicy(), runtimeSecrets(), 'whatsapp', language, style);
   }
 
@@ -867,7 +884,7 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
     }
   }
 
-  private async sendText(to: string, text: string, language?: 'mi', style?: 'plain'): Promise<void> {
+  private async sendText(to: string, text: string, language?: string, style?: string): Promise<void> {
     const { phoneNumberId, accessToken } = config.whatsapp.cloud;
     if (!phoneNumberId || !accessToken) throw new Error('WhatsApp Cloud adapter not configured');
     this.assertWithinCustomerServiceWindow(to);
@@ -1117,7 +1134,10 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
   async performAdminAction(action: AdminAction): Promise<string> {
     switch (action.kind) {
       case 'warn_user': {
-        const prefix = action.params?.language === 'mi' ? WARN_USER_DM_PREFIX_MI : WARN_USER_DM_PREFIX;
+        const prefix =
+          action.params?.language === 'mi'
+            ? this.textPack.warnUserDmPrefixMi
+            : this.textPack.warnUserDmPrefix;
         await this.sendDirectMessage(
           action.targetUserId ?? '',
           `${prefix} ${paramString(action.params?.reason)}`,

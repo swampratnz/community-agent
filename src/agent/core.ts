@@ -8,6 +8,7 @@ import {
 } from '@anthropic-ai/claude-agent-sdk';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
+import { notice } from '../strings/notices.js';
 import { atLeast, toolsForRole, type CallerContext } from '../auth/rbac.js';
 import { superAdminIds } from '../auth/roles.js';
 import type { AdapterLookup, IncomingMessage, Platform, PlatformAdapter } from '../platforms/types.js';
@@ -188,8 +189,7 @@ export interface AgentReply {
  * the router's pre-send backstop (issue #52) so a DB blip mid-turn produces
  * the same degraded reply as an agent-query failure — never silence.
  */
-export const INTERNAL_ERROR_REPLY =
-  'Sorry — I hit an internal error and could not complete that. Please try again.';
+export const INTERNAL_ERROR_REPLY = notice('internalErrorReply');
 
 /**
  * User-facing fallback when a turn exhausts `AGENT_MAX_TURNS` without
@@ -197,15 +197,14 @@ export const INTERNAL_ERROR_REPLY =
  * can replay the exact same, fixed, content-independent string on a cached
  * hit instead of duplicating it.
  */
-export const MAX_TURNS_REPLY =
-  'Sorry — that took more steps than I allow per message. Try breaking it into smaller questions.';
+export const MAX_TURNS_REPLY = notice('maxTurnsReply');
 
 /**
  * User-facing fallback for any other non-success `resultSubtype`. Hoisted
  * from an inline literal (issue #396) so it can gain an `_MI` counterpart
  * like its three siblings above.
  */
-export const TURN_FAILED_REPLY = 'Sorry — I could not complete that request. Please try again.';
+export const TURN_FAILED_REPLY = notice('turnFailedReply');
 
 // Fixed, human-authored te reo Māori variants (issue #396) of the four
 // runAgentTurn failure fallbacks above, served instead of the English
@@ -213,14 +212,11 @@ export const TURN_FAILED_REPLY = 'Sorry — I could not complete that request. P
 // (getLanguagePreference, issue #189) — same trust level as the English
 // constants: no model call, no translation, no injection surface. Mirrors
 // the `_MI`-variant pattern established by #266/#282/#300/#331/#363.
-export const INTERNAL_ERROR_REPLY_MI =
-  'Aroha mai — i pā mai he hapa o roto, kāore i oti i ahau tēnā mahi. Tēnā koa, whakamātauria anō.';
+export const INTERNAL_ERROR_REPLY_MI = notice('internalErrorReply', { language: 'mi' });
 
-export const MAX_TURNS_REPLY_MI =
-  'Aroha mai — he maha rawa ngā hipanga i hiahiatia mō tēnei karere. Whakamātauria te wāwāhi i tō ' +
-  'pātai kia iti ake ngā wāhanga.';
+export const MAX_TURNS_REPLY_MI = notice('maxTurnsReply', { language: 'mi' });
 
-export const TURN_FAILED_REPLY_MI = 'Aroha mai — kāore i oti i ahau tēnā tono. Tēnā koa, whakamātauria anō.';
+export const TURN_FAILED_REPLY_MI = notice('turnFailedReply', { language: 'mi' });
 
 /**
  * Lookup from an English fallback constant to its `_MI` counterpart, applied
@@ -243,12 +239,11 @@ const FALLBACK_REPLY_MI: Readonly<Record<string, string>> = {
 // 'mi' takes precedence over 'plain' (see FALLBACK_REPLY_PLAIN's use below).
 // Same trust level as the English constants: no model call, no translation,
 // no injection surface.
-export const INTERNAL_ERROR_REPLY_PLAIN = 'Sorry, something went wrong on my end. Please try again.';
+export const INTERNAL_ERROR_REPLY_PLAIN = notice('internalErrorReply', { style: 'plain' });
 
-export const MAX_TURNS_REPLY_PLAIN =
-  'Sorry, that was too many steps for me to finish in one go. Please split it into smaller questions.';
+export const MAX_TURNS_REPLY_PLAIN = notice('maxTurnsReply', { style: 'plain' });
 
-export const TURN_FAILED_REPLY_PLAIN = 'Sorry, I could not finish that. Please try again.';
+export const TURN_FAILED_REPLY_PLAIN = notice('turnFailedReply', { style: 'plain' });
 
 /**
  * Lookup from an English fallback constant to its `_PLAIN` counterpart,

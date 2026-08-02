@@ -48,6 +48,7 @@ import {
 } from './wire.js';
 import {
   paramString,
+  type AdapterTextPack,
   type AdminAction,
   type IncomingMessage,
   type MessageHandler,
@@ -101,6 +102,20 @@ export const WHATSAPP_GROUP_WELCOME_MESSAGE =
 export const WHATSAPP_GROUP_WELCOME_MESSAGE_OPEN =
   'Kia ora! 👋 This bot answers Claude/Anthropic questions and remembers context — go ahead and message ' +
   'me any time, no admin approval needed. Ask me "what can you do?" any time for a quick rundown.';
+
+/**
+ * The default injected text pack (agent-base plan item 6, `AdapterTextPack`
+ * in ../types.ts): exactly today's constants, so a constructor that passes
+ * nothing is byte-identical to the pre-pack behaviour. A future module can
+ * swap the pack via the constructor; whatever it injects still leaves
+ * through this adapter's `filtered()` send paths.
+ */
+export const BAILEYS_TEXT_PACK: AdapterTextPack = {
+  welcomeMessage: WHATSAPP_GROUP_WELCOME_MESSAGE,
+  welcomeMessageOpen: WHATSAPP_GROUP_WELCOME_MESSAGE_OPEN,
+  warnUserDmPrefix: WARN_USER_DM_PREFIX,
+  warnUserDmPrefixMi: WARN_USER_DM_PREFIX_MI,
+};
 
 export interface WelcomeCooldownState {
   readonly lastSentAt: Readonly<Record<string, number>>;
@@ -167,7 +182,10 @@ export class BaileysAdapter implements PlatformAdapter {
   private cachedVersion: [number, number, number] | null = null;
   private welcomeCooldown: WelcomeCooldownState = initialWelcomeCooldownState();
 
-  constructor(private readonly sendRetryDelayMs = BAILEYS_SEND_RETRY_DELAY_MS) {}
+  constructor(
+    private readonly sendRetryDelayMs = BAILEYS_SEND_RETRY_DELAY_MS,
+    private readonly textPack: AdapterTextPack = BAILEYS_TEXT_PACK,
+  ) {}
   /**
    * Bounded cache of the messages we've SENT (id -> content), so `getMessage`
    * (wired into makeWASocket in connect()) can answer a recipient's retry
@@ -977,8 +995,8 @@ export class BaileysAdapter implements PlatformAdapter {
 
     const defaultWelcomeMessage =
       config.rbac.accessMode.whatsapp === 'open'
-        ? WHATSAPP_GROUP_WELCOME_MESSAGE_OPEN
-        : WHATSAPP_GROUP_WELCOME_MESSAGE;
+        ? this.textPack.welcomeMessageOpen
+        : this.textPack.welcomeMessage;
     const welcomeMessage = (await getWelcomeMessage()) ?? defaultWelcomeMessage;
     const guidelines = await getCommunityGuidelines();
     const welcomeText = guidelines
@@ -1032,7 +1050,7 @@ export class BaileysAdapter implements PlatformAdapter {
    * site below omits both, so their output stays English-only by
    * construction (never `_MI`/`_PLAIN`).
    */
-  private async filtered(text: string, language?: 'mi', style?: 'plain'): Promise<string> {
+  private async filtered(text: string, language?: string, style?: string): Promise<string> {
     return filterOutbound(text, await getCodeAnswersPolicy(), runtimeSecrets(), 'whatsapp', language, style);
   }
 
@@ -1222,7 +1240,10 @@ export class BaileysAdapter implements PlatformAdapter {
     if (!this.sock) throw new Error('WhatsApp socket not connected');
     switch (action.kind) {
       case 'warn_user': {
-        const prefix = action.params?.language === 'mi' ? WARN_USER_DM_PREFIX_MI : WARN_USER_DM_PREFIX;
+        const prefix =
+          action.params?.language === 'mi'
+            ? this.textPack.warnUserDmPrefixMi
+            : this.textPack.warnUserDmPrefix;
         await this.sendDirectMessage(
           action.targetUserId ?? '',
           `${prefix} ${paramString(action.params?.reason)}`,

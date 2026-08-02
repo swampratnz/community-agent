@@ -6,13 +6,8 @@ import { resolveRole, superAdminIds } from './auth/roles.js';
 import type { IncomingMessage, Platform, PlatformAdapter } from './platforms/types.js';
 import { WindowClosedError } from './platforms/types.js';
 import { sanitizeName } from './util/sanitizeName.js';
-import {
-  INTERNAL_ERROR_REPLY,
-  MAX_TURNS_REPLY,
-  MAX_TURNS_REPLY_MI,
-  runAgentTurn,
-  type AgentReply,
-} from './agent/core.js';
+import { INTERNAL_ERROR_REPLY, runAgentTurn, type AgentReply } from './agent/core.js';
+import { notice } from './strings/notices.js';
 import {
   formatInterestResults,
   formatKnowledgeCitationNote,
@@ -61,28 +56,8 @@ import {
   searchProjects,
 } from './storage/repository.js';
 import { FRESHNESS_DAYS, CLUSTER_LIMIT } from './adminDigest.js';
-import {
-  RATE_LIMIT_NOTICE_TEXT,
-  RATE_LIMIT_NOTICE_TEXT_MI,
-  RATE_LIMIT_NOTICE_TEXT_PLAIN,
-  shouldNotifyRateLimited,
-} from './rateLimitNotice.js';
-import {
-  PAUSE_NOTICE_TEXT,
-  PAUSE_NOTICE_TEXT_MI,
-  PAUSE_NOTICE_TEXT_PLAIN,
-  shouldNotifyPaused,
-} from './pauseNotice.js';
-import {
-  DAILY_BUDGET_NOTICE_TEXT,
-  DAILY_BUDGET_NOTICE_TEXT_MI,
-  DAILY_BUDGET_NOTICE_TEXT_PLAIN,
-} from './dailyBudgetNotice.js';
-import {
-  DAILY_REPLY_BUDGET_WARNING_TEXT,
-  DAILY_REPLY_BUDGET_WARNING_TEXT_MI,
-  DAILY_REPLY_BUDGET_WARNING_TEXT_PLAIN,
-} from './dailyReplyBudgetWarning.js';
+import { shouldNotifyRateLimited } from './rateLimitNotice.js';
+import { shouldNotifyPaused } from './pauseNotice.js';
 import { shouldNotifyBudgetCheckFailed } from './budgetCheckFailureNotice.js';
 import { makeAlertSlotReserver } from './notifications.js';
 import {
@@ -98,8 +73,7 @@ import {
 // (getLanguagePreference, issue #189) — e.g. a former member who set the
 // preference before being removed. Same trust level as the English constant:
 // no model call, no translation, no injection surface.
-export const GATED_NOTICE_MI =
-  'Kia ora! He kaupapa mema anake tēnei kaiāwhina. Tonoa he kaiwhakahaere hapori ki te tāpiri i a koe hei mema, kātahi ka taea e au te āwhina.';
+export const GATED_NOTICE_MI = notice('gatedNotice', { language: 'mi' });
 
 // Fixed, human-authored plain-language variant (issue #430) of the static
 // GATED_NOTICE fallback ONLY — `getGatedNotice`'s dynamic admin-name
@@ -108,28 +82,24 @@ export const GATED_NOTICE_MI =
 // gated guest with a standing 'plain' response-style preference
 // (getResponseStyle, issue #126) whose language preference is NOT 'mi' —
 // 'mi' takes precedence over 'plain'.
-export const GATED_NOTICE_PLAIN =
-  'Kia ora! Only members can use this assistant. Please ask a community admin to add you as a member — then I can help.';
+export const GATED_NOTICE_PLAIN = notice('gatedNotice', { style: 'plain' });
 
 // The three fixed strings the CONFIRM/CANCEL intercept itself authors (issue
 // #405) — the one deterministic path #300/#363's own sweep of this file
 // missed. Same `_MI` + `getLanguagePreference` pattern as every constant
 // above: no model call, no translation, no injection surface, and `.catch(()
 // => 'auto')` at each call site fails safe to the English default.
-export const CANCEL_TEXT = 'Cancelled.';
-export const CANCEL_TEXT_MI = 'Kua whakakorea.';
+export const CANCEL_TEXT = notice('cancelConfirm');
+export const CANCEL_TEXT_MI = notice('cancelConfirm', { language: 'mi' });
 // Deliberately no CANCEL_TEXT_PLAIN (issue #430): already at the floor of
 // simplicity, so a plain variant would be change for change's sake.
 
-export const PERMISSIONS_CHANGED_TEXT =
-  'Not executed: your permissions changed since this action was requested.';
-export const PERMISSIONS_CHANGED_TEXT_MI =
-  'Kāore i whakahaerehia: kua rerekē ō mana whakaaetanga mai i te wā i tonoa ai tēnei mahi.';
+export const PERMISSIONS_CHANGED_TEXT = notice('permissionsChanged');
+export const PERMISSIONS_CHANGED_TEXT_MI = notice('permissionsChanged', { language: 'mi' });
 // Fixed, human-authored plain-language variant (issue #430) — rewords the
 // English constant's passive-voice, negation-first construction into a
 // short, direct statement. Same trust level as the English constant.
-export const PERMISSIONS_CHANGED_TEXT_PLAIN =
-  'I did not do this. Your permission level changed after you asked, so I can no longer do it.';
+export const PERMISSIONS_CHANGED_TEXT_PLAIN = notice('permissionsChanged', { style: 'plain' });
 
 // Fixed, human-authored te reo Māori substitute for the literal `'Failed: '`
 // shell prefix a CONFIRM-gated `requireConfirm` outcome falls back to on a
@@ -139,7 +109,7 @@ export const PERMISSIONS_CHANGED_TEXT_PLAIN =
 // dynamic `result`/error text after it is untouched, same "translate the
 // shell, not the payload" discipline as CODE_TRUNCATED_NOTE_MI (#339) and
 // every other constant in this file.
-export const FAILED_PREFIX_MI = 'I hapa: ';
+export const FAILED_PREFIX_MI = notice('confirmFailedPrefix', { language: 'mi' });
 
 // Symmetric te reo Māori substitute for the literal `'Done: '` shell prefix
 // a successful `requireConfirm` outcome uses when it returns the shared
@@ -150,7 +120,7 @@ export const FAILED_PREFIX_MI = 'I hapa: ';
 // requireConfirm tools that return fully bespoke (non-`Done:`) success
 // strings stay English-only — the same scope boundary FAILED_PREFIX_MI
 // already draws for bespoke failure strings.
-export const DONE_PREFIX_MI = 'Kua oti: ';
+export const DONE_PREFIX_MI = notice('confirmDonePrefix', { language: 'mi' });
 
 // Wrapper around the deterministic pending-action notice (issue #405),
 // mirroring the "translate the shell, leave the dynamic payload alone"
@@ -161,74 +131,28 @@ export const DONE_PREFIX_MI = 'Kua oti: ';
 // and `CANCEL` must stay literal, untranslated tokens in the `_MI` variant:
 // `classifyConfirmReply` matches exactly those strings, so translating them
 // would break the confirm protocol itself.
-export const PENDING_NOTICE = (description: string) =>
-  `⚠️ Pending: ${description}\nReply CONFIRM within 60 seconds to proceed, or CANCEL to abort. ` +
-  `(This confirmation is handled outside the AI and must come from you in this conversation.)`;
-export const PENDING_NOTICE_MI = (description: string) =>
-  `⚠️ Kei te tatari: ${description}\nWhakahokia mai te CONFIRM i roto i te 60 hēkona kia haere tonu ai, ` +
-  `CANCEL rānei kia whakakorehia. (Ka whakahaeretia tēnei whakaūnga i waho o te AI, ā, me ahu mai i a koe ` +
-  `i roto i tēnei kōrerorero.)`;
+export const PENDING_NOTICE = notice('pendingNotice');
+export const PENDING_NOTICE_MI = notice('pendingNotice', { language: 'mi' });
 // Fixed, human-authored plain-language variant (issue #430) — same
 // "translate the shell, leave CONFIRM/CANCEL and `description` literal"
 // treatment as PENDING_NOTICE_MI, but also rewords the meta, abstract
 // parenthetical into something concrete a plain-language reader can act on.
-export const PENDING_NOTICE_PLAIN = (description: string) =>
-  `⚠️ Waiting for you: ${description}\nReply CONFIRM within 60 seconds to go ahead, or CANCEL to stop. ` +
-  `(A person must reply CONFIRM or CANCEL — I cannot do this step myself.)`;
+export const PENDING_NOTICE_PLAIN = notice('pendingNotice', { style: 'plain' });
 
-// Static reply for the ACK_SHORTCUT_ENABLED short-circuit (see
-// ackClassifier.ts). Sent via send() so outbound filtering still applies;
-// deliberately not counted toward the daily reply budget (no outbound
-// recordInteraction call for it — only respond() records outbound), since
-// it isn't a real answer.
-const ACK_REPLY_TEXT = 'No worries!';
-
-// Suffix appended to a KNOWLEDGE_SHORTCUT_ENABLED reply so the member always
-// has an escape hatch to a real agent turn (issue #162) — unlike the ack
-// shortcut, this reply carries real content standing in for the model, so it
-// must be attributed rather than look like the agent answered directly.
-const KNOWLEDGE_SHORTCUT_SUFFIX =
-  "\n\n— From our knowledge base; ask me to explain if this doesn't quite answer it.";
-
-// Appended (instead of KNOWLEDGE_SHORTCUT_SUFFIX's member-facing escape
-// hatch) when a GUEST_KNOWLEDGE_SHORTCUT_ENABLED hit is served to a gated
-// guest (issue #165) — a guest can't "just ask again" for a real turn, so the
-// nudge points at the actual unblock: getting added as a member.
-const GUEST_KNOWLEDGE_SHORTCUT_NUDGE = '\n\nAsk a community admin to add you as a member to keep chatting.';
-
-// Prefix for a REPEAT_QUESTION_SHORTCUT_ENABLED replay (issue #259) — the
-// cached text is a real (already-served) answer, not the ack shortcut's
-// no-content courtesy reply, so it must be clearly labelled as a repeat
-// rather than look like a fresh turn.
-const REPEAT_SHORTCUT_NOTICE = "↩️ You asked this a moment ago — here's my answer again:\n\n";
-
-// Prefix for a REPEAT_MAX_TURNS_SHORTCUT_ENABLED replay (issue #306) — makes
-// clear this is a replayed prior failure, not a fresh attempt that also
-// happened to hit the wall.
-const REPEAT_MAX_TURNS_SHORTCUT_NOTICE =
-  '↩️ Same request as a moment ago — it still needs breaking down:\n\n';
-
-// Fixed, human-authored te reo Māori variants (issue #435) of the five
-// opt-in shortcut-reply strings above, served instead of the English
-// constant to a caller with a standing 'mi' language_prefs row
-// (getLanguagePreference, issue #189) — the closing installment of the
-// #266 series, a scope #363/#396/#405 each named and deliberately deferred
-// as "a different file's call sites... a materially lower-reach path" since
-// every one of these five sits behind an off-by-default flag. Same trust
-// level as every English constant above: no model call, no translation, no
-// injection surface, and `.catch(() => 'auto')` at each call site fails safe
-// to the English default.
-const ACK_REPLY_TEXT_MI = 'Kāore he raru!';
-
-const KNOWLEDGE_SHORTCUT_SUFFIX_MI =
-  '\n\n— Nō tā mātou pātengi mōhiotanga; pātai mai kia whakamāramatia mehemea kāore tēnei e tino whakautu ana i tāu pātai.';
-
-const GUEST_KNOWLEDGE_SHORTCUT_NUDGE_MI =
-  '\n\nTonoa tētahi kaiwhakahaere hapori ki te tāpiri i a koe hei mema kia taea ai te kōrero tonu.';
-
-const REPEAT_SHORTCUT_NOTICE_MI = '↩️ I pātai mai koe i tēnei mea i tērā wā — anei anō tāku whakautu:\n\n';
-
-const REPEAT_MAX_TURNS_SHORTCUT_NOTICE_MI = '↩️ He rite tonu ki tō tono o mua tata nei — me wāwāhi tonu:\n\n';
+// The five opt-in shortcut-reply strings (ack reply/ackClassifier.ts,
+// knowledge-shortcut suffix #162, guest-knowledge nudge #165, repeat-question
+// prefix #259, repeat-max-turns prefix #306) and their fixed, human-authored
+// te reo Māori variants (issue #435, the closing installment of the #266
+// series) live in the strings catalogue (`strings/notices.ts` entries
+// `ackReply`/`knowledgeShortcutSuffix`/`guestKnowledgeShortcutNudge`/
+// `repeatShortcutNotice`/`repeatMaxTurnsShortcutNotice`) and are selected at
+// their call sites via `notice(id, { language })`. Same trust level as every
+// other catalogue entry: no model call, no translation, no injection
+// surface, and `.catch(() => 'auto')` at each call site fails safe to the
+// English default. All are sent via send() so outbound filtering still
+// applies; the ack reply is deliberately not counted toward the daily reply
+// budget (no outbound recordInteraction call for it — only respond() records
+// outbound), since it isn't a real answer.
 
 /**
  * Real-time admin alert fired the moment a gated guest's FIRST-EVER addressed
@@ -297,23 +221,13 @@ export async function notifyAccessRequest(
 // lives entirely in this deterministic router layer — never routed through
 // the model — mirroring the CONFIRM/CANCEL intercept's trust level.
 
-/** Appended to MAX_TURNS_REPLY/_MI (and the repeat-max-turns shortcut's replay of it) when the flag is on — see `offerEscalation`. */
-const ESCALATION_OFFER_SUFFIX =
-  '\n\nWant me to flag this for a community admin? Reply yes within 10 minutes.';
-const ESCALATION_OFFER_SUFFIX_MI =
-  '\n\nMe tohu tēnei mō tētahi kaiwhakahaere hapori? Whakahokia mai "āe" i roto i te 10 meneti.';
-
-/** Sent when a "yes"/"y"/"āe" confirms a live pending escalation and a notification slot was available. */
-const ESCALATION_CONFIRMED_TEXT = '👍 Flagged for a community admin — someone will follow up soon.';
-const ESCALATION_CONFIRMED_TEXT_MI =
-  '👍 Kua tohu mō tētahi kaiwhakahaere hapori — ka whai kōrero mai tētahi i muri tata nei.';
-
-/** Sent when a confirmation would otherwise fire but ESCALATION_RATE_LIMIT_PER_HOUR is already exhausted (issue #479 acceptance criterion 6). */
-const ESCALATION_RATE_LIMITED_TEXT =
-  'Already flagged the max I can this hour, sorry — please try again later or contact an admin directly.';
-const ESCALATION_RATE_LIMITED_TEXT_MI =
-  'Kua tae ki te tepe mō tēnei haora, aroha mai — tēnā koa whakamātauria anō ā muri ake, ' +
-  'whakapā tika rānei ki tētahi kaiwhakahaere.';
+// The three escalation texts — the offer suffix appended to
+// MAX_TURNS_REPLY/_MI (see `offerEscalation`), the "yes"-confirmed
+// acknowledgement, and the ESCALATION_RATE_LIMIT_PER_HOUR-exhausted notice
+// (issue #479 acceptance criterion 6) — live in the strings catalogue
+// (`strings/notices.ts` entries `escalationOfferSuffix`/
+// `escalationConfirmed`/`escalationRateLimited`), selected at their call
+// sites via `notice(id, { language })`.
 
 /**
  * How long a pending escalation offer stays live (issue #479's "reply yes
@@ -851,7 +765,7 @@ export class Router {
    */
   private offerEscalation(msg: IncomingMessage, failureText: string, isMi: boolean): string {
     this.pendingEscalations.set(this.callerKey(msg), { query: msg.text, at: Date.now() });
-    return `${failureText}${isMi ? ESCALATION_OFFER_SUFFIX_MI : ESCALATION_OFFER_SUFFIX}`;
+    return `${failureText}${notice('escalationOfferSuffix', { language: isMi ? 'mi' : undefined })}`;
   }
 
   /**
@@ -927,8 +841,8 @@ export class Router {
     adapter: PlatformAdapter,
     conversationId: string,
     text: string,
-    language?: 'mi',
-    style?: 'plain',
+    language?: string,
+    style?: string,
   ): Promise<string[] | undefined> {
     return adapter.sendMessage({ conversationId, text, language, style });
   }
@@ -1208,7 +1122,7 @@ export class Router {
       if (verdict === 'cancel') {
         cancelPendingAction(msg.platform, pendingConversationId, msg.userId);
         const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
-        await this.send(adapter, msg.conversationId, lang === 'mi' ? CANCEL_TEXT_MI : CANCEL_TEXT).catch(
+        await this.send(adapter, msg.conversationId, notice('cancelConfirm', { language: lang })).catch(
           () => {},
         );
         return;
@@ -1220,12 +1134,14 @@ export class Router {
         // confirm TTL invalidates the queued action.
         if (!atLeast(role, pending.minTier)) {
           const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
-          if (lang === 'mi') {
-            outcome = PERMISSIONS_CHANGED_TEXT_MI;
-          } else {
-            const style = await this.getRespStyle(msg.platform, msg.userId).catch(() => 'standard' as const);
-            outcome = style === 'plain' ? PERMISSIONS_CHANGED_TEXT_PLAIN : PERMISSIONS_CHANGED_TEXT;
-          }
+          // Style is only looked up once 'mi' is ruled out (it takes
+          // precedence), so the 'mi' path pays no style DB read — the
+          // selection itself lives in strings/notices.ts.
+          const style =
+            lang === 'mi'
+              ? undefined
+              : await this.getRespStyle(msg.platform, msg.userId).catch(() => 'standard' as const);
+          outcome = notice('permissionsChanged', { language: lang, style });
         } else {
           try {
             outcome = await pending.execute();
@@ -1307,13 +1223,13 @@ export class Router {
           await this.send(
             adapter,
             msg.conversationId,
-            lang === 'mi' ? ESCALATION_CONFIRMED_TEXT_MI : ESCALATION_CONFIRMED_TEXT,
+            notice('escalationConfirmed', { language: lang }),
           ).catch(() => {});
         } else {
           await this.send(
             adapter,
             msg.conversationId,
-            lang === 'mi' ? ESCALATION_RATE_LIMITED_TEXT_MI : ESCALATION_RATE_LIMITED_TEXT,
+            notice('escalationRateLimited', { language: lang }),
           ).catch(() => {});
         }
         return;
@@ -1372,14 +1288,15 @@ export class Router {
         // channel's shed messages never pay a per-message DB read — at most
         // once per PAUSE_NOTIFY_WINDOW_MS per user, same as the send itself.
         const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
-        let pauseText = PAUSE_NOTICE_TEXT;
-        if (lang === 'mi') {
-          pauseText = PAUSE_NOTICE_TEXT_MI;
-        } else {
-          const style = await this.getRespStyle(msg.platform, msg.userId).catch(() => 'standard' as const);
-          if (style === 'plain') pauseText = PAUSE_NOTICE_TEXT_PLAIN;
-        }
-        await this.send(adapter, msg.conversationId, pauseText).catch(() => {});
+        // Style only looked up once 'mi' is ruled out (it takes precedence) —
+        // no style DB read on the 'mi' path; selection lives in strings/notices.ts.
+        const style =
+          lang === 'mi'
+            ? undefined
+            : await this.getRespStyle(msg.platform, msg.userId).catch(() => 'standard' as const);
+        await this.send(adapter, msg.conversationId, notice('pauseNotice', { language: lang, style })).catch(
+          () => {},
+        );
       }
       return;
     }
@@ -1395,14 +1312,16 @@ export class Router {
         // rate-limit path exists to shed load, so it must not add a
         // per-message DB read to every over-limit message.
         const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
-        let rateLimitText = RATE_LIMIT_NOTICE_TEXT;
-        if (lang === 'mi') {
-          rateLimitText = RATE_LIMIT_NOTICE_TEXT_MI;
-        } else {
-          const style = await this.getRespStyle(msg.platform, msg.userId).catch(() => 'standard' as const);
-          if (style === 'plain') rateLimitText = RATE_LIMIT_NOTICE_TEXT_PLAIN;
-        }
-        await this.send(adapter, msg.conversationId, rateLimitText).catch(() => {});
+        // Same lazy style lookup as the pause notice above.
+        const style =
+          lang === 'mi'
+            ? undefined
+            : await this.getRespStyle(msg.platform, msg.userId).catch(() => 'standard' as const);
+        await this.send(
+          adapter,
+          msg.conversationId,
+          notice('rateLimitNotice', { language: lang, style }),
+        ).catch(() => {});
       }
       return;
     }
@@ -1439,14 +1358,16 @@ export class Router {
           // budget path exists to shed load, so it must not add a
           // per-message DB read to every over-budget message.
           const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
-          let budgetText = DAILY_BUDGET_NOTICE_TEXT;
-          if (lang === 'mi') {
-            budgetText = DAILY_BUDGET_NOTICE_TEXT_MI;
-          } else {
-            const style = await this.getRespStyle(msg.platform, msg.userId).catch(() => 'standard' as const);
-            if (style === 'plain') budgetText = DAILY_BUDGET_NOTICE_TEXT_PLAIN;
-          }
-          await this.send(adapter, msg.conversationId, budgetText).catch(() => {});
+          // Same lazy style lookup as the pause/rate-limit notices above.
+          const style =
+            lang === 'mi'
+              ? undefined
+              : await this.getRespStyle(msg.platform, msg.userId).catch(() => 'standard' as const);
+          await this.send(
+            adapter,
+            msg.conversationId,
+            notice('dailyBudgetNotice', { language: lang, style }),
+          ).catch(() => {});
         }
         return;
       }
@@ -1533,7 +1454,7 @@ export class Router {
         await this.send(
           adapter,
           replyConversationId ?? msg.conversationId,
-          lang === 'mi' ? ACK_REPLY_TEXT_MI : ACK_REPLY_TEXT,
+          notice('ackReply', { language: lang }),
         );
       });
       return;
@@ -1751,7 +1672,7 @@ export class Router {
     // which is per-hit low-rated/staleness framing, not this whole-reply
     // signal.
     const conflictCaveat = hasConflict ? `\n\n(${KNOWLEDGE_CONFLICT_CAVEAT_TEXT})` : '';
-    const suffix = lang === 'mi' ? KNOWLEDGE_SHORTCUT_SUFFIX_MI : KNOWLEDGE_SHORTCUT_SUFFIX;
+    const suffix = notice('knowledgeShortcutSuffix', { language: lang });
     const replyText = `${hit.content}${note}${conflictCaveat}${suffix}`;
     await this.send(adapter, target, replyText);
     this.recordShortcutRetrieval([hit.id]).catch((err) =>
@@ -1961,8 +1882,8 @@ export class Router {
       undefined,
       lang,
     );
-    const suffix = lang === 'mi' ? KNOWLEDGE_SHORTCUT_SUFFIX_MI : KNOWLEDGE_SHORTCUT_SUFFIX;
-    const nudge = lang === 'mi' ? GUEST_KNOWLEDGE_SHORTCUT_NUDGE_MI : GUEST_KNOWLEDGE_SHORTCUT_NUDGE;
+    const suffix = notice('knowledgeShortcutSuffix', { language: lang });
+    const nudge = notice('guestKnowledgeShortcutNudge', { language: lang });
     const replyText = `${hit.content}${note}${suffix}${nudge}`;
     await this.send(adapter, msg.conversationId, replyText);
     this.recordShortcutRetrieval([hit.id]).catch((err) =>
@@ -2004,8 +1925,8 @@ export class Router {
     // original (already-served) answer's language, left untouched (issue
     // #339/#405's "translate the shell, not the dynamic payload" discipline).
     const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
-    const notice = lang === 'mi' ? REPEAT_SHORTCUT_NOTICE_MI : REPEAT_SHORTCUT_NOTICE;
-    const replyText = `${notice}${cachedReplyText}`;
+    const repeatNotice = notice('repeatShortcutNotice', { language: lang });
+    const replyText = `${repeatNotice}${cachedReplyText}`;
     await this.send(adapter, target, replyText);
     await recordInteraction({
       platform: msg.platform,
@@ -2042,11 +1963,11 @@ export class Router {
   ): Promise<void> {
     const target = replyConversationId ?? msg.conversationId;
     const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
-    const notice = lang === 'mi' ? REPEAT_MAX_TURNS_SHORTCUT_NOTICE_MI : REPEAT_MAX_TURNS_SHORTCUT_NOTICE;
-    const failure = lang === 'mi' ? MAX_TURNS_REPLY_MI : MAX_TURNS_REPLY;
+    const repeatNotice = notice('repeatMaxTurnsShortcutNotice', { language: lang });
+    const failure = notice('maxTurnsReply', { language: lang });
     const replyText = config.behaviour.escalationToAdminEnabled
-      ? `${notice}${this.offerEscalation(msg, failure, lang === 'mi')}`
-      : `${notice}${failure}`;
+      ? `${repeatNotice}${this.offerEscalation(msg, failure, lang === 'mi')}`
+      : `${repeatNotice}${failure}`;
     await this.send(adapter, target, replyText);
     await recordInteraction({
       platform: msg.platform,
@@ -2265,16 +2186,17 @@ export class Router {
           const lastWarned = this.budgetWarned.get(userKey) ?? 0;
           if (Date.now() - lastWarned > 24 * 3_600_000) {
             this.budgetWarned.set(userKey, Date.now());
-            let warningText = DAILY_REPLY_BUDGET_WARNING_TEXT(remaining);
-            if (reply.languagePreference === 'mi') {
-              warningText = DAILY_REPLY_BUDGET_WARNING_TEXT_MI(remaining);
-            } else {
-              const style = await this.getRespStyle(msg.platform, msg.userId).catch(
-                () => 'standard' as const,
-              );
-              if (style === 'plain') warningText = DAILY_REPLY_BUDGET_WARNING_TEXT_PLAIN(remaining);
-            }
-            outboundText += warningText;
+            // Style only looked up once 'mi' is ruled out (it takes
+            // precedence) — no style DB read on the 'mi' path; selection
+            // lives in strings/notices.ts.
+            const style =
+              reply.languagePreference === 'mi'
+                ? undefined
+                : await this.getRespStyle(msg.platform, msg.userId).catch(() => 'standard' as const);
+            outboundText += notice('dailyReplyBudgetWarning', {
+              language: reply.languagePreference,
+              style,
+            })(remaining);
           }
         }
       }
@@ -2326,16 +2248,14 @@ export class Router {
       const registeredNewPending = Boolean(pending && pending !== priorPending);
       if (pending && registeredNewPending) {
         const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
-        let pendingText: string;
-        if (lang === 'mi') {
-          pendingText = PENDING_NOTICE_MI(pending.description);
-        } else {
-          const style = await this.getRespStyle(msg.platform, msg.userId).catch(() => 'standard' as const);
-          pendingText =
-            style === 'plain'
-              ? PENDING_NOTICE_PLAIN(pending.description)
-              : PENDING_NOTICE(pending.description);
-        }
+        // Style only looked up once 'mi' is ruled out (it takes precedence) —
+        // no style DB read on the 'mi' path; selection lives in
+        // strings/notices.ts.
+        const style =
+          lang === 'mi'
+            ? undefined
+            : await this.getRespStyle(msg.platform, msg.userId).catch(() => 'standard' as const);
+        const pendingText = notice('pendingNotice', { language: lang, style })(pending.description);
         await this.send(adapter, target, pendingText).catch((err) =>
           logger.warn({ err }, 'Failed to send deterministic pending notice'),
         );

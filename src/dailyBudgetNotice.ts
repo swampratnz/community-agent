@@ -5,20 +5,23 @@
  * router.ts already tracks the 24h budgetNotified window inline.
  */
 
-export const DAILY_BUDGET_NOTICE_TEXT =
-  "You've reached today's usage limit for the assistant — try again later.";
+import { notice } from './strings/notices.js';
+
+// The text itself lives in the strings catalogue (agent-base plan item 6);
+// these consts are derived so every existing import site and pinned test
+// value stays byte-identical.
+export const DAILY_BUDGET_NOTICE_TEXT = notice('dailyBudgetNotice');
 
 // Fixed, human-authored te reo Māori variant (issue #300), served instead of
 // DAILY_BUDGET_NOTICE_TEXT to a caller with a standing 'mi' language_prefs
 // row (getLanguagePreference, issue #189) — same trust level as the English
 // constant: no model call, no translation, no injection surface.
-export const DAILY_BUDGET_NOTICE_TEXT_MI =
-  'Kua eke koe ki te whāiti whakamahi o te rā mō te kaiāwhina — tēnā koa, whakamātau anō ā tērā rā.';
+export const DAILY_BUDGET_NOTICE_TEXT_MI = notice('dailyBudgetNotice', { language: 'mi' });
 
 // Fixed, human-authored plain-language variant (issue #430), served instead
 // of DAILY_BUDGET_NOTICE_TEXT to a caller with a standing 'plain'
 // response-style preference (getResponseStyle, issue #126) whose language
 // preference is NOT 'mi' — 'mi' takes precedence over 'plain' (see
-// router.ts). Same trust level as the English constant: no model call, no
-// translation, no injection surface.
-export const DAILY_BUDGET_NOTICE_TEXT_PLAIN = "You've used all of today's replies. Try again tomorrow.";
+// strings/catalogue.ts, which now owns that precedence). Same trust level as
+// the English constant: no model call, no translation, no injection surface.
+export const DAILY_BUDGET_NOTICE_TEXT_PLAIN = notice('dailyBudgetNotice', { style: 'plain' });
