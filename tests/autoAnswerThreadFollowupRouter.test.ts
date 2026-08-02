@@ -35,7 +35,8 @@ process.env.AUTO_ANSWER_RATE_LIMIT_PER_HOUR = '2';
 
 const { config } = await import('../src/config.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
-const { Router, makeRouterDeps } = await import('../src/router.js');
+const { Router } = await import('../src/router.js');
+const { makeRouterDeps } = await import('../src/routerWiring.js');
 const { ADMIN_TOOLS, MEMBER_TOOLS, SUPER_ADMIN_TOOLS, toolsForRole } = await import('../src/auth/rbac.js');
 type Tier = Parameters<typeof toolsForRole>[0];
 const { embed } = await import('../src/storage/embeddings.js');

@@ -21,7 +21,8 @@ process.env.GUEST_KNOWLEDGE_SHORTCUT_ENABLED = 'true';
 process.env.KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL = '2';
 
 const { config } = await import('../src/config.js');
-const { Router, makeRouterDeps } = await import('../src/router.js');
+const { Router } = await import('../src/router.js');
+const { makeRouterDeps } = await import('../src/routerWiring.js');
 const { KNOWLEDGE_LOW_RATED_CAVEAT_TEXT, KNOWLEDGE_LOW_RATED_CAVEAT_TEXT_MI, KNOWLEDGE_STALE_NOTE_MI } =
   await import('../src/agent/tools.js');
 const { embed } = await import('../src/storage/embeddings.js');

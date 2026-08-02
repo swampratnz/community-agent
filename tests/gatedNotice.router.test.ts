@@ -18,7 +18,8 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 
 const { pool, closeDb } = await import('../src/storage/db.js');
-const { Router, GATED_NOTICE_MI, GATED_NOTICE_PLAIN, makeRouterDeps } = await import('../src/router.js');
+const { Router, GATED_NOTICE_MI, GATED_NOTICE_PLAIN } = await import('../src/router.js');
+const { makeRouterDeps } = await import('../src/routerWiring.js');
 const { GATED_NOTICE } = await import('../src/gatedNotice.js');
 const { embed } = await import('../src/storage/embeddings.js');
 

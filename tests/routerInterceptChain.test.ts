@@ -12,7 +12,8 @@ process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 
 const { PRE_TURN_SPINE, registerPreTurnIntercept } = await import('../src/routerIntercepts.js');
-const { Router, makeRouterDeps } = await import('../src/router.js');
+const { Router } = await import('../src/router.js');
+const { makeRouterDeps } = await import('../src/routerWiring.js');
 
 /** The five community shortcuts/commands router.ts registers, in their long-standing evaluation order. */
 const COMMUNITY_INTERCEPTS = [

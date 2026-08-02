@@ -32,7 +32,8 @@ process.env.AUTO_ANSWER_CHANNEL_IDS = AUTO_CHAN;
 process.env.REPEAT_QUESTION_SHORTCUT_ENABLED = 'true';
 
 const { pool, closeDb } = await import('../src/storage/db.js');
-const { Router, makeRouterDeps } = await import('../src/router.js');
+const { Router } = await import('../src/router.js');
+const { makeRouterDeps } = await import('../src/routerWiring.js');
 const { embed } = await import('../src/storage/embeddings.js');
 
 await embed('warmup').catch(() => {});

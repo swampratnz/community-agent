@@ -25,7 +25,8 @@ process.env.GUEST_KNOWLEDGE_SHORTCUT_ENABLED = 'true';
 process.env.KNOWLEDGE_STALE_DAYS = '30';
 
 const { config } = await import('../src/config.js');
-const { Router, makeRouterDeps } = await import('../src/router.js');
+const { Router } = await import('../src/router.js');
+const { makeRouterDeps } = await import('../src/routerWiring.js');
 
 type SearchKnowledgeFn = typeof searchKnowledge;
 type StaleInfo = { title: string | null; content: string; updatedAt: Date } | null;

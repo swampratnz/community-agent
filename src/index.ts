@@ -19,6 +19,7 @@ import './agent/enabledSkills.js';
 import { installCrashHandlers } from './crashHandlers.js';
 import { configureSubscriptionAuth } from './agent/auth.js';
 import { Router } from './router.js';
+import { makeRouterDeps } from './routerWiring.js';
 import { closeDb, healthcheck } from './storage/db.js';
 import { verifyEmbeddingDim } from './storage/repository.js';
 import { startRegisteredJobs, stopRegisteredJobs } from './jobs/registry.js';
@@ -53,7 +54,7 @@ async function main(): Promise<void> {
   //    offering (or hiding) a tool somewhere wrong.
   assertToolAvailabilityConsistent(TOOL_REGISTRY, ADAPTER_FACTORIES);
 
-  const router = new Router();
+  const router = new Router(makeRouterDeps());
   const adapters = createConfiguredAdapters();
 
   for (const adapter of adapters) {

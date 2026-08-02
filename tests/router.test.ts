@@ -20,7 +20,8 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 
 const { config } = await import('../src/config.js');
-const { Router, GATED_NOTICE_MI, makeRouterDeps } = await import('../src/router.js');
+const { Router, GATED_NOTICE_MI } = await import('../src/router.js');
+const { makeRouterDeps } = await import('../src/routerWiring.js');
 const { INTERNAL_ERROR_REPLY } = await import('../src/agent/core.js');
 const { logger } = await import('../src/logger.js');
 const { embed } = await import('../src/storage/embeddings.js');
@@ -659,7 +660,7 @@ test('config: SHUTDOWN_DRAIN_TIMEOUT_MS defaults to 20000ms when unset', () => {
 });
 
 test('drain(): resolves immediately when there are no in-flight chains — no regression to the fast shutdown path (issue #210)', async () => {
-  const router = new Router();
+  const router = new Router(makeRouterDeps());
   const start = Date.now();
   await router.drain(20_000);
   assert.ok(

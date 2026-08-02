@@ -20,7 +20,8 @@ process.env.ACCESS_MODE_DISCORD = 'open';
 process.env.ESCALATION_TO_ADMIN_ENABLED = 'true';
 
 const { config } = await import('../src/config.js');
-const { Router, ESCALATION_RATE_LIMIT_PER_HOUR, makeRouterDeps } = await import('../src/router.js');
+const { Router, ESCALATION_RATE_LIMIT_PER_HOUR } = await import('../src/router.js');
+const { makeRouterDeps } = await import('../src/routerWiring.js');
 
 const RUN = `human-help-router-${Date.now()}`;
 

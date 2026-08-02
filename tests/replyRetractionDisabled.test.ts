@@ -26,7 +26,8 @@ process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-575-off-discord';
 process.env.SUPER_ADMIN_WHATSAPP_NUMBERS ??= '64277000001';
 
 const { config } = await import('../src/config.js');
-const { Router, makeRouterDeps } = await import('../src/router.js');
+const { Router } = await import('../src/router.js');
+const { makeRouterDeps } = await import('../src/routerWiring.js');
 const { DiscordAdapter } = await import('../src/platforms/discord/adapter.js');
 const { BaileysAdapter } = await import('../src/platforms/whatsapp/baileysAdapter.js');
 const { pool, closeDb } = await import('../src/storage/db.js');

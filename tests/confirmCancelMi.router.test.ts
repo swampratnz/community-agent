@@ -33,8 +33,8 @@ const {
   PENDING_NOTICE_PLAIN,
   FAILED_PREFIX_MI,
   DONE_PREFIX_MI,
-  makeRouterDeps,
 } = await import('../src/router.js');
+const { makeRouterDeps } = await import('../src/routerWiring.js');
 const { registerPendingAction, classifyConfirmReply, hasPendingAction } =
   await import('../src/agent/pendingActions.js');
 const { embed } = await import('../src/storage/embeddings.js');

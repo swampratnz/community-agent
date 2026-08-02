@@ -20,7 +20,8 @@ process.env.KNOWLEDGE_GAP_ALERT_ENABLED = 'true';
 process.env.KNOWLEDGE_GAP_ALERT_RATE_LIMIT_PER_HOUR = '3';
 
 const { config } = await import('../src/config.js');
-const { Router, makeRouterDeps } = await import('../src/router.js');
+const { Router } = await import('../src/router.js');
+const { makeRouterDeps } = await import('../src/routerWiring.js');
 
 function makeAdapter(): {
   adapter: PlatformAdapter;

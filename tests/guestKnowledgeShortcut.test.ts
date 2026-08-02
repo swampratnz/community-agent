@@ -63,7 +63,7 @@ after(async () => {
 // matching tests/knowledgeScope.test.ts's `repo(t)` helper.
 let modsPromise: Promise<{
   Router: typeof import('../src/router.js').Router;
-  makeRouterDeps: typeof import('../src/router.js').makeRouterDeps;
+  makeRouterDeps: typeof import('../src/routerWiring.js').makeRouterDeps;
   saveKnowledge: typeof import('../src/storage/repository.js').saveKnowledge;
 }> | null = null;
 function mods(t: { mock: { module: (specifier: string, opts: unknown) => void } }) {
@@ -80,7 +80,8 @@ function mods(t: { mock: { module: (specifier: string, opts: unknown) => void } 
       },
     });
     modsPromise = (async () => {
-      const { Router, makeRouterDeps } = await import('../src/router.js');
+      const { Router } = await import('../src/router.js');
+      const { makeRouterDeps } = await import('../src/routerWiring.js');
       const { saveKnowledge } = await import('../src/storage/repository.js');
       return { Router, makeRouterDeps, saveKnowledge };
     })();

@@ -25,7 +25,8 @@ const skip = hasDb
   ? false
   : 'DATABASE_URL not set — skipping DB-integration tests (CLAUDE.md: exercise against a local Postgres 16 + pgvector)';
 
-const { Router, makeRouterDeps } = await import('../src/router.js');
+const { Router } = await import('../src/router.js');
+const { makeRouterDeps } = await import('../src/routerWiring.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { config } = await import('../src/config.js');
 const { embed } = await import('../src/storage/embeddings.js');

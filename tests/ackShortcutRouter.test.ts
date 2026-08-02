@@ -17,7 +17,8 @@ process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 process.env.ACK_SHORTCUT_ENABLED = 'true';
 
 const { config } = await import('../src/config.js');
-const { Router, makeRouterDeps } = await import('../src/router.js');
+const { Router } = await import('../src/router.js');
+const { makeRouterDeps } = await import('../src/routerWiring.js');
 const { embed } = await import('../src/storage/embeddings.js');
 
 await embed('warmup').catch(() => {});

@@ -31,7 +31,8 @@ process.env.ESCALATION_TO_ADMIN_ENABLED = 'true';
 process.env.REPEAT_MAX_TURNS_SHORTCUT_ENABLED = 'true';
 
 const { config } = await import('../src/config.js');
-const { Router, ESCALATION_RATE_LIMIT_PER_HOUR, makeRouterDeps } = await import('../src/router.js');
+const { Router, ESCALATION_RATE_LIMIT_PER_HOUR } = await import('../src/router.js');
+const { makeRouterDeps } = await import('../src/routerWiring.js');
 const { embed } = await import('../src/storage/embeddings.js');
 const { MAX_TURNS_REPLY, MAX_TURNS_REPLY_MI } = await import('../src/agent/core.js');
 

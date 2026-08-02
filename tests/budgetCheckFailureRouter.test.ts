@@ -20,7 +20,8 @@ process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 process.env.ACCESS_MODE_DISCORD = 'open';
 
 const { pool, closeDb } = await import('../src/storage/db.js');
-const { Router, makeRouterDeps } = await import('../src/router.js');
+const { Router } = await import('../src/router.js');
+const { makeRouterDeps } = await import('../src/routerWiring.js');
 const { DAILY_BUDGET_NOTICE_TEXT, DAILY_BUDGET_NOTICE_TEXT_MI, DAILY_BUDGET_NOTICE_TEXT_PLAIN } =
   await import('../src/dailyBudgetNotice.js');
 const { embed } = await import('../src/storage/embeddings.js');

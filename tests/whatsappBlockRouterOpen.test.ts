@@ -27,7 +27,8 @@ const RUN = `whatsapp-block-router-open-${Date.now()}`;
 
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { config } = await import('../src/config.js');
-const { Router, makeRouterDeps } = await import('../src/router.js');
+const { Router } = await import('../src/router.js');
+const { makeRouterDeps } = await import('../src/routerWiring.js');
 const { blockUser, unblockUser } = await import('../src/storage/repository.js');
 const { embed } = await import('../src/storage/embeddings.js');
 

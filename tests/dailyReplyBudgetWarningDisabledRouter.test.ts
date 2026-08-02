@@ -20,7 +20,8 @@ process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 process.env.ACCESS_MODE_DISCORD = 'open';
 
 const { pool, closeDb } = await import('../src/storage/db.js');
-const { Router, makeRouterDeps } = await import('../src/router.js');
+const { Router } = await import('../src/router.js');
+const { makeRouterDeps } = await import('../src/routerWiring.js');
 const { config } = await import('../src/config.js');
 const { embed } = await import('../src/storage/embeddings.js');
 

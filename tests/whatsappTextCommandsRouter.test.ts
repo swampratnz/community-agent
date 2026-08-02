@@ -42,7 +42,8 @@ process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { config } = await import('../src/config.js');
-const { Router, makeRouterDeps } = await import('../src/router.js');
+const { Router } = await import('../src/router.js');
+const { makeRouterDeps } = await import('../src/routerWiring.js');
 const { countRepliesToUser } = await import('../src/storage/repository.js');
 
 const RUN = `wa-cmd-router-${Date.now()}`;
@@ -567,9 +568,9 @@ test('"!projects mine" is checked before the general !projects [query] branch â€
   assert.equal(sent[0].text, 'No shared projects match that.');
 });
 
-test('acceptance criterion 4: a bare `new Router()` with no listOwnProjectsFn override still constructs, and an unrelated existing command (!guidelines) behaves unchanged (trailing defaulted field)', async (t) => {
+test('acceptance criterion 4: a default `new Router(makeRouterDeps())` with no listOwnProjectsFn override still constructs, and an unrelated existing command (!guidelines) behaves unchanged (trailing defaulted field)', async (t) => {
   mockPoolRole(t, null);
-  const router = new Router();
+  const router = new Router(makeRouterDeps());
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
 

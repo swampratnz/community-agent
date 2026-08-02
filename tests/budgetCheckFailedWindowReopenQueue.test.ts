@@ -17,7 +17,8 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.ACCESS_MODE_WHATSAPP = 'open';
 process.env.SUPER_ADMIN_WHATSAPP_NUMBERS = 'super-1,super-2';
 
-const { Router, makeRouterDeps } = await import('../src/router.js');
+const { Router } = await import('../src/router.js');
+const { makeRouterDeps } = await import('../src/routerWiring.js');
 const { WindowClosedError } = await import('../src/platforms/whatsapp/cloudAdapter.js');
 
 /**

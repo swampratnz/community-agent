@@ -28,7 +28,8 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 process.env.ACCESS_MODE_DISCORD = 'open';
 const { pool, closeDb } = await import('../src/storage/db.js');
-const { Router, makeRouterDeps } = await import('../src/router.js');
+const { Router } = await import('../src/router.js');
+const { makeRouterDeps } = await import('../src/routerWiring.js');
 const { PAUSE_NOTICE_TEXT, PAUSE_NOTICE_TEXT_MI, PAUSE_NOTICE_TEXT_PLAIN } =
   await import('../src/pauseNotice.js');
 const { RATE_LIMIT_NOTICE_TEXT } = await import('../src/rateLimitNotice.js');

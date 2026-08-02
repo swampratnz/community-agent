@@ -34,7 +34,8 @@ process.env.REPEAT_MAX_TURNS_SHORTCUT_ENABLED = 'true';
 
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { config } = await import('../src/config.js');
-const { Router, makeRouterDeps } = await import('../src/router.js');
+const { Router } = await import('../src/router.js');
+const { makeRouterDeps } = await import('../src/routerWiring.js');
 const { embed } = await import('../src/storage/embeddings.js');
 const { countRepliesToUser } = await import('../src/storage/repository.js');
 const { MAX_TURNS_REPLY, MAX_TURNS_REPLY_MI } = await import('../src/agent/core.js');

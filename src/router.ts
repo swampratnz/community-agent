@@ -19,16 +19,15 @@ import { resolveRole, superAdminIds } from './auth/roles.js';
 import type { IncomingMessage, Platform, PlatformAdapter } from './platforms/types.js';
 import { WindowClosedError } from './platforms/types.js';
 import { sanitizeName } from './util/sanitizeName.js';
-import { INTERNAL_ERROR_REPLY, runAgentTurn, type AgentReply } from './agent/core.js';
+import { INTERNAL_ERROR_REPLY, type runAgentTurn, type AgentReply } from './agent/core.js';
 import { notice } from './strings/catalogue.js';
-import {
+import type {
   formatKnowledgeCitationNote,
   formatRelativeAge,
-  KNOWLEDGE_CONFLICT_CAVEAT_TEXT,
   notifyAdmins,
   truncateForEcho,
 } from './agent/tools.js';
-import { buildMemberDigestContent } from './memberDigest.js';
+import type { buildMemberDigestContent } from './memberDigest.js';
 import {
   cancelPendingAction,
   classifyConfirmReply,
@@ -37,19 +36,17 @@ import {
   sweepExpiredPendingActions,
   takePendingAction,
 } from './agent/pendingActions.js';
-import { isPaused } from './storage/policyStore.js';
-import { getCommunityGuidelines, getCommunityGuidelinesMi } from './storage/policies.js';
+import type { isPaused } from './storage/policyStore.js';
+import type { getCommunityGuidelines, getCommunityGuidelinesMi } from './storage/policies.js';
 import { recordReplyMapping } from './replyRetraction.js';
 import { queuePendingAlert } from './pendingAlertQueue.js';
-import {
+import { isKnowledgeStale, isUserBlocked, listAdmins, recordInteraction } from './storage/repository.js';
+import type {
   countRepliesToUser,
   getLanguagePreference,
   getResponseStyle,
   hasKnowledgeConflictForId,
   isKnowledgeLowRated,
-  isKnowledgeStale,
-  isUserBlocked,
-  listAdmins,
   listOwnProjects,
   listRecentInterests,
   listRecentProjects,
@@ -58,7 +55,6 @@ import {
   recentQuestionClusters,
   recordAccessRequest,
   recordEscalatedKnowledgeGap,
-  recordInteraction,
   recordKnowledgeRetrieval,
   recordShortcutHit as recordShortcutHitDefault,
   searchKnowledge,
@@ -66,7 +62,6 @@ import {
   searchMemberInterestsForSelf,
   searchProjects,
 } from './storage/repository.js';
-import { FRESHNESS_DAYS, CLUSTER_LIMIT } from './adminDigest.js';
 import { shouldNotifyRateLimited } from './rateLimitNotice.js';
 import { shouldNotifyPaused } from './pauseNotice.js';
 import { shouldNotifyBudgetCheckFailed } from './budgetCheckFailureNotice.js';
@@ -74,9 +69,9 @@ import { makeAlertSlotReserver } from './notifications.js';
 import {
   appendWaitClause,
   appendWaitClauseMi,
-  buildGatedNotice,
   GATED_NOTICE,
   waitDaysSince,
+  type buildGatedNotice,
 } from './gatedNotice.js';
 
 // Fixed, human-authored te reo Māori variant (issue #363), served instead of
@@ -283,8 +278,9 @@ interface KnowledgeShortcutHit {
  * (memberDigest.ts) and per docs/STANDARDS.md, a *partial* deps object would
  * silently leave un-stubbed reads pointing at live repository functions, the
  * exact bug class the tests-typecheck ratchet exists to catch. Production
- * passes nothing (`new Router()` → `makeRouterDeps()` supplies every real
- * implementation); tests build a full object with
+ * passes `makeRouterDeps()` (routerWiring.ts — the composition file that
+ * names every real implementation, so this mechanism file never imports the
+ * community content the defaults point at); tests build a full object with
  * `makeRouterDeps({ ...overrides })`.
  *
  * Field provenance (formerly the constructor doc):
@@ -349,6 +345,16 @@ interface KnowledgeShortcutHit {
  *   bare-`!whois` branch when `searchMemberInterestsForSelfFn` reports
  *   `hasProfile: false` — the same no-profile browse fallback
  *   who_is_into/`/whois` gained.
+ * - `formatKnowledgeCitationNoteFn`/`formatRelativeAgeFn`/
+ *   `knowledgeConflictCaveatText`/`truncateForEchoFn` (agent-base plan
+ *   §Phase-2 Stage 3a): the deterministic knowledge/echo formatters the
+ *   shortcut and alert paths render with — community-owned content
+ *   (`agent/tools.js`), so the values are injected here rather than imported
+ *   by the router mechanism; the real exports are the defaults.
+ * - `repeatQuestionFreshnessDays`/`repeatQuestionClusterLimit` (same stage):
+ *   the `adminDigest.ts` clustering window/limit constants
+ *   (`FRESHNESS_DAYS`/`CLUSTER_LIMIT`) `maybeAlertRepeatQuestion` threads
+ *   into `recentQuestionClustersFn`.
  */
 export interface RouterDeps {
   runTurn: typeof runAgentTurn;
@@ -379,56 +385,12 @@ export interface RouterDeps {
   checkKnowledgeConflict: typeof hasKnowledgeConflictForId;
   listOwnProjectsFn: typeof listOwnProjects;
   listRecentInterestsFn: typeof listRecentInterests;
-}
-
-/**
- * Build a COMPLETE `RouterDeps` — the real production wiring overlaid with
- * `overrides`. This is the one sanctioned way to construct a partial-looking
- * deps object: the result is always full (so `RouterDeps` needs no optional
- * fields), and any field a test doesn't override keeps today's behaviour of
- * falling through to the real implementation — exactly the semantics the old
- * positional-parameter defaults had, made explicit at the call site. An
- * override whose VALUE is `undefined` is skipped too, for the same reason:
- * test helpers forward their own optional parameters straight through
- * (`getLangPref: maybeUndefined`), and under the old positional defaults an
- * `undefined` argument meant "use the real implementation", never "inject
- * undefined".
- */
-export function makeRouterDeps(overrides: Partial<RouterDeps> = {}): RouterDeps {
-  const defined = Object.fromEntries(
-    Object.entries(overrides).filter(([, value]) => value !== undefined),
-  ) as Partial<RouterDeps>;
-  return {
-    runTurn: runAgentTurn,
-    typingRefireMs: 8_000,
-    checkPaused: isPaused,
-    searchKnowledgeForShortcut: searchKnowledge,
-    recordShortcutRetrieval: recordKnowledgeRetrieval,
-    countReplies: countRepliesToUser,
-    getLangPref: getLanguagePreference,
-    checkLowRatedKnowledge: isKnowledgeLowRated,
-    getGatedNotice: buildGatedNotice,
-    getRespStyle: getResponseStyle,
-    recordShortcutHit: recordShortcutHitDefault,
-    recordAccessRequestFn: recordAccessRequest,
-    notifyAccessRequestFn: notifyAccessRequest,
-    notifyAdminsFn: notifyAdmins,
-    recordEscalatedGapFn: recordEscalatedKnowledgeGap,
-    markKnowledgeGapsAlertedFn: markKnowledgeGapsAlerted,
-    markStaleKnowledgeAlertedFn: markStaleKnowledgeAlerted,
-    getCommunityGuidelinesFn: getCommunityGuidelines,
-    getCommunityGuidelinesMiFn: getCommunityGuidelinesMi,
-    searchMemberInterestsFn: searchMemberInterests,
-    searchProjectsFn: searchProjects,
-    listRecentProjectsFn: listRecentProjects,
-    buildMemberDigestContentFn: buildMemberDigestContent,
-    recentQuestionClustersFn: recentQuestionClusters,
-    searchMemberInterestsForSelfFn: searchMemberInterestsForSelf,
-    checkKnowledgeConflict: hasKnowledgeConflictForId,
-    listOwnProjectsFn: listOwnProjects,
-    listRecentInterestsFn: listRecentInterests,
-    ...defined,
-  };
+  formatKnowledgeCitationNoteFn: typeof formatKnowledgeCitationNote;
+  formatRelativeAgeFn: typeof formatRelativeAge;
+  knowledgeConflictCaveatText: string;
+  truncateForEchoFn: typeof truncateForEcho;
+  repeatQuestionFreshnessDays: number;
+  repeatQuestionClusterLimit: number;
 }
 
 /**
@@ -568,20 +530,28 @@ export class Router {
   private readonly checkKnowledgeConflict: typeof hasKnowledgeConflictForId;
   private readonly listOwnProjectsFn: typeof listOwnProjects;
   private readonly listRecentInterestsFn: typeof listRecentInterests;
+  private readonly formatKnowledgeCitationNoteFn: typeof formatKnowledgeCitationNote;
+  private readonly formatRelativeAgeFn: typeof formatRelativeAge;
+  private readonly knowledgeConflictCaveatText: string;
+  private readonly truncateForEchoFn: typeof truncateForEcho;
+  private readonly repeatQuestionFreshnessDays: number;
+  private readonly repeatQuestionClusterLimit: number;
 
   /**
    * ONE deps object (agent-base plan §Phase-1 item 7), replacing the 28
    * positional constructor parameters whose *positions* had become the API —
    * every new injectable had to be a trailing field so existing
    * `new Router(...)` call sites stayed unaffected (see `RouterDeps`'s field
-   * docs for each field's provenance). Production passes nothing —
-   * `makeRouterDeps()` supplies every real implementation. Tests pass a FULL
-   * object too, via `makeRouterDeps({ ...overrides })`, matching the
-   * all-or-nothing deps discipline in `memberDigest.ts`/`docs/STANDARDS.md`:
-   * `RouterDeps` has no optional fields, so a hand-written literal can never
-   * silently omit a field and fall through to a live-Postgres read.
+   * docs for each field's provenance). Production passes
+   * `makeRouterDeps()` (routerWiring.ts) — the composition file supplies
+   * every real implementation, so this mechanism file never imports them.
+   * Tests pass a FULL object too, via `makeRouterDeps({ ...overrides })`,
+   * matching the all-or-nothing deps discipline in
+   * `memberDigest.ts`/`docs/STANDARDS.md`: `RouterDeps` has no optional
+   * fields, so a hand-written literal can never silently omit a field and
+   * fall through to a live-Postgres read.
    */
-  constructor(deps: RouterDeps = makeRouterDeps()) {
+  constructor(deps: RouterDeps) {
     this.runTurn = deps.runTurn;
     this.typingRefireMs = deps.typingRefireMs;
     this.checkPaused = deps.checkPaused;
@@ -610,6 +580,12 @@ export class Router {
     this.checkKnowledgeConflict = deps.checkKnowledgeConflict;
     this.listOwnProjectsFn = deps.listOwnProjectsFn;
     this.listRecentInterestsFn = deps.listRecentInterestsFn;
+    this.formatKnowledgeCitationNoteFn = deps.formatKnowledgeCitationNoteFn;
+    this.formatRelativeAgeFn = deps.formatRelativeAgeFn;
+    this.knowledgeConflictCaveatText = deps.knowledgeConflictCaveatText;
+    this.truncateForEchoFn = deps.truncateForEchoFn;
+    this.repeatQuestionFreshnessDays = deps.repeatQuestionFreshnessDays;
+    this.repeatQuestionClusterLimit = deps.repeatQuestionClusterLimit;
     setInterval(() => this.sweep(), this.RATE_WINDOW_MS * 5).unref();
   }
 
@@ -669,10 +645,10 @@ export class Router {
     });
     if (!info) return;
     if (!this.reserveStaleKnowledgeAlertSlot(config.knowledgeStaleAlert.rateLimitPerHour)) return;
-    const name = info.title ?? truncateForEcho(info.content);
+    const name = info.title ?? this.truncateForEchoFn(info.content);
     await this.notifyAdminsFn(
       (platform) => this.adapters.get(platform),
-      `A knowledge entry has been stale for ${formatRelativeAge(info.updatedAt)} and was just shown to a ` +
+      `A knowledge entry has been stale for ${this.formatRelativeAgeFn(info.updatedAt)} and was just shown to a ` +
         `member: "${name}"`,
       excludeUserId,
     ).catch((err) => logger.warn({ err, id }, 'Stale-knowledge admin notification failed'));
@@ -733,8 +709,8 @@ export class Router {
 
     const clusters = await this.recentQuestionClustersFn(
       [msg.conversationId],
-      FRESHNESS_DAYS,
-      CLUSTER_LIMIT,
+      this.repeatQuestionFreshnessDays,
+      this.repeatQuestionClusterLimit,
     ).catch((err) => {
       logger.warn({ err }, 'Repeat-question cluster check failed');
       return [];
@@ -746,7 +722,7 @@ export class Router {
     await this.notifyAdminsFn(
       (platform) => this.adapters.get(platform),
       `A repeat question has come up ${crossed.count} times recently and might be worth turning ` +
-        `into a FAQ: "${truncateForEcho(crossed.representative)}"`,
+        `into a FAQ: "${this.truncateForEchoFn(crossed.representative)}"`,
       msg.userId,
     ).catch((err) => logger.warn({ err }, 'Repeat-question cluster admin notification failed'));
   }
@@ -1412,7 +1388,7 @@ export class Router {
           await this.notifyAdminsFn(
             (platform) => this.adapters.get(platform),
             `${msg.userName} asked for help and hit my step limit on ${msg.platform} ` +
-              `(conversation ${msg.conversationId}): "${truncateForEcho(pendingEscalation.query)}"`,
+              `(conversation ${msg.conversationId}): "${this.truncateForEchoFn(pendingEscalation.query)}"`,
             msg.userId,
           ).catch((err) => logger.warn({ err }, 'Escalation admin notification failed'));
           // Link this confirmed escalation into the knowledge_gaps curation
@@ -1932,7 +1908,7 @@ export class Router {
     // Deterministic, send-path-only citation/freshness note (issue #214) — the
     // shortcut never involves the model, so this is formatted from stored
     // fields exactly like knowledge_search's own note.
-    const note = formatKnowledgeCitationNote(
+    const note = this.formatKnowledgeCitationNoteFn(
       hit,
       config.adminDigest.knowledgeStaleDays,
       lowRatedCaveat,
@@ -1944,7 +1920,7 @@ export class Router {
     // knowledge_search — never merged into the note's own parenthetical,
     // which is per-hit low-rated/staleness framing, not this whole-reply
     // signal.
-    const conflictCaveat = hasConflict ? `\n\n(${KNOWLEDGE_CONFLICT_CAVEAT_TEXT})` : '';
+    const conflictCaveat = hasConflict ? `\n\n(${this.knowledgeConflictCaveatText})` : '';
     const suffix = notice('knowledgeShortcutSuffix', { language: lang });
     const replyText = `${hit.content}${note}${conflictCaveat}${suffix}`;
     await this.send(adapter, target, replyText);
@@ -2094,7 +2070,7 @@ export class Router {
     // (mirrors #789's identical fix to the member `sendKnowledgeShortcut`
     // path).
     const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
-    const note = formatKnowledgeCitationNote(
+    const note = this.formatKnowledgeCitationNoteFn(
       hit,
       config.adminDigest.knowledgeStaleDays,
       undefined,
@@ -2227,7 +2203,7 @@ export class Router {
         await this.notifyAdminsFn(
           (platform) => this.adapters.get(platform),
           `${msg.userName} rated my last answer unhelpful on ${msg.platform} ` +
-            `(conversation ${msg.conversationId}): "${truncateForEcho(msg.text)}"`,
+            `(conversation ${msg.conversationId}): "${this.truncateForEchoFn(msg.text)}"`,
           msg.userId,
         ).catch((err) => logger.warn({ err }, 'Unhelpful-answer admin notification failed'));
       }
@@ -2256,7 +2232,7 @@ export class Router {
         await this.notifyAdminsFn(
           (platform) => this.adapters.get(platform),
           `${msg.userName} asked to talk to a human on ${msg.platform} ` +
-            `(conversation ${msg.conversationId}): "${truncateForEcho(msg.text)}"`,
+            `(conversation ${msg.conversationId}): "${this.truncateForEchoFn(msg.text)}"`,
           msg.userId,
         ).catch((err) => logger.warn({ err }, 'Human-help-request admin notification failed'));
       }
@@ -2294,7 +2270,7 @@ export class Router {
         await this.notifyAdminsFn(
           (platform) => this.adapters.get(platform),
           `A knowledge gap has come up ${cluster.count} times recently and might be worth turning ` +
-            `into a FAQ: "${truncateForEcho(cluster.representative)}"`,
+            `into a FAQ: "${this.truncateForEchoFn(cluster.representative)}"`,
           msg.userId,
         ).catch((err) => logger.warn({ err }, 'Knowledge gap cluster admin notification failed'));
       }

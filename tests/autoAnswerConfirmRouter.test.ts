@@ -33,7 +33,8 @@ const AUTO_CHAN = `${RUN}-chan`;
 process.env.AUTO_ANSWER_CHANNEL_IDS = AUTO_CHAN;
 
 const { pool, closeDb } = await import('../src/storage/db.js');
-const { Router, CANCEL_TEXT, makeRouterDeps } = await import('../src/router.js');
+const { Router, CANCEL_TEXT } = await import('../src/router.js');
+const { makeRouterDeps } = await import('../src/routerWiring.js');
 const { registerPendingAction, hasPendingAction } = await import('../src/agent/pendingActions.js');
 const { embed } = await import('../src/storage/embeddings.js');
 

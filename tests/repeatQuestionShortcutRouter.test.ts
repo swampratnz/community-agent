@@ -43,7 +43,8 @@ process.env.REPEAT_QUESTION_SHORTCUT_ENABLED = 'true';
 
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { config } = await import('../src/config.js');
-const { Router, makeRouterDeps } = await import('../src/router.js');
+const { Router } = await import('../src/router.js');
+const { makeRouterDeps } = await import('../src/routerWiring.js');
 const { embed } = await import('../src/storage/embeddings.js');
 const { registerPendingAction, cancelPendingAction } = await import('../src/agent/pendingActions.js');
 const { countRepliesToUser } = await import('../src/storage/repository.js');

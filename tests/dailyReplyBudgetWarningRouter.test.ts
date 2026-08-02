@@ -30,7 +30,8 @@ process.env.DAILY_REPLY_BUDGET_WARN_REMAINING = '5';
 process.env.REPEAT_QUESTION_SHORTCUT_ENABLED = 'true';
 
 const { pool, closeDb } = await import('../src/storage/db.js');
-const { Router, makeRouterDeps } = await import('../src/router.js');
+const { Router } = await import('../src/router.js');
+const { makeRouterDeps } = await import('../src/routerWiring.js');
 const { DAILY_BUDGET_NOTICE_TEXT } = await import('../src/dailyBudgetNotice.js');
 const {
   DAILY_REPLY_BUDGET_WARNING_TEXT,
