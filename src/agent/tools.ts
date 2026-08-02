@@ -6,6 +6,11 @@ import { assertAtLeast, atLeast, type CallerContext } from '../auth/rbac.js';
 import { normalizeMemberId, resolveWhatsappLid } from '../auth/memberId.js';
 import { untrustedEntryContent } from './systemPrompt.js';
 import { sanitizeName } from '../util/sanitizeName.js';
+import {
+  makeCalendarDayReserver,
+  makeCooldownReserver,
+  makeSlidingWindowReserver,
+} from '../util/rateReservation.js';
 import { isSuperAdmin, resolveRole, superAdminIds } from '../auth/roles.js';
 import { config } from '../config.js';
 import { logger, hashId } from '../logger.js';
@@ -195,7 +200,6 @@ import {
   WHO_IS_INTO_LIMIT,
 } from '../storage/repository.js';
 import { getCommunityGuidelines, getCommunityGuidelinesMi, updatePolicy } from '../storage/policies.js';
-import { embed } from '../storage/embeddings.js';
 import { registerPendingAction } from './pendingActions.js';
 import { recentChanges } from './changelog.js';
 import { generateImage } from '../media/grokImage.js';
@@ -2396,46 +2400,20 @@ async function resetSessionsForRoleChange(platform: Platform, userId: string, ac
  */
 /** Users with an image generation currently in flight — blocks overlapping spawns per user. */
 const imageGenInFlight = new Set<string>();
-/** Per-user image-generation tally for the current UTC day (abuse cap; see config.imageGen.dailyLimit). */
-const imageGenDaily = new Map<string, { day: string; count: number }>();
-
 /**
- * Reserve one image-generation slot for `key` against today's per-user cap.
- * Returns false (and does not increment) if the cap is already reached.
- * A limit of 0 means unlimited.
+ * Reserve one image-generation slot for `key` against today's per-user cap
+ * (`config.imageGen.dailyLimit`; a limit of 0 means unlimited). Returns
+ * false (and does not increment) if the cap is already reached.
  *
  * A reservation is deliberately NOT refunded if the generation later fails: the
  * cap bounds heavyweight `grok` subprocess spawns, and a failed attempt still
  * spawned (and paid for) one — so a timeout/crash counts, and induced-failure
  * retry spam can't bypass the cap.
  */
-function reserveImageGenDaily(key: string, limit: number): boolean {
-  if (limit <= 0) return true;
-  const today = new Date().toISOString().slice(0, 10);
-  const entry = imageGenDaily.get(key);
-  if (!entry || entry.day !== today) {
-    imageGenDaily.set(key, { day: today, count: 1 });
-    return true;
-  }
-  if (entry.count >= limit) return false;
-  entry.count += 1;
-  return true;
-}
+const reserveImageGenDaily = makeCalendarDayReserver();
 
 /** suggest_issue filings per super admin, for the rolling calendar-day cap. */
-const issueFileDaily = new Map<string, { day: string; count: number }>();
-function reserveIssueDaily(key: string, limit: number): boolean {
-  if (limit <= 0) return true;
-  const today = new Date().toISOString().slice(0, 10);
-  const entry = issueFileDaily.get(key);
-  if (!entry || entry.day !== today) {
-    issueFileDaily.set(key, { day: today, count: 1 });
-    return true;
-  }
-  if (entry.count >= limit) return false;
-  entry.count += 1;
-  return true;
-}
+const reserveIssueDaily = makeCalendarDayReserver();
 
 /**
  * dev_team_dispatch calls per super admin, for the rolling calendar-day cap
@@ -2448,19 +2426,7 @@ function reserveIssueDaily(key: string, limit: number): boolean {
  * a failed POST still probed the service, and refunds would let induced
  * failures bypass the cap (same rationale as reserveImageGenDaily).
  */
-const devTeamDispatchDaily = new Map<string, { day: string; count: number }>();
-export function reserveDevTeamDispatchDaily(key: string, limit: number): boolean {
-  if (limit <= 0) return true;
-  const today = new Date().toISOString().slice(0, 10);
-  const entry = devTeamDispatchDaily.get(key);
-  if (!entry || entry.day !== today) {
-    devTeamDispatchDaily.set(key, { day: today, count: 1 });
-    return true;
-  }
-  if (entry.count >= limit) return false;
-  entry.count += 1;
-  return true;
-}
+export const reserveDevTeamDispatchDaily = makeCalendarDayReserver();
 
 /**
  * Discord image-attachment fetches per platform-qualified sender, for the
@@ -2473,337 +2439,72 @@ export function reserveDevTeamDispatchDaily(key: string, limit: number): boolean
  * even though only Discord implements image input today, matching the
  * defensive convention `reserveVoiceTranscriptionSlot` already established.
  */
-const imageInputDaily = new Map<string, { day: string; count: number }>();
-export function reserveImageInputDaily(key: string, limit: number): boolean {
-  if (limit <= 0) return true;
-  const today = new Date().toISOString().slice(0, 10);
-  const entry = imageInputDaily.get(key);
-  if (!entry || entry.day !== today) {
-    imageInputDaily.set(key, { day: today, count: 1 });
-    return true;
-  }
-  if (entry.count >= limit) return false;
-  entry.count += 1;
-  return true;
-}
-
-/** create_poll timestamps per conversation, for the rolling-hour cap (POLL_RATE_LIMIT_PER_HOUR). */
-const pollTimestampsByConversation = new Map<string, number[]>();
+export const reserveImageInputDaily = makeCalendarDayReserver();
 
 /**
  * Reserve one create_poll slot for `conversationId` against a rolling
- * hourly cap (sliding window, unlike reserveImageGenDaily's calendar-day
- * bucket — a 1-hour cap doesn't align to midnight). Returns false without
- * reserving if the conversation already hit `limit` within the last hour.
+ * hourly cap (POLL_RATE_LIMIT_PER_HOUR; sliding window, unlike
+ * reserveImageGenDaily's calendar-day bucket — a 1-hour cap doesn't align
+ * to midnight). Returns false without reserving if the conversation already
+ * hit `limit` within the last hour.
  */
-function reservePollSlot(conversationId: string, limit: number): boolean {
-  const now = Date.now();
-  const windowMs = 60 * 60 * 1000;
-  const recent = (pollTimestampsByConversation.get(conversationId) ?? []).filter((t) => now - t < windowMs);
-  if (recent.length >= limit) {
-    pollTimestampsByConversation.set(conversationId, recent);
-    return false;
-  }
-  recent.push(now);
-  pollTimestampsByConversation.set(conversationId, recent);
-  return true;
-}
-
-/** end_poll timestamps per conversation, for its own rolling-hour cap (POLL_END_RATE_LIMIT_PER_HOUR). */
-const pollEndTimestampsByConversation = new Map<string, number[]>();
+const reservePollSlot = makeSlidingWindowReserver(60 * 60 * 1000);
 
 /**
- * Reserve one `end_poll` slot for `conversationId` — same sliding-hour shape as
- * `reservePollSlot`, but a SEPARATE bucket so ending polls neither consumes nor
- * is blocked by the create_poll budget (PR #272 review).
+ * Reserve one `end_poll` slot for `conversationId`
+ * (POLL_END_RATE_LIMIT_PER_HOUR) — same sliding-hour shape as
+ * `reservePollSlot`, but a SEPARATE window so ending polls neither consumes
+ * nor is blocked by the create_poll budget (PR #272 review).
  */
-function reservePollEndSlot(conversationId: string, limit: number): boolean {
-  const now = Date.now();
-  const windowMs = 60 * 60 * 1000;
-  const recent = (pollEndTimestampsByConversation.get(conversationId) ?? []).filter(
-    (t) => now - t < windowMs,
-  );
-  if (recent.length >= limit) {
-    pollEndTimestampsByConversation.set(conversationId, recent);
-    return false;
-  }
-  recent.push(now);
-  pollEndTimestampsByConversation.set(conversationId, recent);
-  return true;
-}
-
-/** create_thread timestamps per parent channel, for the rolling-hour cap (THREAD_CREATE_RATE_LIMIT_PER_HOUR). */
-const threadTimestampsByConversation = new Map<string, number[]>();
+const reservePollEndSlot = makeSlidingWindowReserver(60 * 60 * 1000);
 
 /**
- * Reserve one create_thread slot for `conversationId` against a rolling
- * hourly cap, same sliding-window shape as `reservePollSlot`. Returns false
- * without reserving if the channel already hit `limit` within the last hour.
+ * Reserve one create_thread slot for the parent channel against a rolling
+ * hourly cap (THREAD_CREATE_RATE_LIMIT_PER_HOUR), same sliding-window shape
+ * as `reservePollSlot`. Returns false without reserving if the channel
+ * already hit `limit` within the last hour.
  */
-function reserveThreadSlot(conversationId: string, limit: number): boolean {
-  const now = Date.now();
-  const windowMs = 60 * 60 * 1000;
-  const recent = (threadTimestampsByConversation.get(conversationId) ?? []).filter((t) => now - t < windowMs);
-  if (recent.length >= limit) {
-    threadTimestampsByConversation.set(conversationId, recent);
-    return false;
-  }
-  recent.push(now);
-  threadTimestampsByConversation.set(conversationId, recent);
-  return true;
-}
+const reserveThreadSlot = makeSlidingWindowReserver(60 * 60 * 1000);
 
 /**
- * WebSearch invocation timestamps per conversation, for its rolling-hour cap
- * (`config.llm.webSearchRateLimitPerHour`, issue #412). Same sliding-window
- * shape as `reservePollSlot`/`reserveThreadSlot`/`reserveWarnSlot` — WebSearch
- * is a built-in SDK tool rather than one of this file's own MCP tools, so it
- * is gated via a `PreToolUse` hook in `core.ts` instead of inline in a tool
- * handler, but reuses the identical per-conversation cap primitive.
+ * The WebSearch guard itself (volume cap, query dedup, per-conversation
+ * lock) lives in `webSearchGuard.ts` — WebSearch is a built-in SDK tool
+ * gated by `core.ts`'s PreToolUse hook, not one of this file's MCP tools.
+ * Re-exported here so existing import sites (tests especially) keep
+ * working unchanged.
  */
-const webSearchTimestampsByConversation = new Map<string, number[]>();
-
-/**
- * Reserve one WebSearch slot for `conversationId` against a rolling hourly
- * cap, same sliding-window shape as `reservePollSlot`. Returns false without
- * reserving if the conversation already hit `limit` within the last hour.
- * Exported so `core.ts`'s `buildQueryOptions` PreToolUse hook can call it.
- */
-export function reserveWebSearchSlot(conversationId: string, limit: number): boolean {
-  const now = Date.now();
-  const windowMs = 60 * 60 * 1000;
-  const recent = (webSearchTimestampsByConversation.get(conversationId) ?? []).filter(
-    (t) => now - t < windowMs,
-  );
-  if (recent.length >= limit) {
-    webSearchTimestampsByConversation.set(conversationId, recent);
-    return false;
-  }
-  recent.push(now);
-  webSearchTimestampsByConversation.set(conversationId, recent);
-  return true;
-}
-
-/** Trim, collapse internal whitespace, and casefold a WebSearch query for exact-match dedup comparison. */
-function normalizeWebSearchQuery(query: string): string {
-  return query.trim().replace(/\s+/g, ' ').toLowerCase();
-}
-
-/** Cosine similarity of two `embed()`-produced (already L2-normalized) vectors — dot product suffices. Local per-file copy, same duplicated-not-shared convention as repository.ts/context/builder.ts's own `cosineSim`. */
-function cosineSim(a: number[], b: number[]): number {
-  let dot = 0;
-  const n = Math.min(a.length, b.length);
-  for (let i = 0; i < n; i++) dot += a[i] * b[i];
-  return dot;
-}
-
-/**
- * Recent (normalized query, timestamp, embedding) triples per conversation,
- * for WebSearch query-level dedup (issue #589, embedding-similarity upgrade
- * #706). In-memory only — same durability class as
- * `webSearchTimestampsByConversation` right above: a restart just forgets
- * recent queries, harmless. Deliberately holds nothing but the normalized
- * query text, its timestamp, and its embedding vector; never written to
- * `interactions`/`admin_audit` or logged (this module has no DB handle in
- * scope, and the caller in `core.ts` only ever logs `{ err, conversationId }`
- * on failure, never the query or its embedding).
- */
-const webSearchQueryHistoryByConversation = new Map<
-  string,
-  Array<{ query: string; ts: number; embedding: number[] }>
->();
-
-/**
- * Per-conversation serialization queue for the dedup check-then-record
- * critical section (adversarial review on issue #706). Before that PR, the
- * whole `PreToolUse` hook body ran with no `await` at all, so JS
- * run-to-completion semantics meant two "parallel" tool-use invocations for
- * the same turn could never interleave — one hook call always finished
- * (check AND record) before the next began. Adding `await embed()` inside
- * `isDuplicateWebSearchQuery` introduced a genuine yield point: without this
- * lock, two near-simultaneous WebSearch calls in one turn could both read
- * `recent` before either recorded, both compute embeddings concurrently, and
- * neither would see the other as a duplicate — defeating even the
- * exact-match short-circuit for the race window. `withWebSearchDedupLock`
- * restores the pre-#706 atomicity: the caller in `core.ts` wraps the entire
- * check -> volume-reserve -> record sequence in this lock, so a second
- * invocation for the same `conversationId` cannot start its own check until
- * the first has fully finished (recorded or not). Chained via a promise
- * queue rather than a real mutex library since Node has no built-in one;
- * the stored continuation always resolves (never rejects) so one failed
- * turn's error can't wedge the queue for the rest of the conversation, while
- * the promise returned to the caller still propagates `fn`'s own
- * rejection/return value untouched. Never cleared, same as every other
- * per-conversation map in this file — a restart just forgets, harmless.
- */
-const webSearchDedupLocks = new Map<string, Promise<void>>();
-
-export function withWebSearchDedupLock<T>(conversationId: string, fn: () => Promise<T>): Promise<T> {
-  const prior = webSearchDedupLocks.get(conversationId) ?? Promise.resolve();
-  const settled = prior.catch(() => {});
-  const result = settled.then(fn);
-  webSearchDedupLocks.set(
-    conversationId,
-    result.then(
-      () => {},
-      () => {},
-    ),
-  );
-  return result;
-}
-
-/**
- * Returns `{ duplicate: true }` if `query` either (a) once normalized,
- * exactly matches one of the queries recorded for `conversationId` within
- * `windowMs`, or (b) embeds above `similarityThreshold` cosine similarity
- * against one of those queries' stored embeddings — the "search, get an
- * unsatisfying result, reformulate almost identically (or exactly),
- * search again" agentic-loop failure mode (issue #589; embedding upgrade
- * #706, the growth path #589 itself named).
- *
- * The exact-match check runs FIRST and short-circuits before any `embed()`
- * call — same true-short-circuit discipline already proven for
- * `candidateTopicAlreadyReviewed` (`repository.ts`, issue #503 AC1): a
- * verbatim repeat never pays for an embedding. Only when no exact match is
- * found does this embed the (normalized) query and compare it against the
- * window's stored embeddings. The returned `embedding` is the vector this
- * call computed (or `null` when the exact-match path short-circuited, or
- * the query normalized to empty) — callers reuse it for `recordWebSearchQuery`
- * instead of embedding a second time, same reuse-not-recompute discipline as
- * `candidateTopicAlreadyReviewed`/`insertKnowledgeCandidate` (issue #503).
- *
- * Pure check otherwise: it prunes window-expired entries (so the stored
- * history doesn't grow unboundedly across calls that never record) but
- * never itself records `query` — a genuine repeat is therefore also never
- * re-recorded, so its timestamp keeps anchoring the original window instead
- * of extending it. An empty/non-string query (normalizes to `''`) never
- * matches, so a missing `tool_input.query` can't wedge the guard.
- *
- * A thrown/rejected `embed()` call is deliberately NOT caught here — it
- * propagates to the caller's own fail-closed try/catch (`core.ts`'s
- * `PreToolUse` hook, issue #412 AC-5 / #589 review), denying the call rather
- * than silently falling back to exact-match-only (issue #706 SECURITY
- * criterion).
- *
- * Recording is a SEPARATE step (`recordWebSearchQuery`) that callers must
- * invoke only once the call is actually going to proceed — i.e. AFTER
- * `reserveWebSearchSlot` also confirms it, not just after this check passes.
- * Recording here unconditionally (as an earlier version of this guard did)
- * let a query that was later denied by the volume cap poison the dedup
- * history: a retry of that exact query would then be wrongly denied as
- * "already searched" even though no search ever ran (issue #589 review).
- */
-export async function isDuplicateWebSearchQuery(
-  conversationId: string,
-  query: string,
-  windowMs: number,
-  similarityThreshold: number,
-): Promise<{ duplicate: boolean; embedding: number[] | null }> {
-  const normalized = normalizeWebSearchQuery(query);
-  const now = Date.now();
-  const recent = (webSearchQueryHistoryByConversation.get(conversationId) ?? []).filter(
-    (entry) => now - entry.ts < windowMs,
-  );
-  webSearchQueryHistoryByConversation.set(conversationId, recent);
-  if (normalized.length === 0) return { duplicate: false, embedding: null };
-  if (recent.some((entry) => entry.query === normalized)) {
-    return { duplicate: true, embedding: null };
-  }
-
-  const embedding = await embed(normalized);
-  const duplicate = recent.some((entry) => cosineSim(embedding, entry.embedding) >= similarityThreshold);
-  return { duplicate, embedding };
-}
-
-/**
- * Record `query` as seen for `conversationId`, trimmed to the last
- * `historySize` entries (oldest evicted first). `embedding` must be the
- * SAME vector `isDuplicateWebSearchQuery` already computed for this exact
- * call — passed through rather than re-embedded (issue #706, mirroring
- * `candidateTopicAlreadyReviewed`/`insertKnowledgeCandidate`'s reuse
- * discipline, issue #503). Callers must only call this once a WebSearch
- * call is confirmed to actually proceed (after BOTH `isDuplicateWebSearchQuery`
- * returns `duplicate: false` AND `reserveWebSearchSlot` returns true) — see
- * the ordering note on `isDuplicateWebSearchQuery`. An empty/non-string query
- * (normalizes to `''`) is never recorded, so a missing `tool_input.query`
- * can't wedge the guard.
- */
-export function recordWebSearchQuery(
-  conversationId: string,
-  query: string,
-  windowMs: number,
-  historySize: number,
-  embedding: number[] | null,
-): void {
-  const normalized = normalizeWebSearchQuery(query);
-  if (normalized.length === 0) return;
-  const now = Date.now();
-  const recent = (webSearchQueryHistoryByConversation.get(conversationId) ?? []).filter(
-    (entry) => now - entry.ts < windowMs,
-  );
-  // `embedding` is only ever `null` from `isDuplicateWebSearchQuery` when `normalized` was
-  // already empty (this function's own early return above already excludes that) or on an
-  // exact-match duplicate (which the caller never proceeds to record) — so this `?? []` is
-  // defensive against the parameter's type, not a reachable runtime path.
-  recent.push({ query: normalized, ts: now, embedding: embedding ?? [] });
-  while (recent.length > historySize) recent.shift();
-  webSearchQueryHistoryByConversation.set(conversationId, recent);
-}
-
-/**
- * Voice-transcription timestamps per platform-qualified SENDER (issue #507;
- * platform-qualified in issue #732), for `config.whatsapp.voice.rateLimitPerHour`
- * / `config.discord.voice.rateLimitPerHour`. Per-sender rather than
- * per-conversation (unlike `reserveWebSearchSlot`) since this bounds one
- * person's own audio volume, not a shared conversation. Same sliding-window
- * shape as `reserveWebSearchSlot`.
- */
-const voiceTranscriptionTimestampsBySender = new Map<string, number[]>();
+export {
+  reserveWebSearchSlot,
+  withWebSearchDedupLock,
+  isDuplicateWebSearchQuery,
+  recordWebSearchQuery,
+} from './webSearchGuard.js';
 
 /**
  * Reserve one voice-transcription slot for `key` against a rolling hourly
- * cap. Returns false without reserving if the sender already hit `limit`
- * within the last hour. Called from `BaileysAdapter`/`DiscordAdapter` BEFORE
- * any media download, so a refused slot never triggers a download/decode/model
- * run. Callers must skip this entirely when `limit` is 0 (unlimited) so the
- * default configuration does no bookkeeping. `key` MUST be platform-qualified
+ * cap (issue #507; platform-qualified in issue #732 —
+ * `config.whatsapp.voice.rateLimitPerHour` /
+ * `config.discord.voice.rateLimitPerHour`). Per-sender rather than
+ * per-conversation (unlike `reserveWebSearchSlot`) since this bounds one
+ * person's own audio volume, not a shared conversation. Returns false
+ * without reserving if the sender already hit `limit` within the last hour.
+ * Called from `BaileysAdapter`/`DiscordAdapter` BEFORE any media download,
+ * so a refused slot never triggers a download/decode/model run. Callers must
+ * skip this entirely when `limit` is 0 (unlimited) so the default
+ * configuration does no bookkeeping. `key` MUST be platform-qualified
  * (e.g. `` `whatsapp:${senderId}` ``/`` `discord:${senderId}` ``) — a bare
  * sender id would let a WhatsApp phone number and a Discord snowflake that
  * happen to collide share one quota bucket across platforms (issue #732).
  */
-export function reserveVoiceTranscriptionSlot(key: string, limit: number): boolean {
-  const now = Date.now();
-  const windowMs = 60 * 60 * 1000;
-  const recent = (voiceTranscriptionTimestampsBySender.get(key) ?? []).filter((t) => now - t < windowMs);
-  if (recent.length >= limit) {
-    voiceTranscriptionTimestampsBySender.set(key, recent);
-    return false;
-  }
-  recent.push(now);
-  voiceTranscriptionTimestampsBySender.set(key, recent);
-  return true;
-}
-
-/** warn_user timestamps per conversation, for the rolling-hour cap (WARN_USER_RATE_LIMIT_PER_HOUR). */
-const warnTimestampsByConversation = new Map<string, number[]>();
+export const reserveVoiceTranscriptionSlot = makeSlidingWindowReserver(60 * 60 * 1000);
 
 /**
  * Reserve one warn_user slot for `conversationId` against a rolling hourly
- * cap, same sliding-window shape as `reservePollSlot`. Returns false without
- * reserving if the conversation already hit `limit` within the last hour.
+ * cap (WARN_USER_RATE_LIMIT_PER_HOUR), same sliding-window shape as
+ * `reservePollSlot`. Returns false without reserving if the conversation
+ * already hit `limit` within the last hour.
  */
-function reserveWarnSlot(conversationId: string, limit: number): boolean {
-  const now = Date.now();
-  const windowMs = 60 * 60 * 1000;
-  const recent = (warnTimestampsByConversation.get(conversationId) ?? []).filter((t) => now - t < windowMs);
-  if (recent.length >= limit) {
-    warnTimestampsByConversation.set(conversationId, recent);
-    return false;
-  }
-  recent.push(now);
-  warnTimestampsByConversation.set(conversationId, recent);
-  return true;
-}
+const reserveWarnSlot = makeSlidingWindowReserver(60 * 60 * 1000);
 
 /**
  * Wires a manual `warn_user` into the same strike system `Moderator.scan`
@@ -2864,8 +2565,6 @@ async function applyManualWarnStrike(opts: {
  * tool could alone exhaust that hourly cap and starve every other member's
  * max-turns/thumbs-down escalations for the rest of the hour.
  */
-const humanHelpRequestTimestamps = new Map<string, number[]>();
-
 export const HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER = 3;
 
 /**
@@ -2875,41 +2574,15 @@ export const HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER = 3;
  * Returns false without reserving if `key` already hit `limit` within the
  * last 24h.
  */
-function reserveHumanHelpRequestSlot(key: string, limit: number): boolean {
-  const now = Date.now();
-  const windowMs = 24 * 60 * 60 * 1000;
-  const recent = (humanHelpRequestTimestamps.get(key) ?? []).filter((t) => now - t < windowMs);
-  if (recent.length >= limit) {
-    humanHelpRequestTimestamps.set(key, recent);
-    return false;
-  }
-  recent.push(now);
-  humanHelpRequestTimestamps.set(key, recent);
-  return true;
-}
-
-/** announce timestamps per conversation, for the rolling-hour cap (ANNOUNCE_RATE_LIMIT_PER_HOUR). */
-const announceTimestampsByConversation = new Map<string, number[]>();
+const reserveHumanHelpRequestSlot = makeSlidingWindowReserver(24 * 60 * 60 * 1000);
 
 /**
  * Reserve one announce slot for `conversationId` against a rolling hourly
- * cap, same sliding-window shape as `reservePollSlot`. Returns false without
- * reserving if the conversation already hit `limit` within the last hour.
+ * cap (ANNOUNCE_RATE_LIMIT_PER_HOUR), same sliding-window shape as
+ * `reservePollSlot`. Returns false without reserving if the conversation
+ * already hit `limit` within the last hour.
  */
-function reserveAnnounceSlot(conversationId: string, limit: number): boolean {
-  const now = Date.now();
-  const windowMs = 60 * 60 * 1000;
-  const recent = (announceTimestampsByConversation.get(conversationId) ?? []).filter(
-    (t) => now - t < windowMs,
-  );
-  if (recent.length >= limit) {
-    announceTimestampsByConversation.set(conversationId, recent);
-    return false;
-  }
-  recent.push(now);
-  announceTimestampsByConversation.set(conversationId, recent);
-  return true;
-}
+const reserveAnnounceSlot = makeSlidingWindowReserver(60 * 60 * 1000);
 
 /**
  * appeal_moderation last-fired timestamp per CALLER (`platform:userId`), for
@@ -2920,7 +2593,7 @@ function reserveAnnounceSlot(conversationId: string, limit: number): boolean {
  * restart merely permits one extra appeal DM, harmless for a non-destructive
  * notification.
  */
-const appealModerationLastAt = new Map<string, number>();
+const appealModerationCooldown = makeCooldownReserver();
 
 /**
  * Reserve one appeal_moderation slot for `key` against a rolling per-caller
@@ -2928,12 +2601,7 @@ const appealModerationLastAt = new Map<string, number>();
  * `cooldownHours`.
  */
 function reserveAppealSlot(key: string, cooldownHours: number): boolean {
-  const now = Date.now();
-  const windowMs = cooldownHours * 60 * 60 * 1000;
-  const last = appealModerationLastAt.get(key);
-  if (last !== undefined && now - last < windowMs) return false;
-  appealModerationLastAt.set(key, now);
-  return true;
+  return appealModerationCooldown(key, cooldownHours * 60 * 60 * 1000);
 }
 
 /**
@@ -2948,7 +2616,7 @@ export const ALLOWED_REACTION_EMOJI = ['✅', '👍', '👀', '🎉'] as const;
 
 /** Per-user reaction tally for the current UTC day (anti-spam on the bot's own identity; issue #231). */
 export const REACTION_RATE_LIMIT_PER_DAY = 20;
-const reactionDaily = new Map<string, { day: string; count: number }>();
+const reactionDaily = makeCalendarDayReserver();
 
 /**
  * Reserve one reaction slot for `key` against today's per-user cap, same
@@ -2957,15 +2625,7 @@ const reactionDaily = new Map<string, { day: string; count: number }>();
  * spawn, so an in-memory (not DB) cap is proportionate and needs no migration.
  */
 function reserveReactionDaily(key: string): boolean {
-  const today = new Date().toISOString().slice(0, 10);
-  const entry = reactionDaily.get(key);
-  if (!entry || entry.day !== today) {
-    reactionDaily.set(key, { day: today, count: 1 });
-    return true;
-  }
-  if (entry.count >= REACTION_RATE_LIMIT_PER_DAY) return false;
-  entry.count += 1;
-  return true;
+  return reactionDaily(key, REACTION_RATE_LIMIT_PER_DAY);
 }
 
 /**

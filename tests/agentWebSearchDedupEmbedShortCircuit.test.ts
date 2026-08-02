@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 // discipline already proven for candidateTopicAlreadyReviewed (repository.ts,
 // issue #503 AC1, tests/knowledgeCandidateDedupDegradation.test.ts). Mocking
 // embed() to throw pins that the exact-match path structurally cannot reach
-// it. Mock BEFORE the first import of core.js/tools.js — a later
+// it. Mock BEFORE the first import of core.js/webSearchGuard.js — a later
 // t.mock.module call can't retarget an already-imported module (same trap
 // noted in tests/agentWebSearchDedupFailClosed.test.ts) — so this lives in
 // its OWN file, same split as that file / tests/agentWebSearchDedupNoLog.test.ts.

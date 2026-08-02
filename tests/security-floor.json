@@ -118,6 +118,7 @@
   "pipelineOutcomes.test.ts": 2,
   "projectScope.test.ts": 16,
   "rateLimitNotice.router.test.ts": 2,
+  "rateReservation.test.ts": 4,
   "rbac.test.ts": 49,
   "redeploy.test.ts": 2,
   "repeatMaxTurnsShortcutRouter.test.ts": 3,

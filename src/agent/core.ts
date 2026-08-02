@@ -33,14 +33,13 @@ import {
   renderRequesterTag,
 } from './systemPrompt.js';
 import { selectPersona } from './personas.js';
+import { buildToolServer, type ToolServerTurnState } from './tools.js';
 import {
-  buildToolServer,
   isDuplicateWebSearchQuery,
   recordWebSearchQuery,
   reserveWebSearchSlot,
   withWebSearchDedupLock,
-  type ToolServerTurnState,
-} from './tools.js';
+} from './webSearchGuard.js';
 import { ENABLED_SKILLS } from './enabledSkills.js';
 import {
   initialUsageLimitTracker,
@@ -373,7 +372,7 @@ const SKILLS_DIR = join(__dirname, 'skills');
  *    WebSearch for those tiers.
  *  - the same hook additionally denies an exact-normalized repeat of a
  *    recent query in the same conversation (issue #589,
- *    `isDuplicateWebSearchQuery`/`recordWebSearchQuery` in `tools.ts`) — the
+ *    `isDuplicateWebSearchQuery`/`recordWebSearchQuery` in `webSearchGuard.ts`) — the
  *    volume cap above bounds call count but never inspected the query, so an
  *    agentic turn could reformulate and re-fire the same search for no new
  *    information. The dedup CHECK runs BEFORE the volume-cap check and, on a
