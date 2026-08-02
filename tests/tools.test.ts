@@ -14380,13 +14380,14 @@ test(
     const rendered = await listTool.handler({});
     assert.match(rendered.content[0]?.text ?? '', /link: https:\/\/example\.com\/my-project/);
 
-    const toolsSource = readFileSync(new URL('../src/agent/tools.ts', import.meta.url), 'utf8');
-    const shareStart = toolsSource.indexOf("'share_project',");
-    const adminSectionStart = toolsSource.indexOf('// --- Admin tools');
-    assert.ok(shareStart !== -1 && adminSectionStart !== -1 && shareStart < adminSectionStart);
-    const toolsRegion = toolsSource.slice(shareStart, adminSectionStart);
+    // share_project/list_projects moved to the social ToolDef domain (tool
+    // registry split), so scan that WHOLE FILE — same module-boundary
+    // reasoning as the memberProjects.ts scan below, and strictly stronger
+    // than the old tools.ts region slice between section banners.
+    const toolsSource = readFileSync(new URL('../src/agent/tools/social.ts', import.meta.url), 'utf8');
+    assert.ok(toolsSource.includes("name: 'share_project',"), 'share_project tool definition not found');
     assert.doesNotMatch(
-      toolsRegion,
+      toolsSource,
       /\bfetch\(|axios|http\.get\(|https\.get\(|XMLHttpRequest/,
       'a stored project link must never be fetched or previewed — only rendered verbatim as text',
     );

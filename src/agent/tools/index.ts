@@ -11,6 +11,20 @@ import { reactionsTools } from './reactions.js';
 import { socialTools } from './social.js';
 import { digestMemberTools } from './digestMember.js';
 import { projectNotesTools } from './projectNotes.js';
+import { activityTools } from './activity.js';
+import { moderationTools } from './moderation.js';
+import { appealsAdminTools } from './appealsAdmin.js';
+import { broadcastTools } from './broadcast.js';
+import { eventsTools } from './events.js';
+import { policyTextTools } from './policyText.js';
+import { knowledgeAdminTools } from './knowledgeAdmin.js';
+import { accessAndSuggestionsTools } from './accessAndSuggestions.js';
+import { rosterTools } from './roster.js';
+import { digestsAdminTools } from './digestsAdmin.js';
+import { reportsAdminTools } from './reportsAdmin.js';
+import { membershipTools } from './membership.js';
+import { discordRolesTools } from './discordRoles.js';
+import { projectsAdminTools } from './projectsAdmin.js';
 import { devTeamTools } from './devTeam.js';
 import { imageGenTools } from './imageGen.js';
 
@@ -36,6 +50,20 @@ export const TOOL_REGISTRY: readonly ToolDef<any>[] = [
   ...socialTools,
   ...digestMemberTools,
   ...projectNotesTools,
+  ...activityTools,
+  ...moderationTools,
+  ...appealsAdminTools,
+  ...broadcastTools,
+  ...eventsTools,
+  ...policyTextTools,
+  ...knowledgeAdminTools,
+  ...accessAndSuggestionsTools,
+  ...rosterTools,
+  ...digestsAdminTools,
+  ...reportsAdminTools,
+  ...membershipTools,
+  ...discordRolesTools,
+  ...projectsAdminTools,
   ...devTeamTools,
   ...imageGenTools,
 ];

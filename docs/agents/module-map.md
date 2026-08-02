@@ -35,21 +35,35 @@ is marked **🔒**. Changes there need a `SECURITY:` test (see
 - `src/agent/skills/` — 🔒 One `SKILL.md` per Agent Skill, plus the plugin manifest. Loaded only when `AGENT_SKILLS_ENABLED`, and only the hand-written `ENABLED_SKILLS` allowlist in `core.ts` — never derived from request content.
 - `src/agent/systemPrompt.ts` — 🔒 Assembles the system prompt: security guidelines, persona voice rules, and the NZ-date grounding. Voice rules never override the security section above them.
 - `src/agent/tools.ts` — 🔒 The barrel for the tool-registry split (re-exports every moved helper/notify/registry symbol) plus the remaining unconverted closure tools in `buildToolServer`. Still large; find your tool by name before reading anything else.
+- `src/agent/tools/accessAndSuggestions.ts` — The `list_access_requests`/`list_suggestions`/`resolve_suggestion` ToolDef domain: guest access-request and member-suggestion triage.
+- `src/agent/tools/activity.ts` — The `whats_new`/`user_history` ToolDef domain: the bot's own changelog plus scoped per-member message history for moderation.
+- `src/agent/tools/appealsAdmin.ts` — The `list_appeals`/`resolve_appeal` ToolDef domain: the admin review side of the appeal_moderation queue, with the origin-platform resolution DM.
+- `src/agent/tools/broadcast.ts` — The `announce`/`create_poll`/`end_poll`/`create_thread`/`archive_thread` ToolDef domain plus their per-conversation sliding-hour reservers and rate/bound constants.
 - `src/agent/tools/context.ts` — 🔒 `makeToolContext`: the per-turn tool kernel — owns `audited` (audit row + super-admin alert pairing) and `requireConfirm` (the CONFIRM gate's forgeable-pending-notice sanitize strip), plus `adapterFor`/`callerScope`/`resolveMemberTarget`.
 - `src/agent/tools/devTeam.ts` — The `dev_team_*` ToolDef domain (dispatch/status/result/backlog/findings/verify) plus its per-super-admin daily dispatch reserver.
 - `src/agent/tools/digestMember.ts` — The `community_digest` ToolDef domain: on-demand pull of the weekly member digest, quarantined before it re-enters model context.
+- `src/agent/tools/digestsAdmin.ts` — The `question_digest`/`admin_digest`/`review_queue`/`response_latency` ToolDef domain: read-only, callerScope-bounded admin signal roll-ups.
+- `src/agent/tools/discordRoles.ts` — The `assign_community_role`/`remove_community_role`/`list_assignable_roles` ToolDef domain (Discord-only cosmetic roles) with the local allowlist guard.
+- `src/agent/tools/events.ts` — The `create_event`/`cancel_event` ToolDef domain (Discord Scheduled Events, both CONFIRM-gated) plus the event field-bound constants.
 - `src/agent/tools/feedback.ts` — The `suggest_improvement`/`rate_answer`/`request_human_help` ToolDef domain, plus the per-caller human-help daily reserver and its exported limit.
 - `src/agent/tools/helpers.ts` — Module-scope pure helpers shared by tool domains: `text()`/`untrusted()` result wrappers, the knowledge/usage/dev-team formatters, the feature-flag allowlists, and shared zod fragments.
 - `src/agent/tools/imageGen.ts` — The `generate_image` ToolDef domain plus its in-flight set and per-user daily reserver.
 - `src/agent/tools/index.ts` — 🔒 `TOOL_REGISTRY`: the declarative tool inventory composed from the per-domain ToolDef arrays; `tests/toolRegistry.test.ts` cross-checks its tier/platform/flag metadata against rbac.ts/core.ts until the flip.
 - `src/agent/tools/info.ts` — The `community_info`/`community_guidelines`/`check_status`/`list_events` ToolDef domain, owning the static per-tier capability rundown texts.
+- `src/agent/tools/knowledgeAdmin.ts` — The admin knowledge-curation ToolDef domain: save/list/update/delete/merge knowledge, duplicate/conflict/gap audits, the candidate review queue, and answer-feedback roll-ups.
 - `src/agent/tools/knowledgeMember.ts` — The member-facing knowledge ToolDef domain: `knowledge_search` (with its turn-state gap/stale correlation writes), `list_knowledge_topics`, `suggest_knowledge`, `withdraw_knowledge_tip`.
+- `src/agent/tools/membership.ts` — The `add_member`/`remove_member`/`link_member`/`unlink_member` ToolDef domain: community membership and cross-platform identity linking.
 - `src/agent/tools/memory.ts` — The `remember_search`/`catch_up` ToolDef domain: recall over past interactions, with the shared per-message truncation cap and the catch_up window/row limits.
+- `src/agent/tools/moderation.ts` — The `moderate`/`clear_warnings`/`list_member_warnings`/`list_muted_members`/`list_blocked_members`/`moderation_history` ToolDef domain plus the per-conversation warn reserver.
 - `src/agent/tools/notify.ts` — The notify family (super-admin/admin fan-out, approval/resolution DMs) with window-reopen queueing, plus `applyManualWarnStrike`/`ackReportedMessage` side-effect helpers.
+- `src/agent/tools/policyText.ts` — The `set_community_guidelines`/`set_welcome_message` ToolDef domain plus the two Discord-message-limit-derived text caps.
 - `src/agent/tools/prefs.ts` — The `set_response_style`/`set_language_preference` ToolDef domain: self-scoped, closed-enum standing preferences.
 - `src/agent/tools/projectNotes.ts` — The `project_recall`/`project_note`/`project_list` ToolDef domain: team-project shared memory, access-scoped in SQL via `visibleProjectIds`.
+- `src/agent/tools/projectsAdmin.ts` — The `project_*` admin ToolDef domain (create/add/remove member, bind/unbind, info, archive/unarchive): team-project membership and surface bindings, never tiers.
 - `src/agent/tools/reactions.ts` — The `react_to_message` ToolDef domain plus its closed emoji allowlist and per-user daily reaction reserver.
+- `src/agent/tools/reportsAdmin.ts` — The `list_reports`/`resolve_report` ToolDef domain: content-report triage with the linked-identity accused-admin exclusion.
 - `src/agent/tools/reportsMember.ts` — The `report_content`/`withdraw_report`/`appeal_moderation` ToolDef domain plus the per-caller appeal cooldown reserver.
+- `src/agent/tools/roster.ts` — The `add_member_note`/`list_member_notes`/`delete_member_note`/`list_roster`/`list_context_digests` ToolDef domain: admin-curated member context and roster views.
 - `src/agent/tools/selfService.ts` — The `forget_me`/`my_submissions`/`my_warnings`/`my_data` ToolDef domain: the caller's own data, always self-scoped.
 - `src/agent/tools/social.ts` — The member-discovery ToolDef domain: interests (`set_my_interests`/`who_is_into`), peer help (`set_helper_availability`/`find_helper`), and the project showcase (`share_project`/`list_projects`/`request_project_connection`).
 - `src/agent/tools/types.ts` — `ToolDef`/`ToolContext`/`defineTool`: the declarative registry's type surface (docs/TOOL-REGISTRY-DESIGN.md).
