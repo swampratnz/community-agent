@@ -40,25 +40,20 @@ export function stepJobFailureTracker(
   };
 }
 
-export type BackgroundJobName =
-  | 'context-builder'
-  | 'knowledge-refresh'
-  | 'docs-ingest'
-  | 'knowledge-link-check'
-  | 'interaction-retention-purge'
-  | 'roster-retention-purge'
-  | 'access-request-retention-purge'
-  | 'anthropic-status-check'
-  | 'embedding-model'
-  | 'admin-digest'
-  | 'usage-alert'
-  | 'dev-team-watch'
-  | 'departed-admin-alert'
-  | 'usage-cost-digest'
-  | 'engagement-alert'
-  | 'member-digest'
-  | 'background-job-cost-alert'
-  | 'admin-leverage-alert';
+/**
+ * Open string, not a closed union (agent-base plan §3: `BackgroundJobName`
+ * becomes an open string so a module can register jobs the base never heard
+ * of — see `src/jobs/types.ts`). Every name in this repo remains a fixed
+ * literal in the job's owning module, composed in `src/jobs/registry.ts` —
+ * never derived from message content or any other runtime value, which is
+ * what keeps `buildJobFailureAlert`'s DM template and the `/healthz` `jobs`
+ * keys non-attacker-controlled. Deliberately distinct from `BackgroundJob`
+ * (`src/storage/repository/adminStats.ts`), which stays a CLOSED union
+ * because the `background_job_costs.job` DB CHECK constrains its values;
+ * per the plan, opening THAT one is a deferred CHECK-registration
+ * (`trackedCostJobs`), not a type change.
+ */
+export type BackgroundJobName = string;
 
 /**
  * Fixed, non-leaking alert template — deliberately excludes the caught
@@ -66,8 +61,9 @@ export type BackgroundJobName =
  * convention `upstreamFailure.ts` already established for its own
  * super-admin DM (an internal error string can incidentally contain a file
  * path, a query fragment, or other operational detail nobody intended to
- * broadcast). `jobName` is always one of the fixed enum values above, never
- * derived from anything dynamic.
+ * broadcast). `jobName` is always a fixed literal registered by the job's
+ * owning module (see `src/jobs/registry.ts`), never derived from anything
+ * dynamic.
  */
 export function buildJobFailureAlert(
   jobName: BackgroundJobName,
@@ -113,8 +109,13 @@ export function recordJobRun(
   });
 }
 
-/** Shallow copy for read — callers can never mutate the shared registry. */
-export function getJobHealthSnapshot(): Partial<Record<BackgroundJobName, JobHealthSnapshot>> {
+/**
+ * Shallow copy for read — callers can never mutate the shared registry.
+ * (Plain `Record`, not `Partial<Record<...>>`: with the job-name key now an
+ * open string the key set is an index signature — inherently sparse — and
+ * `Partial` would only smear `| undefined` over every looked-up value.)
+ */
+export function getJobHealthSnapshot(): Record<BackgroundJobName, JobHealthSnapshot> {
   return Object.fromEntries(jobHealthRegistry);
 }
 

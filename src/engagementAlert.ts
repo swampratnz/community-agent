@@ -9,6 +9,7 @@ import {
 } from './storage/repository.js';
 import { startTrackedJob } from './backgroundJobs.js';
 import { alertSuperAdmins } from './departedAdminAlert.js';
+import type { JobSpec } from './jobs/types.js';
 import type { PlatformAdapter } from './platforms/types.js';
 
 /**
@@ -106,3 +107,10 @@ export function startEngagementAlert(
 ): ReturnType<typeof setInterval> | null {
   return startTrackedJob('engagement-alert', adapters, config.engagementAlert.enabled, runOnce);
 }
+
+// Registry entry (see src/jobs/registry.ts) — gate mirrors startEngagementAlert's own flag.
+export const engagementAlertJob: JobSpec = {
+  name: 'engagement-alert',
+  enabled: (cfg) => cfg.engagementAlert.enabled,
+  start: (adapters) => startEngagementAlert(adapters),
+};

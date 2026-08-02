@@ -40,6 +40,7 @@ import {
   type JobFailureTracker,
 } from './backgroundJobHealth.js';
 import { alertSuperAdmins as sendSuperAdminAlert } from './notifications.js';
+import type { JobSpec } from './jobs/types.js';
 import type { PlatformAdapter } from './platforms/types.js';
 
 const TICK_INTERVAL_MS = 6 * 3_600_000;
@@ -317,6 +318,41 @@ export function startEmbeddingHealthCheckJob(
   return startTrackedJob('embedding-model', adapters, true, runOnce);
 }
 
+// Registry entries for the jobs this module owns (see src/jobs/registry.ts).
+// Each `enabled` mirrors the flag its starter already passes to
+// startTrackedJob / checks itself — declarative metadata only, pinned by
+// tests/jobsRegistry.test.ts.
+export const contextBuilderJob: JobSpec = {
+  name: 'context-builder',
+  enabled: (cfg) => cfg.contextBuilder.enabled,
+  start: (adapters) => startContextBuilder(adapters),
+};
+
+export const knowledgeRefreshJob: JobSpec = {
+  name: 'knowledge-refresh',
+  enabled: (cfg) => cfg.knowledgeRefresh.enabled,
+  start: (adapters) => startKnowledgeRefresh(adapters),
+};
+
+export const docsIngestJob: JobSpec = {
+  name: 'docs-ingest',
+  enabled: (cfg) => cfg.docsIngest.enabled,
+  start: (adapters) => startDocsIngest(adapters),
+};
+
+export const knowledgeLinkCheckJob: JobSpec = {
+  name: 'knowledge-link-check',
+  enabled: (cfg) => cfg.knowledgeLinkCheck.enabled,
+  start: (adapters) => startKnowledgeLinkCheck(adapters),
+};
+
+// Always on — zero-cost local self-test, no enable flag (issue #376).
+export const embeddingHealthCheckJob: JobSpec = {
+  name: 'embedding-model',
+  enabled: () => true,
+  start: (adapters) => startEmbeddingHealthCheckJob(adapters),
+};
+
 /**
  * Cadence-scaled failure threshold (issue #321): roughly one hour of
  * consecutive failures before the first alert, regardless of the configured
@@ -433,6 +469,14 @@ export function startStatusCheck(
   timer.unref();
   return timer;
 }
+
+// Registry entry (see src/jobs/registry.ts) — bespoke configurable poll
+// cadence, never startTrackedJob's 6h tick (see startStatusCheck above).
+export const anthropicStatusCheckJob: JobSpec = {
+  name: 'anthropic-status-check',
+  enabled: (cfg) => cfg.statusCheck.enabled,
+  start: (adapters) => startStatusCheck(adapters),
+};
 
 /** A terminal job state — the poller sends the completion DM only for these. */
 function isTerminalDevTeamState(state: string): boolean {
@@ -658,3 +702,11 @@ export function startDevTeamWatchPoller(
   timer.unref();
   return timer;
 }
+
+// Registry entry (see src/jobs/registry.ts) — bespoke configurable poll
+// cadence, same shape as anthropicStatusCheckJob above.
+export const devTeamWatchJob: JobSpec = {
+  name: 'dev-team-watch',
+  enabled: (cfg) => cfg.devTeam.enabled,
+  start: (adapters) => startDevTeamWatchPoller(adapters),
+};

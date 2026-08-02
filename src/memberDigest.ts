@@ -13,6 +13,7 @@ import {
   wasMemberDigestSentRecently,
   type ContextDigest,
 } from './storage/repository.js';
+import type { JobSpec } from './jobs/types.js';
 import type { PlatformAdapter } from './platforms/types.js';
 
 /** Same weekly window as `adminDigest.ts`'s `FRESHNESS_DAYS` — this signal targets the same ~7-day cadence. */
@@ -337,3 +338,10 @@ export function startMemberDigest(
 ): ReturnType<typeof setInterval> | null {
   return startTrackedJob('member-digest', adapters, config.memberDigest.enabled, runOnce);
 }
+
+// Registry entry (see src/jobs/registry.ts) — gate mirrors startMemberDigest's own flag.
+export const memberDigestJob: JobSpec = {
+  name: 'member-digest',
+  enabled: (cfg) => cfg.memberDigest.enabled,
+  start: (adapters) => startMemberDigest(adapters),
+};

@@ -3139,7 +3139,9 @@ dead" (e.g. a banned WhatsApp number stuck in Baileys' reconnect loop).
   additional, optional `jobs?: Record<string, {consecutiveFailures: number,
   lastRunAt: string, lastSuccessAt: string | null}>` field — present only once
   at least one background job has run this process. Each value is a fixed
-  `BackgroundJobName` enum key, an integer, or an ISO timestamp only — never
+  registered job-name key (a literal in the job's owning module — see
+  `src/jobs/registry.ts` — `BackgroundJobName` is an open string type, never
+  a runtime-derived value), an integer, or an ISO timestamp only — never
   an error message or stack (same "never echo the raw error" convention as
   the DM template). A job whose tracker has crossed its own alert threshold
   (`alerted === true`, a *confirmed* outage) also flips top-level `status` to

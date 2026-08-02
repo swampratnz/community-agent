@@ -42,6 +42,7 @@ import {
   wasAdminDigestSentRecently,
   type QuestionCluster,
 } from './storage/repository.js';
+import type { JobSpec } from './jobs/types.js';
 import type { Platform, PlatformAdapter } from './platforms/types.js';
 
 /**
@@ -1284,3 +1285,10 @@ export function startAdminDigest(
 ): ReturnType<typeof setInterval> | null {
   return startTrackedJob('admin-digest', adapters, config.adminDigest.enabled, runOnce);
 }
+
+// Registry entry (see src/jobs/registry.ts) — gate mirrors startAdminDigest's own flag.
+export const adminDigestJob: JobSpec = {
+  name: 'admin-digest',
+  enabled: (cfg) => cfg.adminDigest.enabled,
+  start: (adapters) => startAdminDigest(adapters),
+};

@@ -209,8 +209,8 @@ test("startStatusCheck: records 'anthropic-status-check' in the shared job-healt
     t.mock.timers.tick(POLL_MS);
     await flush(); // 2nd run succeeds
     snap = getJobHealthSnapshot()['anthropic-status-check'];
-    assert.equal(snap!.consecutiveFailures, 0, 'a success resets consecutiveFailures in the registry');
-    assert.ok(snap!.lastSuccessAt !== null, 'a success records a lastSuccessAt in the registry');
+    assert.equal(snap.consecutiveFailures, 0, 'a success resets consecutiveFailures in the registry');
+    assert.ok(snap.lastSuccessAt !== null, 'a success records a lastSuccessAt in the registry');
   } finally {
     clearInterval(timer!);
   }

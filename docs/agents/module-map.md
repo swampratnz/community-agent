@@ -72,7 +72,7 @@ is marked **🔒**. Changes there need a `SECURITY:` test (see
 - `src/auth/` — 🔒 Identity and role resolution: tiers come from env plus the `community_users` table, never from message content. Four files, all small and worth reading in full — `tiers.ts` is the dependency-free tier lattice (`atLeast`/`assertAtLeast`, imported by the tool domain files so rbac.ts can import the registry without a cycle); `rbac.ts`'s tier arrays and `toolsForRole` are now DERIVED from the tool registry.
 - `src/backgroundJobCostAlert.ts` — Alerts super admins when background-job spend crosses a configured threshold, so an expensive job cannot run up cost unnoticed.
 - `src/backgroundJobHealth.ts` — Pure consecutive-failure debounce tracker for scheduled jobs, so one outage produces one alert rather than an alert per tick.
-- `src/backgroundJobs.ts` — The scheduler: registers, tracks and runs every opt-in background job (context builder, knowledge refresh, docs ingest, retention sweeps) and records their cost.
+- `src/backgroundJobs.ts` — `startTrackedJob` (the shared 6h tick + failure-tracker wrapper most jobs use) plus the knowledge/context/status/dev-team job run functions and their `JobSpec` entries.
 - `src/budgetCheckFailureNotice.ts` — Pure debounce for the single super-admin DM sent when the daily reply-budget check itself fails (a systemic condition, not a per-user one).
 - `src/config.ts` — The composition barrel: merges the per-domain slice fragments from `src/config/` into the full env schema, applies the cross-slice refine, parses once (fail-fast on a bad deploy), and exports the `config` singleton plus the pure `loadConfig(env)`.
 - `src/config/` — Per-domain zod slice fragments (each var's chain + doc comment lives with its domain) and their slice-local refinements; `env.ts` owns the one dotenv load + blank-normalisation. Adding a setting starts in the right slice here.
@@ -89,7 +89,8 @@ is marked **🔒**. Changes there need a `SECURITY:` test (see
 - `src/github/` — 🔒 GitHub issue creation for the super-admin `suggest_issue` tool. The bot's only GitHub egress and its only write credential; the token is fine-grained and issues-scoped.
 - `src/health.ts` — The HTTP health server (`/healthz`) and the adapter/DB probes behind it.
 - `src/healthState.ts` — Pure health logic (disconnect debounce, payload shape), kept import-free of config and HTTP so it is directly unit-testable.
-- `src/index.ts` — Process entry point: loads config, wires adapters, storage, moderation and background jobs, and owns startup/shutdown ordering.
+- `src/index.ts` — Process entry point, now a thin composition root: loads config, wires adapters and the router, starts the job registry (`src/jobs/`), and owns the single shutdown sweep's ordering.
+- `src/jobs/` — The background-job registry: `JobSpec` (open name, declarative gate, self-owned cadence) in `types.ts`, and in `registry.ts` the pinned-order `JOB_REGISTRY` plus the start/stop sweeps `index.ts` composes; each spec lives with its owning job module, only the order lives here.
 - `src/logger.ts` — The pino logger plus the hashing helper used to keep identifiers out of logs.
 - `src/media/` — Local-only media handling: Whisper voice transcription for WhatsApp notes and the Grok image-generation client. Audio is transcribed on-host, never shipped to a third party.
 - `src/memberDigest.ts` — The member-facing digest of recent community activity, built from PII-scrubbed aggregates rather than raw messages.

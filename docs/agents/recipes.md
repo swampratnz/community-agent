@@ -119,8 +119,10 @@ one has it.
 
 | File | Why |
 |---|---|
-| `src/backgroundJobs.ts` | Register it via `startTrackedJob` so it is tracked, cost-accounted and health-monitored. |
+| `src/<job>.ts` (or `src/backgroundJobs.ts`) | The run function + `startX` starter via `startTrackedJob` (tracked, cost-accounted, health-monitored), and the module's exported `JobSpec`. |
+| `src/jobs/registry.ts` | Add the spec to `JOB_REGISTRY` (at the END — start order is pinned). `index.ts` needs no edit: it starts and stops whatever the registry holds. |
 | `src/config/<slice>.ts` + `src/config.ts` | Its enable flag and schedule (slice fragment + barrel surface). Background jobs are **opt-in**. |
+| `tests/jobsRegistry.test.ts` | Add the job's row (name, enabling env) to the table the registry-completeness test pins. |
 
 Cost and consecutive-failure alerting come free from registration — do not
 hand-roll either. A job that can fail repeatedly should say so once per outage,

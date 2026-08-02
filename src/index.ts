@@ -5,29 +5,8 @@ import { configureSubscriptionAuth } from './agent/auth.js';
 import { Router } from './router.js';
 import { closeDb, healthcheck } from './storage/db.js';
 import { verifyEmbeddingDim } from './storage/repository.js';
-import {
-  startAccessRequestRetentionPurge,
-  startRetentionPurge,
-  startRosterRetentionPurge,
-} from './retention.js';
-import {
-  startContextBuilder,
-  startKnowledgeRefresh,
-  startDocsIngest,
-  startKnowledgeLinkCheck,
-  startStatusCheck,
-  startEmbeddingHealthCheckJob,
-  startDevTeamWatchPoller,
-} from './backgroundJobs.js';
-import { startDisconnectAlerts, startHealthServer } from './health.js';
-import { startUsageAlert } from './usageAlert.js';
-import { startUsageCostDigest } from './usageCostDigest.js';
-import { startBackgroundJobCostAlert } from './backgroundJobCostAlert.js';
-import { startAdminDigest } from './adminDigest.js';
-import { startMemberDigest } from './memberDigest.js';
-import { startDepartedAdminAlert } from './departedAdminAlert.js';
-import { startEngagementAlert } from './engagementAlert.js';
-import { startAdminLeverageAlert } from './adminLeverageAlert.js';
+import { startRegisteredJobs, stopRegisteredJobs } from './jobs/registry.js';
+import { startHealthServer } from './health.js';
 import type { PlatformAdapter } from './platforms/types.js';
 import { DiscordAdapter } from './platforms/discord/adapter.js';
 import { BaileysAdapter } from './platforms/whatsapp/baileysAdapter.js';
@@ -72,92 +51,29 @@ async function main(): Promise<void> {
   await Promise.all(adapters.map((a) => a.start()));
   logger.info({ platforms: adapters.map((a) => a.platform) }, 'Community Agent running');
 
-  // 4b. Optional age-based retention purges (each independently disabled
-  //     unless configured — neither's disabled state suppresses the other).
-  //     Routed through startTrackedJob for consecutive-failure alerting
-  //     (issue #291), hence the `adapters` argument.
-  const retentionTimer = startRetentionPurge(adapters);
-  const rosterRetentionTimer = startRosterRetentionPurge(adapters);
-  const accessRequestRetentionTimer = startAccessRequestRetentionPurge(adapters);
+  // 4b. Background jobs — every periodic timer in the process, started in
+  //     the registry's pinned order (src/jobs/registry.ts, which preserves
+  //     the old hand-wired startX() sequence exactly). Each spec keeps its
+  //     own enable gate, cadence mechanism and failure-tracker wiring; a
+  //     disabled job contributes a null timer that the shutdown sweep skips.
+  const jobs = startRegisteredJobs(adapters);
 
-  // 4c. Sustained-disconnect super-admin alerting (always on; no user-facing
-  //     surface to disable) and the optional /healthz endpoint.
-  const disconnectAlertTimer = startDisconnectAlerts(adapters);
+  // 4c. The optional /healthz endpoint. Deliberately NOT a registry job: it
+  //     is an HTTP server, not a timer — no cadence, no failure tracker, and
+  //     its close belongs AFTER the drain below so health probes keep
+  //     answering while in-flight turns finish. (Pre-registry it started
+  //     between disconnect-alerts and the embedding health check; starting
+  //     it after the sweep instead is behaviour-neutral — nothing couples
+  //     the passive server to job start timing.)
   const healthServer = await startHealthServer(adapters);
-
-  // 4c-bis. Embedding-model health check (always on — zero-cost local
-  //         self-test, no enabled flag, same convention as
-  //         startDisconnectAlerts; issue #376).
-  const embeddingHealthTimer = startEmbeddingHealthCheckJob(adapters);
-
-  // 4d. Optional proactive usage alert (disabled unless configured).
-  const usageAlertTimer = startUsageAlert(adapters);
-
-  // 4d-bis. Optional weekly super-admin cost-trend DM (disabled unless configured).
-  const usageCostDigestTimer = startUsageCostDigest(adapters);
-
-  // 4d-ter. Optional proactive per-job background cost spike alert (disabled unless configured).
-  const backgroundJobCostAlertTimer = startBackgroundJobCostAlert(adapters);
-
-  // 4e. Optional offline context builder (disabled unless configured).
-  const contextBuilderTimer = startContextBuilder(adapters);
-
-  // 4e-bis. Optional daily knowledge refresh (disabled unless configured).
-  const knowledgeRefreshTimer = startKnowledgeRefresh(adapters);
-
-  // 4e-ter. Optional weekly docs ingest (disabled unless configured).
-  const docsIngestTimer = startDocsIngest(adapters);
-
-  // 4e-ter-bis. Optional weekly knowledge link-rot check (disabled unless configured).
-  const knowledgeLinkCheckTimer = startKnowledgeLinkCheck(adapters);
-
-  // 4e-quater. Optional Anthropic status check poll (disabled unless
-  //            configured). Routed through backgroundJobs.ts's startStatusCheck
-  //            for consecutive-failure alerting (issue #321), hence the
-  //            `adapters` argument.
-  const statusCheckTimer = startStatusCheck(adapters);
-
-  // 4f. Optional weekly admin recurring-questions digest (disabled unless configured).
-  const adminDigestTimer = startAdminDigest(adapters);
-
-  // 4f-bis. Optional departed-admin visibility alert (disabled unless configured).
-  const departedAdminAlertTimer = startDepartedAdminAlert(adapters);
-
-  // 4f-ter. Optional weekly engagement-percentage alert (disabled unless configured).
-  const engagementAlertTimer = startEngagementAlert(adapters);
-
-  // 4f-ter-bis. Optional weekly admin-leverage alert (disabled unless configured).
-  const adminLeverageAlertTimer = startAdminLeverageAlert(adapters);
-
-  // 4f-quater. Optional weekly member-facing digest channel post (disabled unless configured).
-  const memberDigestTimer = startMemberDigest(adapters);
-
-  // 4g. Optional dev-team completion-DM poller (disabled unless DEV_TEAM_ENABLED):
-  //     DMs the requester when a dispatched ~20-min job finishes.
-  const devTeamWatchTimer = startDevTeamWatchPoller(adapters);
 
   // 5. Graceful shutdown.
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutting down');
-    if (retentionTimer) clearInterval(retentionTimer);
-    if (rosterRetentionTimer) clearInterval(rosterRetentionTimer);
-    if (accessRequestRetentionTimer) clearInterval(accessRequestRetentionTimer);
-    clearInterval(disconnectAlertTimer);
-    if (embeddingHealthTimer) clearInterval(embeddingHealthTimer);
-    if (usageAlertTimer) clearInterval(usageAlertTimer);
-    if (usageCostDigestTimer) clearInterval(usageCostDigestTimer);
-    if (backgroundJobCostAlertTimer) clearInterval(backgroundJobCostAlertTimer);
-    if (contextBuilderTimer) clearInterval(contextBuilderTimer);
-    if (knowledgeRefreshTimer) clearInterval(knowledgeRefreshTimer);
-    if (docsIngestTimer) clearInterval(docsIngestTimer);
-    if (knowledgeLinkCheckTimer) clearInterval(knowledgeLinkCheckTimer);
-    if (statusCheckTimer) clearInterval(statusCheckTimer);
-    if (adminDigestTimer) clearInterval(adminDigestTimer);
-    if (memberDigestTimer) clearInterval(memberDigestTimer);
-    if (departedAdminAlertTimer) clearInterval(departedAdminAlertTimer);
-    if (engagementAlertTimer) clearInterval(engagementAlertTimer);
-    if (adminLeverageAlertTimer) clearInterval(adminLeverageAlertTimer);
-    if (devTeamWatchTimer) clearInterval(devTeamWatchTimer);
+    // ONE sweep over the same registry the timers came from — the old
+    // hand-mirrored one-clearInterval-per-job list (which had to be kept in
+    // sync with the start list by eye) is gone.
+    stopRegisteredJobs(jobs);
     // Drain in-flight per-conversation turns BEFORE stopping any adapter, so
     // a reply generated during the drain window can still be sent on a live
     // connection (issue #210). Bounded by SHUTDOWN_DRAIN_TIMEOUT_MS so a

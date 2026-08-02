@@ -214,8 +214,8 @@ test("startUsageAlert: records 'usage-alert' in the shared job-health registry o
     t.mock.timers.tick(POLL_MS);
     await flush(); // 2nd check succeeds
     snap = getJobHealthSnapshot()['usage-alert'];
-    assert.equal(snap!.consecutiveFailures, 0, 'a success resets consecutiveFailures in the registry');
-    assert.ok(snap!.lastSuccessAt !== null, 'a success records a lastSuccessAt in the registry');
+    assert.equal(snap.consecutiveFailures, 0, 'a success resets consecutiveFailures in the registry');
+    assert.ok(snap.lastSuccessAt !== null, 'a success records a lastSuccessAt in the registry');
   } finally {
     clearInterval(timer!);
     mode = 'succeed';

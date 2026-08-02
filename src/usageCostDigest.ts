@@ -9,6 +9,7 @@ import {
   wasUsageCostDigestSentRecently,
 } from './storage/repository.js';
 import { alertSuperAdmins as sendSuperAdminAlert } from './notifications.js';
+import type { JobSpec } from './jobs/types.js';
 import type { PlatformAdapter } from './platforms/types.js';
 
 /** Same weekly window as `adminDigest.ts`'s `FRESHNESS_DAYS` — this signal targets the same ~7-day cadence. */
@@ -174,3 +175,10 @@ async function alertSuperAdmins(adapters: readonly PlatformAdapter[], message: s
     queueWhenDisconnected: false,
   });
 }
+
+// Registry entry (see src/jobs/registry.ts) — gate mirrors startUsageCostDigest's own flag.
+export const usageCostDigestJob: JobSpec = {
+  name: 'usage-cost-digest',
+  enabled: (cfg) => cfg.usageCostDigest.enabled,
+  start: (adapters) => startUsageCostDigest(adapters),
+};

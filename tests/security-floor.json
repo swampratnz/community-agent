@@ -90,6 +90,7 @@
   "imageInputSystemPromptBothEnabled.test.ts": 1,
   "imageInputSystemPromptEnabled.test.ts": 1,
   "injectionCorpus.test.ts": 7,
+  "jobsRegistry.test.ts": 1,
   "knowledgeCandidateDedupDegradation.test.ts": 1,
   "knowledgeEntryIdRouter.test.ts": 1,
   "knowledgeGapAlert.router.test.ts": 2,
