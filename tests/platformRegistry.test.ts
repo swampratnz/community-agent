@@ -9,6 +9,12 @@ process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
 process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
+// HARD assignment, not ??=: CI's job env exports WHATSAPP_PROVIDER=disabled,
+// which would otherwise win and collapse the composition test below to one
+// adapter (the exact 1 !== 2 failure this pin fixes). The mirror test's
+// premise is the two-adapter discord+baileys composition, so the provider
+// must be deterministic here regardless of the surrounding environment.
+process.env.WHATSAPP_PROVIDER = 'baileys';
 
 const { closeDb } = await import('../src/storage/db.js');
 const { TOOL_REGISTRY } = await import('../src/agent/tools/index.js');
@@ -194,10 +200,11 @@ test('the factory registry mirrors the old index.ts composition: aligned descrip
   }
   assert.equal(descriptorFor('telegram'), undefined);
 
-  // Under this test env (WHATSAPP_PROVIDER unset → the 'baileys' default),
-  // composition builds Discord then Baileys — exactly the adapters the old
-  // inline index.ts block constructed — and each reports the platform it was
-  // registered under.
+  // Under this file's pinned env (WHATSAPP_PROVIDER=baileys, set in the
+  // preamble precisely so CI's job-level 'disabled' can't change the
+  // composition), building constructs Discord then Baileys — exactly the
+  // adapters the old inline index.ts block constructed — and each reports
+  // the platform it was registered under.
   const adapters = createConfiguredAdapters();
   assert.equal(adapters.length, 2);
   assert.ok(adapters[0] instanceof DiscordAdapter);
