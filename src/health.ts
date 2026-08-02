@@ -13,11 +13,10 @@ import {
 } from './healthState.js';
 import {
   drainPendingAlerts,
-  queuePendingAlert,
   getPendingAlertsForTests,
   resetPendingAlertsForTests,
 } from './pendingAlertQueue.js';
-import { WindowClosedError } from './platforms/types.js';
+import { alertSuperAdmins as sendSuperAdminAlert } from './notifications.js';
 import type { PlatformAdapter } from './platforms/types.js';
 
 const CHECK_INTERVAL_MS = 30_000;
@@ -72,30 +71,7 @@ export function startDisconnectAlerts(adapters: readonly PlatformAdapter[]): Ret
 // drive queuing/overflow behaviour directly, without waiting out the
 // once-per-outage debounce in stepDisconnectTracker.
 export async function alertSuperAdmins(adapters: readonly PlatformAdapter[], message: string): Promise<void> {
-  const connected = adapters.filter((adapter) => adapter.isConnected());
-  if (connected.length === 0) {
-    logger.warn(
-      { message },
-      'Health alert could not be delivered live — no connected adapter; queued for flush on reconnect',
-    );
-    queuePendingAlert(message, 'system'); // disconnect alert — never evicted by a member-reachable alert (#545)
-    return;
-  }
-  for (const adapter of connected) {
-    for (const id of superAdminIds(adapter.platform)) {
-      adapter.sendDirectMessage(id, message).catch((err) => {
-        if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
-          adapter.queueForWindowReopen(id, message, 'system');
-          logger.warn(
-            { platform: adapter.platform, id },
-            'Health alert: recipient window closed, queued for reopen',
-          );
-          return;
-        }
-        logger.warn({ err, platform: adapter.platform, id }, 'Health alert DM failed');
-      });
-    }
-  }
+  await sendSuperAdminAlert(adapters, message, { label: 'Health alert', queueWhenDisconnected: true });
 }
 
 // Sends every queued message through the just-reconnected adapter, then

@@ -1,6 +1,5 @@
 import { config } from './config.js';
 import { logger } from './logger.js';
-import { superAdminIds } from './auth/roles.js';
 import { embed } from './storage/embeddings.js';
 import { latestContextDigestAt } from './storage/repository.js';
 import { runContextBuilder, shouldRunContextBuilder, type ClusterSummarizer } from './context/builder.js';
@@ -40,8 +39,7 @@ import {
   type BackgroundJobName,
   type JobFailureTracker,
 } from './backgroundJobHealth.js';
-import { queuePendingAlert } from './pendingAlertQueue.js';
-import { WindowClosedError } from './platforms/types.js';
+import { alertSuperAdmins as sendSuperAdminAlert } from './notifications.js';
 import type { PlatformAdapter } from './platforms/types.js';
 
 const TICK_INTERVAL_MS = 6 * 3_600_000;
@@ -63,8 +61,8 @@ export const BACKGROUND_JOB_FAILURE_ALERT_THRESHOLD = 3;
  * `tracker` variable). `runOnce` resolving (including a no-op "not due
  * yet" skip) counts as success and silently resets the tracker; throwing
  * counts as a failure and steps it, DMing super admins via the same
- * `sendDirectMessage` + `superAdminIds` path `usageAlert.ts`/`health.ts`
- * already use once the threshold is reached.
+ * `notifications.ts` fan-out `usageAlert.ts`/`health.ts` already use once
+ * the threshold is reached.
  *
  * Exported (issue #291) so the two retention purges (src/interactionRetention.ts,
  * src/rosterRetention.ts) can wire through the same tracker/alert plumbing
@@ -124,30 +122,10 @@ export function startTrackedJob(
 // silently dropped, and flushed through the first adapter to reconnect via
 // health.ts's existing flushPendingAlerts (issue #545).
 async function alertSuperAdmins(adapters: readonly PlatformAdapter[], message: string): Promise<void> {
-  if (!adapters.some((adapter) => adapter.isConnected())) {
-    logger.warn(
-      { message },
-      'Background job failure alert could not be delivered live — no connected adapter; queued for flush on reconnect',
-    );
-    queuePendingAlert(message, 'system'); // job-failure alert — never evicted by a member-reachable alert (#545)
-    return;
-  }
-  for (const adapter of adapters) {
-    if (!adapter.isConnected()) continue; // can't send through a dead connection
-    for (const id of superAdminIds(adapter.platform)) {
-      adapter.sendDirectMessage(id, message).catch((err) => {
-        if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
-          adapter.queueForWindowReopen(id, message, 'system');
-          logger.warn(
-            { platform: adapter.platform, id },
-            'Background job failure alert: recipient window closed, queued for reopen',
-          );
-          return;
-        }
-        logger.warn({ err, platform: adapter.platform, id }, 'Background job failure alert DM failed');
-      });
-    }
-  }
+  await sendSuperAdminAlert(adapters, message, {
+    label: 'Background job failure alert',
+    queueWhenDisconnected: true,
+  });
 }
 
 /**

@@ -1,9 +1,8 @@
 import { config } from './config.js';
 import { logger } from './logger.js';
-import { superAdminIds } from './auth/roles.js';
 import { startTrackedJob } from './backgroundJobs.js';
 import { sumBackgroundJobCosts, type BackgroundJob } from './storage/repository.js';
-import { WindowClosedError } from './platforms/types.js';
+import { alertSuperAdmins as sendSuperAdminAlert } from './notifications.js';
 import type { PlatformAdapter } from './platforms/types.js';
 
 /** The three background jobs that write `background_job_costs` rows (issue #401) — a fixed enum, never derived from anything dynamic. */
@@ -139,21 +138,13 @@ export function startBackgroundJobCostAlert(
   );
 }
 
+// `queueWhenDisconnected: false` — a fully-disconnected outage drops this
+// alert rather than queueing it: the next 6h tick re-derives today's spend
+// from `background_job_costs` and re-alerts if still over threshold, so a
+// queued copy would only deliver stale numbers on reconnect.
 async function alertSuperAdmins(adapters: readonly PlatformAdapter[], message: string): Promise<void> {
-  for (const adapter of adapters) {
-    if (!adapter.isConnected()) continue; // can't send through a dead connection
-    for (const id of superAdminIds(adapter.platform)) {
-      adapter.sendDirectMessage(id, message).catch((err) => {
-        if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
-          adapter.queueForWindowReopen(id, message, 'system');
-          logger.warn(
-            { platform: adapter.platform, id },
-            'Cost-spike alert: recipient window closed, queued for reopen',
-          );
-          return;
-        }
-        logger.warn({ err, platform: adapter.platform, id }, 'Cost-spike alert DM failed');
-      });
-    }
-  }
+  await sendSuperAdminAlert(adapters, message, {
+    label: 'Cost-spike alert',
+    queueWhenDisconnected: false,
+  });
 }

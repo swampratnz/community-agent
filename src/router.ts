@@ -84,6 +84,7 @@ import {
   DAILY_REPLY_BUDGET_WARNING_TEXT_PLAIN,
 } from './dailyReplyBudgetWarning.js';
 import { shouldNotifyBudgetCheckFailed } from './budgetCheckFailureNotice.js';
+import { makeAlertSlotReserver } from './notifications.js';
 import {
   appendWaitClause,
   appendWaitClauseMi,
@@ -428,8 +429,6 @@ export class Router {
    * map here.
    */
   private readonly pendingEscalations = new Map<string, { query: string; at: number }>();
-  /** Timestamps of confirmed escalation notifications, for the guild-wide rolling-hour cap (ESCALATION_RATE_LIMIT_PER_HOUR). */
-  private readonly escalationTimestamps: number[] = [];
   /**
    * Auto-answer thread id -> parent channel id (+ creation time), issue #477.
    * A CONFIRM/CANCEL or escalation-confirmation the member types INSIDE an
@@ -580,72 +579,39 @@ export class Router {
     setInterval(() => this.sweep(), this.RATE_WINDOW_MS * 5).unref();
   }
 
-  /** Rolling-hour timestamps for `ACCESS_REQUEST_ALERT_RATE_LIMIT_PER_HOUR` (issue #480) — guild-wide, not per-conversation, since the alert audience (`listAdmins()`) is guild-wide too. */
-  private readonly accessRequestAlertTimestamps: number[] = [];
-
   /**
-   * Reserve one access-request-alert slot against a rolling hourly cap, same
-   * sliding-window shape as `tools.ts`'s `reserveAnnounceSlot`/
-   * `reservePollSlot` — but keyless/guild-wide rather than per-conversation,
-   * matching this alert's guild-wide `listAdmins()` audience. Returns false
-   * without reserving if the guild already hit `limit` within the last hour;
-   * the request is still recorded by the caller either way (issue #480).
+   * Reserve one access-request-alert slot against the rolling hourly cap
+   * (`ACCESS_REQUEST_ALERT_RATE_LIMIT_PER_HOUR`, issue #480) — the shared
+   * `makeAlertSlotReserver` window from `notifications.ts`: keyless/
+   * guild-wide rather than per-conversation, matching this alert's
+   * guild-wide `listAdmins()` audience. Returns false without reserving if
+   * the guild already hit `limit` within the last hour; the request is
+   * still recorded by the caller either way (issue #480).
    */
-  private reserveAccessRequestAlertSlot(limit: number): boolean {
-    const now = Date.now();
-    const windowMs = 60 * 60 * 1000;
-    const recent = this.accessRequestAlertTimestamps.filter((t) => now - t < windowMs);
-    this.accessRequestAlertTimestamps.length = 0;
-    this.accessRequestAlertTimestamps.push(...recent);
-    if (recent.length >= limit) return false;
-    this.accessRequestAlertTimestamps.push(now);
-    return true;
-  }
-
-  /** Rolling-hour timestamps for `KNOWLEDGE_GAP_ALERT_RATE_LIMIT_PER_HOUR` (issue #650) — guild-wide, same reasoning as `accessRequestAlertTimestamps` above (the `listAdmins()` audience is guild-wide too). */
-  private readonly knowledgeGapAlertTimestamps: number[] = [];
+  private readonly reserveAccessRequestAlertSlot = makeAlertSlotReserver();
 
   /**
-   * Reserve one knowledge-gap-cluster-alert slot against a rolling hourly
-   * cap, identical sliding-window shape as `reserveAccessRequestAlertSlot`.
-   * Returns false without reserving if the guild already hit `limit` within
-   * the last hour — the caller (below) leaves the crossed cluster's rows
-   * unalerted in that case, so a later gap in the same cluster can retry the
-   * alert once the window frees (issue #650 acceptance criterion 6).
+   * Reserve one knowledge-gap-cluster-alert slot against the rolling hourly
+   * cap (`KNOWLEDGE_GAP_ALERT_RATE_LIMIT_PER_HOUR`, issue #650), its own
+   * `makeAlertSlotReserver` window. Returns false without reserving if the
+   * guild already hit `limit` within the last hour — the caller (below)
+   * leaves the crossed cluster's rows unalerted in that case, so a later gap
+   * in the same cluster can retry the alert once the window frees (issue
+   * #650 acceptance criterion 6).
    */
-  private reserveKnowledgeGapAlertSlot(limit: number): boolean {
-    const now = Date.now();
-    const windowMs = 60 * 60 * 1000;
-    const recent = this.knowledgeGapAlertTimestamps.filter((t) => now - t < windowMs);
-    this.knowledgeGapAlertTimestamps.length = 0;
-    this.knowledgeGapAlertTimestamps.push(...recent);
-    if (recent.length >= limit) return false;
-    this.knowledgeGapAlertTimestamps.push(now);
-    return true;
-  }
-
-  /** Rolling-hour timestamps for `KNOWLEDGE_STALE_ALERT_RATE_LIMIT_PER_HOUR` (issue #701) — guild-wide, same reasoning as `knowledgeGapAlertTimestamps` above (the `listAdmins()` audience is guild-wide too). */
-  private readonly staleKnowledgeAlertTimestamps: number[] = [];
+  private readonly reserveKnowledgeGapAlertSlot = makeAlertSlotReserver();
 
   /**
-   * Reserve one stale-knowledge-alert slot against a rolling hourly cap,
-   * identical sliding-window shape as `reserveKnowledgeGapAlertSlot`. Unlike
-   * that sibling, a miss here does NOT leave the underlying row unstamped —
+   * Reserve one stale-knowledge-alert slot against the rolling hourly cap
+   * (`KNOWLEDGE_STALE_ALERT_RATE_LIMIT_PER_HOUR`, issue #701), its own
+   * `makeAlertSlotReserver` window. Unlike its knowledge-gap sibling, a miss
+   * here does NOT leave the underlying row unstamped —
    * `maybeAlertStaleKnowledge` below always stamps `stale_alerted_at` via
    * `markStaleKnowledgeAlertedFn` before even checking this slot, so a
    * rate-limited entry doesn't retry-storm (acceptance criterion 5c). This
    * only gates whether the `notifyAdmins` DM itself goes out.
    */
-  private reserveStaleKnowledgeAlertSlot(limit: number): boolean {
-    const now = Date.now();
-    const windowMs = 60 * 60 * 1000;
-    const recent = this.staleKnowledgeAlertTimestamps.filter((t) => now - t < windowMs);
-    this.staleKnowledgeAlertTimestamps.length = 0;
-    this.staleKnowledgeAlertTimestamps.push(...recent);
-    if (recent.length >= limit) return false;
-    this.staleKnowledgeAlertTimestamps.push(now);
-    return true;
-  }
+  private readonly reserveStaleKnowledgeAlertSlot = makeAlertSlotReserver();
 
   /**
    * Real-time admin nudge for a served, stale knowledge entry (issue #701) —
@@ -678,27 +644,16 @@ export class Router {
     ).catch((err) => logger.warn({ err, id }, 'Stale-knowledge admin notification failed'));
   }
 
-  /** Rolling-hour timestamps for `REPEAT_QUESTION_ALERT_RATE_LIMIT_PER_HOUR` (issue #887) — guild-wide, same reasoning as `knowledgeGapAlertTimestamps` above (the `listAdmins()` audience is guild-wide too). */
-  private readonly repeatQuestionAlertTimestamps: number[] = [];
-
   /**
-   * Reserve one repeat-question-cluster-alert slot against a rolling hourly
-   * cap, identical sliding-window shape as `reserveKnowledgeGapAlertSlot`.
-   * Returns false without reserving if the guild already hit `limit` within
-   * the last hour — the caller (below) simply drops the DM in that case; the
-   * underlying cluster is unaffected and still visible via the weekly digest
-   * / `question_digest` (acceptance criterion 4).
+   * Reserve one repeat-question-cluster-alert slot against the rolling
+   * hourly cap (`REPEAT_QUESTION_ALERT_RATE_LIMIT_PER_HOUR`, issue #887),
+   * its own `makeAlertSlotReserver` window. Returns false without reserving
+   * if the guild already hit `limit` within the last hour — the caller
+   * (below) simply drops the DM in that case; the underlying cluster is
+   * unaffected and still visible via the weekly digest / `question_digest`
+   * (acceptance criterion 4).
    */
-  private reserveRepeatQuestionAlertSlot(limit: number): boolean {
-    const now = Date.now();
-    const windowMs = 60 * 60 * 1000;
-    const recent = this.repeatQuestionAlertTimestamps.filter((t) => now - t < windowMs);
-    this.repeatQuestionAlertTimestamps.length = 0;
-    this.repeatQuestionAlertTimestamps.push(...recent);
-    if (recent.length >= limit) return false;
-    this.repeatQuestionAlertTimestamps.push(now);
-    return true;
-  }
+  private readonly reserveRepeatQuestionAlertSlot = makeAlertSlotReserver();
 
   /**
    * Per-conversation cooldown gate for the repeat-question-cluster alert
@@ -901,21 +856,13 @@ export class Router {
 
   /**
    * Reserve one guild-wide escalation-notification slot against the rolling
-   * hourly cap (issue #479 acceptance criterion 6) — same sliding-window
-   * shape as `reserveAnnounceSlot`/`reservePollSlot` in `agent/tools.ts`, but
-   * a single shared window (not per-conversation): the cap bounds total
-   * admin-notification volume regardless of which conversation or caller
-   * tier triggers it.
+   * hourly cap (issue #479 acceptance criterion 6, backed by
+   * `ESCALATION_RATE_LIMIT_PER_HOUR`) — the shared `makeAlertSlotReserver`
+   * window from `notifications.ts`, single and shared (not
+   * per-conversation): the cap bounds total admin-notification volume
+   * regardless of which conversation or caller tier triggers it.
    */
-  private reserveEscalationSlot(limit: number): boolean {
-    const now = Date.now();
-    const recent = this.escalationTimestamps.filter((t) => now - t < 3_600_000);
-    this.escalationTimestamps.length = 0;
-    this.escalationTimestamps.push(...recent);
-    if (this.escalationTimestamps.length >= limit) return false;
-    this.escalationTimestamps.push(now);
-    return true;
-  }
+  private readonly reserveEscalationSlot = makeAlertSlotReserver();
 
   /**
    * Creates the Discord thread an auto-answer reply is contained in (issue

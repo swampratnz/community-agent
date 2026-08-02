@@ -1,11 +1,9 @@
 import { config } from './config.js';
 import { logger } from './logger.js';
-import { superAdminIds } from './auth/roles.js';
 import { listAdminRoster, type AdminRosterEntry } from './storage/repository.js';
 import { startTrackedJob } from './backgroundJobs.js';
 import { initialUsageAlertTracker, stepUsageAlertTracker } from './usageAlert.js';
-import { queuePendingAlert } from './pendingAlertQueue.js';
-import { WindowClosedError } from './platforms/types.js';
+import { alertSuperAdmins as sendSuperAdminAlert } from './notifications.js';
 import type { PlatformAdapter } from './platforms/types.js';
 
 /**
@@ -73,36 +71,18 @@ export function startDepartedAdminAlert(
 }
 
 /**
- * Exported (issue #568) so `engagementAlert.ts` can reuse this exact
- * super-admin-only, connected-adapters-only fan-out by import rather than a
- * second copy — the adversarial-review note on #568 pins this as the single
- * source of truth for "super admins only" DM delivery across both jobs. That
- * makes this function's disconnect-handling (issue #593) apply to both
- * producers by construction, not by duplicating the fix.
+ * Exported (issue #568) so `engagementAlert.ts`/`adminLeverageAlert.ts` can
+ * reuse this exact super-admin-only, connected-adapters-only fan-out by
+ * import rather than a second copy — the adversarial-review note on #568 pins
+ * this as those jobs' shared entry point for "super admins only" DM delivery.
+ * The delivery mechanics themselves now live in `notifications.ts`'s
+ * `alertSuperAdmins` (the codebase-wide single source of truth), so a
+ * delivery fix like #593's disconnect handling reaches every producer by
+ * construction, not by duplicating the fix.
  */
 export async function alertSuperAdmins(adapters: readonly PlatformAdapter[], message: string): Promise<void> {
-  const connected = adapters.filter((adapter) => adapter.isConnected());
-  if (connected.length === 0) {
-    logger.warn(
-      { message },
-      'Departed-admin alert could not be delivered live — no connected adapter; queued for flush on reconnect',
-    );
-    queuePendingAlert(message, 'system'); // super-admin-only alert — never evicted by a member-reachable alert (#545)
-    return;
-  }
-  for (const adapter of connected) {
-    for (const id of superAdminIds(adapter.platform)) {
-      adapter.sendDirectMessage(id, message).catch((err) => {
-        if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
-          adapter.queueForWindowReopen(id, message, 'system');
-          logger.warn(
-            { platform: adapter.platform, id },
-            'Departed-admin alert: recipient window closed, queued for reopen',
-          );
-          return;
-        }
-        logger.warn({ err, platform: adapter.platform, id }, 'Departed-admin alert DM failed');
-      });
-    }
-  }
+  await sendSuperAdminAlert(adapters, message, {
+    label: 'Departed-admin alert',
+    queueWhenDisconnected: true,
+  });
 }
