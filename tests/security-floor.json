@@ -129,6 +129,7 @@
   "repository.test.ts": 117,
   "reviewVerdict.test.ts": 5,
   "router.test.ts": 9,
+  "sanitizeName.test.ts": 3,
   "secrets.test.ts": 5,
   "securityGateCanary.test.ts": 1,
   "securityGateWrite.test.ts": 7,
