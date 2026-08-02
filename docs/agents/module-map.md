@@ -76,7 +76,7 @@ is marked **🔒**. Changes there need a `SECURITY:` test (see
 - `src/storage/repository/whatsappLidMap.ts` — 🔒 Durable WhatsApp LID -> phone mapping. A LID is a privacy id that looks like a number but matches no one; persisting what the adapter learns from real envelopes lets a LID be resolved rather than refused. PII — erased by `forget_me`/`purge_user_data`. See docs/SECURITY.md §6b.
 - `src/usageAlert.ts` — Usage-threshold alerting to super admins with a debounce tracker shared by several other alert modules.
 - `src/usageCostDigest.ts` — The periodic cost digest (spend, cache hit rate) sent to super admins.
-- `src/util/` — Shared leaf helpers with no dependencies of their own; currently NZ-timezone rendering for member-facing times.
+- `src/util/` — Shared leaf helpers with no dependencies of their own; currently NZ-timezone rendering for member-facing times and the `shouldNotifyAfterWindow` notice debounce every debounced notice module re-exports.
 - `src/voiceLanguageCaveatNotice.ts` — Fixed caveat DM for a te reo Māori speaker sending a voice note, because the transcription model is English-only and would otherwise fail silently.
 
 <!-- module-map:end -->
