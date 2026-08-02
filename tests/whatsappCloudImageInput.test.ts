@@ -22,6 +22,9 @@ process.env.WHATSAPP_CLOUD_APP_SECRET ??= 'test-app-secret';
 const { WhatsAppCloudAdapter } = await import('../src/platforms/whatsapp/cloudAdapter.js');
 const { config } = await import('../src/config.js');
 const { pool } = await import('../src/storage/db.js');
+// The tier lists are registered by the tool registry at ITS module scope
+// (rbac.ts fails closed until then), so import the registry first.
+await import('../src/agent/tools/index.js');
 const { toolsForRole, MEMBER_TOOLS, ADMIN_TOOLS, SUPER_ADMIN_TOOLS } = await import('../src/auth/rbac.js');
 
 type Adapter = InstanceType<typeof WhatsAppCloudAdapter>;

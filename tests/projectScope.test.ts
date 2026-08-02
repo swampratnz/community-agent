@@ -604,6 +604,9 @@ test(
   'SECURITY: projects: project membership grants DATA SCOPE ONLY — it never changes the tool surface, exactly as `persons` never touches role',
   { skip },
   async (t) => {
+    // The tier lists are registered by the tool registry at ITS module scope
+    // (rbac.ts fails closed until then), so import the registry first.
+    await import('../src/agent/tools/index.js');
     const { toolsForRole } = await import('../src/auth/rbac.js');
     const r = await repo(t);
     const { project } = await fixture(r, 'tiersurface');

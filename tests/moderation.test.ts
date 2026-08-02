@@ -25,6 +25,9 @@ const {
   blockedDmTextPlain,
   moderationAlertSummaryText,
 } = await import('../src/moderation/moderator.js');
+// The tier lists are registered by the tool registry at ITS module scope
+// (rbac.ts fails closed until then), so import the registry first.
+await import('../src/agent/tools/index.js');
 const { toolsForRole } = await import('../src/auth/rbac.js');
 
 test('SECURITY: boundForClassifier keeps the tail so abuse hidden after filler is still classified', () => {

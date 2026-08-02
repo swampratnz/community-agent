@@ -1,5 +1,6 @@
 import type { ZodRawShape } from 'zod';
 import type { Config } from '../../config.js';
+import { registerToolTiers } from '../../auth/rbac.js';
 import type { ToolDef } from './types.js';
 import { infoTools } from './info.js';
 import { knowledgeMemberTools } from './knowledgeMember.js';
@@ -106,6 +107,18 @@ const FLAGGED_TOOL_PREDICATES: ReadonlyArray<{ name: string; enabled: (cfg: Conf
   TOOL_REGISTRY.flatMap((def) =>
     def.featureFlag ? [{ name: prefixedToolName(def), enabled: def.featureFlag }] : [],
   );
+
+// Register the tier lists into rbac.ts at module scope (the inversion of the
+// old rbac -> registry import): importing this registry anywhere is what
+// makes `toolsForRole` derivable, and rbac fails closed until it happens.
+// src/index.ts imports the registry before serving; tests that read the tier
+// lists import it in their preamble.
+registerToolTiers({
+  member: MEMBER_TOOL_NAMES,
+  admin: ADMIN_TOOL_NAMES,
+  superAdmin: SUPER_ADMIN_TOOL_NAMES,
+  discordOnly: DISCORD_ONLY_TOOL_NAMES,
+});
 
 /** Prefixed names of every member-tier registry def, in registry order. */
 export function memberToolNames(): readonly string[] {
