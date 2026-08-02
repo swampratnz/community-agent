@@ -19,7 +19,7 @@ process.env.ACCESS_REQUEST_ALERT_ENABLED = 'true';
 process.env.ACCESS_REQUEST_ALERT_RATE_LIMIT_PER_HOUR = '3';
 
 const { config } = await import('../src/config.js');
-const { Router } = await import('../src/router.js');
+const { Router, makeRouterDeps } = await import('../src/router.js');
 
 function makeAdapter(): {
   adapter: PlatformAdapter;
@@ -84,21 +84,14 @@ function makeGatedRouter(opts: {
   notifyAccessRequestFn: (...args: unknown[]) => Promise<void>;
 }) {
   return new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a gated-out guest');
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    opts.recordAccessRequestFn,
-    opts.notifyAccessRequestFn,
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a gated-out guest');
+      },
+      typingRefireMs: 20,
+      recordAccessRequestFn: opts.recordAccessRequestFn,
+      notifyAccessRequestFn: opts.notifyAccessRequestFn,
+    }),
   );
 }
 

@@ -33,7 +33,7 @@ process.env.REPEAT_QUESTION_SHORTCUT_ENABLED = 'true';
 process.env.REPEAT_MAX_TURNS_SHORTCUT_ENABLED = 'true';
 
 const { pool, closeDb } = await import('../src/storage/db.js');
-const { Router } = await import('../src/router.js');
+const { Router, makeRouterDeps } = await import('../src/router.js');
 const { embed } = await import('../src/storage/embeddings.js');
 const { MAX_TURNS_REPLY } = await import('../src/agent/core.js');
 
@@ -147,13 +147,14 @@ test(
   { skip: !hasDb },
   async () => {
     const router = new Router(
-      async () => {
-        throw new Error('runTurn must not be called for a near-exact knowledge-shortcut match');
-      },
-      20,
-      undefined,
-      FIXED_HIT_SEARCH,
-      async () => {},
+      makeRouterDeps({
+        runTurn: async () => {
+          throw new Error('runTurn must not be called for a near-exact knowledge-shortcut match');
+        },
+        typingRefireMs: 20,
+        searchKnowledgeForShortcut: FIXED_HIT_SEARCH,
+        recordShortcutRetrieval: async () => {},
+      }),
     );
     const { adapter, sent, threadCalls, trigger } = makeAdapter();
     router.register(adapter);
@@ -184,13 +185,14 @@ test(
   async () => {
     let calls = 0;
     const router = new Router(
-      async () => {
-        calls += 1;
-        return { text: 'the context window is 200k tokens', ok: true };
-      },
-      20,
-      undefined,
-      NO_HIT_SEARCH,
+      makeRouterDeps({
+        runTurn: async () => {
+          calls += 1;
+          return { text: 'the context window is 200k tokens', ok: true };
+        },
+        typingRefireMs: 20,
+        searchKnowledgeForShortcut: NO_HIT_SEARCH,
+      }),
     );
     const { adapter, sent, threadCalls, trigger } = makeAdapter();
     router.register(adapter);
@@ -217,10 +219,11 @@ test(
   { skip: !hasDb },
   async () => {
     const router = new Router(
-      async () => ({ text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true }),
-      20,
-      undefined,
-      NO_HIT_SEARCH,
+      makeRouterDeps({
+        runTurn: async () => ({ text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true }),
+        typingRefireMs: 20,
+        searchKnowledgeForShortcut: NO_HIT_SEARCH,
+      }),
     );
     const { adapter, sent, threadCalls, trigger } = makeAdapter();
     router.register(adapter);

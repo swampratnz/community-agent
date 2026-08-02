@@ -63,6 +63,7 @@ after(async () => {
 // matching tests/knowledgeScope.test.ts's `repo(t)` helper.
 let modsPromise: Promise<{
   Router: typeof import('../src/router.js').Router;
+  makeRouterDeps: typeof import('../src/router.js').makeRouterDeps;
   saveKnowledge: typeof import('../src/storage/repository.js').saveKnowledge;
 }> | null = null;
 function mods(t: { mock: { module: (specifier: string, opts: unknown) => void } }) {
@@ -79,9 +80,9 @@ function mods(t: { mock: { module: (specifier: string, opts: unknown) => void } 
       },
     });
     modsPromise = (async () => {
-      const { Router } = await import('../src/router.js');
+      const { Router, makeRouterDeps } = await import('../src/router.js');
       const { saveKnowledge } = await import('../src/storage/repository.js');
-      return { Router, saveKnowledge };
+      return { Router, makeRouterDeps, saveKnowledge };
     })();
   }
   return modsPromise;
@@ -148,12 +149,16 @@ test(
   'SECURITY: a gated guest served a knowledge-shortcut reply gets no interactions row, but access_requests is still upserted (issue #165)',
   { skip },
   async (t) => {
-    const { Router, saveKnowledge } = await mods(t);
+    const { Router, makeRouterDeps, saveKnowledge } = await mods(t);
     const { id } = await saveKnowledge({ content: GLOBAL_CONTENT, scope: 'global' });
 
-    const router = new Router(async () => {
-      throw new Error('runTurn must not be called for a gated guest');
-    });
+    const router = new Router(
+      makeRouterDeps({
+        runTurn: async () => {
+          throw new Error('runTurn must not be called for a gated guest');
+        },
+      }),
+    );
     const { adapter, sent, trigger } = makeAdapter();
     router.register(adapter);
 
@@ -192,7 +197,7 @@ test(
     'awaits it on the static-notice-render path (issue #591)',
   { skip },
   async (t) => {
-    const { Router, saveKnowledge } = await mods(t);
+    const { Router, makeRouterDeps, saveKnowledge } = await mods(t);
     await saveKnowledge({ content: GLOBAL_CONTENT, scope: 'global' });
 
     let recordConsumed = false;
@@ -205,20 +210,13 @@ test(
     });
 
     const router = new Router(
-      async () => {
-        throw new Error('runTurn must not be called for a gated guest');
-      },
-      20,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      () => hangingRecord, // recordAccessRequestFn: deliberately never resolves during this test
+      makeRouterDeps({
+        runTurn: async () => {
+          throw new Error('runTurn must not be called for a gated guest');
+        },
+        typingRefireMs: 20,
+        recordAccessRequestFn: () => hangingRecord,
+      }), // recordAccessRequestFn: deliberately never resolves during this test
     );
     const { adapter, sent, trigger } = makeAdapter();
     router.register(adapter);
@@ -242,13 +240,17 @@ test(
   'SECURITY: a gated guest never gets a conversation-scoped entry via the shortcut, even at very high similarity (issue #165)',
   { skip },
   async (t) => {
-    const { Router, saveKnowledge } = await mods(t);
+    const { Router, makeRouterDeps, saveKnowledge } = await mods(t);
     const convScope = `${RUN}-conv-a`;
     await saveKnowledge({ content: CONV_SCOPED_CONTENT, scope: convScope });
 
-    const router = new Router(async () => {
-      throw new Error('runTurn must not be called for a gated guest');
-    });
+    const router = new Router(
+      makeRouterDeps({
+        runTurn: async () => {
+          throw new Error('runTurn must not be called for a gated guest');
+        },
+      }),
+    );
     const { adapter, sent, trigger } = makeAdapter();
     router.register(adapter);
 

@@ -21,7 +21,7 @@ process.env.GUEST_KNOWLEDGE_SHORTCUT_ENABLED = 'true';
 process.env.KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL = '2';
 
 const { config } = await import('../src/config.js');
-const { Router } = await import('../src/router.js');
+const { Router, makeRouterDeps } = await import('../src/router.js');
 const { KNOWLEDGE_LOW_RATED_CAVEAT_TEXT, KNOWLEDGE_LOW_RATED_CAVEAT_TEXT_MI, KNOWLEDGE_STALE_NOTE_MI } =
   await import('../src/agent/tools.js');
 const { embed } = await import('../src/storage/embeddings.js');
@@ -117,17 +117,18 @@ function makeRouter(opts: {
   checkLowRatedKnowledge: CheckLowRatedFn;
 }): InstanceType<typeof Router> {
   return new Router(
-    opts.runTurn ??
-      (async () => {
-        throw new Error('runTurn must not be called for a near-exact knowledge-shortcut match');
-      }),
-    20,
-    undefined,
-    opts.searchKnowledgeForShortcut,
-    opts.recordShortcutRetrieval ?? (async () => {}),
-    undefined,
-    opts.getLangPref,
-    opts.checkLowRatedKnowledge,
+    makeRouterDeps({
+      runTurn:
+        opts.runTurn ??
+        (async () => {
+          throw new Error('runTurn must not be called for a near-exact knowledge-shortcut match');
+        }),
+      typingRefireMs: 20,
+      searchKnowledgeForShortcut: opts.searchKnowledgeForShortcut,
+      recordShortcutRetrieval: opts.recordShortcutRetrieval ?? (async () => {}),
+      getLangPref: opts.getLangPref,
+      checkLowRatedKnowledge: opts.checkLowRatedKnowledge,
+    }),
   );
 }
 

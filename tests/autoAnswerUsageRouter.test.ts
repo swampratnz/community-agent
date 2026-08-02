@@ -27,7 +27,7 @@ process.env.AUTO_ANSWER_CHANNEL_IDS = AUTO_CHAN;
 process.env.AUTO_ANSWER_RATE_LIMIT_PER_HOUR = '5';
 
 const { pool, closeDb } = await import('../src/storage/db.js');
-const { Router } = await import('../src/router.js');
+const { Router, makeRouterDeps } = await import('../src/router.js');
 const { embed } = await import('../src/storage/embeddings.js');
 
 await embed('warmup').catch(() => {});
@@ -120,7 +120,9 @@ test(
   'router: an origin-post auto-answer reply records meta.autoAnswer === true (issue #552, acceptance criterion 1)',
   { skip: !hasDb },
   async () => {
-    const router = new Router(async () => makeReply('here is your answer'), 20);
+    const router = new Router(
+      makeRouterDeps({ runTurn: async () => makeReply('here is your answer'), typingRefireMs: 20 }),
+    );
     const { adapter, sent, threadCalls, trigger } = makeAdapter();
     router.register(adapter);
 
@@ -137,7 +139,9 @@ test(
   'router: an in-thread auto-answer follow-up also records meta.autoAnswer === true (issue #552, acceptance criterion 1)',
   { skip: !hasDb },
   async () => {
-    const router = new Router(async () => makeReply('answer'), 20);
+    const router = new Router(
+      makeRouterDeps({ runTurn: async () => makeReply('answer'), typingRefireMs: 20 }),
+    );
     const { adapter, sent, threadCalls, trigger } = makeAdapter();
     router.register(adapter);
 
@@ -164,7 +168,9 @@ test(
   'router: a normal @mention reply (replyConversationId undefined) records NO autoAnswer key at all (issue #552, acceptance criterion 2)',
   { skip: !hasDb },
   async () => {
-    const router = new Router(async () => makeReply('a normal answer'), 20);
+    const router = new Router(
+      makeRouterDeps({ runTurn: async () => makeReply('a normal answer'), typingRefireMs: 20 }),
+    );
     const { adapter, sent, trigger } = makeAdapter();
     router.register(adapter);
 
@@ -188,7 +194,9 @@ test(
   'SECURITY: an addressed reply INSIDE the auto-answer-allowlisted channel whose text mimics the flag still records NO autoAnswer key — only unspoofable internal router state (replyConversationId) can set it, never message content (issue #552, acceptance criterion 6)',
   { skip: !hasDb },
   async () => {
-    const router = new Router(async () => makeReply('a normal answer'), 20);
+    const router = new Router(
+      makeRouterDeps({ runTurn: async () => makeReply('a normal answer'), typingRefireMs: 20 }),
+    );
     const { adapter, sent, threadCalls, trigger } = makeAdapter();
     router.register(adapter);
 

@@ -43,7 +43,7 @@ process.env.REPEAT_QUESTION_SHORTCUT_ENABLED = 'true';
 
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { config } = await import('../src/config.js');
-const { Router } = await import('../src/router.js');
+const { Router, makeRouterDeps } = await import('../src/router.js');
 const { embed } = await import('../src/storage/embeddings.js');
 const { registerPendingAction, cancelPendingAction } = await import('../src/agent/pendingActions.js');
 const { countRepliesToUser } = await import('../src/storage/repository.js');
@@ -168,10 +168,15 @@ test('config: REPEAT_QUESTION_SHORTCUT_ENABLED=true is reflected in config.behav
 
 test('router (repeat-question shortcut): the same caller resending the same whitespace-normalized text within the window results in exactly one runTurn call, and the second reply is the cached answer prefixed with the repeat notice', async () => {
   let calls = 0;
-  const router = new Router(async () => {
-    calls++;
-    return { text: `${RUN} the meetup is at 6pm`, ok: true };
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => {
+        calls++;
+        return { text: `${RUN} the meetup is at 6pm`, ok: true };
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
   const conversationId = `${RUN}-happy`;
@@ -194,19 +199,13 @@ test('router (repeat-question shortcut): the same caller resending the same whit
 test('router (repeat-question shortcut): a hit records a shortcut_hits row of kind "repeat_question" (issue #440)', async () => {
   const calls: string[] = [];
   const router = new Router(
-    async () => ({ text: `${RUN} the meetup is at 6pm`, ok: true }),
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async (kind) => {
-      calls.push(kind);
-    },
+    makeRouterDeps({
+      runTurn: async () => ({ text: `${RUN} the meetup is at 6pm`, ok: true }),
+      typingRefireMs: 20,
+      recordShortcutHit: async (kind) => {
+        calls.push(kind);
+      },
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -225,10 +224,15 @@ test('router (repeat-question shortcut): a hit records a shortcut_hits row of ki
 
 test('router (repeat-question shortcut): the same normalized text from a different userId in the same conversation is NOT short-circuited', async () => {
   let calls = 0;
-  const router = new Router(async () => {
-    calls++;
-    return { text: `${RUN} answer #${calls}`, ok: true };
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => {
+        calls++;
+        return { text: `${RUN} answer #${calls}`, ok: true };
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
   const conversationId = `${RUN}-per-user`;
@@ -251,13 +255,18 @@ test('router (repeat-question shortcut): the same normalized text from a differe
 
 test("SECURITY: router (repeat-question shortcut): the cache never replays one caller's reply to a different userId, conversationId, or platform — isolation is structural (part of the key), never a text-only match (guards the #106 scope-leak class for a reply cache)", async () => {
   let calls = 0;
-  const router = new Router(async (caller) => {
-    calls++;
-    return {
-      text: `${RUN} answer #${calls} for ${caller.platform}:${caller.conversationId}:${caller.userId}`,
-      ok: true,
-    };
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async (caller) => {
+        calls++;
+        return {
+          text: `${RUN} answer #${calls} for ${caller.platform}:${caller.conversationId}:${caller.userId}`,
+          ok: true,
+        };
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const {
     adapter: discordAdapter,
     sent: discordSent,
@@ -315,10 +324,15 @@ test("SECURITY: router (repeat-question shortcut): the cache never replays one c
 
 test('router (repeat-question shortcut): a reply with ok !== true is never cached — a resend after a failed/fallback reply always runs a fresh turn', async () => {
   let calls = 0;
-  const router = new Router(async () => {
-    calls++;
-    return { text: `${RUN} sorry, internal error`, ok: false };
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => {
+        calls++;
+        return { text: `${RUN} sorry, internal error`, ok: false };
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
   const conversationId = `${RUN}-notok`;
@@ -338,10 +352,15 @@ test('router (repeat-question shortcut): a reply with ok !== true is never cache
 test('router (repeat-question shortcut): a resend after REPEAT_SHORTCUT_WINDOW_MS has elapsed (advanced via an injectable clock, never a real sleep) runs a fresh turn, and the stale entry is pruned by sweep()', async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: 0 });
   let calls = 0;
-  const router = new Router(async () => {
-    calls++;
-    return { text: `${RUN} timely answer`, ok: true };
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => {
+        calls++;
+        return { text: `${RUN} timely answer`, ok: true };
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, trigger } = makeAdapter();
   router.register(adapter);
   const conversationId = `${RUN}-expiry`;
@@ -376,15 +395,20 @@ test('router (repeat-question shortcut): a resend after REPEAT_SHORTCUT_WINDOW_M
 test('SECURITY: router (repeat-question shortcut): a turn that registers a NEW pending CONFIRM action is never cached — a repeat of that message always runs a fresh turn, never replaying stale "reply CONFIRM" text with no live pending action behind it', async () => {
   let calls = 0;
   const conversationId = `${RUN}-confirm`;
-  const router = new Router(async (caller) => {
-    calls++;
-    registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
-      description: 'GRANT ADMIN to attacker-123',
-      minTier: 'super_admin',
-      execute: async () => 'granted',
-    });
-    return { text: `${RUN} All set — reply CONFIRM to apply.`, ok: true };
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async (caller) => {
+        calls++;
+        registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
+          description: 'GRANT ADMIN to attacker-123',
+          minTier: 'super_admin',
+          execute: async () => 'granted',
+        });
+        return { text: `${RUN} All set — reply CONFIRM to apply.`, ok: true };
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, trigger } = makeAdapter();
   router.register(adapter);
   const text = `${RUN} please refresh your cache`;
@@ -423,7 +447,9 @@ test(
 
       const before = await countRepliesToUser('discord', userId);
 
-      const router = new Router(async () => ({ text: answer, ok: true }), 20);
+      const router = new Router(
+        makeRouterDeps({ runTurn: async () => ({ text: answer, ok: true }), typingRefireMs: 20 }),
+      );
       const { adapter, sent, trigger } = makeAdapter();
       router.register(adapter);
 
@@ -470,12 +496,17 @@ test('ordering: a repeat-question shortcut reply is enqueued behind an in-flight
     secondEntered = resolve;
   });
   let calls = 0;
-  const router = new Router(async () => {
-    calls++;
-    if (calls === 1) return { text: `${RUN} first answer`, ok: true };
-    secondEntered();
-    return secondTurn;
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => {
+        calls++;
+        if (calls === 1) return { text: `${RUN} first answer`, ok: true };
+        secondEntered();
+        return secondTurn;
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -540,16 +571,14 @@ test('ordering: a repeat-question shortcut reply is enqueued behind an in-flight
 test("router (repeat-question shortcut): a caller with a standing 'mi' language preference gets REPEAT_SHORTCUT_NOTICE_MI prefixed onto the unmodified cached reply text", async () => {
   let calls = 0;
   const router = new Router(
-    async () => {
-      calls++;
-      return { text: `${RUN} the meetup is at 6pm`, ok: true };
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async () => 'mi',
+    makeRouterDeps({
+      runTurn: async () => {
+        calls++;
+        return { text: `${RUN} the meetup is at 6pm`, ok: true };
+      },
+      typingRefireMs: 20,
+      getLangPref: async () => 'mi',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -570,16 +599,14 @@ test("router (repeat-question shortcut): a caller with a standing 'mi' language 
 test("router (repeat-question shortcut): a caller with 'auto' (the default) still gets today's English REPEAT_SHORTCUT_NOTICE, byte-identical", async () => {
   let calls = 0;
   const router = new Router(
-    async () => {
-      calls++;
-      return { text: `${RUN} the meetup is at 6pm`, ok: true };
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async () => 'auto',
+    makeRouterDeps({
+      runTurn: async () => {
+        calls++;
+        return { text: `${RUN} the meetup is at 6pm`, ok: true };
+      },
+      typingRefireMs: 20,
+      getLangPref: async () => 'auto',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -594,15 +621,13 @@ test("router (repeat-question shortcut): a caller with 'auto' (the default) stil
 
 test('SECURITY: a getLanguagePreference failure on the repeat-question shortcut still sends the English default, never throws or drops the reply', async () => {
   const router = new Router(
-    async () => ({ text: `${RUN} answer under failure`, ok: true }),
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async () => {
-      throw new Error('language_prefs read boom');
-    },
+    makeRouterDeps({
+      runTurn: async () => ({ text: `${RUN} answer under failure`, ok: true }),
+      typingRefireMs: 20,
+      getLangPref: async () => {
+        throw new Error('language_prefs read boom');
+      },
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -618,16 +643,14 @@ test('SECURITY: a getLanguagePreference failure on the repeat-question shortcut 
 test('SECURITY: REPEAT_SHORTCUT_NOTICE_MI is a fixed, non-interpolated string — byte-identical regardless of the cached answer or caller', async () => {
   let calls = 0;
   const router = new Router(
-    async () => {
-      calls++;
-      return { text: `${RUN} answer #${calls}`, ok: true };
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async () => 'mi',
+    makeRouterDeps({
+      runTurn: async () => {
+        calls++;
+        return { text: `${RUN} answer #${calls}`, ok: true };
+      },
+      typingRefireMs: 20,
+      getLangPref: async () => 'mi',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);

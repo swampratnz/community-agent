@@ -18,7 +18,7 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 
 const { pool, closeDb } = await import('../src/storage/db.js');
-const { Router } = await import('../src/router.js');
+const { Router, makeRouterDeps } = await import('../src/router.js');
 const { embed } = await import('../src/storage/embeddings.js');
 const { MAX_TURNS_REPLY, INTERNAL_ERROR_REPLY } = await import('../src/agent/core.js');
 
@@ -105,8 +105,14 @@ test(
     const conversationId = `${RUN}-primary`;
     const userId = 'super-1';
     const router = new Router(
-      async () => ({ text: 'the answer, from knowledge_search', ok: true, knowledgeEntryId: 4242 }),
-      20,
+      makeRouterDeps({
+        runTurn: async () => ({
+          text: 'the answer, from knowledge_search',
+          ok: true,
+          knowledgeEntryId: 4242,
+        }),
+        typingRefireMs: 20,
+      }),
     );
     const { adapter, sent, trigger } = makeAdapter();
     router.register(adapter);
@@ -126,8 +132,10 @@ test(
   async () => {
     const conversationId = `${RUN}-no-hit`;
     const router = new Router(
-      async () => ({ text: 'a normal answer, no knowledge_search hit', ok: true }),
-      20,
+      makeRouterDeps({
+        runTurn: async () => ({ text: 'a normal answer, no knowledge_search hit', ok: true }),
+        typingRefireMs: 20,
+      }),
     );
     const { adapter, sent, trigger } = makeAdapter();
     router.register(adapter);
@@ -156,7 +164,12 @@ test(
     // non-success outcome — this test only proves the router doesn't add a
     // SECOND opportunity for staleness by filtering independently.
     const conversationId = `${RUN}-max-turns`;
-    const router = new Router(async () => ({ text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true }), 20);
+    const router = new Router(
+      makeRouterDeps({
+        runTurn: async () => ({ text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true }),
+        typingRefireMs: 20,
+      }),
+    );
     const { adapter, sent, trigger } = makeAdapter();
     router.register(adapter);
 
@@ -178,7 +191,12 @@ test(
   { skip: !hasDb },
   async () => {
     const conversationId = `${RUN}-internal-error`;
-    const router = new Router(async () => ({ text: INTERNAL_ERROR_REPLY, ok: false }), 20);
+    const router = new Router(
+      makeRouterDeps({
+        runTurn: async () => ({ text: INTERNAL_ERROR_REPLY, ok: false }),
+        typingRefireMs: 20,
+      }),
+    );
     const { adapter, sent, trigger } = makeAdapter();
     router.register(adapter);
 

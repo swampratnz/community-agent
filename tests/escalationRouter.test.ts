@@ -31,7 +31,7 @@ process.env.ESCALATION_TO_ADMIN_ENABLED = 'true';
 process.env.REPEAT_MAX_TURNS_SHORTCUT_ENABLED = 'true';
 
 const { config } = await import('../src/config.js');
-const { Router, ESCALATION_RATE_LIMIT_PER_HOUR } = await import('../src/router.js');
+const { Router, ESCALATION_RATE_LIMIT_PER_HOUR, makeRouterDeps } = await import('../src/router.js');
 const { embed } = await import('../src/storage/embeddings.js');
 const { MAX_TURNS_REPLY, MAX_TURNS_REPLY_MI } = await import('../src/agent/core.js');
 
@@ -121,30 +121,27 @@ function makeRouterWithNotifySpy(
   const notifyCalls: { message: string; excludeUserId: string }[] = [];
   const gapCalls: { platform: string; conversationId: string; userId: string; query: string }[] = [];
   const router = new Router(
-    runTurn,
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    getLangPref,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async (
-      _adapterFor: (platform: Platform) => PlatformAdapter | undefined,
-      message: string,
-      excludeUserId: string,
-    ) => {
-      notifyCalls.push({ message, excludeUserId });
-    },
-    async (platform: Platform, conversationId: string, userId: string, query: string) => {
-      gapCalls.push({ platform, conversationId, userId, query });
-      return { id: gapCalls.length };
-    },
+    makeRouterDeps({
+      runTurn: runTurn,
+      typingRefireMs: 20,
+      getLangPref: getLangPref,
+      notifyAdminsFn: async (
+        _adapterFor: (platform: Platform) => PlatformAdapter | undefined,
+        message: string,
+        excludeUserId: string,
+      ) => {
+        notifyCalls.push({ message, excludeUserId });
+      },
+      recordEscalatedGapFn: async (
+        platform: Platform,
+        conversationId: string,
+        userId: string,
+        query: string,
+      ) => {
+        gapCalls.push({ platform, conversationId, userId, query });
+        return { id: gapCalls.length };
+      },
+    }),
   );
   return { router, notifyCalls, gapCalls };
 }

@@ -168,9 +168,9 @@ test("SECURITY: MAX_INCOMING_MESSAGE_CHARS truncation touches only runAgentTurn'
 
 test("SECURITY: the router's own IncomingMessage.text is unaffected by MAX_INCOMING_MESSAGE_CHARS — only the model-bound copy inside runAgentTurn shrinks (acceptance criterion 5, end-to-end)", async (t) => {
   const { runAgentTurn } = await core(t);
-  const { Router } = await import('../src/router.js');
+  const { Router, makeRouterDeps } = await import('../src/router.js');
 
-  const router = new Router(runAgentTurn);
+  const router = new Router(makeRouterDeps({ runTurn: runAgentTurn }));
   let handler: ((msg: IncomingMessage) => Promise<void> | void) | null = null;
   const { adapter } = makeAdapter({
     onMessage(h) {

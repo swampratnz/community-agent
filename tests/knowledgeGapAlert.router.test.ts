@@ -20,7 +20,7 @@ process.env.KNOWLEDGE_GAP_ALERT_ENABLED = 'true';
 process.env.KNOWLEDGE_GAP_ALERT_RATE_LIMIT_PER_HOUR = '3';
 
 const { config } = await import('../src/config.js');
-const { Router } = await import('../src/router.js');
+const { Router, makeRouterDeps } = await import('../src/router.js');
 
 function makeAdapter(): {
   adapter: PlatformAdapter;
@@ -86,30 +86,20 @@ function makeRouterWithSpies(runTurn: Parameters<typeof Router>[0]) {
   const notifyCalls: { message: string; excludeUserId: string }[] = [];
   const markCalls: number[][] = [];
   const router = new Router(
-    runTurn,
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async (
-      _adapterFor: (platform: string) => PlatformAdapter | undefined,
-      message: string,
-      excludeUserId: string,
-    ) => {
-      notifyCalls.push({ message, excludeUserId });
-    },
-    undefined,
-    async (ids: readonly number[]) => {
-      markCalls.push([...ids]);
-    },
+    makeRouterDeps({
+      runTurn: runTurn,
+      typingRefireMs: 20,
+      notifyAdminsFn: async (
+        _adapterFor: (platform: string) => PlatformAdapter | undefined,
+        message: string,
+        excludeUserId: string,
+      ) => {
+        notifyCalls.push({ message, excludeUserId });
+      },
+      markKnowledgeGapsAlertedFn: async (ids: readonly number[]) => {
+        markCalls.push([...ids]);
+      },
+    }),
   );
   return { router, notifyCalls, markCalls };
 }

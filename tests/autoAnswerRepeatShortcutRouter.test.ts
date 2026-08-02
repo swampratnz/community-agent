@@ -32,7 +32,7 @@ process.env.AUTO_ANSWER_CHANNEL_IDS = AUTO_CHAN;
 process.env.REPEAT_QUESTION_SHORTCUT_ENABLED = 'true';
 
 const { pool, closeDb } = await import('../src/storage/db.js');
-const { Router } = await import('../src/router.js');
+const { Router, makeRouterDeps } = await import('../src/router.js');
 const { embed } = await import('../src/storage/embeddings.js');
 
 await embed('warmup').catch(() => {});
@@ -108,10 +108,15 @@ function makeMessage(overrides: Partial<IncomingMessage> = {}): IncomingMessage 
 
 test('SECURITY: the repeat-question shortcut still applies on the auto-answer path — the same caller resending the same text gets the cached reply, not a second turn (issue #477)', async () => {
   let calls = 0;
-  const router = new Router(async () => {
-    calls += 1;
-    return { text: 'the context window is 200k tokens', ok: true };
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => {
+        calls += 1;
+        return { text: 'the context window is 200k tokens', ok: true };
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, sent, threadCalls, trigger } = makeAdapter();
   router.register(adapter);
 

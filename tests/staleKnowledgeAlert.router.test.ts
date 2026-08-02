@@ -25,7 +25,7 @@ process.env.GUEST_KNOWLEDGE_SHORTCUT_ENABLED = 'true';
 process.env.KNOWLEDGE_STALE_DAYS = '30';
 
 const { config } = await import('../src/config.js');
-const { Router } = await import('../src/router.js');
+const { Router, makeRouterDeps } = await import('../src/router.js');
 
 type SearchKnowledgeFn = typeof searchKnowledge;
 type StaleInfo = { title: string | null; content: string; updatedAt: Date } | null;
@@ -129,29 +129,19 @@ function makeRouterWithSpies(
     return queue && queue.length > 0 ? queue.shift()! : null;
   };
   const router = new Router(
-    runTurn,
-    20,
-    undefined,
-    searchKnowledgeForShortcut,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async (
-      _adapterFor: (platform: string) => PlatformAdapter | undefined,
-      message: string,
-      excludeUserId: string,
-    ) => {
-      notifyCalls.push({ message, excludeUserId });
-    },
-    undefined,
-    undefined,
-    markStaleFn,
+    makeRouterDeps({
+      runTurn: runTurn,
+      typingRefireMs: 20,
+      searchKnowledgeForShortcut: searchKnowledgeForShortcut,
+      notifyAdminsFn: async (
+        _adapterFor: (platform: string) => PlatformAdapter | undefined,
+        message: string,
+        excludeUserId: string,
+      ) => {
+        notifyCalls.push({ message, excludeUserId });
+      },
+      markStaleKnowledgeAlertedFn: markStaleFn,
+    }),
   );
   return { router, notifyCalls, markStaleCalls };
 }

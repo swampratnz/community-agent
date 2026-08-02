@@ -24,7 +24,7 @@ process.env.WHATSAPP_CLOUD_VERIFY_TOKEN ??= 'test-verify-token';
 process.env.WHATSAPP_CLOUD_APP_SECRET ??= 'test-app-secret';
 
 const { config } = await import('../src/config.js');
-const { Router } = await import('../src/router.js');
+const { Router, makeRouterDeps } = await import('../src/router.js');
 const { DiscordAdapter } = await import('../src/platforms/discord/adapter.js');
 const { BaileysAdapter } = await import('../src/platforms/whatsapp/baileysAdapter.js');
 const { WhatsAppCloudAdapter } = await import('../src/platforms/whatsapp/cloudAdapter.js');
@@ -47,7 +47,12 @@ type DiscordAdapterInstance = InstanceType<typeof DiscordAdapter>;
 type BaileysAdapterInstance = InstanceType<typeof BaileysAdapter>;
 
 function makeReplyRouter() {
-  return new Router(async () => ({ text: 'here is your answer', ok: true }), 1_000_000);
+  return new Router(
+    makeRouterDeps({
+      runTurn: async () => ({ text: 'here is your answer', ok: true }),
+      typingRefireMs: 1_000_000,
+    }),
+  );
 }
 
 function getHandler(adapter: { handler?: (m: IncomingMessage) => Promise<void> | void }) {
@@ -242,7 +247,9 @@ test(
 
 test('Discord: a multi-chunk reply (longer than the 2000-char cap) is retracted in its ENTIRETY — every chunk is deleted, not just the last one (PR #576 review)', async (t) => {
   const longText = `${RUN}-chunk-a-`.padEnd(2200, 'a') + '\n' + `${RUN}-chunk-b-`.padEnd(2200, 'b');
-  const router = new Router(async () => ({ text: longText, ok: true }), 1_000_000);
+  const router = new Router(
+    makeRouterDeps({ runTurn: async () => ({ text: longText, ok: true }), typingRefireMs: 1_000_000 }),
+  );
   const adapter = new DiscordAdapter();
   const { sentMessages } = stubDiscordChannel(adapter);
   router.register(adapter);
@@ -275,7 +282,9 @@ test('Discord: a multi-chunk reply (longer than the 2000-char cap) is retracted 
 
 test("Discord: one chunk failing to delete (e.g. already manually removed) does not stop the other chunks from being retracted, and does not reject/throw (PR #576 review — matches the WhatsApp Baileys equivalent's per-chunk .catch)", async (t) => {
   const longText = `${RUN}-chunk-a-`.padEnd(2200, 'a') + '\n' + `${RUN}-chunk-b-`.padEnd(2200, 'b');
-  const router = new Router(async () => ({ text: longText, ok: true }), 1_000_000);
+  const router = new Router(
+    makeRouterDeps({ runTurn: async () => ({ text: longText, ok: true }), typingRefireMs: 1_000_000 }),
+  );
   const adapter = new DiscordAdapter();
   const { sentMessages } = stubDiscordChannel(adapter);
   router.register(adapter);

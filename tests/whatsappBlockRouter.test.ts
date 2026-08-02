@@ -25,7 +25,7 @@ const skip = hasDb
 const RUN = `whatsapp-block-router-${Date.now()}`;
 
 const { pool, closeDb } = await import('../src/storage/db.js');
-const { Router } = await import('../src/router.js');
+const { Router, makeRouterDeps } = await import('../src/router.js');
 const { blockUser, unblockUser } = await import('../src/storage/repository.js');
 const { embed } = await import('../src/storage/embeddings.js');
 
@@ -108,9 +108,14 @@ test(
     const convo = `${RUN}-convo-blocked-gated`;
     await blockUser('whatsapp', userId, 'test-admin', 'persistent abuse');
 
-    const router = new Router(async () => {
-      throw new Error('runTurn must never be called for a blocked sender');
-    }, 20);
+    const router = new Router(
+      makeRouterDeps({
+        runTurn: async () => {
+          throw new Error('runTurn must never be called for a blocked sender');
+        },
+        typingRefireMs: 20,
+      }),
+    );
     const { adapter, sent, trigger } = makeAdapter();
     router.register(adapter);
 
@@ -139,10 +144,15 @@ test(
     const userId = 'super-1';
     const convo = `${RUN}-convo-roundtrip`;
     let calls = 0;
-    const router = new Router(async () => {
-      calls += 1;
-      return makeReply('hi there');
-    }, 20);
+    const router = new Router(
+      makeRouterDeps({
+        runTurn: async () => {
+          calls += 1;
+          return makeReply('hi there');
+        },
+        typingRefireMs: 20,
+      }),
+    );
     const { adapter, sent, trigger } = makeAdapter();
     router.register(adapter);
 

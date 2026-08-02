@@ -21,7 +21,7 @@ const skip = hasDb
   ? false
   : 'DATABASE_URL not set — skipping DB-integration tests (CLAUDE.md: exercise against a local Postgres 16 + pgvector)';
 
-const { Router } = await import('../src/router.js');
+const { Router, makeRouterDeps } = await import('../src/router.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
 
 const RUN = `amboff${Date.now()}${Math.floor(Math.random() * 1e6)}`;
@@ -34,7 +34,12 @@ test(
   'SECURITY: archiving off (default) — a gated guest channel message stores nothing at all, identical to pre-#48 behaviour',
   { skip },
   async () => {
-    const router = new Router(async (): Promise<AgentReply> => ({ text: 'never' }), 1_000_000);
+    const router = new Router(
+      makeRouterDeps({
+        runTurn: async (): Promise<AgentReply> => ({ text: 'never' }),
+        typingRefireMs: 1_000_000,
+      }),
+    );
     let handler: ((msg: IncomingMessage) => Promise<void> | void) | null = null;
     const sent: OutgoingMessage[] = [];
     const adapter: PlatformAdapter = {
@@ -91,7 +96,12 @@ test(
       'precondition: default env has no WhatsApp archive allowlist',
     );
 
-    const router = new Router(async (): Promise<AgentReply> => ({ text: 'never' }), 1_000_000);
+    const router = new Router(
+      makeRouterDeps({
+        runTurn: async (): Promise<AgentReply> => ({ text: 'never' }),
+        typingRefireMs: 1_000_000,
+      }),
+    );
     let handler: ((msg: IncomingMessage) => Promise<void> | void) | null = null;
     const sent: OutgoingMessage[] = [];
     const adapter: PlatformAdapter = {

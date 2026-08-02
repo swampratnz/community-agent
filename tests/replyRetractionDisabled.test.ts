@@ -26,7 +26,7 @@ process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-575-off-discord';
 process.env.SUPER_ADMIN_WHATSAPP_NUMBERS ??= '64277000001';
 
 const { config } = await import('../src/config.js');
-const { Router } = await import('../src/router.js');
+const { Router, makeRouterDeps } = await import('../src/router.js');
 const { DiscordAdapter } = await import('../src/platforms/discord/adapter.js');
 const { BaileysAdapter } = await import('../src/platforms/whatsapp/baileysAdapter.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
@@ -138,7 +138,12 @@ function fireWhatsappRevoke(
 
 test('SECURITY: with AUTO_RETRACT_REPLY_ENABLED unset, deleting/revoking a message the bot replied to leaves the reply untouched and invokes deleteOwnMessage on NEITHER Discord NOR WhatsApp Baileys (acceptance criteria 1 + 5)', async (t) => {
   // --- Discord ---
-  const discordRouter = new Router(async () => ({ text: 'here is your answer', ok: true }), 1_000_000);
+  const discordRouter = new Router(
+    makeRouterDeps({
+      runTurn: async () => ({ text: 'here is your answer', ok: true }),
+      typingRefireMs: 1_000_000,
+    }),
+  );
   const discordAdapter = new DiscordAdapter();
   const { sentMessages } = stubDiscordChannel(discordAdapter);
   discordRouter.register(discordAdapter);
@@ -176,7 +181,12 @@ test('SECURITY: with AUTO_RETRACT_REPLY_ENABLED unset, deleting/revoking a messa
   assert.equal(sentMessages.get(replyId)?.deleted, false, "the bot's reply remains untouched");
 
   // --- WhatsApp Baileys ---
-  const waRouter = new Router(async () => ({ text: 'here is your answer', ok: true }), 1_000_000);
+  const waRouter = new Router(
+    makeRouterDeps({
+      runTurn: async () => ({ text: 'here is your answer', ok: true }),
+      typingRefireMs: 1_000_000,
+    }),
+  );
   const waAdapter = new BaileysAdapter();
   const { deleteCalls } = stubBaileysSocket(waAdapter);
   waRouter.register(waAdapter);
@@ -215,7 +225,12 @@ test(
     'never calls deleteOwnMessage, even though DISCORD_ARCHIVE_ALL_MESSAGES is on for this file (so the ' +
     'listener IS registered and its archive-scoped branch DOES fire) — acceptance criteria 1 + 5 (issue #595)',
   async (t) => {
-    const router = new Router(async () => ({ text: 'here is your answer', ok: true }), 1_000_000);
+    const router = new Router(
+      makeRouterDeps({
+        runTurn: async () => ({ text: 'here is your answer', ok: true }),
+        typingRefireMs: 1_000_000,
+      }),
+    );
     const adapter = new DiscordAdapter();
     const { sentMessages } = stubDiscordChannel(adapter);
     router.register(adapter);

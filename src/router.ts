@@ -266,6 +266,161 @@ interface KnowledgeShortcutHit {
 }
 
 /**
+ * The Router's full injectable surface (agent-base plan §Phase-1 item 7) —
+ * ONE typed deps object replacing the former 28 positional constructor
+ * parameters. Every field is REQUIRED: like `MemberDigestContentDeps`
+ * (memberDigest.ts) and per docs/STANDARDS.md, a *partial* deps object would
+ * silently leave un-stubbed reads pointing at live repository functions, the
+ * exact bug class the tests-typecheck ratchet exists to catch. Production
+ * passes nothing (`new Router()` → `makeRouterDeps()` supplies every real
+ * implementation); tests build a full object with
+ * `makeRouterDeps({ ...overrides })`.
+ *
+ * Field provenance (formerly the constructor doc):
+ * - `runTurn` defaults to the real agent core; `typingRefireMs` to a sane
+ *   production cadence (Discord auto-clears its indicator after ~10s, so
+ *   re-firing every 8s keeps it continuously visible); `checkPaused` to the
+ *   real policy read; `searchKnowledgeForShortcut`/`recordShortcutRetrieval`
+ *   to the real DB-backed implementations; `countReplies` to the real
+ *   daily-budget read; `getLangPref` to the real standing-language-preference
+ *   read (issue #300); `checkLowRatedKnowledge` to the real low-rated check
+ *   (issue #337), consulted ONLY from the member `sendKnowledgeShortcut`
+ *   path; `getGatedNotice` to the real TTL-cached, admin-naming gated notice
+ *   builder (issue #360). All are overridable in tests so the
+ *   typing-indicator, pause, knowledge-shortcut, budget-check-failure,
+ *   language-notice, and gated-notice behaviour can be exercised without
+ *   spawning a real Claude Code subprocess, waiting 8 real seconds, or a
+ *   live DB.
+ * - `getRespStyle`: the real standing-response-style read (issue #430),
+ *   mirroring `getLangPref` exactly — consulted at the same call sites, but
+ *   only when `getLangPref` didn't already resolve to 'mi' (which takes
+ *   precedence).
+ * - `recordShortcutHit`: the real DB-backed shortcut-hit recorder (issue
+ *   #440), fired at each of the four member-facing shortcut short-circuits,
+ *   plus `sendWhatsAppTextCommand`'s shared send path (issue #874).
+ * - `notifyAccessRequestFn`: the real `notifyAccessRequest` (issue #480),
+ *   consulted only when `ACCESS_REQUEST_ALERT_ENABLED` is on and
+ *   `recordAccessRequest` reports a fresh insert. `recordAccessRequestFn`:
+ *   the real DB-backed upsert; overridable so its insert-vs-update return
+ *   value can be controlled in tests without a live Postgres.
+ * - `notifyAdminsFn`: the real `listAdmins()`-backed admin alert (issue
+ *   #479), fired from the escalation-confirmation intercept in `handle()`.
+ *   `recordEscalatedGapFn`: the real escalated-gap recorder (issue #514),
+ *   fired alongside it from the same intercept.
+ * - `markStaleKnowledgeAlertedFn`: the real atomic gate+stamp (issue #701),
+ *   consulted from `maybeAlertStaleKnowledge`.
+ * - `getCommunityGuidelinesFn`/`getCommunityGuidelinesMiFn`: the real
+ *   TTL-cached policy reads (issue #850), consulted only from the
+ *   gated-notice branch while `waitDays` is falsy.
+ * - `searchMemberInterestsFn`/`searchProjectsFn`/`listRecentProjectsFn`/
+ *   `buildMemberDigestContentFn`: the real repository/digest reads (issue
+ *   #859), consulted only from `tryWhatsAppTextCommand`'s
+ *   `!whois`/`!projects`/`!digest` branches — overridable so the WhatsApp
+ *   text-command tests can assert `runTurn` (and therefore `embed()`) is
+ *   never reached, without a live DB.
+ * - `recentQuestionClustersFn`: the real clustering read (issue #887),
+ *   consulted only from `maybeAlertRepeatQuestion` when
+ *   `config.repeatQuestionAlert.enabled` is true and the per-conversation
+ *   cooldown has elapsed.
+ * - `searchMemberInterestsForSelfFn` (issue #889): consulted only from
+ *   `tryWhatsAppTextCommand`'s bare-`!whois` branch (no captured query),
+ *   porting the self-match `who_is_into`/`/whois` already have.
+ * - `checkKnowledgeConflict` (issue #918): consulted unconditionally (no
+ *   config gate, matching `knowledge_search`/`/kb`'s own unconditional
+ *   conflict check) from the member `sendKnowledgeShortcut` path ONLY —
+ *   never `sendGuestKnowledgeShortcut`, mirroring `checkLowRatedKnowledge`'s
+ *   member-only scope boundary — and `.catch()`-guarded to `false` like
+ *   every other caveat lookup on that path.
+ * - `listOwnProjectsFn` (issue #916): consulted only from
+ *   `tryWhatsAppTextCommand`'s `!projects mine` branch, keyed on
+ *   `msg.platform`/`msg.userId` only.
+ * - `listRecentInterestsFn` (issue #920): consulted only from the
+ *   bare-`!whois` branch when `searchMemberInterestsForSelfFn` reports
+ *   `hasProfile: false` — the same no-profile browse fallback
+ *   who_is_into/`/whois` gained.
+ */
+export interface RouterDeps {
+  runTurn: typeof runAgentTurn;
+  typingRefireMs: number;
+  checkPaused: typeof isPaused;
+  searchKnowledgeForShortcut: typeof searchKnowledge;
+  recordShortcutRetrieval: typeof recordKnowledgeRetrieval;
+  countReplies: typeof countRepliesToUser;
+  getLangPref: typeof getLanguagePreference;
+  checkLowRatedKnowledge: typeof isKnowledgeLowRated;
+  getGatedNotice: typeof buildGatedNotice;
+  getRespStyle: typeof getResponseStyle;
+  recordShortcutHit: typeof recordShortcutHitDefault;
+  recordAccessRequestFn: typeof recordAccessRequest;
+  notifyAccessRequestFn: typeof notifyAccessRequest;
+  notifyAdminsFn: typeof notifyAdmins;
+  recordEscalatedGapFn: typeof recordEscalatedKnowledgeGap;
+  markKnowledgeGapsAlertedFn: typeof markKnowledgeGapsAlerted;
+  markStaleKnowledgeAlertedFn: typeof markStaleKnowledgeAlerted;
+  getCommunityGuidelinesFn: typeof getCommunityGuidelines;
+  getCommunityGuidelinesMiFn: typeof getCommunityGuidelinesMi;
+  searchMemberInterestsFn: typeof searchMemberInterests;
+  searchProjectsFn: typeof searchProjects;
+  listRecentProjectsFn: typeof listRecentProjects;
+  buildMemberDigestContentFn: typeof buildMemberDigestContent;
+  recentQuestionClustersFn: typeof recentQuestionClusters;
+  searchMemberInterestsForSelfFn: typeof searchMemberInterestsForSelf;
+  checkKnowledgeConflict: typeof hasKnowledgeConflictForId;
+  listOwnProjectsFn: typeof listOwnProjects;
+  listRecentInterestsFn: typeof listRecentInterests;
+}
+
+/**
+ * Build a COMPLETE `RouterDeps` — the real production wiring overlaid with
+ * `overrides`. This is the one sanctioned way to construct a partial-looking
+ * deps object: the result is always full (so `RouterDeps` needs no optional
+ * fields), and any field a test doesn't override keeps today's behaviour of
+ * falling through to the real implementation — exactly the semantics the old
+ * positional-parameter defaults had, made explicit at the call site. An
+ * override whose VALUE is `undefined` is skipped too, for the same reason:
+ * test helpers forward their own optional parameters straight through
+ * (`getLangPref: maybeUndefined`), and under the old positional defaults an
+ * `undefined` argument meant "use the real implementation", never "inject
+ * undefined".
+ */
+export function makeRouterDeps(overrides: Partial<RouterDeps> = {}): RouterDeps {
+  const defined = Object.fromEntries(
+    Object.entries(overrides).filter(([, value]) => value !== undefined),
+  ) as Partial<RouterDeps>;
+  return {
+    runTurn: runAgentTurn,
+    typingRefireMs: 8_000,
+    checkPaused: isPaused,
+    searchKnowledgeForShortcut: searchKnowledge,
+    recordShortcutRetrieval: recordKnowledgeRetrieval,
+    countReplies: countRepliesToUser,
+    getLangPref: getLanguagePreference,
+    checkLowRatedKnowledge: isKnowledgeLowRated,
+    getGatedNotice: buildGatedNotice,
+    getRespStyle: getResponseStyle,
+    recordShortcutHit: recordShortcutHitDefault,
+    recordAccessRequestFn: recordAccessRequest,
+    notifyAccessRequestFn: notifyAccessRequest,
+    notifyAdminsFn: notifyAdmins,
+    recordEscalatedGapFn: recordEscalatedKnowledgeGap,
+    markKnowledgeGapsAlertedFn: markKnowledgeGapsAlerted,
+    markStaleKnowledgeAlertedFn: markStaleKnowledgeAlerted,
+    getCommunityGuidelinesFn: getCommunityGuidelines,
+    getCommunityGuidelinesMiFn: getCommunityGuidelinesMi,
+    searchMemberInterestsFn: searchMemberInterests,
+    searchProjectsFn: searchProjects,
+    listRecentProjectsFn: listRecentProjects,
+    buildMemberDigestContentFn: buildMemberDigestContent,
+    recentQuestionClustersFn: recentQuestionClusters,
+    searchMemberInterestsForSelfFn: searchMemberInterestsForSelf,
+    checkKnowledgeConflict: hasKnowledgeConflictForId,
+    listOwnProjectsFn: listOwnProjects,
+    listRecentInterestsFn: listRecentInterests,
+    ...defined,
+  };
+}
+
+/**
  * Routes normalised messages to the agent and replies on the originating
  * platform. Responsibilities:
  *  - resolve the sender's tier (env super admins + membership DB)
@@ -374,122 +529,76 @@ export class Router {
   private readonly BUDGET_CHECK_FAILURE_ALERT_WINDOW_MS = 900_000; // 15 minutes — a DB recording failure is a systemic condition, not per-user
   private readonly REPEAT_SHORTCUT_WINDOW_MS = 120_000; // 2 minutes — long enough for a double-tap/impatient-resend, short enough that a genuinely new question with identical text is unlikely
 
+  private readonly runTurn: typeof runAgentTurn;
+  private readonly typingRefireMs: number;
+  private readonly checkPaused: typeof isPaused;
+  private readonly searchKnowledgeForShortcut: typeof searchKnowledge;
+  private readonly recordShortcutRetrieval: typeof recordKnowledgeRetrieval;
+  private readonly countReplies: typeof countRepliesToUser;
+  private readonly getLangPref: typeof getLanguagePreference;
+  private readonly checkLowRatedKnowledge: typeof isKnowledgeLowRated;
+  private readonly getGatedNotice: typeof buildGatedNotice;
+  private readonly getRespStyle: typeof getResponseStyle;
+  private readonly recordShortcutHit: typeof recordShortcutHitDefault;
+  private readonly recordAccessRequestFn: typeof recordAccessRequest;
+  private readonly notifyAccessRequestFn: typeof notifyAccessRequest;
+  private readonly notifyAdminsFn: typeof notifyAdmins;
+  private readonly recordEscalatedGapFn: typeof recordEscalatedKnowledgeGap;
+  private readonly markKnowledgeGapsAlertedFn: typeof markKnowledgeGapsAlerted;
+  private readonly markStaleKnowledgeAlertedFn: typeof markStaleKnowledgeAlerted;
+  private readonly getCommunityGuidelinesFn: typeof getCommunityGuidelines;
+  private readonly getCommunityGuidelinesMiFn: typeof getCommunityGuidelinesMi;
+  private readonly searchMemberInterestsFn: typeof searchMemberInterests;
+  private readonly searchProjectsFn: typeof searchProjects;
+  private readonly listRecentProjectsFn: typeof listRecentProjects;
+  private readonly buildMemberDigestContentFn: typeof buildMemberDigestContent;
+  private readonly recentQuestionClustersFn: typeof recentQuestionClusters;
+  private readonly searchMemberInterestsForSelfFn: typeof searchMemberInterestsForSelf;
+  private readonly checkKnowledgeConflict: typeof hasKnowledgeConflictForId;
+  private readonly listOwnProjectsFn: typeof listOwnProjects;
+  private readonly listRecentInterestsFn: typeof listRecentInterests;
+
   /**
-   * `runTurn` defaults to the real agent core; `typingRefireMs` defaults to a
-   * sane production cadence (Discord auto-clears its own indicator after
-   * ~10s, so re-firing every 8s keeps it continuously visible). `checkPaused`
-   * defaults to the real policy read. `searchKnowledgeForShortcut` and
-   * `recordShortcutRetrieval` default to the real DB-backed implementations.
-   * `countReplies` defaults to the real daily-budget read. `getLangPref`
-   * defaults to the real standing-language-preference read (issue #300).
-   * `checkLowRatedKnowledge` defaults to the real DB-backed low-rated check
-   * (issue #337), consulted ONLY from the member `sendKnowledgeShortcut`
-   * path. `getGatedNotice` defaults to the real TTL-cached, admin-naming
-   * gated notice builder (issue #360). All are overridable in tests so the
-   * typing-indicator, pause, knowledge-shortcut, budget-check-failure,
-   * language-notice, and gated-notice behaviour can be exercised without
-   * spawning a real Claude Code subprocess, waiting 8 real seconds, or a
-   * live DB. `getRespStyle` defaults to the real standing-response-style-
-   * preference read (issue #430), mirroring `getLangPref`'s shape exactly —
-   * consulted at the same call sites, but only when `getLangPref` didn't
-   * already resolve to 'mi' (which takes precedence). `recordShortcutHit`
-   * defaults to the real DB-backed shortcut-hit recorder (issue #440),
-   * fired at each of the four member-facing shortcut short-circuits, plus
-   * `sendWhatsAppTextCommand`'s shared send path (issue #874).
-   * `notifyAccessRequestFn` defaults to the real `notifyAccessRequest`
-   * (issue #480), consulted only when `ACCESS_REQUEST_ALERT_ENABLED` is on
-   * and `recordAccessRequest` reports a fresh insert — overridable so tests
-   * can assert the alert fired/didn't without a live DB or adapter.
-   * `recordAccessRequestFn` defaults to the real DB-backed upsert; overridable
-   * (like every other DB read/write above) so its insert-vs-update return
-   * value can be controlled in tests without a live Postgres.
-   * `notifyAdminsFn` defaults to the real `listAdmins()`-backed admin alert
-   * (issue #479), fired from the escalation-confirmation intercept in
-   * `handle()`; overridable so tests can assert on it without a live DB.
-   * `recordEscalatedGapFn` defaults to the real DB-backed escalated-gap
-   * recorder (issue #514), fired alongside `notifyAdminsFn` from the same
-   * intercept; overridable so tests can assert on it without a live DB.
-   * `markStaleKnowledgeAlertedFn` defaults to the real DB-backed atomic
-   * gate+stamp (issue #701), consulted from `maybeAlertStaleKnowledge` below;
-   * overridable so tests can assert on it without a live DB.
-   * `getCommunityGuidelinesFn`/`getCommunityGuidelinesMiFn` default to the
-   * real TTL-cached policy reads (issue #850), consulted only from the
-   * gated-notice branch while `waitDays` is falsy (a guest's first message,
-   * or any message before a whole day has passed) — overridable so tests can
-   * assert on the appended text, the unset no-op, and the fail-open catch
-   * without a live DB. `searchMemberInterestsFn`/`searchProjectsFn`/
-   * `listRecentProjectsFn`/`buildMemberDigestContentFn` default to the real
-   * repository/digest reads (issue #859), consulted only from
-   * `tryWhatsAppTextCommand`'s `!whois`/`!projects`/`!digest` branches —
-   * overridable so the WhatsApp text-command tests can assert `runTurn` (and
-   * therefore `embed()`, which only the real search functions would call) is
-   * never reached, without a live DB.
-   * `recentQuestionClustersFn` defaults to the real DB-backed clustering read
-   * (issue #887), consulted only from `maybeAlertRepeatQuestion` below when
-   * `config.repeatQuestionAlert.enabled` is true and the per-conversation
-   * cooldown has elapsed — overridable so tests can assert on its call count
-   * directly (acceptance criterion 2) without a live DB.
-   * `searchMemberInterestsForSelfFn` defaults to the real
-   * `searchMemberInterestsForSelf` (issue #889), a further trailing field
-   * added after `!whois`/`!projects`/`!guidelines`/`!digest` shipped so every
-   * existing positional `new Router(...)` call site stays unaffected;
-   * consulted only from `tryWhatsAppTextCommand`'s bare-`!whois` branch (no
-   * captured query), porting the same self-match `who_is_into`/`/whois`
-   * already have to the third surface.
-   * `checkKnowledgeConflict` defaults to the real DB-backed single-id
-   * conflict check (issue #918), another trailing field for the same
-   * call-site-stability reason as `searchMemberInterestsForSelfFn` above.
-   * Consulted unconditionally (no config gate, matching `knowledge_search`/
-   * `/kb`'s own unconditional conflict check) from the member
-   * `sendKnowledgeShortcut` path ONLY — never `sendGuestKnowledgeShortcut`,
-   * mirroring `checkLowRatedKnowledge`'s existing member-only scope boundary
-   * — and `.catch()`-guarded to `false` like every other caveat lookup on
-   * this path, so a lookup failure degrades to no caveat rather than a
-   * blocked reply.
-   * `listOwnProjectsFn` defaults to the real `listOwnProjects` (issue #916),
-   * another trailing defaulted field added after `checkKnowledgeConflict`
-   * for the same call-site-stability reason; consulted only from
-   * `tryWhatsAppTextCommand`'s `!projects mine` branch, keyed on
-   * `msg.platform`/`msg.userId` only — mirroring
-   * `list_projects({ mine: true })`/`/projects mine:true`'s own
-   * self-scoping, the third and last of the three `mine` surfaces.
-   * `listRecentInterestsFn` defaults to the real `listRecentInterests`
-   * (issue #920), a further trailing field for the same call-site-stability
-   * reason as `searchMemberInterestsForSelfFn`/`checkKnowledgeConflict`
-   * above; consulted only from `tryWhatsAppTextCommand`'s bare-`!whois`
-   * branch when `searchMemberInterestsForSelfFn` reports `hasProfile: false`
-   * — the same no-profile browse fallback who_is_into/`/whois` gained.
+   * ONE deps object (agent-base plan §Phase-1 item 7), replacing the 28
+   * positional constructor parameters whose *positions* had become the API —
+   * every new injectable had to be a trailing field so existing
+   * `new Router(...)` call sites stayed unaffected (see `RouterDeps`'s field
+   * docs for each field's provenance). Production passes nothing —
+   * `makeRouterDeps()` supplies every real implementation. Tests pass a FULL
+   * object too, via `makeRouterDeps({ ...overrides })`, matching the
+   * all-or-nothing deps discipline in `memberDigest.ts`/`docs/STANDARDS.md`:
+   * `RouterDeps` has no optional fields, so a hand-written literal can never
+   * silently omit a field and fall through to a live-Postgres read.
    */
-  constructor(
-    private readonly runTurn: typeof runAgentTurn = runAgentTurn,
-    private readonly typingRefireMs = 8_000,
-    private readonly checkPaused: typeof isPaused = isPaused,
-    private readonly searchKnowledgeForShortcut: typeof searchKnowledge = searchKnowledge,
-    private readonly recordShortcutRetrieval: typeof recordKnowledgeRetrieval = recordKnowledgeRetrieval,
-    private readonly countReplies: typeof countRepliesToUser = countRepliesToUser,
-    private readonly getLangPref: typeof getLanguagePreference = getLanguagePreference,
-    private readonly checkLowRatedKnowledge: typeof isKnowledgeLowRated = isKnowledgeLowRated,
-    private readonly getGatedNotice: typeof buildGatedNotice = buildGatedNotice,
-    private readonly getRespStyle: typeof getResponseStyle = getResponseStyle,
-    private readonly recordShortcutHit: typeof recordShortcutHitDefault = recordShortcutHitDefault,
-    private readonly recordAccessRequestFn: typeof recordAccessRequest = recordAccessRequest,
-    private readonly notifyAccessRequestFn: typeof notifyAccessRequest = notifyAccessRequest,
-    private readonly notifyAdminsFn: typeof notifyAdmins = notifyAdmins,
-    private readonly recordEscalatedGapFn: typeof recordEscalatedKnowledgeGap = recordEscalatedKnowledgeGap,
-    private readonly markKnowledgeGapsAlertedFn: typeof markKnowledgeGapsAlerted = markKnowledgeGapsAlerted,
-    private readonly markStaleKnowledgeAlertedFn: typeof markStaleKnowledgeAlerted = markStaleKnowledgeAlerted,
-    private readonly getCommunityGuidelinesFn: typeof getCommunityGuidelines = getCommunityGuidelines,
-    private readonly getCommunityGuidelinesMiFn: typeof getCommunityGuidelinesMi = getCommunityGuidelinesMi,
-    private readonly searchMemberInterestsFn: typeof searchMemberInterests = searchMemberInterests,
-    private readonly searchProjectsFn: typeof searchProjects = searchProjects,
-    private readonly listRecentProjectsFn: typeof listRecentProjects = listRecentProjects,
-    private readonly buildMemberDigestContentFn: typeof buildMemberDigestContent = buildMemberDigestContent,
-    private readonly recentQuestionClustersFn: typeof recentQuestionClusters = recentQuestionClusters,
-    private readonly searchMemberInterestsForSelfFn: typeof searchMemberInterestsForSelf = searchMemberInterestsForSelf,
-    private readonly checkKnowledgeConflict: typeof hasKnowledgeConflictForId = hasKnowledgeConflictForId,
-    private readonly listOwnProjectsFn: typeof listOwnProjects = listOwnProjects,
-    private readonly listRecentInterestsFn: typeof listRecentInterests = listRecentInterests,
-  ) {
+  constructor(deps: RouterDeps = makeRouterDeps()) {
+    this.runTurn = deps.runTurn;
+    this.typingRefireMs = deps.typingRefireMs;
+    this.checkPaused = deps.checkPaused;
+    this.searchKnowledgeForShortcut = deps.searchKnowledgeForShortcut;
+    this.recordShortcutRetrieval = deps.recordShortcutRetrieval;
+    this.countReplies = deps.countReplies;
+    this.getLangPref = deps.getLangPref;
+    this.checkLowRatedKnowledge = deps.checkLowRatedKnowledge;
+    this.getGatedNotice = deps.getGatedNotice;
+    this.getRespStyle = deps.getRespStyle;
+    this.recordShortcutHit = deps.recordShortcutHit;
+    this.recordAccessRequestFn = deps.recordAccessRequestFn;
+    this.notifyAccessRequestFn = deps.notifyAccessRequestFn;
+    this.notifyAdminsFn = deps.notifyAdminsFn;
+    this.recordEscalatedGapFn = deps.recordEscalatedGapFn;
+    this.markKnowledgeGapsAlertedFn = deps.markKnowledgeGapsAlertedFn;
+    this.markStaleKnowledgeAlertedFn = deps.markStaleKnowledgeAlertedFn;
+    this.getCommunityGuidelinesFn = deps.getCommunityGuidelinesFn;
+    this.getCommunityGuidelinesMiFn = deps.getCommunityGuidelinesMiFn;
+    this.searchMemberInterestsFn = deps.searchMemberInterestsFn;
+    this.searchProjectsFn = deps.searchProjectsFn;
+    this.listRecentProjectsFn = deps.listRecentProjectsFn;
+    this.buildMemberDigestContentFn = deps.buildMemberDigestContentFn;
+    this.recentQuestionClustersFn = deps.recentQuestionClustersFn;
+    this.searchMemberInterestsForSelfFn = deps.searchMemberInterestsForSelfFn;
+    this.checkKnowledgeConflict = deps.checkKnowledgeConflict;
+    this.listOwnProjectsFn = deps.listOwnProjectsFn;
+    this.listRecentInterestsFn = deps.listRecentInterestsFn;
     setInterval(() => this.sweep(), this.RATE_WINDOW_MS * 5).unref();
   }
 

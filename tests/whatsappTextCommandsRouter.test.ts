@@ -42,7 +42,7 @@ process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { config } = await import('../src/config.js');
-const { Router } = await import('../src/router.js');
+const { Router, makeRouterDeps } = await import('../src/router.js');
 const { countRepliesToUser } = await import('../src/storage/repository.js');
 
 const RUN = `wa-cmd-router-${Date.now()}`;
@@ -153,34 +153,37 @@ interface RouterOpts {
  */
 function makeRouter(opts: RouterOpts = {}): Router {
   return new Router(
-    opts.runTurn ?? (async () => ({ text: REAL_TURN_REPLY })), // 1 runTurn
-    20, // 2 typingRefireMs
-    async () => false, // 3 checkPaused
-    undefined, // 4 searchKnowledgeForShortcut
-    undefined, // 5 recordShortcutRetrieval
-    async () => 0, // 6 countReplies — always under budget, deterministic
-    opts.getLangPref, // 7 getLangPref
-    undefined, // 8 checkLowRatedKnowledge
-    undefined, // 9 getGatedNotice
-    undefined, // 10 getRespStyle
-    opts.recordShortcutHitFn, // 11 recordShortcutHit
-    undefined, // 12 recordAccessRequestFn
-    undefined, // 13 notifyAccessRequestFn
-    undefined, // 14 notifyAdminsFn
-    undefined, // 15 recordEscalatedGapFn
-    undefined, // 16 markKnowledgeGapsAlertedFn
-    undefined, // 17 markStaleKnowledgeAlertedFn
-    opts.getCommunityGuidelinesFn, // 18
-    opts.getCommunityGuidelinesMiFn, // 19
-    opts.searchMemberInterestsFn, // 20
-    opts.searchProjectsFn, // 21
-    opts.listRecentProjectsFn, // 22
-    opts.buildMemberDigestContentFn, // 23
-    undefined, // 24 recentQuestionClustersFn
-    opts.searchMemberInterestsForSelfFn, // 25
-    undefined, // 26 checkKnowledgeConflict
-    opts.listOwnProjectsFn, // 27
-    opts.listRecentInterestsFn, // 28
+    makeRouterDeps({
+      runTurn: opts.runTurn ?? (async () => ({ text: REAL_TURN_REPLY })),
+      // 1 runTurn
+      typingRefireMs: 20,
+      // 2 typingRefireMs
+      checkPaused: async () => false,
+      // 5 recordShortcutRetrieval
+      countReplies: async () => 0,
+      // 6 countReplies — always under budget, deterministic
+      getLangPref: opts.getLangPref,
+      // 10 getRespStyle
+      recordShortcutHit: opts.recordShortcutHitFn,
+      // 17 markStaleKnowledgeAlertedFn
+      getCommunityGuidelinesFn: opts.getCommunityGuidelinesFn,
+      // 18
+      getCommunityGuidelinesMiFn: opts.getCommunityGuidelinesMiFn,
+      // 19
+      searchMemberInterestsFn: opts.searchMemberInterestsFn,
+      // 20
+      searchProjectsFn: opts.searchProjectsFn,
+      // 21
+      listRecentProjectsFn: opts.listRecentProjectsFn,
+      // 22
+      buildMemberDigestContentFn: opts.buildMemberDigestContentFn,
+      // 24 recentQuestionClustersFn
+      searchMemberInterestsForSelfFn: opts.searchMemberInterestsForSelfFn,
+      // 26 checkKnowledgeConflict
+      listOwnProjectsFn: opts.listOwnProjectsFn,
+      // 27
+      listRecentInterestsFn: opts.listRecentInterestsFn,
+    }), // 28
   );
 }
 
@@ -900,29 +903,13 @@ test(
     const before = await countRepliesToUser('whatsapp', userId);
 
     const router = new Router(
-      throwingRunTurn,
-      20,
-      async () => false,
-      undefined,
-      undefined,
-      countRepliesToUser,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      async () => 'Be kind.',
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
+      makeRouterDeps({
+        runTurn: throwingRunTurn,
+        typingRefireMs: 20,
+        checkPaused: async () => false,
+        countReplies: countRepliesToUser,
+        getCommunityGuidelinesFn: async () => 'Be kind.',
+      }),
     );
     const { adapter, sent, trigger } = makeAdapter();
     router.register(adapter);

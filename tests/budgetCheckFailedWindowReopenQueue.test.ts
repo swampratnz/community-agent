@@ -17,7 +17,7 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.ACCESS_MODE_WHATSAPP = 'open';
 process.env.SUPER_ADMIN_WHATSAPP_NUMBERS = 'super-1,super-2';
 
-const { Router } = await import('../src/router.js');
+const { Router, makeRouterDeps } = await import('../src/router.js');
 const { WindowClosedError } = await import('../src/platforms/whatsapp/cloudAdapter.js');
 
 /**
@@ -103,14 +103,15 @@ test(
       'super-2': new WindowClosedError('super-2'),
     });
     const router = new Router(
-      async () => ({ text: 'ok' }), // runTurn
-      20, // typingRefireMs
-      undefined, // checkPaused
-      undefined, // searchKnowledgeForShortcut
-      undefined, // recordShortcutRetrieval
-      async () => {
-        throw new Error('daily reply budget check: DB unreachable');
-      }, // countReplies — forces the budget-check-failed path
+      makeRouterDeps({
+        runTurn: async () => ({ text: 'ok' }),
+        // runTurn
+        typingRefireMs: 20,
+        // recordShortcutRetrieval
+        countReplies: async () => {
+          throw new Error('daily reply budget check: DB unreachable');
+        },
+      }), // countReplies — forces the budget-check-failed path
     );
     router.register(adapter);
 
@@ -138,14 +139,13 @@ test(
       'super-2': new Error('502 from Graph API'),
     });
     const router = new Router(
-      async () => ({ text: 'ok' }),
-      20,
-      undefined,
-      undefined,
-      undefined,
-      async () => {
-        throw new Error('daily reply budget check: DB unreachable');
-      },
+      makeRouterDeps({
+        runTurn: async () => ({ text: 'ok' }),
+        typingRefireMs: 20,
+        countReplies: async () => {
+          throw new Error('daily reply budget check: DB unreachable');
+        },
+      }),
     );
     router.register(adapter);
 
