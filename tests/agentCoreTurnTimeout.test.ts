@@ -1,5 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import '../src/strings/notices.js';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,6 +34,11 @@ process.env.AGENT_TURN_TIMEOUT_MS = '50';
 // real ordering rather than exempting the test is the point: the invariant
 // holds everywhere, including here.
 process.env.IMAGE_GEN_TIMEOUT_MS = '10';
+
+// The tool registry's module-scope registrations (tool tiers, tool-server
+// parts, feature-flag predicates) — the composition-root contract, matching
+// tests/rbac.test.ts.
+await import('../src/agent/tools/index.js');
 
 type QueryBehavior =
   | { mode: 'hang' }

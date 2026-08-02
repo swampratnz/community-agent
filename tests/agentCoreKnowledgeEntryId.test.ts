@@ -1,5 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import '../src/strings/notices.js';
 import type { CallerContext } from '../src/auth/rbac.js';
 import type { OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
 import type { KnowledgeSearchHit } from '../src/storage/repository.js';
@@ -8,6 +12,9 @@ import type { KnowledgeSearchHit } from '../src/storage/repository.js';
 // tests that assemble prompts register them explicitly here.
 import '../src/agent/communityPromptSections.js';
 import '../src/agent/personas.js';
+// Community turn-state registration — the finalizer that surfaces this
+// module's keys on AgentReply.turnState (src/index.ts loads it in production).
+import '../src/agent/communityTurnState.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -131,6 +138,11 @@ async function core(t: { mock: { module: (specifier: string, opts: unknown) => v
         searchKnowledgeLexical: async () => [],
       },
     });
+    // Load the tool registry AFTER the repository mock above, so the tool
+    // handlers (and the base kernel's registered parts) bind the mocked
+    // repository exports — the same ordering the pre-split core.js import
+    // graph gave this file.
+    await import('../src/agent/tools/index.js');
     corePromise = import('../src/agent/core.js');
   }
   return corePromise;

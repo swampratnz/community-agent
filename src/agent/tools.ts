@@ -1,16 +1,17 @@
-import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
-import type { AdapterLookup, PlatformAdapter } from '../platforms/types.js';
-import type { CallerContext } from '../auth/rbac.js';
-import { KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD, getLanguagePreference } from '../storage/repository.js';
-import { makeToolContext } from './tools/context.js';
-import { TOOL_REGISTRY } from './tools/index.js';
+import { KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD } from '../storage/repository.js';
+// The registry import is load-bearing beyond the re-exports below: importing
+// this barrel is what runs tools/index.ts's module-scope registrations (tool
+// tiers, tool-server parts, feature-flag predicates), so `buildToolServer`
+// and `toolsForRole` work anywhere this file is imported — the pre-split
+// behaviour every existing import site (tests especially) relies on.
+import './tools/index.js';
 
 // This file is the BARREL for the tool registry split (docs/
 // TOOL-REGISTRY-DESIGN.md §3): every symbol that moved into src/agent/tools/
 // is re-exported here so the 20+ existing import sites (tests especially)
 // keep working unchanged. Every tool now lives in a ToolDef domain file
-// under src/agent/tools/ — buildToolServer below is just the per-turn
-// context plus the registry.
+// under src/agent/tools/ — and the per-turn server assembly lives in the
+// base kernel `agent/toolServer.ts`, re-exported below.
 export {
   resolveSanitizedLabel,
   formatRelativeAge,
@@ -109,46 +110,22 @@ export {
 
 /**
  * Turn-scoped, mutable correlation state threaded in from `execTurn` (issue
- * #411) — now the generic, module-augmentable bag from `agent/turnState.ts`
+ * #411) — the generic, module-augmentable bag from `agent/turnState.ts`
  * (agent-base plan §3): base declares it empty, and this module's keys
  * (`lastKnowledgeHitId`, `unhelpfulAnswerRated`, `knowledgeGapCluster`,
  * `staleKnowledgeAlertIds`, `humanHelpRequested` — full contracts documented
- * there) live in `agent/communityTurnState.ts`, imported below for its
- * side effect so the community finalizer is registered anywhere a tool
- * server can be built. Still optional on the tool context, so every existing
+ * there) live in `agent/communityTurnState.ts`, whose registering
+ * side-effect import now sits in src/index.ts's composition-root block (and
+ * in the preambles of tests that finalize turn state without loading it).
+ * Still optional on the tool context, so every existing
  * `buildToolServer(caller, adapter)` call keeps compiling unchanged.
  */
-import './communityTurnState.js';
-import type { ToolServerTurnState } from './turnState.js';
 export type { ToolServerTurnState } from './turnState.js';
 
 /**
- * Build the in-process MCP tool server for one agent turn. The tools close
- * over the caller context and the adapter handling this conversation, so
- * RBAC and platform routing are baked in. Layers:
- *  1. The tool list attached to the turn is tier-derived (rbac.toolsForRole).
- *  2. Every privileged tool re-asserts the tier before any side effect.
- *  3. Admin data access is scoped in SQL to conversations the admin is in.
- *  4. Destructive actions require an out-of-band CONFIRM (pendingActions.ts).
- *  5. Everything privileged is audited and alerted to super admins.
+ * The per-turn server assembly moved to the base kernel (agent-base plan §2
+ * `agent/` row): `buildToolServer` there composes whatever parts the
+ * community registry registered (tools/index.ts). Re-exported so existing
+ * import sites keep working unchanged.
  */
-export function buildToolServer(
-  caller: CallerContext,
-  adapter: PlatformAdapter,
-  getAdapter?: AdapterLookup,
-  turnState?: ToolServerTurnState,
-  getLangPref: typeof getLanguagePreference = getLanguagePreference,
-) {
-  const ctx = makeToolContext(caller, adapter, getAdapter, turnState, getLangPref);
-  // Attach everything; the per-turn allowedTools list (rbac.toolsForRole) is
-  // what actually restricts which of these the model can call.
-  return createSdkMcpServer({
-    name: 'community',
-    version: '2.0.0',
-    tools: TOOL_REGISTRY.map((def) =>
-      tool(def.name, def.description, def.schema, (args) => def.handler(args, ctx), {
-        annotations: { readOnlyHint: def.readOnlyHint },
-      }),
-    ),
-  });
-}
+export { buildToolServer } from './toolServer.js';

@@ -8,7 +8,7 @@ import { registerPendingAction } from '../pendingActions.js';
 import { text } from './helpers.js';
 import { notifySuperAdmins } from './notify.js';
 import type { ToolContext } from './types.js';
-import type { ToolServerTurnState } from '../tools.js';
+import type { ToolServerTurnState } from '../turnState.js';
 
 /**
  * Build the per-turn `ToolContext` kernel (docs/TOOL-REGISTRY-DESIGN.md §2):

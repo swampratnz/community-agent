@@ -1,7 +1,10 @@
 import type { ZodRawShape } from 'zod';
 import type { Config } from '../../config.js';
 import { registerToolTiers } from '../../auth/rbac.js';
-import type { ToolDef } from './types.js';
+import { registerToolServerParts } from '../toolServer.js';
+import { registerFlaggedToolPredicates } from '../featureFlags.js';
+import { makeToolContext } from './context.js';
+import type { ToolContext, ToolDef } from './types.js';
 import { infoTools } from './info.js';
 import { knowledgeMemberTools } from './knowledgeMember.js';
 import { memoryTools } from './memory.js';
@@ -119,6 +122,22 @@ registerToolTiers({
   superAdmin: SUPER_ADMIN_TOOL_NAMES,
   discordOnly: DISCORD_ONLY_TOOL_NAMES,
 });
+
+// Register the tool-server parts into the base kernel (agent/toolServer.ts)
+// at module scope, same inversion as the tier lists above: the MCP server
+// name (the root of every `mcp__community__*` id), the declarative registry,
+// and the per-turn context factory are all community content, so the base
+// `buildToolServer` fails closed until this registry has been imported.
+registerToolServerParts<ToolContext>({
+  name: 'community',
+  makeContext: makeToolContext,
+  registry: TOOL_REGISTRY,
+});
+
+// And the feature-flag predicates (agent/featureFlags.ts): core.ts's
+// per-turn subtractive filter reads them from the base registry rather than
+// importing this module — same fail-closed-until-imported contract.
+registerFlaggedToolPredicates(FLAGGED_TOOL_PREDICATES);
 
 /** Prefixed names of every member-tier registry def, in registry order. */
 export function memberToolNames(): readonly string[] {

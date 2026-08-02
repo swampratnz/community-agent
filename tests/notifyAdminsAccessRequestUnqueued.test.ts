@@ -1,5 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import '../src/strings/notices.js';
 import type { OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
 
 // Regression coverage for issue #593's binding acceptance criterion 6:

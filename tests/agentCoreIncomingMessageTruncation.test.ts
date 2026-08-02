@@ -1,5 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import '../src/strings/notices.js';
 import type { CallerContext } from '../src/auth/rbac.js';
 import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
 // Community content registrations (prompt sections + persona roster) — the
@@ -20,6 +24,11 @@ process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 process.env.MAX_INCOMING_MESSAGE_CHARS ??= '20';
+
+// The tool registry's module-scope registrations (tool tiers, tool-server
+// parts, feature-flag predicates) — the composition-root contract, matching
+// tests/rbac.test.ts.
+await import('../src/agent/tools/index.js');
 
 // Captures the exact params passed to query() so tests can assert on the
 // assembled user-turn prompt, mirroring tests/agentCoreRequesterTag.test.ts.

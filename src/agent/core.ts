@@ -33,8 +33,9 @@ import {
   renderRequesterTag,
 } from './systemPrompt.js';
 import { selectPersona } from './personaRegistry.js';
-import { buildToolServer, type ToolServerTurnState } from './tools.js';
-import { flaggedToolPredicates } from './tools/index.js';
+import { buildToolServer, toolServerName } from './toolServer.js';
+import type { ToolServerTurnState } from './turnState.js';
+import { flaggedToolPredicates } from './featureFlags.js';
 import {
   isDuplicateWebSearchQuery,
   recordWebSearchQuery,
@@ -233,10 +234,11 @@ interface TurnOutcome {
  * name+description+schema tokens on every turn for a tier that can never
  * successfully call them (issue #535). Purely subtractive: a tool is dropped
  * only while its flag is off. The flagged set and each tool's predicate are
- * derived from the registry (`ToolDef.featureFlag`, tools/index.ts), and
- * every predicate is evaluated against the live `config` HERE, at call time —
- * never frozen at import, the trap the old hand-maintained flag groups'
- * import-time booleans had.
+ * derived from the registry (`ToolDef.featureFlag`, tools/index.ts) and
+ * registered into the base predicate slot (`agent/featureFlags.ts`) at the
+ * registry's import time, and every predicate is evaluated against the live
+ * `config` HERE, at call time — never frozen at import, the trap the old
+ * hand-maintained flag groups' import-time booleans had.
  */
 export function filterFeatureFlaggedTools(tools: string[]): string[] {
   const disabled = new Set(
@@ -883,7 +885,10 @@ async function execTurn(
             ...buildQueryOptions(
               caller.role,
               systemPrompt,
-              { community: toolServer },
+              // Keyed by the module-registered MCP server name (the same name
+              // that roots the `mcp__<name>__*` ids in allowedTools) — never a
+              // hard-coded literal here in base.
+              { [toolServerName()]: toolServer },
               resumeSession,
               caller.conversationId,
               caller.platform,

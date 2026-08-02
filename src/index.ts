@@ -1,10 +1,11 @@
 import { config } from './config.js';
 import { logger } from './logger.js';
 // Side-effect imports: the community content registrations (prompt sections
-// into promptSpine.ts's slot set, the persona roster into personaRegistry.ts,
-// the skills manifest into skillsManifest.ts, the notice pack into
-// strings/catalogue.ts, the community policy keys into storage/policyStore.ts,
-// the command list into commands/registry.ts).
+// into promptSpine.ts's slot set, the turn-state finalizer into
+// agent/turnState.ts, the persona roster into personaRegistry.ts, the skills
+// manifest into skillsManifest.ts, the notice pack into strings/catalogue.ts,
+// the community policy keys into storage/policyStore.ts, the command list
+// into commands/registry.ts).
 // They live HERE, at the composition root, so the base modules that consume
 // them (systemPrompt.ts, core.ts) no longer import community content
 // themselves — each registry fails closed if its module never loaded. Must
@@ -15,6 +16,7 @@ import { logger } from './logger.js';
 import './strings/notices.js';
 import './storage/policies.js';
 import './agent/communityPromptSections.js';
+import './agent/communityTurnState.js';
 import './agent/personas.js';
 import './agent/enabledSkills.js';
 import './commands.js';

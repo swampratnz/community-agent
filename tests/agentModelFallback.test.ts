@@ -1,5 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import '../src/strings/notices.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -14,6 +18,11 @@ process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 // Comma-separated, per the SDK's own accepted shape for Options.fallbackModel
 // — this repo does no parsing of it, just forwards the string unchanged.
 process.env.AGENT_MODEL_FALLBACK = 'claude-haiku-4-5-20251001,claude-sonnet-5';
+
+// The tool registry's module-scope registrations (tool tiers, tool-server
+// parts, feature-flag predicates) — the composition-root contract, matching
+// tests/rbac.test.ts.
+await import('../src/agent/tools/index.js');
 
 const { config } = await import('../src/config.js');
 const { buildQueryOptions } = await import('../src/agent/core.js');
