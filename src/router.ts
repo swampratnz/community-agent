@@ -1,13 +1,17 @@
 import { config } from './config.js';
 import {
   PRE_TURN_SPINE,
+  registerPostTurnHandler,
   registerPreTurnIntercept,
+  registeredPostTurnHandlers,
   registeredPreTurnIntercepts,
   type InterceptOutcome,
+  type PostTurnContext,
   type PreTurnContext,
   type PreTurnIntercept,
   type SpineStepName,
 } from './routerIntercepts.js';
+import { COMMUNITY_COMMANDS, TEXT_COMMAND_UNMATCHED, type WhatsAppTextCommandDeps } from './commands.js';
 import { logger } from './logger.js';
 import { isPureAcknowledgement } from './ackClassifier.js';
 import { atLeast, type CallerContext, type Tier } from './auth/rbac.js';
@@ -18,12 +22,9 @@ import { sanitizeName } from './util/sanitizeName.js';
 import { INTERNAL_ERROR_REPLY, runAgentTurn, type AgentReply } from './agent/core.js';
 import { notice } from './strings/notices.js';
 import {
-  formatInterestResults,
   formatKnowledgeCitationNote,
-  formatProjectResults,
   formatRelativeAge,
   KNOWLEDGE_CONFLICT_CAVEAT_TEXT,
-  LIST_PROJECTS_DEFAULT_LIMIT,
   notifyAdmins,
   truncateForEcho,
 } from './agent/tools.js';
@@ -2000,91 +2001,37 @@ export class Router {
    * reply (see the call site's comment for why silent fallthrough, not a
    * denial reply, is the deliberate choice here).
    *
-   * Tier floors mirror each Discord handler's REAL minimum exactly:
-   * `who_is_into`/`list_projects`/`community_digest` are structurally
-   * reachable by every role (including guest) via `toolsForRole` — none of
-   * them are Discord-only tools — so `atLeast(role, 'member')` alone is
-   * equivalent to Discord's own `toolsForRole(...).includes(...) ||
-   * !atLeast(...)` check for these three. `community_guidelines` has no tier
-   * floor in either handler.
+   * Since the command-registry split (agent-base plan §3 `commands` row) the
+   * per-command matchers/handlers live VERBATIM in `src/commands.ts` — one
+   * registry consumed by this dispatcher AND Discord slash registration —
+   * with the tier-floor rationale documented there. Each entry's `whatsapp`
+   * handler gets the trimmed text and either declines
+   * (`TEXT_COMMAND_UNMATCHED` → this loop tries the next entry), matches but
+   * falls through (`null` — the ineligible-tier case above), or returns the
+   * reply text. The injected repository reads are threaded through as
+   * same-named deps, so every existing test fake reaches the moved handlers
+   * unchanged.
    */
   private async tryWhatsAppTextCommand(msg: IncomingMessage, role: Tier): Promise<string | null> {
     if (msg.platform !== 'whatsapp') return null;
     const text = msg.text.trim();
-
-    const whoisMatch = /^!whois(?:\s+(.+))?$/i.exec(text);
-    if (whoisMatch) {
-      if (!atLeast(role, 'member')) return null;
-      const query = whoisMatch[1]?.trim();
-      if (query) {
-        const hits = await this.searchMemberInterestsFn(query);
-        return hits.length === 0
-          ? 'No members have published interests matching that yet.'
-          : await formatInterestResults(hits);
-      }
-      // Bare `!whois` (issue #889): mirror who_is_into's/`/whois`'s own
-      // no-argument self-match — the implicit query is the caller's own
-      // already-stored `member_interests` embedding, keyed on
-      // `msg.platform`/`msg.userId` only, never re-embedded and never
-      // sourced from the surrounding message text (SECURITY: #634 AC #4 /
-      // #882's "never inferred from chat content" invariant).
-      const selfMatch = await this.searchMemberInterestsForSelfFn(msg.platform, msg.userId);
-      if (!selfMatch.hasProfile) {
-        // Issue #920: same no-profile browse fallback as who_is_into's chat
-        // path and /whois — a separate call site, wired independently via
-        // the injected listRecentInterestsFn.
-        const hint =
-          "You haven't published interests yet — call set_my_interests first, then who_is_into with no " +
-          'topic will search using your own published interests.';
-        const recent = await this.listRecentInterestsFn();
-        return recent.length === 0 ? hint : `${await formatInterestResults(recent)}\n\n${hint}`;
-      }
-      return selfMatch.hits.length === 0
-        ? 'No members have published interests matching that yet.'
-        : await formatInterestResults(selfMatch.hits);
+    const deps: WhatsAppTextCommandDeps = {
+      searchMemberInterestsFn: this.searchMemberInterestsFn,
+      searchMemberInterestsForSelfFn: this.searchMemberInterestsForSelfFn,
+      listRecentInterestsFn: this.listRecentInterestsFn,
+      listOwnProjectsFn: this.listOwnProjectsFn,
+      searchProjectsFn: this.searchProjectsFn,
+      listRecentProjectsFn: this.listRecentProjectsFn,
+      getLangPref: this.getLangPref,
+      getCommunityGuidelinesFn: this.getCommunityGuidelinesFn,
+      getCommunityGuidelinesMiFn: this.getCommunityGuidelinesMiFn,
+      buildMemberDigestContentFn: this.buildMemberDigestContentFn,
+    };
+    for (const command of COMMUNITY_COMMANDS) {
+      if (!command.whatsapp) continue;
+      const result = await command.whatsapp(text, msg, role, deps);
+      if (result !== TEXT_COMMAND_UNMATCHED) return result;
     }
-
-    // Checked BEFORE the general `!projects [query]` branch below so the
-    // literal word "mine" is never swallowed as a `searchProjectsFn` query
-    // (issue #916) — mirrors `list_projects({ mine: true })`'s own ignore-
-    // query-when-mine behaviour rather than blending the two.
-    if (/^!projects\s+mine$/i.test(text)) {
-      if (!atLeast(role, 'member')) return null;
-      const projects = await this.listOwnProjectsFn(msg.platform, msg.userId);
-      return projects.length === 0
-        ? "You haven't shared any projects yet."
-        : await formatProjectResults(projects);
-    }
-
-    const projectsMatch = /^!projects(?:\s+(.+))?$/i.exec(text);
-    if (projectsMatch) {
-      if (!atLeast(role, 'member')) return null;
-      const query = projectsMatch[1]?.trim();
-      const projects = query
-        ? await this.searchProjectsFn(query, LIST_PROJECTS_DEFAULT_LIMIT)
-        : await this.listRecentProjectsFn(LIST_PROJECTS_DEFAULT_LIMIT);
-      return projects.length === 0
-        ? query
-          ? 'No shared projects match that.'
-          : 'No projects have been shared yet.'
-        : await formatProjectResults(projects);
-    }
-
-    if (/^!guidelines$/i.test(text)) {
-      const languagePreference = await this.getLangPref(msg.platform, msg.userId);
-      const guidelines =
-        languagePreference === 'mi'
-          ? ((await this.getCommunityGuidelinesMiFn()) ?? (await this.getCommunityGuidelinesFn()))
-          : await this.getCommunityGuidelinesFn();
-      return guidelines ?? 'No community guidelines have been set yet — ask an admin.';
-    }
-
-    if (/^!digest$/i.test(text)) {
-      if (!atLeast(role, 'member')) return null;
-      const message = await this.buildMemberDigestContentFn();
-      return message ?? 'Nothing to report right now.';
-    }
-
     return null;
   }
 
@@ -2260,6 +2207,135 @@ export class Router {
     );
   }
 
+  /**
+   * Post-turn handler (registered at module scope below): real-time admin
+   * escalation for a member's own thumbs-down (issue #598) — a direct-fire
+   * sibling of the max-turns offer in `respond()`, not a speculative offer:
+   * `rate_answer(helpful: false)` IS the explicit action already taken, so
+   * there is nothing to confirm and no `pendingEscalations` entry is
+   * registered. Never touches `outboundText`/`reply.text` — the member still
+   * just sees "Thanks for the feedback, noted." Shares (never adds to) the
+   * same guild-wide `ESCALATION_RATE_LIMIT_PER_HOUR` cap as the max-turns
+   * producer; when the cap is exhausted this is silently suppressed, not
+   * queued or retried.
+   */
+  async unhelpfulAnswerEscalationHandler(ctx: PostTurnContext): Promise<void> {
+    const { msg, reply } = ctx;
+    if (config.behaviour.escalationToAdminEnabled && reply.turnState?.unhelpfulAnswerRated === true) {
+      if (this.reserveEscalationSlot(ESCALATION_RATE_LIMIT_PER_HOUR)) {
+        await this.notifyAdminsFn(
+          (platform) => this.adapters.get(platform),
+          `${msg.userName} rated my last answer unhelpful on ${msg.platform} ` +
+            `(conversation ${msg.conversationId}): "${truncateForEcho(msg.text)}"`,
+          msg.userId,
+        ).catch((err) => logger.warn({ err }, 'Unhelpful-answer admin notification failed'));
+      }
+    }
+  }
+
+  /**
+   * Post-turn handler (registered at module scope below): real-time admin
+   * escalation for a member's own explicit ask (issue #808) — a third
+   * direct-fire sibling: the member's own words ARE the explicit action,
+   * mirroring #598's reasoning exactly ("the rating itself is the explicit
+   * action, so there's nothing to confirm"), so no `pendingEscalations`
+   * entry is registered. Never touches `outboundText`/`reply.text` — the
+   * member still just sees the model's own reply, informed only by the
+   * tool's fixed neutral acknowledgement text. Shares (never adds to) the
+   * same guild-wide `ESCALATION_RATE_LIMIT_PER_HOUR` cap as both producers
+   * above — the per-caller daily cap that bounds a single member's own
+   * worst-case share of that budget is enforced inside the
+   * `request_human_help` tool handler itself (`tools.ts`), before
+   * `turnState.humanHelpRequested` is ever set.
+   */
+  async humanHelpEscalationHandler(ctx: PostTurnContext): Promise<void> {
+    const { msg, reply } = ctx;
+    if (config.behaviour.escalationToAdminEnabled && reply.turnState?.humanHelpRequested === true) {
+      if (this.reserveEscalationSlot(ESCALATION_RATE_LIMIT_PER_HOUR)) {
+        await this.notifyAdminsFn(
+          (platform) => this.adapters.get(platform),
+          `${msg.userName} asked to talk to a human on ${msg.platform} ` +
+            `(conversation ${msg.conversationId}): "${truncateForEcho(msg.text)}"`,
+          msg.userId,
+        ).catch((err) => logger.warn({ err }, 'Human-help-request admin notification failed'));
+      }
+    }
+  }
+
+  /**
+   * Post-turn handler (registered at module scope below): real-time admin
+   * nudge when a knowledge-gap cluster crosses KNOWLEDGE_GAP_ALERT_THRESHOLD
+   * (issue #650) — the "asked N times, never confidently answered" signal
+   * promoted from the weekly digest's bare count to an instant DM.
+   * `turnState.knowledgeGapCluster` is only ever set (by the
+   * knowledge_search tool handler) when config.knowledgeGapAlert.enabled is
+   * true and the turn ended in genuine success, so no separate flag check is
+   * needed here. The rate slot is reserved BEFORE marking the cluster
+   * alerted: on a miss, the cluster's rows are deliberately left unalerted
+   * (not marked) so a later gap in the same cluster can retry once the
+   * trailing hour frees up — the underlying gap is still recorded and still
+   * counted by the weekly digest either way (acceptance criterion 6).
+   * SECURITY: unlike the escalation/unhelpful-answer alerts above, the
+   * message deliberately omits `msg.platform`/`msg.conversationId` —
+   * acceptance criterion 5 requires the DM body to be a strict subset of
+   * what `list_knowledge_gaps` already returns for the same scope (query
+   * text + count only, no new field), and that tool's own output never
+   * includes a conversation id.
+   */
+  async knowledgeGapAlertHandler(ctx: PostTurnContext): Promise<void> {
+    const { msg, reply } = ctx;
+    if (reply.turnState?.knowledgeGapCluster) {
+      const cluster = reply.turnState.knowledgeGapCluster;
+      if (this.reserveKnowledgeGapAlertSlot(config.knowledgeGapAlert.rateLimitPerHour)) {
+        await this.markKnowledgeGapsAlertedFn(cluster.rowIds).catch((err) =>
+          logger.warn({ err }, 'Failed to mark knowledge gap cluster alerted'),
+        );
+        await this.notifyAdminsFn(
+          (platform) => this.adapters.get(platform),
+          `A knowledge gap has come up ${cluster.count} times recently and might be worth turning ` +
+            `into a FAQ: "${truncateForEcho(cluster.representative)}"`,
+          msg.userId,
+        ).catch((err) => logger.warn({ err }, 'Knowledge gap cluster admin notification failed'));
+      }
+    }
+  }
+
+  /**
+   * Post-turn handler (registered at module scope below): real-time admin
+   * nudge for a served, stale knowledge entry (issue #701) — the
+   * `knowledge_search` call site's half of the mechanism; the two shortcut
+   * call sites (`sendKnowledgeShortcut`/`sendGuestKnowledgeShortcut`) call
+   * the identical `maybeAlertStaleKnowledge` directly, since they never go
+   * through the model/turn-state plumbing `knowledge_search` does.
+   * `turnState.staleKnowledgeAlertIds` is only ever set (by the
+   * `knowledge_search` tool handler) when `config.knowledgeStaleAlert.enabled`
+   * is true and the turn ended in genuine success, so no separate flag check
+   * is needed here.
+   */
+  async staleKnowledgeAlertHandler(ctx: PostTurnContext): Promise<void> {
+    const { msg, reply } = ctx;
+    if (reply.turnState?.staleKnowledgeAlertIds) {
+      for (const id of reply.turnState.staleKnowledgeAlertIds) {
+        await this.maybeAlertStaleKnowledge(id, msg.userId);
+      }
+    }
+  }
+
+  /**
+   * Post-turn handler (registered at module scope below): best-effort
+   * knowledge_search-hit correlation on the normal (non-shortcut) outbound
+   * path (issue #411) — contributes the same scalar `knowledgeEntryId` meta
+   * key `sendKnowledgeShortcut` already writes, so both paths feed
+   * `listKnowledgeFeedbackSummary`/`listAnswerFeedback` with no query/schema
+   * change. Absent whenever no `knowledge_search` call in the turn had a hit
+   * clear the relevance floor.
+   */
+  async knowledgeEntryMetaHandler(ctx: PostTurnContext): Promise<void> {
+    if (ctx.reply.turnState?.knowledgeEntryId != null) {
+      ctx.outboundMeta.knowledgeEntryId = ctx.reply.turnState.knowledgeEntryId;
+    }
+  }
+
   private async respond(
     msg: IncomingMessage,
     role: Tier,
@@ -2335,98 +2411,16 @@ export class Router {
           ? this.offerEscalation(msg, reply.text, reply.languagePreference === 'mi')
           : reply.text;
 
-      // Real-time admin escalation for a member's own thumbs-down (issue
-      // #598) — a direct-fire sibling of the max-turns offer above, not a
-      // speculative offer: `rate_answer(helpful: false)` IS the explicit
-      // action already taken, so there is nothing to confirm and no
-      // `pendingEscalations` entry is registered. Never touches
-      // `outboundText`/`reply.text` — the member still just sees "Thanks for
-      // the feedback, noted." Shares (never adds to) the same guild-wide
-      // `ESCALATION_RATE_LIMIT_PER_HOUR` cap as the max-turns producer; when
-      // the cap is exhausted this is silently suppressed, not queued or
-      // retried.
-      if (config.behaviour.escalationToAdminEnabled && reply.unhelpfulAnswerRated === true) {
-        if (this.reserveEscalationSlot(ESCALATION_RATE_LIMIT_PER_HOUR)) {
-          await this.notifyAdminsFn(
-            (platform) => this.adapters.get(platform),
-            `${msg.userName} rated my last answer unhelpful on ${msg.platform} ` +
-              `(conversation ${msg.conversationId}): "${truncateForEcho(msg.text)}"`,
-            msg.userId,
-          ).catch((err) => logger.warn({ err }, 'Unhelpful-answer admin notification failed'));
-        }
-      }
-
-      // Real-time admin escalation for a member's own explicit ask (issue
-      // #808) — a third direct-fire sibling of the two above: the member's
-      // own words ARE the explicit action, mirroring #598's reasoning
-      // exactly ("the rating itself is the explicit action, so there's
-      // nothing to confirm"), so no `pendingEscalations` entry is
-      // registered. Never touches `outboundText`/`reply.text` — the member
-      // still just sees the model's own reply, informed only by the tool's
-      // fixed neutral acknowledgement text. Shares (never adds to) the same
-      // guild-wide `ESCALATION_RATE_LIMIT_PER_HOUR` cap as both producers
-      // above — the per-caller daily cap that bounds a single member's own
-      // worst-case share of that budget is enforced inside the
-      // `request_human_help` tool handler itself (`tools.ts`), before
-      // `reply.humanHelpRequested` is ever set.
-      if (config.behaviour.escalationToAdminEnabled && reply.humanHelpRequested === true) {
-        if (this.reserveEscalationSlot(ESCALATION_RATE_LIMIT_PER_HOUR)) {
-          await this.notifyAdminsFn(
-            (platform) => this.adapters.get(platform),
-            `${msg.userName} asked to talk to a human on ${msg.platform} ` +
-              `(conversation ${msg.conversationId}): "${truncateForEcho(msg.text)}"`,
-            msg.userId,
-          ).catch((err) => logger.warn({ err }, 'Human-help-request admin notification failed'));
-        }
-      }
-
-      // Real-time admin nudge when a knowledge-gap cluster crosses
-      // KNOWLEDGE_GAP_ALERT_THRESHOLD (issue #650) — the "asked N times,
-      // never confidently answered" signal promoted from the weekly digest's
-      // bare count to an instant DM, same promote-to-instant-DM shape as the
-      // escalation branch above. `reply.knowledgeGapCluster` is only ever set
-      // (by the knowledge_search tool handler) when
-      // config.knowledgeGapAlert.enabled is true and the turn ended in
-      // genuine success, so no separate flag check is needed here. The rate
-      // slot is reserved BEFORE marking the cluster alerted: on a miss, the
-      // cluster's rows are deliberately left unalerted (not marked) so a
-      // later gap in the same cluster can retry once the trailing hour frees
-      // up — the underlying gap is still recorded and still counted by the
-      // weekly digest either way (acceptance criterion 6). SECURITY: unlike
-      // the escalation/unhelpful-answer alerts above, the message deliberately
-      // omits `msg.platform`/`msg.conversationId` — acceptance criterion 5
-      // requires the DM body to be a strict subset of what `list_knowledge_gaps`
-      // already returns for the same scope (query text + count only, no new
-      // field), and that tool's own output never includes a conversation id.
-      if (reply.knowledgeGapCluster) {
-        const cluster = reply.knowledgeGapCluster;
-        if (this.reserveKnowledgeGapAlertSlot(config.knowledgeGapAlert.rateLimitPerHour)) {
-          await this.markKnowledgeGapsAlertedFn(cluster.rowIds).catch((err) =>
-            logger.warn({ err }, 'Failed to mark knowledge gap cluster alerted'),
-          );
-          await this.notifyAdminsFn(
-            (platform) => this.adapters.get(platform),
-            `A knowledge gap has come up ${cluster.count} times recently and might be worth turning ` +
-              `into a FAQ: "${truncateForEcho(cluster.representative)}"`,
-            msg.userId,
-          ).catch((err) => logger.warn({ err }, 'Knowledge gap cluster admin notification failed'));
-        }
-      }
-
-      // Real-time admin nudge for a served, stale knowledge entry (issue
-      // #701) — the `knowledge_search` call site's half of the mechanism;
-      // the two shortcut call sites (`sendKnowledgeShortcut`/
-      // `sendGuestKnowledgeShortcut`) call the identical
-      // `maybeAlertStaleKnowledge` directly, since they never go through the
-      // model/turn-state plumbing `knowledge_search` does.
-      // `reply.staleKnowledgeAlertIds` is only ever set (by the
-      // `knowledge_search` tool handler) when
-      // `config.knowledgeStaleAlert.enabled` is true and the turn ended in
-      // genuine success, so no separate flag check is needed here.
-      if (reply.staleKnowledgeAlertIds) {
-        for (const id of reply.staleKnowledgeAlertIds) {
-          await this.maybeAlertStaleKnowledge(id, msg.userId);
-        }
+      // Post-turn handler chain (routerIntercepts.ts): the module-registered
+      // handlers — today the four community alert readers plus the
+      // knowledge-entry meta stamp, each moved verbatim into a named handler
+      // below — run in registration order at exactly the point their inline
+      // blocks sat. Handlers read module signals off `reply.turnState` and
+      // may contribute outbound-meta entries; they never touch
+      // `outboundText`, the caches, or anything the pre-turn spine decided.
+      const postCtx: PostTurnContext = { msg, adapter, reply, router: this, outboundMeta: {} };
+      for (const handler of registeredPostTurnHandlers()) {
+        await handler.run(postCtx);
       }
 
       // Real-time admin nudge for a generic repeat-question cluster (issue
@@ -2569,14 +2563,11 @@ export class Router {
         meta: {
           replyToUserId: msg.userId,
           ...(reply.maxTurnsExceeded === true ? { maxTurnsExceeded: true } : {}),
-          // Best-effort knowledge_search-hit correlation on the normal
-          // (non-shortcut) outbound path (issue #411) — the same scalar
-          // `knowledgeEntryId` meta key `sendKnowledgeShortcut` already
-          // writes, so both paths feed `listKnowledgeFeedbackSummary` /
-          // `listAnswerFeedback` with no query/schema change. Absent
-          // whenever no `knowledge_search` call in the turn had a hit clear
-          // the relevance floor.
-          ...(reply.knowledgeEntryId != null ? { knowledgeEntryId: reply.knowledgeEntryId } : {}),
+          // Handler-contributed meta (the former inline `knowledgeEntryId`
+          // spread, issue #411 — see `knowledgeEntryMetaHandler` below):
+          // spread at the exact position the scalar key previously held, so
+          // the recorded meta shape is unchanged.
+          ...postCtx.outboundMeta,
           // Cache-usage telemetry (issue #522): mirrors the conditional-spread
           // pattern above, but gated on `> 0` rather than `!= null` — a turn
           // whose SDK result carried no `usage` at all (undefined) AND a turn
@@ -2637,4 +2628,31 @@ registerPreTurnIntercept({
 registerPreTurnIntercept({
   name: 'repeat-max-turns-shortcut',
   run: (ctx) => ctx.router.repeatMaxTurnsShortcutIntercept(ctx),
+});
+
+// The five community post-turn handlers (agent-base plan §3
+// `postTurnHandlers` row), registered in the exact order their inline blocks
+// ran in `respond()`: the four alert readers of the (former) AgentReply
+// community fields — now `reply.turnState` keys — then the outbound-meta
+// knowledge-entry stamp. Handlers observe the finished turn and fire
+// deterministic side effects only; they never rewrite the reply.
+registerPostTurnHandler({
+  name: 'unhelpful-answer-escalation',
+  run: (ctx) => ctx.router.unhelpfulAnswerEscalationHandler(ctx),
+});
+registerPostTurnHandler({
+  name: 'human-help-escalation',
+  run: (ctx) => ctx.router.humanHelpEscalationHandler(ctx),
+});
+registerPostTurnHandler({
+  name: 'knowledge-gap-alert',
+  run: (ctx) => ctx.router.knowledgeGapAlertHandler(ctx),
+});
+registerPostTurnHandler({
+  name: 'stale-knowledge-alert',
+  run: (ctx) => ctx.router.staleKnowledgeAlertHandler(ctx),
+});
+registerPostTurnHandler({
+  name: 'knowledge-entry-meta',
+  run: (ctx) => ctx.router.knowledgeEntryMetaHandler(ctx),
 });

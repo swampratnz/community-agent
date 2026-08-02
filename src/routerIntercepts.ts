@@ -1,5 +1,6 @@
 import type { IncomingMessage, PlatformAdapter } from './platforms/types.js';
 import type { Tier } from './auth/rbac.js';
+import type { AgentReply } from './agent/core.js';
 import type { Router } from './router.js';
 
 /**
@@ -120,4 +121,52 @@ export function registerPreTurnIntercept(intercept: PreTurnIntercept): void {
 /** The post-spine intercepts in registration order — consumed by `Router.preTurnChain()`. */
 export function registeredPreTurnIntercepts(): readonly PreTurnIntercept[] {
   return postSpineIntercepts;
+}
+
+/**
+ * The post-turn handler registry — the mirror-image extension point for the
+ * sequence `respond()` runs AFTER an agent turn, replacing the five inline
+ * community readers of `AgentReply`'s (former) hardcoded fields. Handlers
+ * run in registration order at exactly the point the old inline blocks sat:
+ * after the max-turns escalation offer, before the budget warning and the
+ * reply send. Unlike the pre-turn chain there is no outcome value — a
+ * handler observes the finished reply (its module keys live on
+ * `reply.turnState`) and fires deterministic side effects (admin alerts,
+ * outbound-meta stamps); it can never rewrite the reply text, the caches, or
+ * anything the security spine already decided.
+ */
+export interface PostTurnContext {
+  msg: IncomingMessage;
+  adapter: PlatformAdapter;
+  /** The finished turn — module signals ride on `reply.turnState` (agent/communityTurnState.ts). */
+  reply: AgentReply;
+  /** The owning Router — handlers call back into its (public) alert helpers. */
+  router: Router;
+  /**
+   * Extra `meta` entries the outbound `recordInteraction` call spreads in at
+   * the (former) `knowledgeEntryId` position — how a handler stamps
+   * correlation keys onto the outbound record without owning the record
+   * call.
+   */
+  outboundMeta: Record<string, unknown>;
+}
+
+export interface PostTurnHandler {
+  name: string;
+  run(ctx: PostTurnContext): Promise<void>;
+}
+
+const postTurnHandlers: PostTurnHandler[] = [];
+
+/** Register a post-turn handler (append-only, duplicate names rejected). */
+export function registerPostTurnHandler(handler: PostTurnHandler): void {
+  if (postTurnHandlers.some((existing) => existing.name === handler.name)) {
+    throw new Error(`Post-turn handler already registered: ${handler.name}`);
+  }
+  postTurnHandlers.push(handler);
+}
+
+/** The post-turn handlers in registration order — consumed by `Router.respond()`. */
+export function registeredPostTurnHandlers(): readonly PostTurnHandler[] {
+  return postTurnHandlers;
 }

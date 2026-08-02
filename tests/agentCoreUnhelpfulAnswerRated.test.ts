@@ -134,7 +134,7 @@ test('runAgentTurn: AgentReply.unhelpfulAnswerRated is true after a genuine rate
   const reply = await runAgentTurn(makeCaller(), 'that was wrong', makeAdapter().adapter);
 
   assert.equal(reply.ok, true);
-  assert.equal(reply.unhelpfulAnswerRated, true);
+  assert.equal(reply.turnState?.unhelpfulAnswerRated, true);
 });
 
 test('runAgentTurn: AgentReply.unhelpfulAnswerRated is absent after rate_answer(helpful: true) (issue #598, acceptance criterion 3)', async (t) => {
@@ -144,7 +144,7 @@ test('runAgentTurn: AgentReply.unhelpfulAnswerRated is absent after rate_answer(
   const reply = await runAgentTurn(makeCaller(), 'that helped', makeAdapter().adapter);
 
   assert.equal(reply.ok, true);
-  assert.equal(reply.unhelpfulAnswerRated, undefined);
+  assert.equal(reply.turnState?.unhelpfulAnswerRated, undefined);
 });
 
 test("runAgentTurn: AgentReply.unhelpfulAnswerRated is absent when createAnswerFeedback returns 'no_recent_answer' (issue #598, acceptance criterion 4)", async (t) => {
@@ -153,7 +153,7 @@ test("runAgentTurn: AgentReply.unhelpfulAnswerRated is absent when createAnswerF
 
   const reply = await runAgentTurn(makeCaller(), 'that was wrong', makeAdapter().adapter);
 
-  assert.equal(reply.unhelpfulAnswerRated, undefined);
+  assert.equal(reply.turnState?.unhelpfulAnswerRated, undefined);
 });
 
 test("runAgentTurn: AgentReply.unhelpfulAnswerRated is absent when createAnswerFeedback returns 'rate_limited' (issue #598, acceptance criterion 4)", async (t) => {
@@ -162,7 +162,7 @@ test("runAgentTurn: AgentReply.unhelpfulAnswerRated is absent when createAnswerF
 
   const reply = await runAgentTurn(makeCaller(), 'that was wrong', makeAdapter().adapter);
 
-  assert.equal(reply.unhelpfulAnswerRated, undefined);
+  assert.equal(reply.turnState?.unhelpfulAnswerRated, undefined);
 });
 
 test('runAgentTurn: AgentReply.unhelpfulAnswerRated is absent when the turn makes no rate_answer call (issue #598)', async (t) => {
@@ -171,7 +171,7 @@ test('runAgentTurn: AgentReply.unhelpfulAnswerRated is absent when the turn make
 
   const reply = await runAgentTurn(makeCaller(), 'hello', makeAdapter().adapter);
 
-  assert.equal(reply.unhelpfulAnswerRated, undefined);
+  assert.equal(reply.turnState?.unhelpfulAnswerRated, undefined);
 });
 
 test('SECURITY: runAgentTurn: AgentReply.unhelpfulAnswerRated is absent when the turn ends in a thrown failure, even though a genuine thumbs-down was recorded first — never a stale flag on a failed turn (issue #598, mirrors #411 acceptance criterion 5)', async (t) => {
@@ -182,7 +182,7 @@ test('SECURITY: runAgentTurn: AgentReply.unhelpfulAnswerRated is absent when the
 
   assert.equal(reply.ok, false, 'the simulated thrown failure must surface as a failed turn');
   assert.equal(
-    reply.unhelpfulAnswerRated,
+    reply.turnState?.unhelpfulAnswerRated,
     undefined,
     'a failed turn must never carry unhelpfulAnswerRated, even if a genuine thumbs-down was recorded before the failure',
   );
@@ -197,7 +197,7 @@ test('SECURITY: runAgentTurn: AgentReply.unhelpfulAnswerRated is absent on an er
   assert.equal(reply.ok, false);
   assert.equal(reply.maxTurnsExceeded, true);
   assert.equal(
-    reply.unhelpfulAnswerRated,
+    reply.turnState?.unhelpfulAnswerRated,
     undefined,
     'a max-turns failure must never carry unhelpfulAnswerRated, even if a genuine thumbs-down was recorded before it',
   );

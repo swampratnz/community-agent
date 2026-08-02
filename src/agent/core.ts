@@ -21,10 +21,10 @@ import {
   searchMemory,
   setClaudeSessionId,
   type ConversationTailRow,
-  type CrossedKnowledgeGapCluster,
   type LanguagePreference,
   type ResponseStyle,
 } from '../storage/repository.js';
+import { finalizeTurnState, type TurnStateBag } from './turnState.js';
 import { getCodeAnswersPolicy } from '../storage/policies.js';
 import { queuePendingAlert } from '../pendingAlertQueue.js';
 import {
@@ -123,65 +123,20 @@ export interface AgentReply {
    */
   responseStyle?: ResponseStyle;
   /**
-   * Best-effort correlation with the most recent `knowledge_search` call in
-   * this turn that had a hit clear `KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD`
-   * (issue #411) — the id of that call's top-scoring hit, threaded from
-   * `TurnOutcome.knowledgeEntryId` via the same turn-scoped-ref pattern
-   * `buildToolServer` already uses. This is a correlation, not a guarantee:
-   * it names the last qualifying `knowledge_search` call in the turn, not
-   * necessarily the entry the model's final reply actually drew from.
-   * `undefined` whenever no call in the turn had a qualifying hit, or the
-   * turn didn't end in a genuine success (`TurnOutcome.ok === true`) — never
-   * a stale id left over from an earlier failed attempt. The router's normal
-   * outbound-recording path (router.ts) writes this into the same
-   * `meta.knowledgeEntryId` key the deterministic knowledge-shortcut path
-   * already stamps, so both paths feed the same admin aggregation
-   * (`list_low_rated_knowledge` / `list_answer_feedback`).
+   * Module signals surfaced by this turn's tools — the generic turn-state
+   * bag (agent-base plan §3) that replaced the five hardcoded community
+   * fields (`knowledgeEntryId`, `unhelpfulAnswerRated`, `humanHelpRequested`,
+   * `knowledgeGapCluster`, `staleKnowledgeAlertIds`). Threaded from
+   * `TurnOutcome.turnState`; set ONLY when the turn ended in genuine success
+   * (`TurnOutcome.ok === true`) AND a registered finalizer produced at least
+   * one key — never a stale value from an earlier failed attempt, exactly
+   * the contract every replaced field had. The KEYS are typed (and their
+   * per-key contracts documented) by module augmentation in ONE
+   * community-owned file, `agent/communityTurnState.ts`; consumed by the
+   * router's registered post-turn handlers, never read by (or acted on
+   * inside) any model-callable tool.
    */
-  knowledgeEntryId?: number;
-  /**
-   * `true` only when this turn's `rate_answer` call recorded a genuine
-   * `helpful: false` rating (issue #598), threaded from
-   * `TurnOutcome.unhelpfulAnswerRated` via the same turn-scoped-ref pattern
-   * as `knowledgeEntryId` above. `undefined` on a positive rating, an
-   * unrecorded call (`'no_recent_answer'`/`'rate_limited'`), no `rate_answer`
-   * call at all, or a turn that didn't end in genuine success (`ok !==
-   * true`). Consumed by the router's post-turn deterministic escalation
-   * branch — never read by, or acted on inside, any model-callable tool.
-   */
-  unhelpfulAnswerRated?: boolean;
-  /**
-   * `true` only when this turn's `request_human_help` call recorded a
-   * genuine ask (issue #808), threaded from `TurnOutcome.humanHelpRequested`
-   * via the same turn-scoped-ref pattern as `unhelpfulAnswerRated` above.
-   * `undefined` on a declined-by-cap call, no `request_human_help` call at
-   * all, or a turn that didn't end in genuine success (`ok !== true`).
-   * Consumed by the router's post-turn deterministic escalation branch —
-   * never read by, or acted on inside, any model-callable tool.
-   */
-  humanHelpRequested?: boolean;
-  /**
-   * Set only when this turn's `knowledge_search` below-floor-miss crossed
-   * `KNOWLEDGE_GAP_ALERT_THRESHOLD` for the first time (issue #650),
-   * threaded from `TurnOutcome.knowledgeGapCluster` via the same
-   * turn-scoped-ref pattern as `unhelpfulAnswerRated` above. `undefined`
-   * whenever the flag is off, no crossing occurred this turn, or the turn
-   * didn't end in genuine success (`ok !== true`). Consumed by the router's
-   * post-turn deterministic alert branch — never read by, or acted on
-   * inside, any model-callable tool.
-   */
-  knowledgeGapCluster?: CrossedKnowledgeGapCluster;
-  /**
-   * Ids of `knowledge_search` hits served this turn that were newly stale and
-   * unalerted at serve time (issue #701), threaded from
-   * `TurnOutcome.staleKnowledgeAlertIds` via the same turn-scoped-ref pattern
-   * as `knowledgeGapCluster` above. `undefined`/empty whenever the flag is
-   * off, no served hit was stale this turn, or the turn didn't end in genuine
-   * success (`ok !== true`). Consumed by the router's post-turn deterministic
-   * alert branch — never read by, or acted on inside, any model-callable
-   * tool.
-   */
-  staleKnowledgeAlertIds?: number[];
+  turnState?: Partial<TurnStateBag>;
 }
 
 /**
@@ -269,11 +224,7 @@ interface TurnOutcome {
   modelUsage?: Record<string, number>;
   sessionId?: string;
   maxTurnsExceeded?: boolean;
-  knowledgeEntryId?: number;
-  unhelpfulAnswerRated?: boolean;
-  humanHelpRequested?: boolean;
-  knowledgeGapCluster?: CrossedKnowledgeGapCluster;
-  staleKnowledgeAlertIds?: number[];
+  turnState?: Partial<TurnStateBag>;
 }
 
 /**
@@ -759,11 +710,7 @@ export async function runAgentTurn(
     maxTurnsExceeded: outcome.maxTurnsExceeded,
     languagePreference,
     responseStyle,
-    knowledgeEntryId: outcome.knowledgeEntryId,
-    unhelpfulAnswerRated: outcome.unhelpfulAnswerRated,
-    humanHelpRequested: outcome.humanHelpRequested,
-    knowledgeGapCluster: outcome.knowledgeGapCluster,
-    staleKnowledgeAlertIds: outcome.staleKnowledgeAlertIds,
+    turnState: outcome.turnState,
   };
 }
 
@@ -901,17 +848,14 @@ async function execTurn(
   getAdapter?: AdapterLookup,
   image?: IncomingMessage['image'],
 ): Promise<TurnOutcome> {
-  // Turn-scoped ref (issue #411): the knowledge_search handler writes the
-  // top-scoring id of its most recent qualifying hit here; read back below
-  // only on the genuine-success path (never on a thrown-error or non-success
-  // result, so a fallback/error reply can never carry a stale correlation).
-  const turnState: ToolServerTurnState = {
-    lastKnowledgeHitId: null,
-    unhelpfulAnswerRated: false,
-    humanHelpRequested: false,
-    knowledgeGapCluster: null,
-    staleKnowledgeAlertIds: [],
-  };
+  // Turn-scoped ref (issue #411): tool handlers write their module's keys
+  // into this bag during the turn (agent/communityTurnState.ts documents
+  // today's five); finalized back below only on the genuine-success path
+  // (never on a thrown-error or non-success result, so a fallback/error
+  // reply can never carry a stale correlation). Starts EMPTY — every module
+  // key is optional, and the registered finalizer treats absent exactly like
+  // the old false/null/[] initializers.
+  const turnState: ToolServerTurnState = {};
   const toolServer = buildToolServer(caller, adapter, getAdapter, turnState);
 
   // Text of the assistant message currently being streamed. Reset per
@@ -1116,6 +1060,11 @@ async function execTurn(
 
   noteUsageLimitOutcome(false, adapter, caller.conversationId, getAdapter);
   const text = resultText.trim() || lastAssistantText.trim() || "I don't have a response for that.";
+  // Generic replacement for the old five hardcoded conditional spreads: the
+  // registered finalizers (agent/communityTurnState.ts) decide which keys
+  // surface; an empty bag writes no `turnState` key at all, preserving the
+  // absent-not-empty discipline of the fields it replaced.
+  const bag = finalizeTurnState(turnState);
   return {
     ok: true,
     resumeFailed: false,
@@ -1125,12 +1074,6 @@ async function execTurn(
     cacheCreationTokens,
     modelUsage,
     sessionId,
-    ...(turnState.lastKnowledgeHitId != null ? { knowledgeEntryId: turnState.lastKnowledgeHitId } : {}),
-    ...(turnState.unhelpfulAnswerRated ? { unhelpfulAnswerRated: true } : {}),
-    ...(turnState.humanHelpRequested ? { humanHelpRequested: true } : {}),
-    ...(turnState.knowledgeGapCluster ? { knowledgeGapCluster: turnState.knowledgeGapCluster } : {}),
-    ...(turnState.staleKnowledgeAlertIds && turnState.staleKnowledgeAlertIds.length > 0
-      ? { staleKnowledgeAlertIds: turnState.staleKnowledgeAlertIds }
-      : {}),
+    ...(Object.keys(bag).length > 0 ? { turnState: bag } : {}),
   };
 }

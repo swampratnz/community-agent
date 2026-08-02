@@ -2,11 +2,7 @@ import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import type { AdapterLookup, PlatformAdapter } from '../platforms/types.js';
 import type { CallerContext } from '../auth/rbac.js';
 import { makeCalendarDayReserver, makeSlidingWindowReserver } from '../util/rateReservation.js';
-import {
-  KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD,
-  type CrossedKnowledgeGapCluster,
-  getLanguagePreference,
-} from '../storage/repository.js';
+import { KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD, getLanguagePreference } from '../storage/repository.js';
 import { makeToolContext } from './tools/context.js';
 import { TOOL_REGISTRY } from './tools/index.js';
 
@@ -145,59 +141,18 @@ export const reserveVoiceTranscriptionSlot = makeSlidingWindowReserver(60 * 60 *
 
 /**
  * Turn-scoped, mutable correlation state threaded in from `execTurn` (issue
- * #411) — currently the most recent qualifying `knowledge_search` hit and
- * (issue #598) whether `rate_answer` recorded a genuine thumbs-down this
- * turn, mirroring the `languagePreference`/`maxTurnsExceeded` turn-scoped
- * signals already threaded through `TurnOutcome`/`AgentReply`. Optional so
- * every existing `buildToolServer(caller, adapter)` call (this file's own
- * tests, mainly) keeps compiling unchanged; callers that don't care about the
- * correlation simply never read it back.
+ * #411) — now the generic, module-augmentable bag from `agent/turnState.ts`
+ * (agent-base plan §3): base declares it empty, and this module's keys
+ * (`lastKnowledgeHitId`, `unhelpfulAnswerRated`, `knowledgeGapCluster`,
+ * `staleKnowledgeAlertIds`, `humanHelpRequested` — full contracts documented
+ * there) live in `agent/communityTurnState.ts`, imported below for its
+ * side effect so the community finalizer is registered anywhere a tool
+ * server can be built. Still optional on the tool context, so every existing
+ * `buildToolServer(caller, adapter)` call keeps compiling unchanged.
  */
-export interface ToolServerTurnState {
-  lastKnowledgeHitId: number | null;
-  /**
-   * Set `true` only when this turn's `rate_answer` call recorded a genuine
-   * `helpful: false` rating (`createAnswerFeedback` returned `{ id }`, not
-   * `'no_recent_answer'`/`'rate_limited'`) — never on a positive rating or an
-   * unrecorded call. Read back by `execTurn` into `TurnOutcome`/`AgentReply`
-   * so `router.ts` can direct-fire `notifyAdmins` post-turn (issue #598);
-   * `notifyAdmins` itself is never called from this file — see `rate_answer`
-   * below and `notifyAdmins`'s own doc comment.
-   */
-  unhelpfulAnswerRated?: boolean;
-  /**
-   * Set when this turn's `knowledge_search` below-floor-miss `recordKnowledgeGap`
-   * insert crossed `KNOWLEDGE_GAP_ALERT_THRESHOLD` unresolved+unalerted rows
-   * in its conversation-scoped cluster for the first time (issue #650). Read
-   * back by `execTurn` into `TurnOutcome`/`AgentReply` so `router.ts` can
-   * reserve a rate-limit slot and direct-fire `notifyAdmins` post-turn,
-   * mirroring `unhelpfulAnswerRated`'s shape exactly — `notifyAdmins` itself
-   * is never called from this file, see its own doc comment.
-   */
-  knowledgeGapCluster?: CrossedKnowledgeGapCluster | null;
-  /**
-   * Ids of `knowledge_search` hits served this turn that were newly stale
-   * (`isKnowledgeStale` true) at serve time, gated by
-   * `KNOWLEDGE_STALE_ALERT_ENABLED` (issue #701) — read back by `execTurn`
-   * into `TurnOutcome`/`AgentReply` so `router.ts` can atomically gate+stamp
-   * (`markStaleKnowledgeAlerted`) and rate-limit+notify post-turn, mirroring
-   * `knowledgeGapCluster`'s shape. Appended to, never overwritten, so
-   * multiple qualifying `knowledge_search` calls in one turn each get their
-   * own alert. `notifyAdmins` itself is never called from this file — see its
-   * own doc comment.
-   */
-  staleKnowledgeAlertIds?: number[];
-  /**
-   * Set `true` only when this turn's `request_human_help` call recorded a
-   * genuine ask (the caller was under its own `HUMAN_HELP_REQUEST_DAILY_
-   * LIMIT_PER_USER` cap) — never on a declined-by-cap call. Read back by
-   * `execTurn` into `TurnOutcome`/`AgentReply` so `router.ts` can direct-fire
-   * `notifyAdmins` post-turn (issue #808), mirroring `unhelpfulAnswerRated`'s
-   * shape exactly — `notifyAdmins` itself is never called from this file,
-   * see `request_human_help` below and `notifyAdmins`'s own doc comment.
-   */
-  humanHelpRequested?: boolean;
-}
+import './communityTurnState.js';
+import type { ToolServerTurnState } from './turnState.js';
+export type { ToolServerTurnState } from './turnState.js';
 
 /**
  * Build the in-process MCP tool server for one agent turn. The tools close

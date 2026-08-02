@@ -158,7 +158,7 @@ test('router (knowledge_search stale alert): a served-stale id fires exactly one
     updatedAt: new Date(Date.now() - 20 * 86_400_000),
   };
   const { router, notifyCalls, markStaleCalls } = makeRouterWithSpies(
-    async () => ({ text: 'Here is what I found.', ok: true, staleKnowledgeAlertIds: [77] }),
+    async () => ({ text: 'Here is what I found.', ok: true, turnState: { staleKnowledgeAlertIds: [77] } }),
     new Map([[77, [info]]]),
   );
   const { adapter, sent, trigger } = makeAdapter();
@@ -178,7 +178,7 @@ test('router (knowledge_search stale alert): multiple stale ids served in one tu
   const infoA: StaleInfo = { title: 'Entry A', content: 'content a', updatedAt: new Date() };
   const infoB: StaleInfo = { title: 'Entry B', content: 'content b', updatedAt: new Date() };
   const { router, notifyCalls, markStaleCalls } = makeRouterWithSpies(
-    async () => ({ text: 'reply', ok: true, staleKnowledgeAlertIds: [1, 2] }),
+    async () => ({ text: 'reply', ok: true, turnState: { staleKnowledgeAlertIds: [1, 2] } }),
     new Map([
       [1, [infoA]],
       [2, [infoB]],
@@ -211,7 +211,7 @@ test('router (knowledge_search stale alert): no staleKnowledgeAlertIds on the re
 test('router (knowledge_search stale alert): single-shot per episode — a second serve of the same, already-alerted id (markStaleKnowledgeAlertedFn returns null) fires no further notifyAdmins call (issue #701 acceptance criterion 2)', async () => {
   const info: StaleInfo = { title: 'Repeatedly served entry', content: 'content', updatedAt: new Date() };
   const { router, notifyCalls, markStaleCalls } = makeRouterWithSpies(
-    async () => ({ text: 'reply', ok: true, staleKnowledgeAlertIds: [99] }),
+    async () => ({ text: 'reply', ok: true, turnState: { staleKnowledgeAlertIds: [99] } }),
     new Map([[99, [info, null]]]),
   );
   const { adapter, trigger } = makeAdapter();
@@ -228,7 +228,7 @@ test('router (knowledge_search stale alert): re-arm on edit — once markStaleKn
   const infoBeforeEdit: StaleInfo = { title: 'Re-armed entry', content: 'content', updatedAt: new Date() };
   const infoAfterEdit: StaleInfo = { title: 'Re-armed entry', content: 'new content', updatedAt: new Date() };
   const { router, notifyCalls, markStaleCalls } = makeRouterWithSpies(
-    async () => ({ text: 'reply', ok: true, staleKnowledgeAlertIds: [55] }),
+    async () => ({ text: 'reply', ok: true, turnState: { staleKnowledgeAlertIds: [55] } }),
     new Map([[55, [infoBeforeEdit, null, infoAfterEdit]]]),
   );
   const { adapter, trigger } = makeAdapter();
@@ -250,7 +250,7 @@ test('SECURITY: router (stale-knowledge alert): the alert DM body is a strict su
   const longContent = 'x'.repeat(500);
   const info: StaleInfo = { title: null, content: longContent, updatedAt: new Date() };
   const { router, notifyCalls } = makeRouterWithSpies(
-    async () => ({ text: 'reply', ok: true, staleKnowledgeAlertIds: [12] }),
+    async () => ({ text: 'reply', ok: true, turnState: { staleKnowledgeAlertIds: [12] } }),
     new Map([[12, [info]]]),
   );
   const { adapter, trigger } = makeAdapter();
@@ -279,7 +279,7 @@ test('SECURITY: router (stale-knowledge alert): the alert DM body is a strict su
 test('SECURITY: router (stale-knowledge alert): the alert is delivered only via notifyAdminsFn (the listAdmins()-scoped path) — no member-facing sendMessage carries the alert body (issue #701 acceptance criterion 5b)', async () => {
   const info: StaleInfo = { title: 'Admin-only alert content', content: 'content', updatedAt: new Date() };
   const { router, notifyCalls } = makeRouterWithSpies(
-    async () => ({ text: 'member reply text', ok: true, staleKnowledgeAlertIds: [21] }),
+    async () => ({ text: 'member reply text', ok: true, turnState: { staleKnowledgeAlertIds: [21] } }),
     new Map([[21, [info]]]),
   );
   const { adapter, sent, trigger } = makeAdapter();
@@ -311,7 +311,7 @@ test('SECURITY: router (stale-knowledge alert): once KNOWLEDGE_STALE_ALERT_RATE_
     async (_caller, prompt: string) => ({
       text: 'reply',
       ok: true,
-      staleKnowledgeAlertIds: [Number(prompt.replace(/\D/g, ''))],
+      turnState: { staleKnowledgeAlertIds: [Number(prompt.replace(/\D/g, ''))] },
     }),
     responses,
   );

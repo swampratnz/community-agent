@@ -116,7 +116,7 @@ test('router (unhelpful-answer escalation, flag off): a genuine thumbs-down repl
     const { router, notifyCalls } = makeRouterWithNotifySpy(async () => ({
       text: 'Thanks for the feedback, noted.',
       ok: true,
-      unhelpfulAnswerRated: true,
+      turnState: { unhelpfulAnswerRated: true },
     }));
     const { adapter, sent, trigger } = makeAdapter();
     router.register(adapter);
@@ -135,7 +135,7 @@ test('router (unhelpful-answer escalation, flag on): a genuine thumbs-down reply
   const { router, notifyCalls } = makeRouterWithNotifySpy(async () => ({
     text: 'Thanks for the feedback, noted.',
     ok: true,
-    unhelpfulAnswerRated: true,
+    turnState: { unhelpfulAnswerRated: true },
   }));
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -188,7 +188,7 @@ test('SECURITY: router (unhelpful-answer escalation): the producer shares — ne
     // recognisable conversation-scoped prompt; every earlier trigger in this
     // test is the max-turns producer's own failing ask.
     if (prompt === `${RUN} over-cap thumbs-down`) {
-      return { text: 'Thanks for the feedback, noted.', ok: true, unhelpfulAnswerRated: true };
+      return { text: 'Thanks for the feedback, noted.', ok: true, turnState: { unhelpfulAnswerRated: true } };
     }
     return {
       text: 'Sorry — that took more steps than I allow per message.',

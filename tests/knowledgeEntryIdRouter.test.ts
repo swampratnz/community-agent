@@ -109,7 +109,7 @@ test(
         runTurn: async () => ({
           text: 'the answer, from knowledge_search',
           ok: true,
-          knowledgeEntryId: 4242,
+          turnState: { knowledgeEntryId: 4242 },
         }),
         typingRefireMs: 20,
       }),
