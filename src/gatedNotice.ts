@@ -1,4 +1,4 @@
-import { sanitizeName } from './agent/systemPrompt.js';
+import { sanitizeName } from './util/sanitizeName.js';
 import { logger } from './logger.js';
 import type { Platform } from './platforms/types.js';
 import { listAdminDisplayNames as listAdminDisplayNamesReal } from './storage/repository.js';

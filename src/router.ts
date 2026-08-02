@@ -5,7 +5,7 @@ import { atLeast, type CallerContext, type Tier } from './auth/rbac.js';
 import { resolveRole, superAdminIds } from './auth/roles.js';
 import type { IncomingMessage, Platform, PlatformAdapter } from './platforms/types.js';
 import { WindowClosedError } from './platforms/types.js';
-import { sanitizeName } from './agent/systemPrompt.js';
+import { sanitizeName } from './util/sanitizeName.js';
 import {
   INTERNAL_ERROR_REPLY,
   MAX_TURNS_REPLY,
