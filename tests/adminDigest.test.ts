@@ -6231,7 +6231,7 @@ test(
     ]);
     // (d) a row whose interaction_id is NULL (as if the rated reply had
     // since been purged via forget_me/purge_user_data, which sets
-    // interaction_id to NULL on delete per schema.sql) — excluded, since
+    // interaction_id to NULL on delete per schema/25-answer-feedback.sql) — excluded, since
     // there's no interaction left to classify as grounded/ungrounded.
     const purgedUserId = `${RUN}-generalunhelpful-purged`;
     users.push(purgedUserId);
@@ -6355,7 +6355,7 @@ test(
     ]);
     // (f) a row whose interaction_id is NULL (as if the rated reply had since
     // been purged via forget_me/purge_user_data, which sets interaction_id to
-    // NULL on delete per schema.sql) — excluded, there's no interaction left
+    // NULL on delete per schema/25-answer-feedback.sql) — excluded, there's no interaction left
     // to join.
     const purgedUserId = `${RUN}-overallrate-purged`;
     users.push(purgedUserId);

@@ -1,20 +1,19 @@
-import { readFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootConfig } from '../config/boot.js';
 import { logger } from '../logger.js';
 import { closeDb, pool } from './db.js';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
+import { loadSchemaSql } from './schema/manifest.js';
 
 /**
- * Apply schema.sql. Idempotent — every statement uses IF NOT EXISTS.
- * The embedding dimension is injected from config so the vector columns
- * always match the configured model.
+ * Apply the schema (src/storage/schema/ fragments, concatenated in manifest
+ * order). Idempotent — every statement uses IF NOT EXISTS. The embedding
+ * dimension is injected from config so the vector columns always match the
+ * configured model. Still ONE pool.query: the single multi-statement query is
+ * what rolls the whole migration back on any failure.
  */
 export async function migrate(): Promise<void> {
-  const schemaPath = join(__dirname, 'schema.sql');
-  const raw = await readFile(schemaPath, 'utf8');
+  const raw = await loadSchemaSql();
   const sql = raw.replaceAll(':EMBEDDING_DIM', String(bootConfig.db.embeddingDim));
 
   logger.info({ embeddingDim: bootConfig.db.embeddingDim }, 'Applying database schema');

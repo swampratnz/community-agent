@@ -1,5 +1,6 @@
 // ---------------------------------------------------------------------------
-// WhatsApp LID -> phone number mapping (see schema.sql, docs/SECURITY.md §6b).
+// WhatsApp LID -> phone number mapping (see src/storage/schema/70-whatsapp.sql,
+// docs/SECURITY.md §6b).
 //
 // WhatsApp hands out two identifiers for one person: an E.164 phone number and
 // a LID (`<digits>@lid`, a privacy id). Only the phone number is a usable

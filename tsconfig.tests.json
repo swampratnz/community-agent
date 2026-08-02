@@ -35,6 +35,7 @@
     "tests/rateReservation.test.ts",
     "tests/sanitizeName.test.ts",
     "tests/schemaConstraintIdempotency.test.ts",
+    "tests/schemaFragmentEquivalence.test.ts",
     "tests/toolRegistry.test.ts",
     "tests/usageCostDigest.test.ts",
     "tests/whoIsIntoBrowseEmbedCount.test.ts"

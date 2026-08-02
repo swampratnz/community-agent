@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 /**
- * Persisted WhatsApp LID -> phone mapping (schema.sql, docs/SECURITY.md §6b).
+ * Persisted WhatsApp LID -> phone mapping (src/storage/schema/70-whatsapp.sql,
+ * docs/SECURITY.md §6b).
  *
  * The adapter always learned this mapping, but only in an in-memory Map that
  * died with the process. Persisting it lets a LID be RESOLVED to a phone

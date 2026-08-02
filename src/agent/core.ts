@@ -304,10 +304,10 @@ export function filterFeatureFlaggedTools(tools: string[]): string[] {
 
 /**
  * Repo-bundled Agent Skills plugin directory (issue #741), resolved the same
- * way migrate.ts locates schema.sql: relative to this file's own compiled
- * location, so it resolves to src/agent/skills in dev (tsx) and
+ * way the schema manifest locates its fragments: relative to this file's own
+ * compiled location, so it resolves to src/agent/skills in dev (tsx) and
  * dist/agent/skills in the built artifact (package.json's build script
- * copies it there, mirroring the existing schema.sql copy step). Contains
+ * copies it there, mirroring the existing schema-fragments copy step). Contains
  * only a `.claude-plugin/plugin.json` manifest and static per-skill
  * `skills/<name>/SKILL.md` files (currently `prompt-review`,
  * `model-and-plan-selection` per issue #758, `agent-architecture-review` per

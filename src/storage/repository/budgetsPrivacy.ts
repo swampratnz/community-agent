@@ -261,7 +261,7 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
     // access is `project_members`, which IS platform-qualified above. Fixing it
     // properly needs a platform column on all three, which is a repo-wide
     // change, not a project-local one.
-    // WhatsApp LID -> phone mapping (schema.sql, docs/SECURITY.md §6b). This
+    // WhatsApp LID -> phone mapping (schema/70-whatsapp.sql, docs/SECURITY.md §6b). This
     // row de-anonymises a privacy id, so it is squarely personal data and must
     // not survive an erasure request. Keyed on the PHONE because that is what
     // `userId` is for a WhatsApp identity, and one person can accumulate more

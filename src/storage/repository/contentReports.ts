@@ -372,7 +372,7 @@ export async function countMaxTurnsFailures(
  * The JOIN to `interactions` (rather than a `meta` subquery) means a row
  * whose `interaction_id` is NULL — e.g. after the rated reply was purged via
  * `forget_me`/`purge_user_data`, which sets `answer_feedback.interaction_id`
- * to NULL on delete (schema.sql) — is excluded: with no interaction left to
+ * to NULL on delete (schema/25-answer-feedback.sql) — is excluded: with no interaction left to
  * join, there's nothing to classify as grounded or ungrounded.
  */
 export async function countGeneralUnhelpfulAnswers(

@@ -90,7 +90,7 @@ unset is a silent breaking change for the running deployment.
 
 | File | Why |
 |---|---|
-| `src/storage/schema.sql` | Schema changes. **Every statement must be `IF NOT EXISTS`** — `migrate` is idempotent and re-runs on every deploy. |
+| `src/storage/schema/<NN-domain>.sql` | Schema changes go in the owning fragment (`migrate` concatenates them in `manifest.ts` order and replays the result as ONE query). **Every statement must be `IF NOT EXISTS`** — the replay is idempotent and re-runs on every deploy. A brand-new fragment must also be listed in `src/storage/schema/manifest.ts` (explicit array, never a glob — the sync test in `tests/schemaConstraintIdempotency.test.ts` fails otherwise). |
 | `src/storage/repository/<domain>.ts` | Put a new query in its **domain module** (`preferences`, `memberNotes`, …). `repository.ts` re-exports them, so callers still import from `repository.js`. Admin-facing reads are **conversation-scoped in SQL**, not by the caller. |
 | `src/storage/repository.ts` | Only for a domain not yet extracted (the split is incremental — audit L14). A brand-new domain module also needs its `docs/agents/module-map.md` entry in the same diff. |
 | `tests/repository.test.ts` | DB tests skip cleanly without `DATABASE_URL` and run in CI against a real `pgvector/pgvector:pg16` service. |
@@ -100,8 +100,9 @@ Run `npm run migrate` before `npm test` locally, or the DB tests fail with
 
 **Widening an enum `CHECK` (a new `kind`, `status`, …):** edit the existing
 `DROP CONSTRAINT IF EXISTS` / `ADD CONSTRAINT` pair's value list **in place**.
-Never append a second pair for the same constraint name. `migrate()` replays the
-entire file as one multi-statement query, so both pairs run in order on every
+Never append a second pair for the same constraint name — in any fragment.
+`migrate()` replays the entire fragment concatenation as one multi-statement
+query, so both pairs run in order on every
 future migration; the earlier, narrower one is validated against live rows, and
 a single row using a value only the later pair allows aborts it — rolling back
 the whole migration. This is not theoretical: stacked

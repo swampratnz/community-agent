@@ -11160,7 +11160,7 @@ test(
 );
 
 test(
-  "repository: schema.sql's answer_feedback dedup DELETE removes pre-existing duplicate (interaction_id, " +
+  "repository: the schema's answer_feedback dedup DELETE (25-answer-feedback.sql) removes pre-existing duplicate (interaction_id, " +
     'user_id) rows — keeping the most recent — before the partial unique index statement runs, so redeploying ' +
     "against a production DB that already has the pre-fix double-tap bug's duplicates (issue #619) succeeds " +
     'instead of failing on a duplicate-key error',
@@ -11173,7 +11173,7 @@ test(
     // runner runs files in parallel), risking spurious "no unique or
     // exclusion constraint matching ON CONFLICT" failures elsewhere in the
     // suite. A temp table is invisible to every other session, so this
-    // reproduces the exact statements from schema.sql with zero blast
+    // reproduces the exact statements from schema/25-answer-feedback.sql with zero blast
     // radius on concurrently-running tests.
     const client = await pool.connect();
     try {
@@ -11202,7 +11202,7 @@ test(
       );
       const newerRowId = Number(dupRows.find((r) => r.helpful === false)?.id);
 
-      // The exact dedup statement from schema.sql: keep the highest-id
+      // The exact dedup statement from schema/25-answer-feedback.sql: keep the highest-id
       // (most recent) row per (interaction_id, user_id), drop the rest.
       await client.query(`
         DELETE FROM answer_feedback_dedup_fixture a USING answer_feedback_dedup_fixture b
@@ -11212,7 +11212,7 @@ test(
            AND a.id < b.id
       `);
 
-      // The exact unique index statement from schema.sql must now succeed
+      // The exact unique index statement from schema/25-answer-feedback.sql must now succeed
       // against the de-duped data, not fail with a duplicate-key error.
       await assert.doesNotReject(
         client.query(

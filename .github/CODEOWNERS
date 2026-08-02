@@ -9,6 +9,6 @@
 /src/agent/core.ts            @swampratnz
 /src/agent/outbound.ts        @swampratnz
 /src/agent/pendingActions.ts  @swampratnz
-/src/storage/schema.sql       @swampratnz
+/src/storage/schema/          @swampratnz
 /tests/security-floor.json    @swampratnz
 /docs/SECURITY.md             @swampratnz
