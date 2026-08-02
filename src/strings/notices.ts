@@ -1,4 +1,4 @@
-import { createNoticeCatalogue, type NoticeAxes } from './catalogue.js';
+import { registerNoticePack, type NoticeAxes } from './catalogue.js';
 
 /**
  * The NZ Claude Community notice PACK — the community-owned half of the
@@ -364,15 +364,33 @@ const NOTICE_ENTRIES = {
   },
 } as const;
 
-const CATALOGUE = createNoticeCatalogue(NOTICE_AXES, NOTICE_ENTRIES);
+// Registration happens at THIS module's import time (the composition root,
+// src/index.ts, imports it above anything that could evaluate a notice
+// consumer), so the base `notice()` in catalogue.ts never imports this pack —
+// same inversion as registerToolTiers (auth/rbac.ts).
+registerNoticePack(NOTICE_AXES, NOTICE_ENTRIES);
+
+/** Per-id base types for the pack — the type-side half of the registration. */
+type CommunityNoticeBases = {
+  [K in keyof typeof NOTICE_ENTRIES]: (typeof NOTICE_ENTRIES)[K]['base'];
+};
+
+declare module './catalogue.js' {
+  // Augments the base map so `notice()` keeps each id's concrete return type
+  // (template entries stay functions, fixed entries stay strings) everywhere
+  // in the program, without catalogue.ts importing this entry map.
+  // eslint-disable-next-line @typescript-eslint/no-empty-object-type
+  interface NoticeIdMap extends CommunityNoticeBases {}
+}
 
 /**
- * `notice(id, {language, style})` — the one selection point. Pass the
- * caller's standing preferences RAW (`'auto'`/`'en'`/`'standard'` mean
+ * Re-exported for module-side consumers (agent/tools/helpers.ts, notify.ts):
+ * same registry-backed `notice(id, {language, style})` as catalogue.ts. Pass
+ * the caller's standing preferences RAW (`'auto'`/`'en'`/`'standard'` mean
  * "default" because they are not registered axis values); never pre-resolve
  * the precedence at a call site.
  */
-export const notice = CATALOGUE.notice;
+export { notice } from './catalogue.js';
 
 /** The full entry map, exported for the table-driven equivalence test. */
 export { NOTICE_ENTRIES };

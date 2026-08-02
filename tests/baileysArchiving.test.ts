@@ -1,5 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import '../src/strings/notices.js';
 import type { IncomingMessage } from '../src/platforms/types.js';
 
 // Wire-level tests for WhatsApp group ambient archiving (issue #103, extends

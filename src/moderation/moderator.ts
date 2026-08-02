@@ -2,7 +2,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import { makeAlertSlotReserver } from '../notifications.js';
-import { notice } from '../strings/notices.js';
+import { notice } from '../strings/catalogue.js';
 import type { Platform } from '../platforms/types.js';
 import {
   recordBackgroundJobCost,

@@ -9,7 +9,7 @@
  * computed integer, never member text, so it carries no injection surface.
  */
 
-import { notice } from './strings/notices.js';
+import { notice } from './strings/catalogue.js';
 
 // The template itself lives in the strings catalogue (agent-base plan item
 // 6); these consts are derived so every existing import site and pinned test

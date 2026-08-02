@@ -1,5 +1,5 @@
 import type { CodeAnswersPolicy } from '../storage/policies.js';
-import { notice } from '../strings/notices.js';
+import { notice } from '../strings/catalogue.js';
 
 /**
  * Outbound reply filter (DLP + behaviour policy), applied to every message

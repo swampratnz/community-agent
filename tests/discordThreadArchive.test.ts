@@ -1,5 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import '../src/strings/notices.js';
 
 // A message posted in a thread reports the THREAD's id as `channelId`, not its
 // parent's. This file pins that archive/allowlist scope decisions resolve a

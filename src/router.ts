@@ -20,7 +20,7 @@ import type { IncomingMessage, Platform, PlatformAdapter } from './platforms/typ
 import { WindowClosedError } from './platforms/types.js';
 import { sanitizeName } from './util/sanitizeName.js';
 import { INTERNAL_ERROR_REPLY, runAgentTurn, type AgentReply } from './agent/core.js';
-import { notice } from './strings/notices.js';
+import { notice } from './strings/catalogue.js';
 import {
   formatKnowledgeCitationNote,
   formatRelativeAge,

@@ -6,7 +6,7 @@ import {
 } from '@anthropic-ai/claude-agent-sdk';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
-import { notice } from '../strings/notices.js';
+import { notice } from '../strings/catalogue.js';
 import { atLeast, toolsForRole, type CallerContext } from '../auth/rbac.js';
 import { superAdminIds } from '../auth/roles.js';
 import type { AdapterLookup, IncomingMessage, Platform, PlatformAdapter } from '../platforms/types.js';

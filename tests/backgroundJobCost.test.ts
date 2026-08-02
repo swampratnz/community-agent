@@ -1,5 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import '../src/strings/notices.js';
 
 // Issue #401: classifyAbuseWithLlm, summarizeCluster, and researchTopic each
 // spawn a standalone query() against the shared Max pool but wrote no

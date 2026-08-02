@@ -10,7 +10,7 @@
  * echoed, matching the "never surface the raw internal transcript" invariant
  * this shares with core.ts's non-success branch.
  */
-import { notice } from '../strings/notices.js';
+import { notice } from '../strings/catalogue.js';
 
 const USAGE_LIMIT_PATTERNS = [/rate.?limit/i, /usage limit/i, /\b429\b/, /overloaded_error/i, /\bquota\b/i];
 

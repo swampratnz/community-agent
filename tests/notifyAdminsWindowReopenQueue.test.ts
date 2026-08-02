@@ -1,5 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import '../src/strings/notices.js';
 import type { PlatformAdapter } from '../src/platforms/types.js';
 
 // Issue #602: WhatsApp Cloud admin/super-admin real-time alerts (escalations,

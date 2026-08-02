@@ -85,23 +85,55 @@ export function selectNoticeVariant<T>(
 export type NoticeValue = string | ((...args: never[]) => string);
 
 /**
- * Builds a typed `notice(id, {language, style})` lookup over a module's
- * entry map. The return type is the entry's own `base` type, so a template
- * entry comes back as its concrete function type and a fixed entry as a
- * string — call sites keep full type safety with zero casts.
+ * Per-id notice types — the type-side half of pack registration. The pack
+ * module augments this interface over its own entry map (`notices.ts` does
+ * `declare module './catalogue.js'`), so `notice()` keeps each id's concrete
+ * return type — a template entry comes back as its function type and a fixed
+ * entry as a string, with zero casts at call sites — without this module
+ * ever importing the pack. Empty until a pack augments it, so an
+ * unregistered id is a compile error, not just the runtime throw below.
  */
-export function createNoticeCatalogue<M extends Record<string, NoticeEntry<NoticeValue>>>(
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+export interface NoticeIdMap {}
+
+let registered: { axes: NoticeAxes; entries: Record<string, NoticeEntry<NoticeValue>> } | null = null;
+
+/**
+ * Register THE notice pack, exactly once per process — called by the pack
+ * module (src/strings/notices.ts) at its own module scope, so importing the
+ * pack anywhere is what makes `notice` servable. A second registration
+ * throws rather than swapping packs after boot, matching `registerToolTiers`
+ * (auth/rbac.ts) and the skills-manifest/prompt-sections registries.
+ */
+export function registerNoticePack(
   axes: NoticeAxes,
-  entries: M,
-): {
-  axes: NoticeAxes;
-  entries: M;
-  notice: <K extends keyof M>(id: K, selection?: NoticeSelection) => M[K]['base'];
-} {
-  return {
-    axes,
-    entries,
-    notice: <K extends keyof M>(id: K, selection?: NoticeSelection): M[K]['base'] =>
-      selectNoticeVariant(entries[id], axes, selection),
-  };
+  entries: Record<string, NoticeEntry<NoticeValue>>,
+): void {
+  if (registered) {
+    throw new Error('notice pack already registered — the pack cannot be swapped after boot');
+  }
+  registered = { axes, entries };
+}
+
+/**
+ * `notice(id, {language, style})` — the one selection point, reading the
+ * registered pack. Pass the caller's standing preferences RAW
+ * (`'auto'`/`'en'`/`'standard'` mean "default" because they are not
+ * registered axis values); never pre-resolve the precedence at a call site.
+ * FAILS LOUD — never a silent empty string — if the pack module was never
+ * imported: several consumers derive exported consts from `notice()` at
+ * their own module scope, so a missing registration import surfaces as an
+ * immediate throw at load time, not as blank member-facing text.
+ */
+export function notice<K extends keyof NoticeIdMap>(id: K, selection?: NoticeSelection): NoticeIdMap[K] {
+  if (!registered) {
+    throw new Error(
+      'no notice pack registered — import the pack module (src/strings/notices.js) before requesting a notice',
+    );
+  }
+  const entry = registered.entries[id as string];
+  if (!entry) {
+    throw new Error(`unknown notice id: ${String(id)} — not present in the registered pack`);
+  }
+  return selectNoticeVariant(entry, registered.axes, selection) as NoticeIdMap[K];
 }
