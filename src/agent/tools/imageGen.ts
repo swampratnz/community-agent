@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { assertAtLeast } from '../../auth/rbac.js';
+import { assertAtLeast } from '../../auth/tiers.js';
 import { config, onDiskSecretPaths } from '../../config.js';
 import { logger, hashId } from '../../logger.js';
 import { generateImage } from '../../media/grokImage.js';

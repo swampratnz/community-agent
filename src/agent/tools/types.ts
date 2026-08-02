@@ -64,11 +64,11 @@ export interface ToolContext {
 
 /**
  * One declarative tool registration (docs/TOOL-REGISTRY-DESIGN.md §2): the
- * single place a tool's name, tier, platform restriction, feature flag and
- * handler live. During the strangler migration the tier/platform/flag
- * metadata is still MIRRORED from the hand arrays in `src/auth/rbac.ts` /
- * `src/agent/core.ts` (which remain authoritative until the flip);
- * `tests/toolRegistry.test.ts` cross-checks that the two never disagree.
+ * single — and, since the flip, the ONLY — place a tool's name, tier,
+ * platform restriction, feature flag and handler live. rbac.ts's tier
+ * arrays, its Discord-only platform filter and core.ts's feature-flag
+ * filter are all derived from these fields via tools/index.ts;
+ * `tests/toolRegistry.test.ts` pins the derivation's invariants.
  */
 export interface ToolDef<Shape extends ZodRawShape> {
   /** Bare snake_case name; the registry derives `mcp__community__<name>` everywhere — the prefix is never hand-typed here. */
@@ -76,9 +76,9 @@ export interface ToolDef<Shape extends ZodRawShape> {
   description: string;
   /** Tier that gets the tool OFFERED (guest keeps the member surface, as today). */
   minTier: 'member' | 'admin' | 'super_admin';
-  /** Omit = all platforms. `['discord']` mirrors rbac.ts's DISCORD_ONLY_TOOLS. */
+  /** Omit = all platforms. `['discord']` drops the tool from non-Discord surfaces via rbac.ts's derived platform filter. */
   platforms?: readonly Platform[];
-  /** Evaluated per turn against the live config — mirrors core.ts's FEATURE_FLAGGED_TOOL_GROUPS. Omit for unflagged tools. */
+  /** Evaluated per turn against the live config by core.ts's subtractive flag filter. Omit for unflagged tools. */
   featureFlag?: (cfg: Config) => boolean;
   readOnlyHint: boolean;
   schema: Shape;

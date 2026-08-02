@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { assertAtLeast } from '../../auth/rbac.js';
+import { assertAtLeast } from '../../auth/tiers.js';
 import { config } from '../../config.js';
 import { logger } from '../../logger.js';
 import { makeCalendarDayReserver } from '../../util/rateReservation.js';
@@ -41,6 +41,9 @@ export const reserveDevTeamDispatchDaily = makeCalendarDayReserver();
 // super_admin at the handler (defence in depth on top of the tier-derived
 // tool list) and refuse with a friendly message when the feature is off. The
 // outputs are plain text so they work identically on Discord and WhatsApp.
+// Super-admin only: this is outward-acting authority holding the service's
+// bearer credential, the same trust floor as suggest_issue/redeploy_bot
+// (docs/SECURITY.md).
 const devTeamEnabledOr = (): { ok: true; endpoint: string; token: string } | { ok: false } => {
   if (!config.devTeam.enabled || !config.devTeam.endpointUrl || !config.devTeam.authToken) {
     return { ok: false };

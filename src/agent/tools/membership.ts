@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { assertAtLeast } from '../../auth/rbac.js';
+import { assertAtLeast } from '../../auth/tiers.js';
 import { normalizeMemberId } from '../../auth/memberId.js';
 import { isSuperAdmin } from '../../auth/roles.js';
 import { logger } from '../../logger.js';

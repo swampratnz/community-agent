@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { Platform } from '../../platforms/types.js';
-import { assertAtLeast } from '../../auth/rbac.js';
+import { assertAtLeast } from '../../auth/tiers.js';
 import { normalizeMemberId } from '../../auth/memberId.js';
 import { isSuperAdmin } from '../../auth/roles.js';
 import { config } from '../../config.js';
@@ -308,6 +308,11 @@ export const superAdminTools = [
     },
   }),
 
+  // Read-only, no CONFIRM, no DB/model call — reflects the fixed
+  // FEATURE_FLAG_MAP allowlist (issue #559) against the already-loaded
+  // config object. Super-admin only: several flags are security-relevant
+  // posture (e.g. moderation.llmAbuseEnabled), same least-privilege
+  // reasoning as engagement_stats/admin_activity's own super-admin floor.
   defineTool({
     name: 'feature_flags',
     description:
@@ -406,6 +411,8 @@ export const superAdminTools = [
     },
   }),
 
+  // Files a GitHub issue via the bot's fine-grained repo token — super-admin
+  // only because it is the bot's one outward write credential (docs/SECURITY.md).
   defineTool({
     name: 'suggest_issue',
     description:

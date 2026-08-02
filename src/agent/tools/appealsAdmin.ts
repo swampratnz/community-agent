@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { assertAtLeast } from '../../auth/rbac.js';
+import { assertAtLeast } from '../../auth/tiers.js';
 import { sanitizeName } from '../../util/sanitizeName.js';
 import { listAppeals, type ModerationAppeal, resolveModerationAppeal } from '../../storage/repository.js';
 import { text, untrusted } from './helpers.js';
@@ -7,6 +7,11 @@ import { notifyAppealResolved } from './notify.js';
 import { defineTool } from './types.js';
 
 export const appealsAdminTools = [
+  // Durable queue for appeal_moderation (issue #554): a member appealing
+  // their own active warning(s)/mute is a self-scoped member-tier write
+  // (appeal_moderation); reviewing/resolving the filed appeal is admin-tier,
+  // same guild-wide (not conversation-scoped) boundary as clear_warnings/
+  // list_member_warnings — warnings/mutes carry no conversation to scope by.
   defineTool({
     name: 'list_appeals',
     description:

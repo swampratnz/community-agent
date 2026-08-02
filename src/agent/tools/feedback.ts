@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { assertAtLeast, atLeast } from '../../auth/rbac.js';
+import { assertAtLeast, atLeast } from '../../auth/tiers.js';
 import { config } from '../../config.js';
 import { logger } from '../../logger.js';
 import {
@@ -41,6 +41,9 @@ export const HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER = 3;
 const reserveHumanHelpRequestSlot = makeSlidingWindowReserver(24 * 60 * 60 * 1000);
 
 export const feedbackTools = [
+  // Write-only into the member's own queue (rate-capped); the shared-queue
+  // read side (list_suggestions) is admin-tier — a member can never read
+  // anyone else's suggestion, only their own via my_submissions.
   defineTool({
     name: 'suggest_improvement',
     description:
@@ -78,6 +81,9 @@ export const feedbackTools = [
     },
   }),
 
+  // Write-only, boolean-only rating of the bot's own last answer to the
+  // caller (rate-capped); the read side (list_answer_feedback) is
+  // admin-tier — a member can never read the aggregate feedback queue.
   defineTool({
     name: 'rate_answer',
     description:
@@ -221,6 +227,11 @@ export const feedbackTools = [
     },
   }),
 
+  // Zero-argument write; sets a turn-scoped flag only (rate-capped per
+  // caller) — router.ts reads it back post-turn to direct-fire the same
+  // admin escalation notifyAdmins path rate_answer's thumbs-down uses
+  // (issue #808). Never a free-text field, so there is nothing here for a
+  // model-composed admin-notification injection to ride.
   defineTool({
     name: 'request_human_help',
     description:

@@ -39,6 +39,10 @@ export const selfServiceTools = [
       ),
   }),
 
+  // Self-scoped read of the caller's OWN suggestions/reports/appeals and
+  // suggest_knowledge tips (never the shared queue, never another member's
+  // rows, never reviewer identity) — the pull-based counterpart to the
+  // best-effort resolution DMs.
   defineTool({
     name: 'my_submissions',
     description:
@@ -130,6 +134,9 @@ export const selfServiceTools = [
     },
   }),
 
+  // Self-scoped read of the caller's OWN active warning count vs. the
+  // configured limit — never a warning's reason/excerpt (admin-only context,
+  // see list_member_warnings) and never another member's warnings.
   defineTool({
     name: 'my_warnings',
     description:
@@ -172,6 +179,11 @@ export const selfServiceTools = [
     },
   }),
 
+  // Self-scoped, read-only summary of what's stored about the caller —
+  // counts mirroring exactly what forget_me/purge_user_data would delete,
+  // scoped the same way (own identity + linked identities). Never queries
+  // member_notes (issue #45: no member self-access to notes about
+  // themselves) or any other admin-only table.
   defineTool({
     name: 'my_data',
     description:

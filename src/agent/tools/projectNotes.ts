@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { assertAtLeast } from '../../auth/rbac.js';
+import { assertAtLeast } from '../../auth/tiers.js';
 import { logger } from '../../logger.js';
 import {
   listVisibleProjects,

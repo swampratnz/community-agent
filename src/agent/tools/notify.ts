@@ -1,6 +1,6 @@
 import type { Platform, PlatformAdapter } from '../../platforms/types.js';
 import { WindowClosedError } from '../../platforms/types.js';
-import { atLeast } from '../../auth/rbac.js';
+import { atLeast } from '../../auth/tiers.js';
 import { resolveRole, superAdminIds } from '../../auth/roles.js';
 import { config } from '../../config.js';
 import { logger, hashId } from '../../logger.js';

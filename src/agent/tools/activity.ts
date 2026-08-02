@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { assertAtLeast } from '../../auth/rbac.js';
+import { assertAtLeast } from '../../auth/tiers.js';
 import { recentChanges } from '../changelog.js';
 import { resolveLinkedIdentities, userMessages } from '../../storage/repository.js';
 import { text, untrusted } from './helpers.js';

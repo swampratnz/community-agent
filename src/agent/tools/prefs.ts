@@ -4,6 +4,7 @@ import { text } from './helpers.js';
 import { defineTool } from './types.js';
 
 export const prefsTools = [
+  // Self-service, non-destructive, instantly reversible — no CONFIRM gate.
   defineTool({
     name: 'set_response_style',
     description:
@@ -25,6 +26,8 @@ export const prefsTools = [
     },
   }),
 
+  // Same self-service shape as set_response_style, closed enum — no CONFIRM
+  // gate (issue #189).
   defineTool({
     name: 'set_language_preference',
     description:

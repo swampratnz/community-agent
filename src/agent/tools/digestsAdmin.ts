@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { assertAtLeast } from '../../auth/rbac.js';
+import { assertAtLeast } from '../../auth/tiers.js';
 import { buildAdminDigestForAdmin } from '../../adminDigest.js';
 import {
   countAccessRequests,
@@ -74,6 +74,11 @@ export const digestsAdminTools = [
     },
   }),
 
+  // Argument-less roll-up of the five review-queue tools' own counts (issue
+  // #743) — access requests/suggestions/knowledge candidates are guild-wide
+  // like their list_* tools; reports uses callerScope()+linked-identity
+  // exclusion like list_reports; appeals uses caller.platform like
+  // list_appeals. No new scoping decision, no new data exposure.
   defineTool({
     name: 'review_queue',
     description:
@@ -131,6 +136,12 @@ export const digestsAdminTools = [
     },
   }),
 
+  // Time-to-first-answer aggregate (issue #877). Admin-tier and
+  // callerScope()-scoped exactly like review_queue/question_digest above.
+  // Historical note (issue #877 review): under the old hand-maintained rbac
+  // tier arrays this tool once shipped registered-but-never-offered (dead
+  // code in production); the offered surface is now derived from this def's
+  // own minTier, which is exactly the failure class the registry kills.
   defineTool({
     name: 'response_latency',
     description:

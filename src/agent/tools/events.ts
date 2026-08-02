@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { assertAtLeast } from '../../auth/rbac.js';
+import { assertAtLeast } from '../../auth/tiers.js';
 import { formatNzEventTime } from '../../util/nzTime.js';
 import { isoInstantSchema, parseIsoInstant, text } from './helpers.js';
 import { defineTool } from './types.js';
@@ -22,6 +22,9 @@ export const EVENT_LOCATION_MAX_CHARS = 100;
 export const EVENT_CANCEL_REASON_MAX_CHARS = 500;
 
 export const eventsTools = [
+  // Discord Scheduled Event creation (issue #230) — outward + member-
+  // notifying (RSVP/reminders), so admin-tier + CONFIRM, a genuinely higher
+  // floor than announce/create_poll. See docs/SECURITY.md.
   defineTool({
     name: 'create_event',
     description:
@@ -112,6 +115,10 @@ export const eventsTools = [
     },
   }),
 
+  // Symmetric destroy-adjacent counterpart to create_event (issue #424),
+  // same pattern create_poll/end_poll and create_thread/archive_thread
+  // already established: admin-tier + CONFIRM, marks the event Canceled
+  // rather than deleting it. See docs/SECURITY.md.
   defineTool({
     name: 'cancel_event',
     description:

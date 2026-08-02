@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { assertAtLeast } from '../../auth/rbac.js';
+import { assertAtLeast } from '../../auth/tiers.js';
 import { config } from '../../config.js';
 import { logger, hashId } from '../../logger.js';
 import { recentConversationHistory, searchMemory } from '../../storage/repository.js';
@@ -83,6 +83,10 @@ export const memoryTools = [
     },
   }),
 
+  // Time-windowed recap of the caller's OWN current conversation (issue
+  // #167) — always scoped to caller.platform/caller.conversationId, never a
+  // model-supplied id; same conversation-scope discipline as
+  // remember_search's default scope.
   defineTool({
     name: 'catch_up',
     description:

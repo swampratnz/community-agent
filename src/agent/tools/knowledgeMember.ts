@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { assertAtLeast } from '../../auth/rbac.js';
+import { assertAtLeast } from '../../auth/tiers.js';
 import { config } from '../../config.js';
 import { logger } from '../../logger.js';
 import {
@@ -192,6 +192,10 @@ export const knowledgeMemberTools = [
     },
   }),
 
+  // Read-only, no arguments — titles-only browse of the knowledge base, the
+  // proactive "what's covered" counterpart to knowledge_search's reactive
+  // search (issue #437). Reuses knowledge_search's exact scope predicate and
+  // additionally excludes 'auto'-provenance entries (issue #214 boundary).
   defineTool({
     name: 'list_knowledge_topics',
     description:
@@ -210,6 +214,12 @@ export const knowledgeMemberTools = [
     },
   }),
 
+  // Write-only into the SAME admin-reviewed candidate queue the offline
+  // context builder feeds (issue #633) — digest_id NULL, rate-capped, dedup-
+  // guarded against already-queued/reviewed topics and already-covered
+  // knowledge. Nothing a member writes here can influence answers until an
+  // admin's accept_knowledge_candidate call; the read/accept/decline side
+  // stays admin-tier, same shape as suggest_improvement/list_suggestions.
   defineTool({
     name: 'suggest_knowledge',
     description:
@@ -282,6 +292,11 @@ export const knowledgeMemberTools = [
     },
   }),
 
+  // Retract your OWN still-pending suggest_knowledge tip(s) (issue #895) —
+  // scoped in SQL to source_platform/source_user_id, so it can never touch
+  // another member's tip or a machine-drafted candidate, and never touches
+  // an already-reviewed (accepted/declined) tip. Same shape as
+  // withdraw_report for content_reports.
   defineTool({
     name: 'withdraw_knowledge_tip',
     description:

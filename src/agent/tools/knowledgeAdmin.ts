@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { Platform } from '../../platforms/types.js';
-import { assertAtLeast } from '../../auth/rbac.js';
+import { assertAtLeast } from '../../auth/tiers.js';
 import { config } from '../../config.js';
 import {
   acceptKnowledgeCandidate,
@@ -138,6 +138,9 @@ export const knowledgeAdminTools = [
     },
   }),
 
+  // Retroactive read-only audit (issue #316) for near-duplicate pairs that
+  // save_knowledge's write-time nudge never caught — same tier as its
+  // siblings, no CONFIRM (read-only, no mutation).
   defineTool({
     name: 'list_duplicate_knowledge',
     description:
@@ -170,6 +173,9 @@ export const knowledgeAdminTools = [
     },
   }),
 
+  // Sibling of list_duplicate_knowledge (issue #330): same tier/read-only/no-
+  // CONFIRM shape, but the opposite similarity band — flags entries that may
+  // quietly disagree (mid-range similarity) rather than converged wording.
   defineTool({
     name: 'list_knowledge_conflicts',
     description:
@@ -305,6 +311,10 @@ export const knowledgeAdminTools = [
     },
   }),
 
+  // Consolidates a detected duplicate/conflict pair into one entry (issue
+  // #886) — same admin-tier + CONFIRM + audited shape as update_knowledge/
+  // delete_knowledge, the two write tools it replaces the unlinked manual
+  // two-call workaround with.
   defineTool({
     name: 'merge_knowledge',
     description:
@@ -653,6 +663,11 @@ export const knowledgeAdminTools = [
     },
   }),
 
+  // Clusters unhelpful-rating comments across BOTH grounded and ungrounded
+  // answers by embedding similarity (issue #724) — the cross-cutting
+  // complement list_low_rated_knowledge (per-entry, grounded-only) doesn't
+  // provide, instrumenting the second half of VISION's answer-quality
+  // north star.
   defineTool({
     name: 'list_unhelpful_themes',
     description:

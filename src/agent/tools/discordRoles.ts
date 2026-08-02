@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { PlatformAdapter } from '../../platforms/types.js';
-import { assertAtLeast } from '../../auth/rbac.js';
+import { assertAtLeast } from '../../auth/tiers.js';
 import { config } from '../../config.js';
 import { getMemberRole } from '../../storage/repository.js';
 import { resolveSanitizedLabel, text } from './helpers.js';

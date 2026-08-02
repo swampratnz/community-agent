@@ -1,9 +1,15 @@
-import { assertAtLeast } from '../../auth/rbac.js';
+import { assertAtLeast } from '../../auth/tiers.js';
 import { buildMemberDigestContent } from '../../memberDigest.js';
 import { text, untrusted } from './helpers.js';
 import { defineTool } from './types.js';
 
 export const digestMemberTools = [
+  // On-demand pull of the community-wide weekly member-digest snapshot
+  // (issue #841) — the member-facing sibling of admin_digest (#499): same
+  // buildMemberDigestContent gathering the scheduled MEMBER_DIGEST_ENABLED
+  // push already computes, just available on request instead of waiting up
+  // to a week. Re-checks 'member' explicitly in the handler to exclude
+  // open-mode guests, same discipline set_my_interests/who_is_into use.
   defineTool({
     name: 'community_digest',
     description:

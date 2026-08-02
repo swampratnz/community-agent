@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { assertAtLeast } from '../../auth/rbac.js';
+import { assertAtLeast } from '../../auth/tiers.js';
 import { config } from '../../config.js';
 import { logger, hashId } from '../../logger.js';
 import { WindowClosedError } from '../../platforms/types.js';
@@ -45,6 +45,12 @@ import { defineTool } from './types.js';
 export const LIST_PROJECTS_DEFAULT_LIMIT = 8;
 
 export const socialTools = [
+  // Self-scoped write (one row per identity, upsert/clear semantics),
+  // instantly reversible ('clear') like set_response_style — no CONFIRM gate.
+  // Publishes to other members (issue #634), so unlike most other
+  // self-service member tools it re-checks 'member' explicitly in the
+  // handler to exclude open-mode guests, same discipline share_project below
+  // uses. Only self-declared text is ever stored — never inferred from chat.
   defineTool({
     name: 'set_my_interests',
     description:
@@ -81,6 +87,9 @@ export const socialTools = [
     },
   }),
 
+  // Read-only counterpart to set_my_interests — embedding-similarity search
+  // over member_interests only, same 'member' floor check. A caller with no
+  // published interests of their own can still search.
   defineTool({
     name: 'who_is_into',
     description:
@@ -133,6 +142,11 @@ export const socialTools = [
     },
   }),
 
+  // Opt-in "notify me to help" flag riding the caller's own member_interests
+  // row (issue #729) — self-scoped, instantly reversible like
+  // set_response_style, so no CONFIRM gate. Behind FIND_HELPER_ENABLED (the
+  // featureFlag below), same layering as generate_image/suggest_issue/
+  // dev_team_*.
   defineTool({
     name: 'set_helper_availability',
     description:
@@ -175,6 +189,14 @@ export const socialTools = [
     },
   }),
 
+  // The active-side handoff itself (issue #729): matches the caller's topic
+  // against opted-in helpers and sends at most one DM. Re-checks 'member' in
+  // the handler like set_my_interests/share_project — this is the first
+  // member-tier write that DMs a DIFFERENT member as a side effect, so it's
+  // rate-capped on both the requester and the notified-helper side (see
+  // repository.ts FIND_HELPER_REQUESTER_DAILY_LIMIT /
+  // FIND_HELPER_WEEKLY_LIMIT_PER_HELPER). Same FIND_HELPER_ENABLED gate as
+  // set_helper_availability above.
   defineTool({
     name: 'find_helper',
     description:
@@ -249,6 +271,10 @@ export const socialTools = [
     },
   }),
 
+  // Self-scoped write (rate-capped, own-project-only), instantly reversible
+  // like set_response_style — no CONFIRM gate. Publishes to other members
+  // (issue #646), so it re-checks 'member' explicitly in the handler to
+  // exclude open-mode guests.
   defineTool({
     name: 'share_project',
     description:
@@ -346,6 +372,8 @@ export const socialTools = [
     },
   }),
 
+  // Read-only counterpart to share_project — most-recent or embedding-
+  // similarity search over member_projects only, same 'member' floor check.
   defineTool({
     name: 'list_projects',
     description:
@@ -404,6 +432,16 @@ export const socialTools = [
     },
   }),
 
+  // The signal-to-action handoff for share_project's seekingCollaborators
+  // flag (issue #840): looks up a project by id and sends its owner at most
+  // one DM. Re-checks 'member' in the handler like share_project/find_helper
+  // above, and is rate-capped on both the requester and the notified-owner
+  // side (see repository.ts PROJECT_CONNECTION_REQUESTER_DAILY_LIMIT /
+  // PROJECT_CONNECTION_OWNER_WEEKLY_LIMIT), same shape as find_helper. Unlike
+  // find_helper this is not behind a feature flag — no new disclosure class,
+  // and the DM is solicited (the owner explicitly opted this specific project
+  // in via seekingCollaborators), a stronger consent basis than find_helper's
+  // topic-match.
   defineTool({
     name: 'request_project_connection',
     description:

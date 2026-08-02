@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { assertAtLeast, atLeast } from '../../auth/rbac.js';
+import { assertAtLeast, atLeast } from '../../auth/tiers.js';
 import { resolveRole } from '../../auth/roles.js';
 import { config } from '../../config.js';
 import { logger, hashId } from '../../logger.js';
@@ -292,6 +292,10 @@ export const moderationTools = [
     },
   }),
 
+  // Per-member, reason/excerpt-included warning history (auto + admin
+  // strikes) — the read moderation_history structurally can't provide, since
+  // it reads only admin_audit, never member_warnings (issue #410). Same
+  // (platform, userId)-only scope as clear_warnings, not conversation-scoped.
   defineTool({
     name: 'list_member_warnings',
     description:
@@ -327,6 +331,10 @@ export const moderationTools = [
     },
   }),
 
+  // Enumerates currently-muted members by identity — the growth path #403
+  // itself named and deferred (issue #487). Same admin-tier, non-
+  // conversation-scoped boundary as clear_warnings/list_member_warnings;
+  // never includes reason/excerpt.
   defineTool({
     name: 'list_muted_members',
     description:
@@ -366,6 +374,9 @@ export const moderationTools = [
     },
   }),
 
+  // Enumerates the WhatsApp bot-side block list (issue #924) — the read
+  // block_user/unblock_user (#572) never got. Same admin-tier, guild-wide
+  // (blocked_users has no conversation_id) boundary as list_muted_members.
   defineTool({
     name: 'list_blocked_members',
     description:

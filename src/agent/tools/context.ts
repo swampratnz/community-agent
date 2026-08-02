@@ -1,5 +1,6 @@
 import type { AdapterLookup, Platform, PlatformAdapter } from '../../platforms/types.js';
-import { assertAtLeast, type CallerContext } from '../../auth/rbac.js';
+import { assertAtLeast } from '../../auth/tiers.js';
+import type { CallerContext } from '../../auth/rbac.js';
 import { normalizeMemberId, resolveWhatsappLid } from '../../auth/memberId.js';
 import { logger, hashId } from '../../logger.js';
 import { getLanguagePreference, phoneForLid, recordAdminAction } from '../../storage/repository.js';

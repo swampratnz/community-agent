@@ -1,4 +1,4 @@
-import { atLeast } from '../../auth/rbac.js';
+import { atLeast } from '../../auth/tiers.js';
 import { config } from '../../config.js';
 import { getCommunityGuidelines, getCommunityGuidelinesMi } from '../../storage/policies.js';
 import { getLanguagePreference } from '../../storage/repository.js';
@@ -148,6 +148,8 @@ export const infoTools = [
     },
   }),
 
+  // Read-only, no arguments; returns the admin-set guidelines text verbatim,
+  // or a clear not-set-yet message (issue #212).
   defineTool({
     name: 'community_guidelines',
     description:
@@ -167,6 +169,9 @@ export const infoTools = [
     },
   }),
 
+  // Read-only, no arguments, reveals nothing about this community — only
+  // Anthropic's own public status page (issue #206) — so it's reachable by
+  // guests in open mode too, same tier as community_info/knowledge_search.
   defineTool({
     name: 'check_status',
     description:
@@ -180,6 +185,12 @@ export const infoTools = [
     handler: async () => text(formatStatusMessage(getStatusCache(), Date.now())),
   }),
 
+  // Read-only, no arguments, no CONFIRM (issue #388) — the read counterpart
+  // to the admin-tier, CONFIRM-gated create_event (issue #230). Publicly
+  // visible via Discord's own Events tab the moment create_event runs, so
+  // there's no confidentiality boundary to gate at admin tier, same
+  // reasoning as community_guidelines/check_status. Discord-only; other
+  // adapters simply don't implement PlatformAdapter.listUpcomingEvents.
   defineTool({
     name: 'list_events',
     description:

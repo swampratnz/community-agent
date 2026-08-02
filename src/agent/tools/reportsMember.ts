@@ -108,6 +108,8 @@ export const reportsMemberTools = [
     },
   }),
 
+  // Reporter can retract their OWN report(s) — scoped in SQL to
+  // reporter_user_id, so it can never touch anyone else's report.
   defineTool({
     name: 'withdraw_report',
     description:
@@ -135,6 +137,11 @@ export const reportsMemberTools = [
     },
   }),
 
+  // Self-scoped: asks admins to double-check the caller's OWN active
+  // warning(s)/mute (issue #496) — refuses cleanly with no active warning,
+  // so it can't become a generic side channel to message admins (that's
+  // already what suggest_improvement is for). Resolves eligibility from
+  // caller.platform/caller.userId only, exactly like my_warnings.
   defineTool({
     name: 'appeal_moderation',
     description:

@@ -1,13 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  ADMIN_TOOLS,
-  MEMBER_TOOLS,
-  SUPER_ADMIN_TOOLS,
-  assertAtLeast,
-  atLeast,
-  toolsForRole,
-} from '../src/auth/rbac.js';
+
+// rbac.ts's tier arrays are derived from the tool registry, whose domain
+// files (transitively) load config.ts — which validates env at import time.
+// Provide a dummy environment before importing it, matching the convention
+// in tests/tools.test.ts.
+process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
+process.env.DISCORD_BOT_TOKEN ??= 'test-token';
+process.env.DISCORD_GUILD_ID ??= '1';
+process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
+
+const { ADMIN_TOOLS, MEMBER_TOOLS, SUPER_ADMIN_TOOLS, assertAtLeast, atLeast, toolsForRole } =
+  await import('../src/auth/rbac.js');
 
 test('tier ordering', () => {
   assert.ok(atLeast('super_admin', 'admin'));
@@ -31,7 +35,7 @@ test('SECURITY: members and guests never get admin or super-admin tools', () => 
 test('SECURITY: whats_new is admin-only (binding requirement from #55)', () => {
   const tool = 'mcp__community__whats_new';
   assert.ok(ADMIN_TOOLS.includes(tool), 'whats_new must be in ADMIN_TOOLS');
-  assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(tool), 'whats_new must not be in MEMBER_TOOLS');
+  assert.ok(!MEMBER_TOOLS.includes(tool), 'whats_new must not be in MEMBER_TOOLS');
   for (const role of ['guest', 'member'] as const) {
     assert.ok(!toolsForRole(role).includes(tool), `${role} must not reach whats_new`);
   }
@@ -43,10 +47,7 @@ test('SECURITY: whats_new is admin-only (binding requirement from #55)', () => {
 test('SECURITY: generate_image is admin/super-admin only, never members or guests', () => {
   const tool = 'mcp__community__generate_image';
   assert.ok(ADMIN_TOOLS.includes(tool), 'generate_image must be in ADMIN_TOOLS');
-  assert.ok(
-    !(MEMBER_TOOLS as readonly string[]).includes(tool),
-    'generate_image must not be in MEMBER_TOOLS',
-  );
+  assert.ok(!MEMBER_TOOLS.includes(tool), 'generate_image must not be in MEMBER_TOOLS');
   for (const role of ['guest', 'member'] as const) {
     assert.ok(!toolsForRole(role).includes(tool), `${role} must not reach generate_image`);
   }
@@ -68,13 +69,10 @@ test('SECURITY: community_guidelines is member+ (read-only rules text); set_comm
   const writeTool = 'mcp__community__set_community_guidelines';
 
   assert.ok(MEMBER_TOOLS.includes(readTool), 'community_guidelines must be in MEMBER_TOOLS');
-  assert.ok(
-    !(MEMBER_TOOLS as readonly string[]).includes(writeTool),
-    'set_community_guidelines must not be in MEMBER_TOOLS',
-  );
+  assert.ok(!MEMBER_TOOLS.includes(writeTool), 'set_community_guidelines must not be in MEMBER_TOOLS');
   assert.ok(ADMIN_TOOLS.includes(writeTool), 'set_community_guidelines must be in ADMIN_TOOLS');
   assert.ok(
-    !(SUPER_ADMIN_TOOLS as readonly string[]).includes(writeTool),
+    !SUPER_ADMIN_TOOLS.includes(writeTool),
     'set_community_guidelines is content curation (like save_knowledge), not super-admin runtime control like set_policy',
   );
 
@@ -93,12 +91,9 @@ test('SECURITY: set_welcome_message is admin+ only, never members or guests (iss
   const tool = 'mcp__community__set_welcome_message';
 
   assert.ok(ADMIN_TOOLS.includes(tool), 'set_welcome_message must be in ADMIN_TOOLS');
+  assert.ok(!MEMBER_TOOLS.includes(tool), 'set_welcome_message must not be in MEMBER_TOOLS');
   assert.ok(
-    !(MEMBER_TOOLS as readonly string[]).includes(tool),
-    'set_welcome_message must not be in MEMBER_TOOLS',
-  );
-  assert.ok(
-    !(SUPER_ADMIN_TOOLS as readonly string[]).includes(tool),
+    !SUPER_ADMIN_TOOLS.includes(tool),
     'set_welcome_message is content curation (like set_community_guidelines), not super-admin runtime control like set_policy',
   );
 
@@ -133,7 +128,7 @@ test('SECURITY: my_submissions is member+ and strictly narrower than the shared 
   assert.ok(MEMBER_TOOLS.includes(tool), 'my_submissions must be in MEMBER_TOOLS');
   for (const t of sharedQueueTools) {
     assert.ok(
-      !(MEMBER_TOOLS as readonly string[]).includes(t),
+      !MEMBER_TOOLS.includes(t),
       `${t} (the shared queue) must never be in MEMBER_TOOLS even though my_submissions is`,
     );
   }
@@ -154,10 +149,7 @@ test('SECURITY: my_warnings is member+ and strictly narrower than the admin-only
 
   assert.ok(MEMBER_TOOLS.includes(tool), 'my_warnings must be in MEMBER_TOOLS');
   for (const t of adminOnlyModerationTools) {
-    assert.ok(
-      !(MEMBER_TOOLS as readonly string[]).includes(t),
-      `${t} must never be in MEMBER_TOOLS even though my_warnings is`,
-    );
+    assert.ok(!MEMBER_TOOLS.includes(t), `${t} must never be in MEMBER_TOOLS even though my_warnings is`);
   }
   for (const role of ['member', 'admin', 'super_admin'] as const) {
     assert.ok(toolsForRole(role).includes(tool), `${role} must reach my_warnings`);
@@ -177,7 +169,7 @@ test('SECURITY: appeal_moderation is member+ and strictly narrower than the admi
   assert.ok(MEMBER_TOOLS.includes(tool), 'appeal_moderation must be in MEMBER_TOOLS');
   for (const t of adminOnlyModerationTools) {
     assert.ok(
-      !(MEMBER_TOOLS as readonly string[]).includes(t),
+      !MEMBER_TOOLS.includes(t),
       `${t} must never be in MEMBER_TOOLS even though appeal_moderation is`,
     );
   }
@@ -203,10 +195,7 @@ test('SECURITY: my_data is member+ and strictly narrower than admin-only data to
 
   assert.ok(MEMBER_TOOLS.includes(tool), 'my_data must be in MEMBER_TOOLS');
   for (const t of adminOrHigherOnlyTools) {
-    assert.ok(
-      !(MEMBER_TOOLS as readonly string[]).includes(t),
-      `${t} must never be in MEMBER_TOOLS even though my_data is`,
-    );
+    assert.ok(!MEMBER_TOOLS.includes(t), `${t} must never be in MEMBER_TOOLS even though my_data is`);
   }
   for (const role of ['member', 'admin', 'super_admin'] as const) {
     assert.ok(toolsForRole(role).includes(tool), `${role} must reach my_data`);
@@ -290,10 +279,7 @@ test('SECURITY: list_events is member+ (guests reach it in open mode; matches ME
 test('SECURITY: list_answer_feedback is admin-only — a member can never read the aggregate rating queue, including ratings they themselves submitted (issue #118)', () => {
   const tool = 'mcp__community__list_answer_feedback';
   assert.ok(ADMIN_TOOLS.includes(tool), 'list_answer_feedback must be in ADMIN_TOOLS');
-  assert.ok(
-    !(MEMBER_TOOLS as readonly string[]).includes(tool),
-    'list_answer_feedback must not be in MEMBER_TOOLS',
-  );
+  assert.ok(!MEMBER_TOOLS.includes(tool), 'list_answer_feedback must not be in MEMBER_TOOLS');
   for (const role of ['guest', 'member'] as const) {
     assert.ok(!toolsForRole(role).includes(tool), `${role} must not reach list_answer_feedback`);
   }
@@ -305,10 +291,7 @@ test('SECURITY: list_answer_feedback is admin-only — a member can never read t
 test('SECURITY: list_low_rated_knowledge is admin-only — a member can never read the per-entry aggregate (issue #287)', () => {
   const tool = 'mcp__community__list_low_rated_knowledge';
   assert.ok(ADMIN_TOOLS.includes(tool), 'list_low_rated_knowledge must be in ADMIN_TOOLS');
-  assert.ok(
-    !(MEMBER_TOOLS as readonly string[]).includes(tool),
-    'list_low_rated_knowledge must not be in MEMBER_TOOLS',
-  );
+  assert.ok(!MEMBER_TOOLS.includes(tool), 'list_low_rated_knowledge must not be in MEMBER_TOOLS');
   for (const role of ['guest', 'member'] as const) {
     assert.ok(!toolsForRole(role).includes(tool), `${role} must not reach list_low_rated_knowledge`);
   }
@@ -321,7 +304,7 @@ test('SECURITY: list_reports and resolve_report are admin-only (member/guest mus
   const tools = ['mcp__community__list_reports', 'mcp__community__resolve_report'];
   for (const t of tools) {
     assert.ok(ADMIN_TOOLS.includes(t), `${t} must be in ADMIN_TOOLS`);
-    assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(t), `${t} must not be in MEMBER_TOOLS`);
+    assert.ok(!MEMBER_TOOLS.includes(t), `${t} must not be in MEMBER_TOOLS`);
   }
   for (const role of ['guest', 'member'] as const) {
     const surface = toolsForRole(role);
@@ -337,8 +320,8 @@ test('SECURITY: list_appeals and resolve_appeal are admin-only (member/guest mus
   const tools = ['mcp__community__list_appeals', 'mcp__community__resolve_appeal'];
   for (const t of tools) {
     assert.ok(ADMIN_TOOLS.includes(t), `${t} must be in ADMIN_TOOLS`);
-    assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(t), `${t} must not be in MEMBER_TOOLS`);
-    assert.ok(!(SUPER_ADMIN_TOOLS as readonly string[]).includes(t), `${t} must not be super-admin-only`);
+    assert.ok(!MEMBER_TOOLS.includes(t), `${t} must not be in MEMBER_TOOLS`);
+    assert.ok(!SUPER_ADMIN_TOOLS.includes(t), `${t} must not be super-admin-only`);
   }
   for (const role of ['guest', 'member'] as const) {
     const surface = toolsForRole(role);
@@ -353,7 +336,7 @@ test('SECURITY: list_appeals and resolve_appeal are admin-only (member/guest mus
 test('SECURITY: list_roster is admin-only — members/guests never see the roster (issue #47)', () => {
   const tool = 'mcp__community__list_roster';
   assert.ok(ADMIN_TOOLS.includes(tool), 'list_roster must be in ADMIN_TOOLS');
-  assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(tool), 'list_roster must not be in MEMBER_TOOLS');
+  assert.ok(!MEMBER_TOOLS.includes(tool), 'list_roster must not be in MEMBER_TOOLS');
   for (const role of ['guest', 'member'] as const) {
     assert.ok(!toolsForRole(role).includes(tool), `${role} must not reach list_roster`);
   }
@@ -369,7 +352,7 @@ test('SECURITY: suggest_improvement is write-only at member tier — the suggest
   assert.ok(MEMBER_TOOLS.includes(writeTool), 'suggest_improvement must be in MEMBER_TOOLS');
   for (const t of readTools) {
     assert.ok(ADMIN_TOOLS.includes(t), `${t} must be in ADMIN_TOOLS`);
-    assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(t), `${t} must not be in MEMBER_TOOLS`);
+    assert.ok(!MEMBER_TOOLS.includes(t), `${t} must not be in MEMBER_TOOLS`);
   }
   for (const role of ['guest', 'member'] as const) {
     const surface = toolsForRole(role);
@@ -393,7 +376,7 @@ test('SECURITY: suggest_knowledge is write-only at member tier — the candidate
   assert.ok(MEMBER_TOOLS.includes(writeTool), 'suggest_knowledge must be in MEMBER_TOOLS');
   for (const t of readTools) {
     assert.ok(ADMIN_TOOLS.includes(t), `${t} must be in ADMIN_TOOLS`);
-    assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(t), `${t} must not be in MEMBER_TOOLS`);
+    assert.ok(!MEMBER_TOOLS.includes(t), `${t} must not be in MEMBER_TOOLS`);
   }
   for (const role of ['guest', 'member'] as const) {
     const surface = toolsForRole(role);
@@ -436,7 +419,7 @@ test('SECURITY: member-note tools are admin-only — a member can never read or 
   ];
   for (const t of tools) {
     assert.ok(ADMIN_TOOLS.includes(t), `${t} must be in ADMIN_TOOLS`);
-    assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(t), `${t} must not be in MEMBER_TOOLS`);
+    assert.ok(!MEMBER_TOOLS.includes(t), `${t} must not be in MEMBER_TOOLS`);
   }
   for (const role of ['guest', 'member'] as const) {
     const surface = toolsForRole(role);
@@ -452,7 +435,7 @@ test('SECURITY: link_member and unlink_member are admin-only, never reachable by
   const tools = ['mcp__community__link_member', 'mcp__community__unlink_member'];
   for (const t of tools) {
     assert.ok(ADMIN_TOOLS.includes(t), `${t} must be in ADMIN_TOOLS`);
-    assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(t), `${t} must not be in MEMBER_TOOLS`);
+    assert.ok(!MEMBER_TOOLS.includes(t), `${t} must not be in MEMBER_TOOLS`);
   }
   for (const role of ['guest', 'member'] as const) {
     const surface = toolsForRole(role);
@@ -467,10 +450,7 @@ test('SECURITY: link_member and unlink_member are admin-only, never reachable by
 test('SECURITY: list_context_digests is admin-only — digests derive from member content and never reach member turns (issue #51)', () => {
   const tool = 'mcp__community__list_context_digests';
   assert.ok(ADMIN_TOOLS.includes(tool), 'list_context_digests must be in ADMIN_TOOLS');
-  assert.ok(
-    !(MEMBER_TOOLS as readonly string[]).includes(tool),
-    'list_context_digests must not be in MEMBER_TOOLS',
-  );
+  assert.ok(!MEMBER_TOOLS.includes(tool), 'list_context_digests must not be in MEMBER_TOOLS');
   for (const role of ['guest', 'member'] as const) {
     assert.ok(!toolsForRole(role).includes(tool), `${role} must not reach list_context_digests`);
   }
@@ -487,7 +467,7 @@ test('SECURITY: list_knowledge_candidates/accept_knowledge_candidate/decline_kno
   ];
   for (const t of tools) {
     assert.ok(ADMIN_TOOLS.includes(t), `${t} must be in ADMIN_TOOLS`);
-    assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(t), `${t} must not be in MEMBER_TOOLS`);
+    assert.ok(!MEMBER_TOOLS.includes(t), `${t} must not be in MEMBER_TOOLS`);
   }
   for (const role of ['guest', 'member'] as const) {
     const surface = toolsForRole(role);
@@ -502,12 +482,9 @@ test('SECURITY: list_knowledge_candidates/accept_knowledge_candidate/decline_kno
 test('SECURITY: list_knowledge_gaps is admin-only, conversation-scoped like question_digest — the below-floor knowledge_search miss signal never reaches member/guest turns (issue #208)', () => {
   const tool = 'mcp__community__list_knowledge_gaps';
   assert.ok(ADMIN_TOOLS.includes(tool), 'list_knowledge_gaps must be in ADMIN_TOOLS');
+  assert.ok(!MEMBER_TOOLS.includes(tool), 'list_knowledge_gaps must not be in MEMBER_TOOLS');
   assert.ok(
-    !(MEMBER_TOOLS as readonly string[]).includes(tool),
-    'list_knowledge_gaps must not be in MEMBER_TOOLS',
-  );
-  assert.ok(
-    !(SUPER_ADMIN_TOOLS as readonly string[]).includes(tool),
+    !SUPER_ADMIN_TOOLS.includes(tool),
     'list_knowledge_gaps must not be exclusively a SUPER_ADMIN_TOOLS entry',
   );
   for (const role of ['guest', 'member'] as const) {
@@ -521,9 +498,9 @@ test('SECURITY: list_knowledge_gaps is admin-only, conversation-scoped like ques
 test('SECURITY: admin_digest is admin-tier — never reachable by member/guest, and not exclusively super-admin (issue #499)', () => {
   const tool = 'mcp__community__admin_digest';
   assert.ok(ADMIN_TOOLS.includes(tool), 'admin_digest must be in ADMIN_TOOLS');
-  assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(tool), 'admin_digest must not be in MEMBER_TOOLS');
+  assert.ok(!MEMBER_TOOLS.includes(tool), 'admin_digest must not be in MEMBER_TOOLS');
   assert.ok(
-    !(SUPER_ADMIN_TOOLS as readonly string[]).includes(tool),
+    !SUPER_ADMIN_TOOLS.includes(tool),
     'admin_digest must not be exclusively a SUPER_ADMIN_TOOLS entry',
   );
   for (const role of ['guest', 'member'] as const) {
@@ -537,11 +514,8 @@ test('SECURITY: admin_digest is admin-tier — never reachable by member/guest, 
 test('SECURITY: create_poll is admin-tier — never reachable by member/guest (issue #228)', () => {
   const tool = 'mcp__community__create_poll';
   assert.ok(ADMIN_TOOLS.includes(tool), 'create_poll must be in ADMIN_TOOLS');
-  assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(tool), 'create_poll must not be in MEMBER_TOOLS');
-  assert.ok(
-    !(SUPER_ADMIN_TOOLS as readonly string[]).includes(tool),
-    'create_poll must not be double-listed in SUPER_ADMIN_TOOLS',
-  );
+  assert.ok(!MEMBER_TOOLS.includes(tool), 'create_poll must not be in MEMBER_TOOLS');
+  assert.ok(!SUPER_ADMIN_TOOLS.includes(tool), 'create_poll must not be double-listed in SUPER_ADMIN_TOOLS');
   for (const role of ['guest', 'member'] as const) {
     assert.ok(!toolsForRole(role).includes(tool), `${role} must not reach create_poll`);
   }
@@ -553,11 +527,8 @@ test('SECURITY: create_poll is admin-tier — never reachable by member/guest (i
 test('SECURITY: create_thread / archive_thread are admin-tier — never reachable by member/guest (issue #229)', () => {
   for (const tool of ['mcp__community__create_thread', 'mcp__community__archive_thread']) {
     assert.ok(ADMIN_TOOLS.includes(tool), `${tool} must be in ADMIN_TOOLS`);
-    assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(tool), `${tool} must not be in MEMBER_TOOLS`);
-    assert.ok(
-      !(SUPER_ADMIN_TOOLS as readonly string[]).includes(tool),
-      `${tool} must not be double-listed in SUPER_ADMIN_TOOLS`,
-    );
+    assert.ok(!MEMBER_TOOLS.includes(tool), `${tool} must not be in MEMBER_TOOLS`);
+    assert.ok(!SUPER_ADMIN_TOOLS.includes(tool), `${tool} must not be double-listed in SUPER_ADMIN_TOOLS`);
     for (const role of ['guest', 'member'] as const) {
       assert.ok(!toolsForRole(role).includes(tool), `${role} must not reach ${tool}`);
     }
@@ -570,11 +541,8 @@ test('SECURITY: create_thread / archive_thread are admin-tier — never reachabl
 test('SECURITY: create_event is admin-tier — never reachable by member/guest (issue #230)', () => {
   const tool = 'mcp__community__create_event';
   assert.ok(ADMIN_TOOLS.includes(tool), 'create_event must be in ADMIN_TOOLS');
-  assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(tool), 'create_event must not be in MEMBER_TOOLS');
-  assert.ok(
-    !(SUPER_ADMIN_TOOLS as readonly string[]).includes(tool),
-    'create_event must not be double-listed in SUPER_ADMIN_TOOLS',
-  );
+  assert.ok(!MEMBER_TOOLS.includes(tool), 'create_event must not be in MEMBER_TOOLS');
+  assert.ok(!SUPER_ADMIN_TOOLS.includes(tool), 'create_event must not be double-listed in SUPER_ADMIN_TOOLS');
   for (const role of ['guest', 'member'] as const) {
     assert.ok(!toolsForRole(role).includes(tool), `${role} must not reach create_event`);
   }
@@ -586,11 +554,8 @@ test('SECURITY: create_event is admin-tier — never reachable by member/guest (
 test('SECURITY: cancel_event is admin-tier — never reachable by member/guest (issue #424)', () => {
   const tool = 'mcp__community__cancel_event';
   assert.ok(ADMIN_TOOLS.includes(tool), 'cancel_event must be in ADMIN_TOOLS');
-  assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(tool), 'cancel_event must not be in MEMBER_TOOLS');
-  assert.ok(
-    !(SUPER_ADMIN_TOOLS as readonly string[]).includes(tool),
-    'cancel_event must not be double-listed in SUPER_ADMIN_TOOLS',
-  );
+  assert.ok(!MEMBER_TOOLS.includes(tool), 'cancel_event must not be in MEMBER_TOOLS');
+  assert.ok(!SUPER_ADMIN_TOOLS.includes(tool), 'cancel_event must not be double-listed in SUPER_ADMIN_TOOLS');
   for (const role of ['guest', 'member'] as const) {
     assert.ok(!toolsForRole(role).includes(tool), `${role} must not reach cancel_event`);
   }
@@ -602,8 +567,8 @@ test('SECURITY: cancel_event is admin-tier — never reachable by member/guest (
 test('SECURITY: redeploy_bot is super-admin only (issue #101) — never reachable by admin/member/guest', () => {
   const tool = 'mcp__community__redeploy_bot';
   assert.ok(SUPER_ADMIN_TOOLS.includes(tool), 'redeploy_bot must be in SUPER_ADMIN_TOOLS');
-  assert.ok(!(ADMIN_TOOLS as readonly string[]).includes(tool), 'redeploy_bot must not be in ADMIN_TOOLS');
-  assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(tool), 'redeploy_bot must not be in MEMBER_TOOLS');
+  assert.ok(!ADMIN_TOOLS.includes(tool), 'redeploy_bot must not be in ADMIN_TOOLS');
+  assert.ok(!MEMBER_TOOLS.includes(tool), 'redeploy_bot must not be in MEMBER_TOOLS');
   for (const role of ['guest', 'member', 'admin'] as const) {
     assert.ok(!toolsForRole(role).includes(tool), `${role} must not reach redeploy_bot`);
   }
@@ -613,8 +578,8 @@ test('SECURITY: redeploy_bot is super-admin only (issue #101) — never reachabl
 test('SECURITY: list_admins is super-admin only (who currently holds bot-admin tier) — never reachable by admin/member/guest (issue #428)', () => {
   const tool = 'mcp__community__list_admins';
   assert.ok(SUPER_ADMIN_TOOLS.includes(tool), 'list_admins must be in SUPER_ADMIN_TOOLS');
-  assert.ok(!(ADMIN_TOOLS as readonly string[]).includes(tool), 'list_admins must not be in ADMIN_TOOLS');
-  assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(tool), 'list_admins must not be in MEMBER_TOOLS');
+  assert.ok(!ADMIN_TOOLS.includes(tool), 'list_admins must not be in ADMIN_TOOLS');
+  assert.ok(!MEMBER_TOOLS.includes(tool), 'list_admins must not be in MEMBER_TOOLS');
   for (const role of ['guest', 'member', 'admin'] as const) {
     assert.ok(!toolsForRole(role).includes(tool), `${role} must not reach list_admins`);
   }
@@ -624,11 +589,8 @@ test('SECURITY: list_admins is super-admin only (who currently holds bot-admin t
 test('SECURITY: admin_activity is super-admin only (per-admin action-volume rollup) — never reachable by admin/member/guest (issue #488)', () => {
   const tool = 'mcp__community__admin_activity';
   assert.ok(SUPER_ADMIN_TOOLS.includes(tool), 'admin_activity must be in SUPER_ADMIN_TOOLS');
-  assert.ok(!(ADMIN_TOOLS as readonly string[]).includes(tool), 'admin_activity must not be in ADMIN_TOOLS');
-  assert.ok(
-    !(MEMBER_TOOLS as readonly string[]).includes(tool),
-    'admin_activity must not be in MEMBER_TOOLS',
-  );
+  assert.ok(!ADMIN_TOOLS.includes(tool), 'admin_activity must not be in ADMIN_TOOLS');
+  assert.ok(!MEMBER_TOOLS.includes(tool), 'admin_activity must not be in MEMBER_TOOLS');
   for (const role of ['guest', 'member', 'admin'] as const) {
     assert.ok(!toolsForRole(role).includes(tool), `${role} must not reach admin_activity`);
   }
@@ -638,14 +600,8 @@ test('SECURITY: admin_activity is super-admin only (per-admin action-volume roll
 test('SECURITY: engagement_stats is super-admin only (issue #419) — never admin/member/guest', () => {
   const tool = 'mcp__community__engagement_stats';
   assert.ok(SUPER_ADMIN_TOOLS.includes(tool), 'engagement_stats must be in SUPER_ADMIN_TOOLS');
-  assert.ok(
-    !(ADMIN_TOOLS as readonly string[]).includes(tool),
-    'engagement_stats must not be in ADMIN_TOOLS',
-  );
-  assert.ok(
-    !(MEMBER_TOOLS as readonly string[]).includes(tool),
-    'engagement_stats must not be in MEMBER_TOOLS',
-  );
+  assert.ok(!ADMIN_TOOLS.includes(tool), 'engagement_stats must not be in ADMIN_TOOLS');
+  assert.ok(!MEMBER_TOOLS.includes(tool), 'engagement_stats must not be in MEMBER_TOOLS');
   for (const role of ['guest', 'member', 'admin'] as const) {
     assert.ok(!toolsForRole(role).includes(tool), `${role} must not reach engagement_stats`);
   }
@@ -655,8 +611,8 @@ test('SECURITY: engagement_stats is super-admin only (issue #419) — never admi
 test("SECURITY: suggest_issue is super-admin only (issue-filing = the bot's only repo write credential) — never admin/member/guest", () => {
   const tool = 'mcp__community__suggest_issue';
   assert.ok(SUPER_ADMIN_TOOLS.includes(tool), 'suggest_issue must be in SUPER_ADMIN_TOOLS');
-  assert.ok(!(ADMIN_TOOLS as readonly string[]).includes(tool), 'suggest_issue must not be in ADMIN_TOOLS');
-  assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(tool), 'suggest_issue must not be in MEMBER_TOOLS');
+  assert.ok(!ADMIN_TOOLS.includes(tool), 'suggest_issue must not be in ADMIN_TOOLS');
+  assert.ok(!MEMBER_TOOLS.includes(tool), 'suggest_issue must not be in MEMBER_TOOLS');
   for (const role of ['guest', 'member', 'admin'] as const) {
     assert.ok(!toolsForRole(role).includes(tool), `${role} must not reach suggest_issue`);
   }
@@ -671,8 +627,8 @@ test('SECURITY: dev_team_dispatch / dev_team_status / dev_team_result are super-
   ];
   for (const t of tools) {
     assert.ok(SUPER_ADMIN_TOOLS.includes(t), `${t} must be in SUPER_ADMIN_TOOLS`);
-    assert.ok(!(ADMIN_TOOLS as readonly string[]).includes(t), `${t} must not be in ADMIN_TOOLS`);
-    assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(t), `${t} must not be in MEMBER_TOOLS`);
+    assert.ok(!ADMIN_TOOLS.includes(t), `${t} must not be in ADMIN_TOOLS`);
+    assert.ok(!MEMBER_TOOLS.includes(t), `${t} must not be in MEMBER_TOOLS`);
   }
   for (const role of ['guest', 'member', 'admin'] as const) {
     const surface = toolsForRole(role);
@@ -685,18 +641,9 @@ test('SECURITY: dev_team_dispatch / dev_team_status / dev_team_result are super-
 
 test('SECURITY: dev_team_backlog is super-admin only — never reachable by admin/member/guest (drives the dev-team service with its bearer credential, same trust floor as the other dev_team_* tools)', () => {
   const tool = 'mcp__community__dev_team_backlog';
-  assert.ok(
-    (SUPER_ADMIN_TOOLS as readonly string[]).includes(tool),
-    'dev_team_backlog must be in SUPER_ADMIN_TOOLS',
-  );
-  assert.ok(
-    !(ADMIN_TOOLS as readonly string[]).includes(tool),
-    'dev_team_backlog must not be in ADMIN_TOOLS',
-  );
-  assert.ok(
-    !(MEMBER_TOOLS as readonly string[]).includes(tool),
-    'dev_team_backlog must not be in MEMBER_TOOLS',
-  );
+  assert.ok(SUPER_ADMIN_TOOLS.includes(tool), 'dev_team_backlog must be in SUPER_ADMIN_TOOLS');
+  assert.ok(!ADMIN_TOOLS.includes(tool), 'dev_team_backlog must not be in ADMIN_TOOLS');
+  assert.ok(!MEMBER_TOOLS.includes(tool), 'dev_team_backlog must not be in MEMBER_TOOLS');
   for (const role of ['guest', 'member', 'admin'] as const) {
     assert.ok(!toolsForRole(role).includes(tool), `${role} must not reach dev_team_backlog`);
   }
@@ -706,9 +653,9 @@ test('SECURITY: dev_team_backlog is super-admin only — never reachable by admi
 test('SECURITY: dev_team_findings / dev_team_verify are super-admin only — never reachable by admin/member/guest (drive the dev-team service with its bearer credential; verify additionally dispatches a paid remote job)', () => {
   const tools = ['mcp__community__dev_team_findings', 'mcp__community__dev_team_verify'];
   for (const t of tools) {
-    assert.ok((SUPER_ADMIN_TOOLS as readonly string[]).includes(t), `${t} must be in SUPER_ADMIN_TOOLS`);
-    assert.ok(!(ADMIN_TOOLS as readonly string[]).includes(t), `${t} must not be in ADMIN_TOOLS`);
-    assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(t), `${t} must not be in MEMBER_TOOLS`);
+    assert.ok(SUPER_ADMIN_TOOLS.includes(t), `${t} must be in SUPER_ADMIN_TOOLS`);
+    assert.ok(!ADMIN_TOOLS.includes(t), `${t} must not be in ADMIN_TOOLS`);
+    assert.ok(!MEMBER_TOOLS.includes(t), `${t} must not be in MEMBER_TOOLS`);
   }
   for (const role of ['guest', 'member', 'admin'] as const) {
     const surface = toolsForRole(role);
@@ -727,8 +674,8 @@ test('SECURITY: assign_community_role / remove_community_role / list_assignable_
   ];
   for (const t of tools) {
     assert.ok(ADMIN_TOOLS.includes(t), `${t} must be in ADMIN_TOOLS`);
-    assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(t), `${t} must not be in MEMBER_TOOLS`);
-    assert.ok(!(SUPER_ADMIN_TOOLS as readonly string[]).includes(t), `${t} must not be super-admin-only`);
+    assert.ok(!MEMBER_TOOLS.includes(t), `${t} must not be in MEMBER_TOOLS`);
+    assert.ok(!SUPER_ADMIN_TOOLS.includes(t), `${t} must not be super-admin-only`);
   }
   for (const role of ['guest', 'member'] as const) {
     for (const t of tools) {
@@ -790,11 +737,8 @@ test('SECURITY: every project-management tool is admin-tier, never member or gue
   ];
   for (const tool of adminProjectTools) {
     assert.ok(ADMIN_TOOLS.includes(tool), `${tool} must be in ADMIN_TOOLS`);
-    assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(tool), `${tool} must not be in MEMBER_TOOLS`);
-    assert.ok(
-      !(SUPER_ADMIN_TOOLS as readonly string[]).includes(tool),
-      `${tool} must not be duplicated into SUPER_ADMIN_TOOLS`,
-    );
+    assert.ok(!MEMBER_TOOLS.includes(tool), `${tool} must not be in MEMBER_TOOLS`);
+    assert.ok(!SUPER_ADMIN_TOOLS.includes(tool), `${tool} must not be duplicated into SUPER_ADMIN_TOOLS`);
     for (const role of ['guest', 'member'] as const) {
       assert.ok(!toolsForRole(role).includes(tool), `${role} must not reach ${tool}`);
     }
@@ -814,7 +758,7 @@ test('SECURITY: the three member-tier project tools are on every member surface,
     'mcp__community__project_list',
   ];
   for (const tool of memberProjectTools) {
-    assert.ok((MEMBER_TOOLS as readonly string[]).includes(tool), `${tool} must be in MEMBER_TOOLS`);
+    assert.ok(MEMBER_TOOLS.includes(tool), `${tool} must be in MEMBER_TOOLS`);
     assert.ok(!ADMIN_TOOLS.includes(tool), `${tool} must not be admin-gated`);
     for (const role of ['member', 'admin', 'super_admin'] as const) {
       assert.ok(toolsForRole(role).includes(tool), `${role} must reach ${tool}`);

@@ -10,95 +10,33 @@ process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 
 const { closeDb } = await import('../src/storage/db.js');
-const { TOOL_REGISTRY } = await import('../src/agent/tools/index.js');
+const { config } = await import('../src/config.js');
+const { TOOL_REGISTRY, flaggedToolPredicates } = await import('../src/agent/tools/index.js');
 const { buildToolServer } = await import('../src/agent/tools.js');
 const { MEMBER_TOOLS, ADMIN_TOOLS, SUPER_ADMIN_TOOLS, toolsForRole } = await import('../src/auth/rbac.js');
+const { filterFeatureFlaggedTools } = await import('../src/agent/core.js');
 
 after(async () => {
   await closeDb();
 });
 
-// During the strangler migration (docs/TOOL-REGISTRY-DESIGN.md §4) there are
-// two sources of truth for a converted tool's tier/platform/flag metadata:
-// its ToolDef and the still-authoritative hand arrays in src/auth/rbac.ts /
-// src/agent/core.ts. This file is what makes that safe — it fails the build
-// the moment the registry and the hand arrays disagree, for every converted
-// tool, and grows automatically as later stages convert more domains.
+// The registry (src/agent/tools/index.ts) is THE single source of truth for
+// every tool's name, tier, platform restriction and feature flag — rbac.ts's
+// tier arrays, toolsForRole's platform filtering and core.ts's flag filter
+// are all DERIVED from it (docs/TOOL-REGISTRY-DESIGN.md §2's flip). The old
+// strangler-era cross-checks against the hand arrays became tautological the
+// moment those arrays were derived; what this file pins instead are the
+// registry's own structural invariants, which no longer hold "by
+// convention" anywhere else.
 
 const prefixed = (name: string) => `mcp__community__${name}`;
 
-test('SECURITY: every registry def is listed in exactly the rbac tier array matching its minTier', () => {
-  const tierArrays: Record<'member' | 'admin' | 'super_admin', readonly string[]> = {
-    member: MEMBER_TOOLS,
-    admin: ADMIN_TOOLS,
-    super_admin: SUPER_ADMIN_TOOLS,
-  };
-  for (const def of TOOL_REGISTRY) {
-    for (const [tier, arr] of Object.entries(tierArrays)) {
-      const listed = arr.includes(prefixed(def.name));
-      if (tier === def.minTier) {
-        assert.equal(
-          listed,
-          true,
-          `${def.name}: declared minTier '${def.minTier}' but ${prefixed(def.name)} is missing from that rbac tier array`,
-        );
-      } else {
-        assert.equal(
-          listed,
-          false,
-          `${def.name}: declared minTier '${def.minTier}' but ${prefixed(def.name)} also appears in the '${tier}' rbac tier array`,
-        );
-      }
-    }
-  }
-});
-
-test("SECURITY: a registry def declares platforms:['discord'] iff rbac's platform filter drops it on WhatsApp", () => {
-  const onDiscord = new Set(toolsForRole('super_admin', 'discord'));
-  const onWhatsapp = new Set(toolsForRole('super_admin', 'whatsapp'));
-  for (const def of TOOL_REGISTRY) {
-    const name = prefixed(def.name);
-    assert.equal(onDiscord.has(name), true, `${def.name}: not offered to super_admin on Discord at all`);
-    const discordOnlyPerRbac = !onWhatsapp.has(name);
-    const discordOnlyPerDef =
-      def.platforms !== undefined && def.platforms.length === 1 && def.platforms[0] === 'discord';
-    assert.equal(
-      discordOnlyPerDef,
-      discordOnlyPerRbac,
-      `${def.name}: registry platforms metadata (${JSON.stringify(def.platforms)}) disagrees with rbac's DISCORD_ONLY_TOOLS filtering`,
-    );
-  }
-});
-
-test("SECURITY: a registry def carries a featureFlag predicate iff core.ts's FEATURE_FLAGGED_TOOL_GROUPS names it", () => {
-  // Hand-copied from src/agent/core.ts's FEATURE_FLAGGED_TOOL_GROUPS (the
-  // authoritative list until the flip): the 10 tools gated behind a config
-  // flag today. When a group is added/removed there, update this set in the
-  // same diff — that's the point of the cross-check.
-  const flagged = new Set([
-    'generate_image',
-    'suggest_issue',
-    'dev_team_dispatch',
-    'dev_team_status',
-    'dev_team_result',
-    'dev_team_backlog',
-    'dev_team_findings',
-    'dev_team_verify',
-    'set_helper_availability',
-    'find_helper',
-  ]);
-  for (const def of TOOL_REGISTRY) {
-    assert.equal(
-      def.featureFlag !== undefined,
-      flagged.has(def.name),
-      `${def.name}: featureFlag presence (${String(def.featureFlag !== undefined)}) disagrees with core.ts's flagged set`,
-    );
-  }
-});
-
-test('registry names are unique and every def is actually registered on a built server', () => {
+test('registry names are unique, exactly 117 defs, and every def is registered on a built server', () => {
   const names = TOOL_REGISTRY.map((def) => def.name);
   assert.equal(new Set(names).size, names.length, 'duplicate tool name in TOOL_REGISTRY');
+  // The full inventory at the flip. A change here must be a conscious tool
+  // addition/removal, never a domain file falling out of the registry.
+  assert.equal(names.length, 117);
 
   const adapter = {
     platform: 'discord',
@@ -132,7 +70,89 @@ test('registry names are unique and every def is actually registered on a built 
   for (const name of names) {
     assert.ok(name in registered, `${name}: in TOOL_REGISTRY but not registered on the MCP server`);
   }
-  // The strangle must never drop or duplicate a tool: registry-built tools
-  // plus the remaining closure tools must still total exactly 117.
-  assert.equal(Object.keys(registered).length, 117);
+  assert.equal(Object.keys(registered).length, names.length, 'server registered tools beyond the registry');
+});
+
+test('SECURITY: the derived tier arrays partition the registry — every def in exactly the array matching its minTier, no overlap', () => {
+  const tierArrays: Record<'member' | 'admin' | 'super_admin', readonly string[]> = {
+    member: MEMBER_TOOLS,
+    admin: ADMIN_TOOLS,
+    super_admin: SUPER_ADMIN_TOOLS,
+  };
+  for (const def of TOOL_REGISTRY) {
+    for (const [tier, arr] of Object.entries(tierArrays)) {
+      assert.equal(
+        arr.includes(prefixed(def.name)),
+        tier === def.minTier,
+        `${def.name} (minTier '${def.minTier}') membership in the '${tier}' tier array is wrong`,
+      );
+    }
+  }
+  // The three arrays cover the whole registry and nothing else.
+  assert.equal(MEMBER_TOOLS.length + ADMIN_TOOLS.length + SUPER_ADMIN_TOOLS.length, TOOL_REGISTRY.length);
+});
+
+test("SECURITY: toolsForRole('member', 'whatsapp') excludes every platforms:['discord'] def and still includes react_to_message", () => {
+  const onWhatsapp = new Set(toolsForRole('member', 'whatsapp'));
+  for (const def of TOOL_REGISTRY) {
+    if (def.minTier !== 'member') continue;
+    const discordOnly =
+      def.platforms !== undefined && def.platforms.length === 1 && def.platforms[0] === 'discord';
+    assert.equal(
+      onWhatsapp.has(prefixed(def.name)),
+      !discordOnly,
+      `${def.name}: platforms ${JSON.stringify(def.platforms)} vs the WhatsApp member surface disagree`,
+    );
+  }
+  // react_to_message is the canary: implemented on BOTH WhatsApp adapters
+  // (Baileys: issue #495, Cloud: issue #528), so it must never be swept up
+  // by the Discord-only platform filter.
+  assert.ok(onWhatsapp.has(prefixed('react_to_message')));
+  // And the super-admin Discord surface is the full registry, so the filter
+  // above is the only thing platform ever subtracts.
+  assert.equal(toolsForRole('super_admin', 'discord').length, TOOL_REGISTRY.length);
+});
+
+test('SECURITY: a member surface never contains an admin or super_admin def name, on either platform', () => {
+  const higher = TOOL_REGISTRY.filter((def) => def.minTier !== 'member').map((def) => prefixed(def.name));
+  for (const platform of ['discord', 'whatsapp'] as const) {
+    const member = new Set(toolsForRole('member', platform));
+    const guest = new Set(toolsForRole('guest', platform));
+    for (const name of higher) {
+      assert.ok(!member.has(name), `${name} leaked onto the member surface on ${platform}`);
+      assert.ok(!guest.has(name), `${name} leaked onto the guest surface on ${platform}`);
+    }
+  }
+});
+
+test('SECURITY: every off-flag def is dropped by filterFeatureFlaggedTools, and the filter is purely subtractive', () => {
+  const predicates = flaggedToolPredicates();
+  // Exactly the defs declaring a featureFlag are flagged — the set is
+  // derived, so this pins that derivation stayed 1:1.
+  assert.deepEqual(
+    predicates.map((p) => p.name).sort(),
+    TOOL_REGISTRY.filter((def) => def.featureFlag !== undefined)
+      .map((def) => prefixed(def.name))
+      .sort(),
+  );
+  const offNames = predicates.filter((p) => !p.enabled(config)).map((p) => p.name);
+  // This test file's dummy env leaves every gating flag at its false
+  // default, so the off set must be the whole flagged set here — if this
+  // env ever changes, the assertion below still covers whatever is off.
+  assert.ok(offNames.length > 0, 'expected at least one off-flag tool under the test env');
+  const full = toolsForRole('super_admin', 'discord');
+  const filtered = filterFeatureFlaggedTools(full);
+  for (const name of offNames) {
+    assert.ok(full.includes(name), `${name} missing from the unfiltered surface`);
+    assert.ok(!filtered.includes(name), `${name} offered while its feature flag is off`);
+  }
+  // Purely subtractive: everything the filter kept was already offered, and
+  // nothing unflagged was touched.
+  const fullSet = new Set(full);
+  assert.ok(filtered.every((t) => fullSet.has(t)));
+  const offSet = new Set(offNames);
+  assert.deepEqual(
+    filtered,
+    full.filter((t) => !offSet.has(t)),
+  );
 });

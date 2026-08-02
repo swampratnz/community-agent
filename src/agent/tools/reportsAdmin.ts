@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { Platform } from '../../platforms/types.js';
-import { assertAtLeast } from '../../auth/rbac.js';
+import { assertAtLeast } from '../../auth/tiers.js';
 import { sanitizeName } from '../../util/sanitizeName.js';
 import { listReports, resolveContentReport, resolveLinkedIdentities } from '../../storage/repository.js';
 import { text, untrusted } from './helpers.js';

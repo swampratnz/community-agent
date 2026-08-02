@@ -30,6 +30,12 @@ function reserveReactionDaily(key: string): boolean {
 }
 
 export const reactionsTools = [
+  // Lightweight emoji acknowledgement (issue #231): closed positive/neutral
+  // allowlist only, and only on a message the bot has actually seen in this
+  // conversation — same "validate targets" discipline as moderate/announce,
+  // just scoped to the caller's own conversation rather than an admin's set.
+  // Implemented on Discord and both WhatsApp adapters (Baileys: issue #495,
+  // Cloud: issue #528) — NOT platform-filtered, unlike list_events.
   defineTool({
     name: 'react_to_message',
     description:

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { assertAtLeast } from '../../auth/rbac.js';
+import { assertAtLeast } from '../../auth/tiers.js';
 import { config } from '../../config.js';
 import { makeSlidingWindowReserver } from '../../util/rateReservation.js';
 import { isKnownConversation, isKnownMessage } from '../../storage/repository.js';

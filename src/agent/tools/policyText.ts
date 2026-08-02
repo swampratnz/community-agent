@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { assertAtLeast } from '../../auth/rbac.js';
+import { assertAtLeast } from '../../auth/tiers.js';
 import { updatePolicy } from '../../storage/policies.js';
 import { text } from './helpers.js';
 import { defineTool } from './types.js';
@@ -26,6 +26,8 @@ export const COMMUNITY_GUIDELINES_MAX_CHARS = 1500;
 export const WELCOME_MESSAGE_MAX_CHARS = 400;
 
 export const policyTextTools = [
+  // Content curation, same tier as save_knowledge — not super-admin like
+  // set_policy, which is runtime bot control (issue #212).
   defineTool({
     name: 'set_community_guidelines',
     description:
@@ -64,6 +66,8 @@ export const policyTextTools = [
     },
   }),
 
+  // Sibling of set_community_guidelines (issue #253): same admin/audited/no-
+  // CONFIRM shape, configures the other half of the new-member welcome text.
   defineTool({
     name: 'set_welcome_message',
     description:
