@@ -1,6 +1,7 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
+import { makeAlertSlotReserver } from '../notifications.js';
 import type { Platform } from '../platforms/types.js';
 import {
   recordBackgroundJobCost,
@@ -228,8 +229,6 @@ const MODERATION_ALERT_SUMMARY_DEBOUNCE_MS = 10_000;
 export class Moderator {
   constructor(private readonly deps: ModeratorDeps) {}
 
-  /** Timestamps of posted admin alerts, for the guild-wide rolling-hour cap (issue #517). */
-  private readonly alertTimestamps: number[] = [];
   /** Alerts suppressed since the last summary flush, in the current debounce cycle. */
   private suppressedAlerts = 0;
   private summaryFlushTimer: NodeJS.Timeout | null = null;
@@ -331,21 +330,19 @@ export class Moderator {
     }
   }
 
+  /** The rolling-hour window behind `reserveAlertSlot` — the shared `makeAlertSlotReserver` shape from notifications.ts, same as router.ts's alert slots. */
+  private readonly reserveAlertSlotWindow = makeAlertSlotReserver();
+
   /**
-   * Rolling-hour cap on admin alerts (issue #517), mirroring
-   * `reserveEscalationSlot` in router.ts exactly: filter timestamps older
-   * than an hour, push the new one, compare against the limit. Guild-wide
-   * (not per-user/per-channel) — a multi-account raid can't buy extra slots
-   * by spreading hits across identities.
+   * Rolling-hour cap on admin alerts (issue #517), the same guild-wide
+   * sliding window as `reserveEscalationSlot` in router.ts — guild-wide
+   * (not per-user/per-channel) so a multi-account raid can't buy extra
+   * slots by spreading hits across identities. Reads the limit from
+   * `deps` at call time, which is why this stays a method over the window
+   * rather than binding the limit at construction.
    */
   private reserveAlertSlot(): boolean {
-    const now = Date.now();
-    const recent = this.alertTimestamps.filter((t) => now - t < 3_600_000);
-    this.alertTimestamps.length = 0;
-    this.alertTimestamps.push(...recent);
-    if (this.alertTimestamps.length >= this.deps.alertRateLimitPerHour) return false;
-    this.alertTimestamps.push(now);
-    return true;
+    return this.reserveAlertSlotWindow(this.deps.alertRateLimitPerHour);
   }
 
   /**

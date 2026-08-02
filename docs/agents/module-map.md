@@ -60,6 +60,7 @@ is marked **🔒**. Changes there need a `SECURITY:` test (see
 - `src/memberDigest.ts` — The member-facing digest of recent community activity, built from PII-scrubbed aggregates rather than raw messages.
 - `src/moderation/` — Two-stage moderation: a zero-cost wordlist pass, then a model pass, with admins and super admins exempt. The enforcer is injected so the platform side stays swappable.
 - `src/mutedRoleAlertNotice.ts` — Pure debounce for the super-admin alert raised when Discord muted-role permission overwrites exhaust their retries.
+- `src/notifications.ts` — The shared super-admin DM fan-out every alert producer delegates to (connected-adapters-only, window-reopen queueing, optional queue-on-outage), plus the rolling-hour alert-slot reserver factory behind the router's and moderator's guild-wide alert caps.
 - `src/pauseNotice.ts` — Pure debounce for the "the bot is paused" reply, on a longer window than the rate-limit notice because a pause is longer-lived.
 - `src/pendingAlertQueue.ts` — Best-effort queue for super-admin alerts raised while every adapter was disconnected, so an alert during an outage is not simply lost.
 - `src/platforms/` — 🔒 The platform abstraction plus the Discord and WhatsApp (Baileys and Cloud API) adapters. Adapters own the send path, so outbound filtering and chunking live at their edges.

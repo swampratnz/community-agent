@@ -1,6 +1,5 @@
 import { config } from './config.js';
 import { logger } from './logger.js';
-import { superAdminIds } from './auth/roles.js';
 import { startTrackedJob } from './backgroundJobs.js';
 import {
   getLastUsageCostDigestCacheHitRate,
@@ -9,7 +8,7 @@ import {
   usageStats,
   wasUsageCostDigestSentRecently,
 } from './storage/repository.js';
-import { WindowClosedError } from './platforms/types.js';
+import { alertSuperAdmins as sendSuperAdminAlert } from './notifications.js';
 import type { PlatformAdapter } from './platforms/types.js';
 
 /** Same weekly window as `adminDigest.ts`'s `FRESHNESS_DAYS` — this signal targets the same ~7-day cadence. */
@@ -165,21 +164,13 @@ export function startUsageCostDigest(
   return startTrackedJob('usage-cost-digest', adapters, config.usageCostDigest.enabled, runOnce);
 }
 
+// `queueWhenDisconnected: false` — a fully-disconnected outage drops this
+// digest rather than queueing it: the weekly cadence re-reports current
+// numbers on the next due tick, so a queued copy would only deliver a stale
+// week-over-week comparison on reconnect.
 async function alertSuperAdmins(adapters: readonly PlatformAdapter[], message: string): Promise<void> {
-  for (const adapter of adapters) {
-    if (!adapter.isConnected()) continue; // can't send through a dead connection
-    for (const id of superAdminIds(adapter.platform)) {
-      adapter.sendDirectMessage(id, message).catch((err) => {
-        if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
-          adapter.queueForWindowReopen(id, message, 'system');
-          logger.warn(
-            { platform: adapter.platform, id },
-            'Cost-trend digest: recipient window closed, queued for reopen',
-          );
-          return;
-        }
-        logger.warn({ err, platform: adapter.platform, id }, 'Cost-trend digest DM failed');
-      });
-    }
-  }
+  await sendSuperAdminAlert(adapters, message, {
+    label: 'Cost-trend digest',
+    queueWhenDisconnected: false,
+  });
 }
