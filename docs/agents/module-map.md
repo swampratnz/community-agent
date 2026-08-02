@@ -34,7 +34,14 @@ is marked **🔒**. Changes there need a `SECURITY:` test (see
 - `src/agent/secrets.ts` — 🔒 `runtimeSecrets()`: the exact-value secret list the outbound filter redacts as a backstop against unknown egress paths. Add every new outward credential here.
 - `src/agent/skills/` — 🔒 One `SKILL.md` per Agent Skill, plus the plugin manifest. Loaded only when `AGENT_SKILLS_ENABLED`, and only the hand-written `ENABLED_SKILLS` allowlist in `core.ts` — never derived from request content.
 - `src/agent/systemPrompt.ts` — 🔒 Assembles the system prompt: security guidelines, persona voice rules, and the NZ-date grounding. Voice rules never override the security section above them.
-- `src/agent/tools.ts` — 🔒 Every tool implementation plus its tier requirement. By far the largest file in the repo; find your tool by name before reading anything else.
+- `src/agent/tools.ts` — 🔒 The barrel for the tool-registry split (re-exports every moved helper/notify/registry symbol) plus the remaining unconverted closure tools in `buildToolServer`. Still large; find your tool by name before reading anything else.
+- `src/agent/tools/context.ts` — 🔒 `makeToolContext`: the per-turn tool kernel — owns `audited` (audit row + super-admin alert pairing) and `requireConfirm` (the CONFIRM gate's forgeable-pending-notice sanitize strip), plus `adapterFor`/`callerScope`/`resolveMemberTarget`.
+- `src/agent/tools/devTeam.ts` — The `dev_team_*` ToolDef domain (dispatch/status/result/backlog/findings/verify) plus its per-super-admin daily dispatch reserver.
+- `src/agent/tools/helpers.ts` — Module-scope pure helpers shared by tool domains: `text()`/`untrusted()` result wrappers, the knowledge/usage/dev-team formatters, the feature-flag allowlists, and shared zod fragments.
+- `src/agent/tools/imageGen.ts` — The `generate_image` ToolDef domain plus its in-flight set and per-user daily reserver.
+- `src/agent/tools/index.ts` — 🔒 `TOOL_REGISTRY`: the declarative tool inventory composed from the per-domain ToolDef arrays; `tests/toolRegistry.test.ts` cross-checks its tier/platform/flag metadata against rbac.ts/core.ts until the flip.
+- `src/agent/tools/notify.ts` — The notify family (super-admin/admin fan-out, approval/resolution DMs) with window-reopen queueing, plus `applyManualWarnStrike`/`ackReportedMessage` side-effect helpers.
+- `src/agent/tools/types.ts` — `ToolDef`/`ToolContext`/`defineTool`: the declarative registry's type surface (docs/TOOL-REGISTRY-DESIGN.md).
 - `src/agent/webSearchGuard.ts` — 🔒 The WebSearch PreToolUse guard: per-conversation hourly volume cap, exact-then-embedding query dedup, and the per-conversation lock keeping check-then-record atomic. Fail-closed by contract — a thrown `embed()` denies the call.
 - `src/auth/` — 🔒 Identity and role resolution: tiers come from env plus the `community_users` table, never from message content. Three files, all small and worth reading in full.
 - `src/backgroundJobCostAlert.ts` — Alerts super admins when background-job spend crosses a configured threshold, so an expensive job cannot run up cost unnoticed.

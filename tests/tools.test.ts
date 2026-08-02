@@ -9023,7 +9023,9 @@ test('SECURITY: feature_flags allowlist purity — a planted secret-shaped field
 });
 
 test('SECURITY: feature_flags handler + formatter never call Object.entries/Object.values/spread on the object they read — only fixed allowlist paths are indexed (issue #559)', () => {
-  const source = readFileSync(new URL('../src/agent/tools.ts', import.meta.url), 'utf8');
+  // The formatter moved to the tool-registry split's helpers module
+  // (src/agent/tools/helpers.ts) — same assertion, scanned where it now lives.
+  const source = readFileSync(new URL('../src/agent/tools/helpers.ts', import.meta.url), 'utf8');
   const formatterStart = source.indexOf('export function formatFeatureFlags(');
   const getterStart = source.indexOf('function getConfigBoolean(');
   assert.ok(formatterStart !== -1 && getterStart !== -1, 'formatFeatureFlags/getConfigBoolean not found');
@@ -9221,7 +9223,9 @@ test('feature_flags: every OTHER_CONFIGURED_KNOBS entry resolves against the rea
 });
 
 test('SECURITY: feature_flags handler + "Other configured knobs" formatter never call Object.entries/Object.values/spread on the object they read (issue #616)', () => {
-  const source = readFileSync(new URL('../src/agent/tools.ts', import.meta.url), 'utf8');
+  // The formatter moved to the tool-registry split's helpers module
+  // (src/agent/tools/helpers.ts) — same assertion, scanned where it now lives.
+  const source = readFileSync(new URL('../src/agent/tools/helpers.ts', import.meta.url), 'utf8');
   const formatterStart = source.indexOf('export function formatOtherConfiguredKnobs(');
   assert.notEqual(formatterStart, -1, 'formatOtherConfiguredKnobs not found');
   const region = source.slice(formatterStart, source.indexOf('\n}\n', formatterStart) + 3);
