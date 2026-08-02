@@ -74,7 +74,9 @@ is marked **🔒**. Changes there need a `SECURITY:` test (see
 - `src/backgroundJobHealth.ts` — Pure consecutive-failure debounce tracker for scheduled jobs, so one outage produces one alert rather than an alert per tick.
 - `src/backgroundJobs.ts` — The scheduler: registers, tracks and runs every opt-in background job (context builder, knowledge refresh, docs ingest, retention sweeps) and records their cost.
 - `src/budgetCheckFailureNotice.ts` — Pure debounce for the single super-admin DM sent when the daily reply-budget check itself fails (a systemic condition, not a per-user one).
-- `src/config.ts` — The zod-validated environment schema and the single source of every tunable. Adding a setting starts here; the schema is what fails loudly on a bad deploy.
+- `src/config.ts` — The composition barrel: merges the per-domain slice fragments from `src/config/` into the full env schema, applies the cross-slice refine, parses once (fail-fast on a bad deploy), and exports the `config` singleton plus the pure `loadConfig(env)`.
+- `src/config/` — Per-domain zod slice fragments (each var's chain + doc comment lives with its domain) and their slice-local refinements; `env.ts` owns the one dotenv load + blank-normalisation. Adding a setting starts in the right slice here.
+- `src/config/boot.ts` — Boot-path config: validates ONLY the db+log slices so `logger.ts`/`storage/db.ts`/`storage/migrate.ts` run with just `DATABASE_URL` — what lets a bare `npm run migrate` work without the app's other required vars.
 - `src/context/` — The community-context learning loop: nightly digest builder, knowledge refresh, docs ingest, link-rot check, and the PII-scrubbed export that is the DB-to-repo privacy boundary.
 - `src/crashHandlers.ts` — Installs handlers for unhandled rejections and uncaught exceptions, so a process death always leaves a logged reason.
 - `src/dailyBudgetNotice.ts` — Static text for the daily reply-budget notice; the 24h debounce window itself is tracked inline by the router.

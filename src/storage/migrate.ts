@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { config } from '../config.js';
+import { bootConfig } from '../config/boot.js';
 import { logger } from '../logger.js';
 import { closeDb, pool } from './db.js';
 
@@ -15,9 +15,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 export async function migrate(): Promise<void> {
   const schemaPath = join(__dirname, 'schema.sql');
   const raw = await readFile(schemaPath, 'utf8');
-  const sql = raw.replaceAll(':EMBEDDING_DIM', String(config.db.embeddingDim));
+  const sql = raw.replaceAll(':EMBEDDING_DIM', String(bootConfig.db.embeddingDim));
 
-  logger.info({ embeddingDim: config.db.embeddingDim }, 'Applying database schema');
+  logger.info({ embeddingDim: bootConfig.db.embeddingDim }, 'Applying database schema');
   await pool.query(sql);
   logger.info('Database schema applied');
 }
