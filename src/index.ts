@@ -24,7 +24,8 @@ import { Router } from './router.js';
 import { makeRouterDeps } from './routerWiring.js';
 import { closeDb, healthcheck } from './storage/db.js';
 import { verifyEmbeddingDim } from './storage/repository.js';
-import { startRegisteredJobs, stopRegisteredJobs } from './jobs/registry.js';
+import { JOB_REGISTRY } from './jobs/registry.js';
+import { startRegisteredJobs, stopRegisteredJobs } from './jobs/runner.js';
 import { startHealthServer } from './health.js';
 import { assertToolAvailabilityConsistent } from './platforms/registry.js';
 import { ADAPTER_FACTORIES, createConfiguredAdapters } from './platforms/factories.js';
@@ -72,7 +73,7 @@ async function main(): Promise<void> {
   //     the old hand-wired startX() sequence exactly). Each spec keeps its
   //     own enable gate, cadence mechanism and failure-tracker wiring; a
   //     disabled job contributes a null timer that the shutdown sweep skips.
-  const jobs = startRegisteredJobs(adapters);
+  const jobs = startRegisteredJobs(JOB_REGISTRY, adapters);
 
   // 4c. The optional /healthz endpoint. Deliberately NOT a registry job: it
   //     is an HTTP server, not a timer — no cadence, no failure tracker, and

@@ -100,7 +100,8 @@ is marked **🔒**. Changes there need a `SECURITY:` test (see
 - `src/health.ts` — The HTTP health server (`/healthz`) and the adapter/DB probes behind it.
 - `src/healthState.ts` — Pure health logic (disconnect debounce, payload shape), kept import-free of config and HTTP so it is directly unit-testable.
 - `src/index.ts` — Process entry point, now a thin composition root: loads config, wires adapters and the router, starts the job registry (`src/jobs/`), and owns the single shutdown sweep's ordering.
-- `src/jobs/` — The background-job registry: `JobSpec` (open name, declarative gate, self-owned cadence) in `types.ts`, and in `registry.ts` the pinned-order `JOB_REGISTRY` plus the start/stop sweeps `index.ts` composes; each spec lives with its owning job module, only the order lives here.
+- `src/jobs/` — The background-job registry: `JobSpec` (open name, declarative gate, self-owned cadence) in `types.ts`, the pinned-order community `JOB_REGISTRY` list in `registry.ts`, and the generic start/stop sweeps in `runner.ts`; each spec lives with its owning job module, only the order lives in the list.
+- `src/jobs/runner.ts` — The base job-runner mechanism: `startRegisteredJobs(specs, adapters)`/`stopRegisteredJobs(started)` sweep whatever spec list the composition root passes (index.ts passes `JOB_REGISTRY`) — it never imports the community job list itself.
 - `src/jobs/trackedJob.ts` — `startTrackedJob`: the shared 6h tick + consecutive-failure tracker/alert wrapper most job starters use, plus the queue-on-outage super-admin alert helper the bespoke pollers share.
 - `src/logger.ts` — The pino logger plus the hashing helper used to keep identifiers out of logs.
 - `src/media/` — Local-only media handling: Whisper voice transcription for WhatsApp notes and the Grok image-generation client. Audio is transcribed on-host, never shipped to a third party.
