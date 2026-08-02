@@ -794,7 +794,7 @@ const EnvSchema = z.object({
   // member_interests/who_is_into. Off by default — both tools are dropped
   // from allowedTools entirely (never merely refused), byte-identical to
   // today for any deployment that doesn't set this, same convention as every
-  // other tool-gating flag in FEATURE_FLAGGED_TOOL_GROUPS (agent/core.ts).
+  // other tool-gating flag (ToolDef.featureFlag, filtered in agent/core.ts).
   FIND_HELPER_ENABLED: z
     .string()
     .optional()

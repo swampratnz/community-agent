@@ -249,20 +249,23 @@ test('SECURITY: router (unhelpful-answer escalation): the producer shares — ne
 });
 
 test('SECURITY: rate_answer tool handler never calls notifyAdmins directly — the notification fires only from router.ts reading the turn-scoped flag post-turn (issue #598 acceptance criterion 5)', () => {
-  const source = readFileSync(new URL('../src/agent/tools.ts', import.meta.url), 'utf8');
+  // The handler moved from the tools.ts closure into the feedback ToolDef
+  // domain (docs/TOOL-REGISTRY-DESIGN.md §3); same body, new home.
+  const source = readFileSync(new URL('../src/agent/tools/feedback.ts', import.meta.url), 'utf8');
   const defStart = source.indexOf("'rate_answer',");
   assert.notEqual(defStart, -1, 'rate_answer tool definition not found');
-  // The handler body runs from its `async (args) => {` opener through to the
-  // closing `},\n  );` that ends the `tool(...)` call — mirrors the
-  // feature_flags handler-body extraction in tests/tools.test.ts.
+  // The handler body runs from its `handler: async (args, {…}) => {` opener
+  // through to the closing `},\n  }),` that ends the `defineTool({...})`
+  // entry — mirrors the feature_flags handler-body extraction in
+  // tests/tools.test.ts.
   // Bound the region at the NEXT tool definition rather than a fixed byte
   // window: a fixed window silently went stale each time the handler grew
   // (issue #726, then the #730 review fixes), turning handler growth into a
   // spurious gate failure.
-  const nextToolDef = source.slice(defStart + 1).search(/tool\(\s*'[a-z_]+'/);
+  const nextToolDef = source.slice(defStart + 1).search(/defineTool\(\{\s*name: '[a-z_]+'/);
   const regionEnd = nextToolDef === -1 ? source.length : defStart + 1 + nextToolDef;
   const region = source.slice(defStart, regionEnd);
-  const handlerMatch = region.match(/async \(args\) => \{([\s\S]*?)\n {4}\},\n {2}\);/);
+  const handlerMatch = region.match(/handler: async \(args, \{[^)]*\}\) => \{([\s\S]*?)\n {4}\},\n {2}\}\),/);
   assert.ok(handlerMatch, 'rate_answer handler body not found');
   const body = handlerMatch[1];
   assert.doesNotMatch(

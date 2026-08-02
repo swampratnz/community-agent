@@ -262,13 +262,17 @@ test('SECURITY: router (human-help-request escalation): the producer shares — 
 
 test('SECURITY: request_human_help tool handler never calls notifyAdmins directly — the notification fires only from router.ts reading the turn-scoped flag post-turn (issue #808)', async () => {
   const { readFileSync } = await import('node:fs');
-  const source = readFileSync(new URL('../src/agent/tools.ts', import.meta.url), 'utf8');
+  // The handler moved from the tools.ts closure into the feedback ToolDef
+  // domain (docs/TOOL-REGISTRY-DESIGN.md §3); same body, new home.
+  const source = readFileSync(new URL('../src/agent/tools/feedback.ts', import.meta.url), 'utf8');
   const defStart = source.indexOf("'request_human_help',");
   assert.notEqual(defStart, -1, 'request_human_help tool definition not found');
-  const nextToolDef = source.slice(defStart + 1).search(/tool\(\s*'[a-z_]+'/);
+  const nextToolDef = source.slice(defStart + 1).search(/defineTool\(\{\s*name: '[a-z_]+'/);
   const regionEnd = nextToolDef === -1 ? source.length : defStart + 1 + nextToolDef;
   const region = source.slice(defStart, regionEnd);
-  const handlerMatch = region.match(/async \(\) => \{([\s\S]*?)\n {4}\},\n {2}\);/);
+  const handlerMatch = region.match(
+    /handler: async \(_args, \{[^)]*\}\) => \{([\s\S]*?)\n {4}\},\n {2}\}\),/,
+  );
   assert.ok(handlerMatch, 'request_human_help handler body not found');
   const body = handlerMatch[1];
   assert.doesNotMatch(

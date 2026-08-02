@@ -8995,12 +8995,15 @@ test('SECURITY: feature_flags handler refuses a forged direct call from a non-su
   // first statement in the handler body, and formatFeatureFlags (the only
   // config read) is only reached afterwards — so a refusal can never fall
   // through to a config read, not merely "usually doesn't" in practice.
-  const source = readFileSync(new URL('../src/agent/tools.ts', import.meta.url), 'utf8');
-  const defStart = source.indexOf("'feature_flags',");
+  // The tool moved to the tool-registry split's super-admin domain file
+  // (src/agent/tools/superAdmin.ts) — same assertion, scanned where it now
+  // lives.
+  const source = readFileSync(new URL('../src/agent/tools/superAdmin.ts', import.meta.url), 'utf8');
+  const defStart = source.indexOf("name: 'feature_flags',");
   assert.notEqual(defStart, -1, 'feature_flags tool definition not found');
   const handlerMatch = source
     .slice(defStart)
-    .match(/async \(\) => \{([\s\S]*?)\},\s*\{ annotations: \{ readOnlyHint: true \} \},\s*\);/);
+    .match(/handler: async \(_args, \{ caller \}\) => \{([\s\S]*?)\},\s*\}\),/);
   assert.ok(handlerMatch, 'feature_flags handler body not found');
   const body = handlerMatch[1];
   const assertIdx = body.indexOf('assertAtLeast(');
@@ -9023,7 +9026,9 @@ test('SECURITY: feature_flags allowlist purity — a planted secret-shaped field
 });
 
 test('SECURITY: feature_flags handler + formatter never call Object.entries/Object.values/spread on the object they read — only fixed allowlist paths are indexed (issue #559)', () => {
-  const source = readFileSync(new URL('../src/agent/tools.ts', import.meta.url), 'utf8');
+  // The formatter moved to the tool-registry split's helpers module
+  // (src/agent/tools/helpers.ts) — same assertion, scanned where it now lives.
+  const source = readFileSync(new URL('../src/agent/tools/helpers.ts', import.meta.url), 'utf8');
   const formatterStart = source.indexOf('export function formatFeatureFlags(');
   const getterStart = source.indexOf('function getConfigBoolean(');
   assert.ok(formatterStart !== -1 && getterStart !== -1, 'formatFeatureFlags/getConfigBoolean not found');
@@ -9094,12 +9099,15 @@ test('feature_flags anti-drift pin fails loudly for an uncovered *_ENABLED flag 
 });
 
 test('SECURITY: feature_flags handler makes no repository or query() call — synchronous read of the in-memory config only (issue #559)', () => {
-  const source = readFileSync(new URL('../src/agent/tools.ts', import.meta.url), 'utf8');
-  const defStart = source.indexOf("'feature_flags',");
+  // The tool moved to the tool-registry split's super-admin domain file
+  // (src/agent/tools/superAdmin.ts) — same assertion, scanned where it now
+  // lives.
+  const source = readFileSync(new URL('../src/agent/tools/superAdmin.ts', import.meta.url), 'utf8');
+  const defStart = source.indexOf("name: 'feature_flags',");
   assert.notEqual(defStart, -1, 'feature_flags tool definition not found');
   const handlerMatch = source
     .slice(defStart)
-    .match(/async \(\) => \{([\s\S]*?)\},\s*\{ annotations: \{ readOnlyHint: true \} \},\s*\);/);
+    .match(/handler: async \(_args, \{ caller \}\) => \{([\s\S]*?)\},\s*\}\),/);
   assert.ok(handlerMatch, 'feature_flags handler body not found');
   const body = handlerMatch[1];
   assert.doesNotMatch(
@@ -9221,7 +9229,9 @@ test('feature_flags: every OTHER_CONFIGURED_KNOBS entry resolves against the rea
 });
 
 test('SECURITY: feature_flags handler + "Other configured knobs" formatter never call Object.entries/Object.values/spread on the object they read (issue #616)', () => {
-  const source = readFileSync(new URL('../src/agent/tools.ts', import.meta.url), 'utf8');
+  // The formatter moved to the tool-registry split's helpers module
+  // (src/agent/tools/helpers.ts) — same assertion, scanned where it now lives.
+  const source = readFileSync(new URL('../src/agent/tools/helpers.ts', import.meta.url), 'utf8');
   const formatterStart = source.indexOf('export function formatOtherConfiguredKnobs(');
   assert.notEqual(formatterStart, -1, 'formatOtherConfiguredKnobs not found');
   const region = source.slice(formatterStart, source.indexOf('\n}\n', formatterStart) + 3);
@@ -10234,7 +10244,9 @@ test(
 );
 
 test("SECURITY: the knowledge_search tool handler never calls notifyAdmins directly — a real-time alert (issue #650) may only fire from router.ts reading the turn-scoped flag post-turn, mirroring rate_answer's own invariant (issue #598)", () => {
-  const source = readFileSync(new URL('../src/agent/tools.ts', import.meta.url), 'utf8');
+  // The handler moved from the tools.ts closure into the knowledgeMember
+  // ToolDef domain (docs/TOOL-REGISTRY-DESIGN.md §3); same body, new home.
+  const source = readFileSync(new URL('../src/agent/tools/knowledgeMember.ts', import.meta.url), 'utf8');
   const start = source.indexOf("'knowledge_search',");
   const end = source.indexOf("'list_knowledge_topics',");
   assert.notEqual(start, -1, 'knowledge_search tool definition not found');
@@ -14374,13 +14386,14 @@ test(
     const rendered = await listTool.handler({});
     assert.match(rendered.content[0]?.text ?? '', /link: https:\/\/example\.com\/my-project/);
 
-    const toolsSource = readFileSync(new URL('../src/agent/tools.ts', import.meta.url), 'utf8');
-    const shareStart = toolsSource.indexOf("'share_project',");
-    const adminSectionStart = toolsSource.indexOf('// --- Admin tools');
-    assert.ok(shareStart !== -1 && adminSectionStart !== -1 && shareStart < adminSectionStart);
-    const toolsRegion = toolsSource.slice(shareStart, adminSectionStart);
+    // share_project/list_projects moved to the social ToolDef domain (tool
+    // registry split), so scan that WHOLE FILE — same module-boundary
+    // reasoning as the memberProjects.ts scan below, and strictly stronger
+    // than the old tools.ts region slice between section banners.
+    const toolsSource = readFileSync(new URL('../src/agent/tools/social.ts', import.meta.url), 'utf8');
+    assert.ok(toolsSource.includes("name: 'share_project',"), 'share_project tool definition not found');
     assert.doesNotMatch(
-      toolsRegion,
+      toolsSource,
       /\bfetch\(|axios|http\.get\(|https\.get\(|XMLHttpRequest/,
       'a stored project link must never be fetched or previewed — only rendered verbatim as text',
     );

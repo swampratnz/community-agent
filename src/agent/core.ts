@@ -34,6 +34,7 @@ import {
 } from './systemPrompt.js';
 import { selectPersona } from './personas.js';
 import { buildToolServer, type ToolServerTurnState } from './tools.js';
+import { flaggedToolPredicates } from './tools/index.js';
 import {
   isDuplicateWebSearchQuery,
   recordWebSearchQuery,
@@ -281,35 +282,23 @@ interface TurnOutcome {
 }
 
 /**
- * Tool groups gated behind a config flag that defaults `false` — each
- * handler already refuses independently when its flag is off (defense in
- * depth, kept as-is), but leaving them in `allowedTools` still pays their
- * full name+description+schema tokens on every turn for a tier that can
- * never successfully call them (issue #535). Purely subtractive: a tool
- * named here is dropped from `allowedTools` only while its flag is off.
+ * Drop feature-flagged tools whose config flag is off — each handler already
+ * refuses independently when its flag is off (defense in depth, kept as-is),
+ * but leaving them in `allowedTools` still pays their full
+ * name+description+schema tokens on every turn for a tier that can never
+ * successfully call them (issue #535). Purely subtractive: a tool is dropped
+ * only while its flag is off. The flagged set and each tool's predicate are
+ * derived from the registry (`ToolDef.featureFlag`, tools/index.ts), and
+ * every predicate is evaluated against the live `config` HERE, at call time —
+ * never frozen at import, the trap the old hand-maintained flag groups'
+ * import-time booleans had.
  */
-const FEATURE_FLAGGED_TOOL_GROUPS: ReadonlyArray<{ enabled: boolean; tools: readonly string[] }> = [
-  { enabled: config.imageGen.enabled, tools: ['mcp__community__generate_image'] },
-  { enabled: config.github.enabled, tools: ['mcp__community__suggest_issue'] },
-  {
-    enabled: config.devTeam.enabled,
-    tools: [
-      'mcp__community__dev_team_dispatch',
-      'mcp__community__dev_team_status',
-      'mcp__community__dev_team_result',
-      'mcp__community__dev_team_backlog',
-      'mcp__community__dev_team_findings',
-      'mcp__community__dev_team_verify',
-    ],
-  },
-  {
-    enabled: config.findHelper.enabled,
-    tools: ['mcp__community__set_helper_availability', 'mcp__community__find_helper'],
-  },
-];
-
-function filterFeatureFlaggedTools(tools: string[]): string[] {
-  const disabled = new Set(FEATURE_FLAGGED_TOOL_GROUPS.filter((g) => !g.enabled).flatMap((g) => g.tools));
+export function filterFeatureFlaggedTools(tools: string[]): string[] {
+  const disabled = new Set(
+    flaggedToolPredicates()
+      .filter((p) => !p.enabled(config))
+      .map((p) => p.name),
+  );
   return tools.filter((t) => !disabled.has(t));
 }
 
