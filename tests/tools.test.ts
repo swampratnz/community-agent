@@ -8995,12 +8995,15 @@ test('SECURITY: feature_flags handler refuses a forged direct call from a non-su
   // first statement in the handler body, and formatFeatureFlags (the only
   // config read) is only reached afterwards — so a refusal can never fall
   // through to a config read, not merely "usually doesn't" in practice.
-  const source = readFileSync(new URL('../src/agent/tools.ts', import.meta.url), 'utf8');
-  const defStart = source.indexOf("'feature_flags',");
+  // The tool moved to the tool-registry split's super-admin domain file
+  // (src/agent/tools/superAdmin.ts) — same assertion, scanned where it now
+  // lives.
+  const source = readFileSync(new URL('../src/agent/tools/superAdmin.ts', import.meta.url), 'utf8');
+  const defStart = source.indexOf("name: 'feature_flags',");
   assert.notEqual(defStart, -1, 'feature_flags tool definition not found');
   const handlerMatch = source
     .slice(defStart)
-    .match(/async \(\) => \{([\s\S]*?)\},\s*\{ annotations: \{ readOnlyHint: true \} \},\s*\);/);
+    .match(/handler: async \(_args, \{ caller \}\) => \{([\s\S]*?)\},\s*\}\),/);
   assert.ok(handlerMatch, 'feature_flags handler body not found');
   const body = handlerMatch[1];
   const assertIdx = body.indexOf('assertAtLeast(');
@@ -9096,12 +9099,15 @@ test('feature_flags anti-drift pin fails loudly for an uncovered *_ENABLED flag 
 });
 
 test('SECURITY: feature_flags handler makes no repository or query() call — synchronous read of the in-memory config only (issue #559)', () => {
-  const source = readFileSync(new URL('../src/agent/tools.ts', import.meta.url), 'utf8');
-  const defStart = source.indexOf("'feature_flags',");
+  // The tool moved to the tool-registry split's super-admin domain file
+  // (src/agent/tools/superAdmin.ts) — same assertion, scanned where it now
+  // lives.
+  const source = readFileSync(new URL('../src/agent/tools/superAdmin.ts', import.meta.url), 'utf8');
+  const defStart = source.indexOf("name: 'feature_flags',");
   assert.notEqual(defStart, -1, 'feature_flags tool definition not found');
   const handlerMatch = source
     .slice(defStart)
-    .match(/async \(\) => \{([\s\S]*?)\},\s*\{ annotations: \{ readOnlyHint: true \} \},\s*\);/);
+    .match(/handler: async \(_args, \{ caller \}\) => \{([\s\S]*?)\},\s*\}\),/);
   assert.ok(handlerMatch, 'feature_flags handler body not found');
   const body = handlerMatch[1];
   assert.doesNotMatch(

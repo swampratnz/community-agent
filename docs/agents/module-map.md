@@ -66,6 +66,7 @@ is marked **🔒**. Changes there need a `SECURITY:` test (see
 - `src/agent/tools/roster.ts` — The `add_member_note`/`list_member_notes`/`delete_member_note`/`list_roster`/`list_context_digests` ToolDef domain: admin-curated member context and roster views.
 - `src/agent/tools/selfService.ts` — The `forget_me`/`my_submissions`/`my_warnings`/`my_data` ToolDef domain: the caller's own data, always self-scoped.
 - `src/agent/tools/social.ts` — The member-discovery ToolDef domain: interests (`set_my_interests`/`who_is_into`), peer help (`set_helper_availability`/`find_helper`), and the project showcase (`share_project`/`list_projects`/`request_project_connection`).
+- `src/agent/tools/superAdmin.ts` — The super-admin ToolDef domain (grant/revoke admin, purge, audit/usage/engagement views, pause/resume, set_policy, redeploy, suggest_issue) plus the per-super-admin daily issue reserver.
 - `src/agent/tools/types.ts` — `ToolDef`/`ToolContext`/`defineTool`: the declarative registry's type surface (docs/TOOL-REGISTRY-DESIGN.md).
 - `src/agent/webSearchGuard.ts` — 🔒 The WebSearch PreToolUse guard: per-conversation hourly volume cap, exact-then-embedding query dedup, and the per-conversation lock keeping check-then-record atomic. Fail-closed by contract — a thrown `embed()` denies the call.
 - `src/auth/` — 🔒 Identity and role resolution: tiers come from env plus the `community_users` table, never from message content. Three files, all small and worth reading in full.

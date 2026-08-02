@@ -25,6 +25,7 @@ import { reportsAdminTools } from './reportsAdmin.js';
 import { membershipTools } from './membership.js';
 import { discordRolesTools } from './discordRoles.js';
 import { projectsAdminTools } from './projectsAdmin.js';
+import { superAdminTools } from './superAdmin.js';
 import { devTeamTools } from './devTeam.js';
 import { imageGenTools } from './imageGen.js';
 
@@ -64,6 +65,7 @@ export const TOOL_REGISTRY: readonly ToolDef<any>[] = [
   ...membershipTools,
   ...discordRolesTools,
   ...projectsAdminTools,
+  ...superAdminTools,
   ...devTeamTools,
   ...imageGenTools,
 ];
