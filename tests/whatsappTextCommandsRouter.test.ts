@@ -42,6 +42,11 @@ process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { config } = await import('../src/config.js');
+// Side-effect import (mechanism/content split): the router's text-command
+// dispatcher reads commands/registry.ts's registered list, which only the
+// community commands module populates — src/index.ts does this in
+// production.
+await import('../src/commands.js');
 const { Router } = await import('../src/router.js');
 const { makeRouterDeps } = await import('../src/routerWiring.js');
 const { countRepliesToUser } = await import('../src/storage/repository.js');

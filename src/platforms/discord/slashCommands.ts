@@ -32,7 +32,10 @@ import {
   LIST_PROJECTS_DEFAULT_LIMIT,
 } from '../../agent/tools.js';
 import { chunkText } from '../textChunk.js';
-import { bindDiscordCommand, COMMUNITY_COMMANDS } from '../../commands.js';
+import { bindDiscordCommand } from '../../commands/registry.js';
+// Importing the community command list ALSO runs its self-registration
+// (registerCommands) before the module-scope bindDiscordCommand calls below.
+import { COMMUNITY_COMMANDS } from '../../commands.js';
 
 /**
  * Discord caps a message (and an interaction reply/follow-up) at 2000 chars —

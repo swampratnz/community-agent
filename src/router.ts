@@ -11,7 +11,11 @@ import {
   type PreTurnIntercept,
   type SpineStepName,
 } from './routerIntercepts.js';
-import { COMMUNITY_COMMANDS, TEXT_COMMAND_UNMATCHED, type WhatsAppTextCommandDeps } from './commands.js';
+import {
+  registeredCommands,
+  TEXT_COMMAND_UNMATCHED,
+  type WhatsAppTextCommandDeps,
+} from './commands/registry.js';
 import { logger } from './logger.js';
 import { isPureAcknowledgement } from './ackClassifier.js';
 import { atLeast, type CallerContext, type Tier } from './auth/rbac.js';
@@ -2004,7 +2008,7 @@ export class Router {
       getCommunityGuidelinesMiFn: this.getCommunityGuidelinesMiFn,
       buildMemberDigestContentFn: this.buildMemberDigestContentFn,
     };
-    for (const command of COMMUNITY_COMMANDS) {
+    for (const command of registeredCommands()) {
       if (!command.whatsapp) continue;
       const result = await command.whatsapp(text, msg, role, deps);
       if (result !== TEXT_COMMAND_UNMATCHED) return result;

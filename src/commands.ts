@@ -1,9 +1,4 @@
-import type {
-  ChatInputCommandInteraction,
-  RESTPostAPIChatInputApplicationCommandsJSONBody,
-} from 'discord.js';
-import type { IncomingMessage, Platform } from './platforms/types.js';
-import { atLeast, type Tier } from './auth/rbac.js';
+import { atLeast } from './auth/rbac.js';
 import { formatInterestResults, formatProjectResults, LIST_PROJECTS_DEFAULT_LIMIT } from './agent/tools.js';
 import type {
   getLanguagePreference,
@@ -16,34 +11,30 @@ import type {
 } from './storage/repository.js';
 import type { getCommunityGuidelines, getCommunityGuidelinesMi } from './storage/policies.js';
 import type { buildMemberDigestContent } from './memberDigest.js';
-import type { SlashCommandDeps } from './platforms/discord/slashCommands.js';
+import { registerCommands, TEXT_COMMAND_UNMATCHED, type RegisteredCommand } from './commands/registry.js';
 
 /**
  * The community command registry (agent-base plan §3 `commands` row): ONE
  * ordered list of `{ name, platforms, handler }` entries consumed by BOTH
  * command surfaces — Discord slash registration/dispatch
  * (`platforms/discord/slashCommands.ts`) and the router's WhatsApp
- * `!`-text-command intercept (`router.ts`). Handlers were moved VERBATIM
- * from their previous homes; registry order is the previous
- * `buildSlashCommands()` order (kb, projects, whois, guidelines, digest),
- * which is also safe for the WhatsApp side because every `!` matcher is
- * anchored and mutually exclusive.
+ * `!`-text-command intercept (`router.ts`, via the registered list in
+ * `commands/registry.ts`). Handlers were moved VERBATIM from their previous
+ * homes; registry order is the previous `buildSlashCommands()` order (kb,
+ * projects, whois, guidelines, digest), which is also safe for the WhatsApp
+ * side because every `!` matcher is anchored and mutually exclusive.
  *
- * The Discord halves are BOUND here at the Discord adapter's module-load
- * time (`bindDiscordCommand`, called from slashCommands.ts) rather than
- * defined inline, so this file — imported by the router on every platform —
+ * The Discord halves are BOUND at the Discord adapter's module-load time
+ * (`bindDiscordCommand`, called from slashCommands.ts) rather than defined
+ * inline, so this file — loaded by the composition root on every platform —
  * never pulls discord.js into the runtime graph; only its types.
+ *
+ * Since the mechanism/content split (plan §Phase-2 Stage 3a) the sentinel,
+ * the handler/binding/command types and the registration slot live in
+ * `commands/registry.ts`; this file is the community side and registers
+ * `COMMUNITY_COMMANDS` there at its own module scope (`registerCommands`
+ * below), the same self-registration shape as `strings/notices.ts`.
  */
-
-/**
- * Sentinel a WhatsApp handler returns when the text simply isn't its command
- * — the dispatcher tries the next entry. Distinct from `null`, which means
- * "matched, but fall through to a normal agent turn" (the deliberate
- * no-denial-reply tier-gate behaviour: a WhatsApp group reply has no
- * ephemeral concept, so a bespoke denial would out an ineligible caller's
- * tier to the whole group — see the router call site's comment).
- */
-export const TEXT_COMMAND_UNMATCHED: unique symbol = Symbol('whatsapp-text-command-unmatched');
 
 /**
  * The injected repository/policy reads the WhatsApp handlers use — the same
@@ -64,43 +55,7 @@ export interface WhatsAppTextCommandDeps {
   buildMemberDigestContentFn: typeof buildMemberDigestContent;
 }
 
-export type WhatsAppTextCommandHandler = (
-  text: string,
-  msg: IncomingMessage,
-  role: Tier,
-  deps: WhatsAppTextCommandDeps,
-) => Promise<string | null | typeof TEXT_COMMAND_UNMATCHED>;
-
-/** The Discord half of a command: its slash registration JSON plus the deferred-ephemeral handler. */
-export interface DiscordCommandBinding {
-  build: () => RESTPostAPIChatInputApplicationCommandsJSONBody;
-  handle: (interaction: ChatInputCommandInteraction, deps: SlashCommandDeps) => Promise<void>;
-}
-
-export interface CommunityCommand {
-  name: string;
-  platforms: readonly Platform[];
-  /**
-   * WhatsApp `!` text handler (issue #859) — absent for Discord-only
-   * commands (`/kb` is deliberately WhatsApp-absent:
-   * `KNOWLEDGE_SHORTCUT_ENABLED` already gives WhatsApp an implicit,
-   * similarity-matched equivalent, so a second literal-prefix path to the
-   * same knowledge read would be redundant scope).
-   *
-   * Tier floors mirror each Discord handler's REAL minimum exactly:
-   * `who_is_into`/`list_projects`/`community_digest` are structurally
-   * reachable by every role (including guest) via `toolsForRole` — none of
-   * them are Discord-only tools — so `atLeast(role, 'member')` alone is
-   * equivalent to Discord's own `toolsForRole(...).includes(...) ||
-   * !atLeast(...)` check for these three. `community_guidelines` has no tier
-   * floor in either handler.
-   */
-  whatsapp?: WhatsAppTextCommandHandler;
-  /** Bound by slashCommands.ts at Discord module load (`bindDiscordCommand`) — see the file doc above. */
-  discord?: DiscordCommandBinding;
-}
-
-export const COMMUNITY_COMMANDS: readonly CommunityCommand[] = [
+export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
   { name: 'kb', platforms: ['discord'] },
   {
     name: 'projects',
@@ -193,14 +148,8 @@ export const COMMUNITY_COMMANDS: readonly CommunityCommand[] = [
   },
 ];
 
-/**
- * Attach a command's Discord half. Called from slashCommands.ts at module
- * scope, once per command; rejects unknown names (a binding must correspond
- * to a registry entry that declares the discord platform) and double binds.
- */
-export function bindDiscordCommand(name: string, binding: DiscordCommandBinding): void {
-  const command = COMMUNITY_COMMANDS.find((c) => c.name === name && c.platforms.includes('discord'));
-  if (!command) throw new Error(`bindDiscordCommand: no registry entry for Discord command "${name}"`);
-  if (command.discord) throw new Error(`bindDiscordCommand: "${name}" is already bound`);
-  command.discord = binding;
-}
+// Self-registration at module scope (the Stage 1–2 pattern): the composition
+// root (src/index.ts) — and any test exercising a command surface — imports
+// this module for its side effect, and the base mechanism fails loud if that
+// import was forgotten.
+registerCommands(COMMUNITY_COMMANDS);
