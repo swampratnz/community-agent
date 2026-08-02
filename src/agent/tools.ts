@@ -12,7 +12,7 @@ import {
   makeSlidingWindowReserver,
 } from '../util/rateReservation.js';
 import { isSuperAdmin, resolveRole, superAdminIds } from '../auth/roles.js';
-import { config } from '../config.js';
+import { config, onDiskSecretPaths } from '../config.js';
 import { logger, hashId } from '../logger.js';
 import { queuePendingAlert, type AlertPriority } from '../pendingAlertQueue.js';
 import { WindowClosedError } from '../platforms/types.js';
@@ -8180,7 +8180,7 @@ export function buildToolServer(
       }
       imageGenInFlight.add(key);
       try {
-        const image = await generateImage(args.prompt);
+        const image = await generateImage(args.prompt, onDiskSecretPaths());
         await adapter.sendImage(
           caller.conversationId,
           {

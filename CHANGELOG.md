@@ -20,7 +20,7 @@ preamble, which src/agent/changelog.ts skips, so `whats_new` never shows it
 to members. Append numbers; never remove them.
 Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #775 #784 #804 #807 #809 #810 #812 #814 #816 #817 #818 #819 #821 #824 #825
-#868 #896 #899 #904 #949 #950 #951 #952 #953 #954
+#868 #896 #899 #904 #949 #950 #951 #952 #953 #954 #955
 -->
 
 
