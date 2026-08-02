@@ -9,6 +9,15 @@
 /src/agent/core.ts            @swampratnz
 /src/agent/outbound.ts        @swampratnz
 /src/agent/pendingActions.ts  @swampratnz
+/src/agent/promptSpine.ts     @swampratnz
+/src/agent/tools/context.ts   @swampratnz
+/src/agent/tools/index.ts     @swampratnz
+/src/agent/webSearchGuard.ts  @swampratnz
+/src/router.ts                @swampratnz
+/src/routerIntercepts.ts      @swampratnz
+/src/storage/lifecycle.ts     @swampratnz
+/src/storage/provenance.ts    @swampratnz
+/src/storage/repository/      @swampratnz
 /src/storage/schema/          @swampratnz
 /tests/security-floor.json    @swampratnz
 /docs/SECURITY.md             @swampratnz
