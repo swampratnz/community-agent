@@ -1,4 +1,13 @@
 import { config } from './config.js';
+import {
+  PRE_TURN_SPINE,
+  registerPreTurnIntercept,
+  registeredPreTurnIntercepts,
+  type InterceptOutcome,
+  type PreTurnContext,
+  type PreTurnIntercept,
+  type SpineStepName,
+} from './routerIntercepts.js';
 import { logger } from './logger.js';
 import { isPureAcknowledgement } from './ackClassifier.js';
 import { atLeast, type CallerContext, type Tier } from './auth/rbac.js';
@@ -1008,10 +1017,71 @@ export class Router {
     await tracked;
   }
 
+  /**
+   * The spine step implementations, keyed by the frozen `PRE_TURN_SPINE`
+   * names (routerIntercepts.ts) — a `Record` over `SpineStepName` so a
+   * missing or extra implementation is a compile error, and the ORDER
+   * authority stays the frozen array alone. Each step body was moved
+   * VERBATIM from the old inline `handle()` sequence; only the early
+   * `return;`s became `return 'handled';` and cross-step locals moved onto
+   * `ctx.state`.
+   */
+  private readonly spineSteps: Record<SpineStepName, (ctx: PreTurnContext) => Promise<InterceptOutcome>> = {
+    'block-list': (ctx) => this.blockListStep(ctx),
+    'role-resolution': (ctx) => this.roleResolutionStep(ctx),
+    'gated-guest': (ctx) => this.gatedGuestStep(ctx),
+    'record-inbound': (ctx) => this.recordInboundStep(ctx),
+    'confirm-intercept': (ctx) => this.confirmInterceptStep(ctx),
+    'escalation-confirm': (ctx) => this.escalationConfirmStep(ctx),
+    'addressed-gate': (ctx) => this.addressedGateStep(ctx),
+    pause: (ctx) => this.pauseStep(ctx),
+    'rate-limit': (ctx) => this.rateLimitStep(ctx),
+    'daily-budget': (ctx) => this.dailyBudgetStep(ctx),
+    'auto-answer-reserve': (ctx) => this.autoAnswerReserveStep(ctx),
+    'memory-barrier': (ctx) => this.memoryBarrierStep(ctx),
+    'auto-answer-thread': (ctx) => this.autoAnswerThreadStep(ctx),
+  };
+
+  /**
+   * The full ordered pre-turn chain: the frozen security spine first (built
+   * HERE from `PRE_TURN_SPINE` — no registration API can insert, remove or
+   * reorder a spine step), then the module-registered post-spine intercepts
+   * in registration order. Rebuilt per message so late registrations (module
+   * init) apply; the spine prefix is structurally identical every time.
+   */
+  preTurnChain(): readonly PreTurnIntercept[] {
+    return [
+      ...PRE_TURN_SPINE.map((name) => ({ name, run: this.spineSteps[name] })),
+      ...registeredPreTurnIntercepts(),
+    ];
+  }
+
+  /** Chain step names in execution order — inspected by the SECURITY spine test. */
+  preTurnChainNames(): string[] {
+    return this.preTurnChain().map((intercept) => intercept.name);
+  }
+
   private async handle(msg: IncomingMessage): Promise<void> {
     const adapter = this.adapters.get(msg.platform);
     if (!adapter) return;
 
+    // Run the pre-turn intercept chain (routerIntercepts.ts): the security
+    // spine in its frozen order, then the registered community shortcuts.
+    // Each step either fully handles the message (chain stops) or passes it
+    // on; whatever survives every intercept becomes a real agent turn.
+    const ctx: PreTurnContext = { msg, adapter, router: this, state: {} };
+    for (const intercept of this.preTurnChain()) {
+      if ((await intercept.run(ctx)) === 'handled') return;
+    }
+
+    // Serialise per conversation so session resume stays consistent.
+    await this.enqueue(this.convoKey(msg), 'respond', () =>
+      this.respond(msg, ctx.state.role!, adapter, ctx.state.replyBudget, ctx.state.replyConversationId),
+    );
+  }
+
+  private async blockListStep(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg } = ctx;
     // Block list (issue #572): checked before role resolution and before any
     // storage, so a blocked sender gets zero footprint — no interaction row,
     // no reply — and this overrides `open` access mode's default-allow,
@@ -1019,11 +1089,15 @@ export class Router {
     // and continue) on a DB error, same posture as the role-resolution catch
     // just below: one failed check must never itself become an outage.
     try {
-      if (await isUserBlocked(msg.platform, msg.userId)) return;
+      if (await isUserBlocked(msg.platform, msg.userId)) return 'handled';
     } catch (err) {
       logger.error({ err }, 'Block-list check failed; treating sender as not blocked');
     }
+    return 'continue';
+  }
 
+  private async roleResolutionStep(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg } = ctx;
     let role: Tier;
     try {
       role = await resolveRole(msg.platform, msg.userId);
@@ -1031,7 +1105,13 @@ export class Router {
       logger.error({ err }, 'Role resolution failed; treating sender as guest');
       role = 'guest';
     }
+    ctx.state.role = role;
+    return 'continue';
+  }
 
+  private async gatedGuestStep(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg, adapter } = ctx;
+    const role = ctx.state.role!;
     const gated = config.rbac.accessMode[msg.platform] === 'gated';
 
     // Gated mode: guests are not part of the community — do not store their
@@ -1191,12 +1271,17 @@ export class Router {
           }
         }
       }
-      return;
+      return 'handled';
     }
+    return 'continue';
+  }
 
+  private async recordInboundStep(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg } = ctx;
+    const role = ctx.state.role!;
     // Record member+ (and open-mode guest) traffic for audit + learning.
     // Fire-and-forget so embedding CPU never blocks channels we won't answer.
-    const recorded = recordInteraction({
+    ctx.state.recorded = recordInteraction({
       platform: msg.platform,
       conversationId: msg.conversationId,
       userId: msg.userId,
@@ -1209,7 +1294,12 @@ export class Router {
       messageId: msg.messageId,
       kind: msg.addressedToBot || msg.isDirect ? 'addressed' : 'ambient',
     }).catch((err) => logger.error({ err }, 'Failed to record inbound interaction'));
+    return 'continue';
+  }
 
+  private async confirmInterceptStep(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg, adapter } = ctx;
+    const role = ctx.state.role!;
     // Deterministic CONFIRM/CANCEL intercept for pending destructive actions.
     // Runs BEFORE the addressed check so a bare "CONFIRM" works in groups
     // (where plain replies aren't "addressed"). Only fires when this exact
@@ -1234,7 +1324,7 @@ export class Router {
         await this.send(adapter, msg.conversationId, notice('cancelConfirm', { language: lang })).catch(
           () => {},
         );
-        return;
+        return 'handled';
       }
       const pending = takePendingAction(msg.platform, pendingConversationId, msg.userId);
       if (pending) {
@@ -1279,10 +1369,14 @@ export class Router {
         await this.send(adapter, msg.conversationId, outcome).catch((err) =>
           logger.error({ err }, 'Failed to send confirm outcome'),
         );
-        return;
+        return 'handled';
       }
     }
+    return 'continue';
+  }
 
+  private async escalationConfirmStep(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg, adapter } = ctx;
     // Deterministic escalation-confirmation intercept (issue #479). Sibling
     // of the CONFIRM/CANCEL intercept above: runs BEFORE the addressed check
     // (so a bare "yes" works in a group where a plain reply isn't
@@ -1341,10 +1435,14 @@ export class Router {
             notice('escalationRateLimited', { language: lang }),
           ).catch(() => {});
         }
-        return;
+        return 'handled';
       }
     }
+    return 'continue';
+  }
 
+  private async addressedGateStep(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg } = ctx;
     // Auto-answer (issue #477): an operator-allowlisted Discord channel
     // (AUTO_ANSWER_CHANNEL_IDS) gets an answer for a plain top-level human
     // post too, not just one that mentions/replies to the bot — this only
@@ -1379,9 +1477,16 @@ export class Router {
 
     // Only respond when addressed (mention/reply), in a direct conversation,
     // or an auto-answer candidate.
-    if (!msg.addressedToBot && !msg.isDirect && !isAutoAnswerCandidate) return;
-    if (!msg.text.trim()) return;
+    if (!msg.addressedToBot && !msg.isDirect && !isAutoAnswerCandidate) return 'handled';
+    if (!msg.text.trim()) return 'handled';
+    ctx.state.autoAnswerThreadParent = autoAnswerThreadParent;
+    ctx.state.isAutoAnswerCandidate = isAutoAnswerCandidate;
+    return 'continue';
+  }
 
+  private async pauseStep(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg, adapter } = ctx;
+    const role = ctx.state.role!;
     // Paused: only super admins get through (so they can resume it). Everyone
     // else gets a debounced notice instead of silence (issue #128, mirroring
     // the rate-limit/budget notices below) — at most once per
@@ -1407,9 +1512,13 @@ export class Router {
           () => {},
         );
       }
-      return;
+      return 'handled';
     }
+    return 'continue';
+  }
 
+  private async rateLimitStep(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg, adapter } = ctx;
     const userKey = `${msg.platform}:${msg.userId}`;
     if (this.rateLimited(userKey)) {
       logger.warn({ userKey }, 'User rate limited');
@@ -1432,9 +1541,16 @@ export class Router {
           notice('rateLimitNotice', { language: lang, style }),
         ).catch(() => {});
       }
-      return;
+      return 'handled';
     }
+    ctx.state.userKey = userKey;
+    return 'continue';
+  }
 
+  private async dailyBudgetStep(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg, adapter } = ctx;
+    const role = ctx.state.role!;
+    const userKey = ctx.state.userKey!;
     // Daily reply budget (super admins exempt). `replyBudget` is hoisted out
     // of this block (issue #511) so the already-fetched `used`/`limit` pair
     // can be threaded into `respond()` below for the approaching-budget
@@ -1478,11 +1594,18 @@ export class Router {
             notice('dailyBudgetNotice', { language: lang, style }),
           ).catch(() => {});
         }
-        return;
+        return 'handled';
       }
       replyBudget = { used, limit };
     }
+    ctx.state.replyBudget = replyBudget;
+    return 'continue';
+  }
 
+  private async autoAnswerReserveStep(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg } = ctx;
+    const isAutoAnswerCandidate = ctx.state.isAutoAnswerCandidate === true;
+    const autoAnswerThreadParent = ctx.state.autoAnswerThreadParent;
     // Per-channel rolling-hour cap (issue #477) — bounds the flood/cost risk
     // of this new untrusted-input path. Reserved HERE, only once pause, the
     // per-user rate limit, and the daily budget have all passed, so a message
@@ -1495,12 +1618,21 @@ export class Router {
     // side-channel around AUTO_ANSWER_RATE_LIMIT_PER_HOUR the moment a
     // member replies inside a busy auto-answer thread.
     if (isAutoAnswerCandidate && !this.reserveAutoAnswerSlot(autoAnswerThreadParent ?? msg.conversationId))
-      return;
+      return 'handled';
+    return 'continue';
+  }
 
+  private async memoryBarrierStep(ctx: PreTurnContext): Promise<InterceptOutcome> {
     // If we ARE replying, make sure this message is in memory before the
     // agent turn runs (so recall can see it and ordering stays sane).
-    await recorded;
+    await ctx.state.recorded;
+    return 'continue';
+  }
 
+  private async autoAnswerThreadStep(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg, adapter } = ctx;
+    const isAutoAnswerCandidate = ctx.state.isAutoAnswerCandidate === true;
+    const autoAnswerThreadParent = ctx.state.autoAnswerThreadParent;
     // Auto-answer replies are contained in a new Discord thread anchored to
     // the origin post (issue #477), never sent bare into the channel — every
     // shortcut/respond send below is redirected through `replyConversationId`.
@@ -1543,9 +1675,15 @@ export class Router {
         }
       }
     }
+    ctx.state.replyConversationId = replyConversationId;
+    return 'continue';
+  }
 
+  /** Post-spine intercept (registered at module scope below): the ack shortcut. */
+  async ackShortcutIntercept(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg, adapter } = ctx;
+    const replyConversationId = ctx.state.replyConversationId;
     const key = this.convoKey(msg);
-
     // Deterministic short-circuit for pure acknowledgements ("thanks", "👍")
     // that carry no information for the agent to act on: skip the expensive
     // turn (memory recall + a query() subprocess against the shared Max
@@ -1566,9 +1704,16 @@ export class Router {
           notice('ackReply', { language: lang }),
         );
       });
-      return;
+      return 'handled';
     }
+    return 'continue';
+  }
 
+  /** Post-spine intercept (registered at module scope below): the near-exact FAQ shortcut. */
+  async knowledgeShortcutIntercept(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg, adapter } = ctx;
+    const replyConversationId = ctx.state.replyConversationId;
+    const key = this.convoKey(msg);
     // Deterministic-ish near-exact FAQ short-circuit (issue #162): if the
     // message scores at or above a strict floor against an existing
     // knowledge entry, reply with that entry's content instead of spawning a
@@ -1584,10 +1729,17 @@ export class Router {
         await this.enqueue(key, 'knowledge shortcut reply', () =>
           this.sendKnowledgeShortcut(msg, adapter, hit, replyConversationId),
         );
-        return;
+        return 'handled';
       }
     }
+    return 'continue';
+  }
 
+  /** Post-spine intercept (registered at module scope below): the WhatsApp `!` text commands. */
+  async whatsappTextCommandIntercept(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg, adapter } = ctx;
+    const role = ctx.state.role!;
+    const key = this.convoKey(msg);
     // WhatsApp-only, zero-model-call text commands (issue #859): the
     // WhatsApp counterpart to Discord's slash commands (slashCommands.ts),
     // checked alongside the shortcuts above. Off by default. A gate failure
@@ -1603,10 +1755,17 @@ export class Router {
         await this.enqueue(key, 'whatsapp text command reply', () =>
           this.sendWhatsAppTextCommand(msg, adapter, replyText),
         );
-        return;
+        return 'handled';
       }
     }
+    return 'continue';
+  }
 
+  /** Post-spine intercept (registered at module scope below): the repeat-question replay shortcut. */
+  async repeatQuestionShortcutIntercept(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg, adapter } = ctx;
+    const replyConversationId = ctx.state.replyConversationId;
+    const key = this.convoKey(msg);
     // Deterministic repeat-question short-circuit (issue #259): the same
     // caller (platform + conversation + user) sending the exact
     // whitespace-normalized text again inside REPEAT_SHORTCUT_WINDOW_MS gets
@@ -1633,10 +1792,17 @@ export class Router {
         await this.enqueue(key, 'repeat-question shortcut reply', () =>
           this.sendRepeatShortcut(msg, adapter, cached.replyText, replyConversationId),
         );
-        return;
+        return 'handled';
       }
     }
+    return 'continue';
+  }
 
+  /** Post-spine intercept (registered at module scope below): the repeat-max-turns replay shortcut. */
+  async repeatMaxTurnsShortcutIntercept(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg, adapter } = ctx;
+    const replyConversationId = ctx.state.replyConversationId;
+    const key = this.convoKey(msg);
     // Deterministic max-turns repeat short-circuit (issue #306): the sibling
     // of the shortcut above, for the one outcome it deliberately excludes — a
     // turn that exhausted AGENT_MAX_TURNS. Same caller key, same normalized
@@ -1660,14 +1826,10 @@ export class Router {
         await this.enqueue(key, 'repeat-max-turns shortcut reply', () =>
           this.sendRepeatMaxTurnsShortcut(msg, adapter, replyConversationId),
         );
-        return;
+        return 'handled';
       }
     }
-
-    // Serialise per conversation so session resume stays consistent.
-    await this.enqueue(key, 'respond', () =>
-      this.respond(msg, role, adapter, replyBudget, replyConversationId),
-    );
+    return 'continue';
   }
 
   /**
@@ -2450,3 +2612,29 @@ export class Router {
     }
   }
 }
+
+// The five community shortcut/command intercepts, registered through the same
+// post-spine extension point a future module would use (agent-base plan §3
+// `intercepts` row). Order is load-bearing and long-standing: ack → knowledge
+// → WhatsApp `!` commands → repeat-question → repeat-max-turns — pinned
+// (along with the spine prefix) by the SECURITY chain test
+// (tests/routerInterceptChain.test.ts). Registration can only ever land AFTER
+// the frozen spine, so none of these can run before block/role/gate/CONFIRM/
+// pause/rate/budget.
+registerPreTurnIntercept({ name: 'ack-shortcut', run: (ctx) => ctx.router.ackShortcutIntercept(ctx) });
+registerPreTurnIntercept({
+  name: 'knowledge-shortcut',
+  run: (ctx) => ctx.router.knowledgeShortcutIntercept(ctx),
+});
+registerPreTurnIntercept({
+  name: 'whatsapp-text-commands',
+  run: (ctx) => ctx.router.whatsappTextCommandIntercept(ctx),
+});
+registerPreTurnIntercept({
+  name: 'repeat-question-shortcut',
+  run: (ctx) => ctx.router.repeatQuestionShortcutIntercept(ctx),
+});
+registerPreTurnIntercept({
+  name: 'repeat-max-turns-shortcut',
+  run: (ctx) => ctx.router.repeatMaxTurnsShortcutIntercept(ctx),
+});

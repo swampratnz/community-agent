@@ -54,6 +54,17 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   model, so an injection can *request* an action but can never *complete*
   one. The actor's tier is **re-resolved at confirm time**: a role revoked
   inside the TTL invalidates the queued action.
+  Since the router split (agent-base Phase 1 item 7), this whole pre-turn
+  sequence is an explicit, named intercept chain (`src/routerIntercepts.ts`):
+  the **security spine** — block-list → role resolution → gated-guest gate →
+  inbound record → CONFIRM/CANCEL intercept → escalation-confirm → addressed
+  gate → pause → rate limit → daily budget → auto-answer reserve/barrier/
+  thread — is a frozen array the Router builds itself, with **no API that can
+  insert, remove or reorder a spine step**. Module-registered intercepts (the
+  ack/knowledge/repeat shortcuts, WhatsApp `!` commands) can only ever append
+  AFTER the spine, so nothing a module registers can run before or among
+  those checks. The exact spine order and the registration constraint are
+  pinned by `SECURITY:` tests in `tests/routerInterceptChain.test.ts`.
   The router deterministically re-emits the pending action's `description` as
   the trusted `⚠️ Pending:` notice a human reads before confirming, so
   `requireConfirm` strips newline/angle-bracket forgery characters
