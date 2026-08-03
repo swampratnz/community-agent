@@ -1,5 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// The adapters take their community text pack as a required constructor
+// parameter now (agent-base plan item 6) — production hands it over in
+// src/platforms/factories.ts, so these constructions pass the same pack.
+import { BAILEYS_TEXT_PACK, DISCORD_TEXT_PACK } from '../src/platforms/textPacks.js';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
@@ -83,7 +87,7 @@ test('SECURITY: Discord voice transcription passes DISCORD_VOICE_MODEL, not the 
   })) as unknown as typeof fetch;
   modelCalls.length = 0;
   try {
-    const adapter = new DiscordAdapter() as unknown as {
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK) as unknown as {
       transcribeAttachment: (url: string, seconds: number) => Promise<string>;
     };
     const transcript = await adapter.transcribeAttachment('https://cdn.discordapp.com/voice.ogg', 5);
@@ -105,7 +109,7 @@ test('SECURITY: WhatsApp voice transcription passes WHATSAPP_VOICE_MODEL, distin
   whatsappVoice.model = 'test/whatsapp-only-model';
   modelCalls.length = 0;
   try {
-    const adapter = new BaileysAdapter() as unknown as {
+    const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK) as unknown as {
       sock: unknown;
       transcribeAudioMessage: (msg: unknown, seconds: number) => Promise<string>;
     };

@@ -1,5 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// The adapters take their community text pack as a required constructor
+// parameter now (agent-base plan item 6) — production hands it over in
+// src/platforms/factories.ts, so these constructions pass the same pack.
+import {
+  WHATSAPP_CLOUD_TEXT_PACK,
+  WHATSAPP_CLOUD_WELCOME_MESSAGE,
+  WHATSAPP_CLOUD_WELCOME_MESSAGE_OPEN,
+} from '../src/platforms/textPacks.js';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
@@ -23,12 +31,7 @@ process.env.WHATSAPP_CLOUD_ACCESS_TOKEN ??= 'test-access-token';
 process.env.WHATSAPP_CLOUD_VERIFY_TOKEN ??= 'test-verify-token';
 process.env.WHATSAPP_CLOUD_APP_SECRET ??= 'test-app-secret';
 
-const {
-  WhatsAppCloudAdapter,
-  WHATSAPP_CLOUD_WELCOME_MESSAGE,
-  WHATSAPP_CLOUD_WELCOME_MESSAGE_OPEN,
-  WindowClosedError,
-} = await import('../src/platforms/whatsapp/cloudAdapter.js');
+const { WhatsAppCloudAdapter, WindowClosedError } = await import('../src/platforms/whatsapp/cloudAdapter.js');
 const { config } = await import('../src/config.js');
 const { pool } = await import('../src/storage/db.js');
 const { resetPolicyCacheForTests } = await import('../src/storage/policyStore.js');
@@ -216,7 +219,7 @@ function fakeResponse(): { res: ServerResponse; getStatus: () => number } {
 }
 
 test('sendDirectMessage: short text sends exactly one Graph API call, unchanged from today', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   markInboundNow(adapter, '64211234567');
   const { calls, fetchMock } = mockFetch([{ ok: true }]);
   const originalFetch = globalThis.fetch;
@@ -231,7 +234,7 @@ test('sendDirectMessage: short text sends exactly one Graph API call, unchanged 
 });
 
 test('sendDirectMessage: a reply over 4096 chars is chunked into multiple sequential Graph API calls', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   markInboundNow(adapter, '64211234567');
   const longText = 'line of reply text\n'.repeat(400); // well over 4096 chars
   const { calls, fetchMock } = mockFetch([{ ok: true }]);
@@ -249,7 +252,7 @@ test('sendDirectMessage: a reply over 4096 chars is chunked into multiple sequen
 });
 
 test('SECURITY: filtering runs once on the whole message before chunking, so a secret cannot straddle a chunk boundary and leak', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   markInboundNow(adapter, '64211234567');
   // No newlines near the 4096 boundary, so chunkText hard-cuts at exactly
   // position 4096 — which falls in the middle of the secret below. If
@@ -288,7 +291,7 @@ test('SECURITY: filtering runs once on the whole message before chunking, so a s
 });
 
 test('sendDirectMessage: Discord-style markdown is converted to WhatsApp formatting before sending', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   markInboundNow(adapter, '64211234567');
   const { calls, fetchMock } = mockFetch([{ ok: true }]);
   const originalFetch = globalThis.fetch;
@@ -307,7 +310,7 @@ test(
   'performAdminAction("warn_user") sends the te reo Māori wrapper when params.language is "mi", with the ' +
     "admin's reason appended verbatim and untranslated (issue #618)",
   async () => {
-    const adapter = new WhatsAppCloudAdapter();
+    const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
     markInboundNow(adapter, '64211234567');
     const { calls, fetchMock } = mockFetch([{ ok: true }]);
     const originalFetch = globalThis.fetch;
@@ -340,7 +343,7 @@ test(
       { reason: 'spam', language: undefined },
       { reason: 'spam' },
     ]) {
-      const adapter = new WhatsAppCloudAdapter();
+      const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
       markInboundNow(adapter, '64211234567');
       const { calls, fetchMock } = mockFetch([{ ok: true }]);
       const originalFetch = globalThis.fetch;
@@ -358,7 +361,7 @@ test(
 );
 
 test('partial-failure semantics: a mid-sequence Graph API failure delivers earlier chunks then throws (parity with Discord)', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   markInboundNow(adapter, '64211234567');
   const longText = 'line of reply text\n'.repeat(400);
   const { calls, fetchMock } = mockFetch([{ ok: true }, { ok: false, status: 400 }, { ok: true }]);
@@ -378,7 +381,7 @@ test('partial-failure semantics: a mid-sequence Graph API failure delivers earli
 // --- 429 rate-limit retry (issue #470) -----
 
 test('429 retry: sendChunk retries once on 429 honoring Retry-After, delivers the message, and does not record a send failure', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   markInboundNow(adapter, '64211234567');
   (adapter as unknown as { server: object }).server = {};
   const delays = stubSleep(adapter);
@@ -399,7 +402,7 @@ test('429 retry: sendChunk retries once on 429 honoring Retry-After, delivers th
 });
 
 test('429 retry: uploadMedia retries once on 429 and returns the media id on the successful retry, without recording a send failure', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   markInboundNow(adapter, '64211234567');
   (adapter as unknown as { server: object }).server = {};
   stubSleep(adapter);
@@ -434,7 +437,7 @@ test('429 retry: uploadMedia retries once on 429 and returns the media id on the
 });
 
 test('429 retry: sendImageMessage retries once on 429 and delivers, without recording a send failure', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   markInboundNow(adapter, '64211234567');
   (adapter as unknown as { server: object }).server = {};
   stubSleep(adapter);
@@ -463,7 +466,7 @@ test('429 retry: sendImageMessage retries once on 429 and delivers, without reco
 });
 
 test('429 retry: an absent Retry-After header falls back to the default backoff before retrying', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   markInboundNow(adapter, '64211234567');
   const delays = stubSleep(adapter);
   const { fetchMock } = mockFetch([{ ok: false, status: 429 }, { ok: true }]);
@@ -478,7 +481,7 @@ test('429 retry: an absent Retry-After header falls back to the default backoff 
 });
 
 test('429 retry: an unparseable Retry-After header falls back to the default backoff before retrying', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   markInboundNow(adapter, '64211234567');
   const delays = stubSleep(adapter);
   const { fetchMock } = mockFetch([
@@ -496,7 +499,7 @@ test('429 retry: an unparseable Retry-After header falls back to the default bac
 });
 
 test('429 retry exhausted: a retry that also returns 429 still calls recordSendFailure() exactly once and throws', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   markInboundNow(adapter, '64211234567');
   (adapter as unknown as { server: object }).server = {};
   stubSleep(adapter);
@@ -523,7 +526,7 @@ test('429 retry exhausted: a retry that also returns 429 still calls recordSendF
 });
 
 test('429 retry exhausted: a retry that returns a different non-OK status (500) still calls recordSendFailure() exactly once and throws — byte-identical failure semantics to today', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   markInboundNow(adapter, '64211234567');
   (adapter as unknown as { server: object }).server = {};
   stubSleep(adapter);
@@ -550,7 +553,7 @@ test('429 retry exhausted: a retry that returns a different non-OK status (500) 
 });
 
 test('429 retry: a non-429 non-OK response (401) on the first attempt is not retried — immediate failure, exactly one fetch call', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   markInboundNow(adapter, '64211234567');
   const delays = stubSleep(adapter);
   const { calls, fetchMock } = mockFetch([{ ok: false, status: 401 }]);
@@ -569,7 +572,7 @@ test('429 retry: a non-429 non-OK response (401) on the first attempt is not ret
 });
 
 test('429 retry: a non-429 non-OK response (500) on the first attempt is not retried — immediate failure, exactly one fetch call', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   markInboundNow(adapter, '64211234567');
   const { calls, fetchMock } = mockFetch([{ ok: false, status: 500 }]);
   const originalFetch = globalThis.fetch;
@@ -586,7 +589,7 @@ test('429 retry: a non-429 non-OK response (500) on the first attempt is not ret
 });
 
 test('SECURITY: sendChunk retry body is byte-identical to the first attempt — no re-filtering or re-derivation on retry', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   markInboundNow(adapter, '64211234567');
   stubSleep(adapter);
   const secret = 'sk-ant-' + 'y'.repeat(30);
@@ -611,7 +614,7 @@ test('SECURITY: sendChunk retry body is byte-identical to the first attempt — 
 });
 
 test('SECURITY: sendImageMessage retry body (including caption) is byte-identical to the first attempt — no re-filtering on retry', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   markInboundNow(adapter, '64211234567');
   stubSleep(adapter);
   const secret = 'sk-ant-' + 'y'.repeat(30);
@@ -641,7 +644,7 @@ test('SECURITY: sendImageMessage retry body (including caption) is byte-identica
 });
 
 test('SECURITY: an extreme Retry-After value is clamped to SEND_RETRY_MAX_BACKOFF_MS (5000ms)', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   markInboundNow(adapter, '64211234567');
   const delays = stubSleep(adapter);
   const { fetchMock } = mockFetch([
@@ -663,7 +666,7 @@ test('SECURITY: an extreme Retry-After value is clamped to SEND_RETRY_MAX_BACKOF
 });
 
 test('SECURITY: a malformed Retry-After value never produces a delay above the clamp', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   markInboundNow(adapter, '64211234567');
   const delays = stubSleep(adapter);
   const { fetchMock } = mockFetch([
@@ -684,7 +687,7 @@ test('SECURITY: a malformed Retry-After value never produces a delay above the c
 });
 
 test('sendTypingIndicator: posts the mark-as-read + typing_indicator payload for the inbound wamid', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   const { calls, fetchMock } = mockFetch([{ ok: true }]);
   const originalFetch = globalThis.fetch;
   globalThis.fetch = fetchMock as typeof fetch;
@@ -711,7 +714,7 @@ test('sendTypingIndicator: posts the mark-as-read + typing_indicator payload for
 });
 
 test('sendTypingIndicator: a message with no wamid on `raw` is a silent no-op (no Graph API call)', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   const { calls, fetchMock } = mockFetch([{ ok: true }]);
   const originalFetch = globalThis.fetch;
   globalThis.fetch = fetchMock as typeof fetch;
@@ -734,7 +737,7 @@ test('sendTypingIndicator: a message with no wamid on `raw` is a silent no-op (n
 });
 
 test('sendTypingIndicator: a Graph API failure throws — the router treats this as best-effort and swallows it', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   const { fetchMock } = mockFetch([{ ok: false, status: 400 }]);
   const originalFetch = globalThis.fetch;
   globalThis.fetch = fetchMock as typeof fetch;
@@ -758,7 +761,7 @@ test('sendTypingIndicator: a Graph API failure throws — the router treats this
 });
 
 test('isConnected(): true before start() ever succeeds is not claimed — but stays true after fewer than the threshold of consecutive send failures', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   (adapter as unknown as { server: object }).server = {};
   markInboundNow(adapter, '64211234567');
   const { fetchMock } = mockFetch([
@@ -781,7 +784,7 @@ test('isConnected(): true before start() ever succeeds is not claimed — but st
 });
 
 test('isConnected(): flips false once SEND_FAILURE_THRESHOLD (3) consecutive send failures are reached', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   (adapter as unknown as { server: object }).server = {};
   markInboundNow(adapter, '64211234567');
   const { fetchMock } = mockFetch([{ ok: false, status: 500 }]);
@@ -802,7 +805,7 @@ test('isConnected(): a REJECTED fetch (network error, not a non-OK response) als
   // returning res.ok===false. Before #218 that path skipped the failure
   // counter entirely, so a total Graph API outage (every send rejecting)
   // left isConnected() stuck true and the disconnect alert never fired.
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   (adapter as unknown as { server: object }).server = {};
   markInboundNow(adapter, '64211234567');
   const rejectingFetch = async () => {
@@ -826,7 +829,7 @@ test('isConnected(): a REJECTED fetch (network error, not a non-OK response) als
 });
 
 test('isConnected(): a single successful send after crossing the threshold resets the counter and restores isConnected()', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   (adapter as unknown as { server: object }).server = {};
   markInboundNow(adapter, '64211234567');
   const originalFetch = globalThis.fetch;
@@ -852,7 +855,7 @@ test('isConnected(): a single successful send after crossing the threshold reset
 });
 
 test('isConnected(): a failure to one recipient followed by a success to a different recipient does not trip the threshold', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   (adapter as unknown as { server: object }).server = {};
   markInboundNow(adapter, '64211111111');
   markInboundNow(adapter, '64222222222');
@@ -878,7 +881,7 @@ test('isConnected(): a failure to one recipient followed by a success to a diffe
 });
 
 test('sendTypingIndicator failures never drive isConnected() — only real message sends (sendChunk) do', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   (adapter as unknown as { server: object }).server = {};
   const { fetchMock } = mockFetch([{ ok: false, status: 500 }]);
   const originalFetch = globalThis.fetch;
@@ -910,7 +913,7 @@ test('sendTypingIndicator failures never drive isConnected() — only real messa
 });
 
 test('outside the 24h customer-service window: throws before any Graph API call, regardless of message length', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   // No markInboundNow — this user has no recent inbound message.
   const { calls, fetchMock } = mockFetch([{ ok: true }]);
   const originalFetch = globalThis.fetch;
@@ -927,7 +930,7 @@ test('outside the 24h customer-service window: throws before any Graph API call,
 });
 
 test('outside the 24h customer-service window: the rejection is a WindowClosedError carrying the recipient id (issue #602)', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   await assert.rejects(
     () => adapter.sendDirectMessage('64299999999', 'hi'),
     (err: unknown) => {
@@ -941,7 +944,7 @@ test('outside the 24h customer-service window: the rejection is a WindowClosedEr
 // --- Per-recipient window-reopen queue (issue #602) -----
 
 test('queueForWindowReopen: caps at 3 messages per recipient, oldest evicted on overflow (acceptance criterion 2)', () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   // All same priority, so overflow is plain FIFO oldest-evicted.
   adapter.queueForWindowReopen('64211234567', 'msg-1', 'low');
   adapter.queueForWindowReopen('64211234567', 'msg-2', 'low');
@@ -957,7 +960,7 @@ test('queueForWindowReopen: caps at 3 messages per recipient, oldest evicted on 
 });
 
 test('SECURITY: queueForWindowReopen — a member-reachable low alert never evicts a system alert for the same recipient, mirroring pendingAlertQueue #545 (issue #602)', () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   // A recipient's queue fills with system alerts (escalations / admin-action audits).
   adapter.queueForWindowReopen('64211234567', 'sys-1', 'system');
   adapter.queueForWindowReopen('64211234567', 'sys-2', 'system');
@@ -977,7 +980,7 @@ test('SECURITY: queueForWindowReopen — a member-reachable low alert never evic
 });
 
 test('SECURITY: queueForWindowReopen — at cap, a new alert evicts the OLDEST low entry first, preserving every system alert (issue #602)', () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   // Interleave so oldest-overall would be a low, proving it targets low not merely oldest.
   adapter.queueForWindowReopen('r', 'low-old', 'low');
   adapter.queueForWindowReopen('r', 'sys-a', 'system');
@@ -1000,7 +1003,7 @@ test('SECURITY: queueForWindowReopen — at cap, a new alert evicts the OLDEST l
 });
 
 test("flush on window reopen: queued messages send via sendText, in order, and the recipient's queue clears once their inbound message arrives (acceptance criterion 3)", async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   adapter.queueForWindowReopen('64211234567', 'queued message one', 'low');
   adapter.queueForWindowReopen('64211234567', 'queued message two', 'low');
 
@@ -1024,7 +1027,7 @@ test("flush on window reopen: queued messages send via sendText, in order, and t
 });
 
 test('flush on window reopen: a failed flush send is logged and dropped, never re-queued (acceptance criterion 4)', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   adapter.queueForWindowReopen('64211234567', 'will fail to flush', 'low');
 
   const { fetchMock } = mockFetch([{ ok: false, status: 500 }]);
@@ -1046,7 +1049,7 @@ test('flush on window reopen: a failed flush send is logged and dropped, never r
 });
 
 test("SECURITY: flush on window reopen — recipient isolation: recipient A's reopened window never sends recipient B's queued messages, and B's queue stays untouched (acceptance criterion 5)", async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   adapter.queueForWindowReopen('64211111111', 'message for A', 'low');
   adapter.queueForWindowReopen('64222222222', 'message for B', 'low');
 
@@ -1073,7 +1076,7 @@ test("SECURITY: flush on window reopen — recipient isolation: recipient A's re
 });
 
 test("SECURITY: a queued message is never sent by the mere passage of time or another recipient's inbound message — only that exact recipient's own inbound message triggers a flush (acceptance criterion 7)", async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   adapter.queueForWindowReopen('64211111111', 'must not leak out early', 'low');
 
   const { calls, fetchMock } = mockFetch([{ ok: true }]);
@@ -1112,7 +1115,7 @@ test("SECURITY: a queued message is never sent by the mere passage of time or an
 });
 
 test('sendImage: posts exactly two Graph API calls in order — a media upload, then a message send referencing the returned media id (issue #356)', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   markInboundNow(adapter, '64211234567');
   const { calls, fetchMock } = mockFetch([{ ok: true, json: { id: 'media-123' } }, { ok: true }]);
   const originalFetch = globalThis.fetch;
@@ -1147,7 +1150,7 @@ test('sendImage: posts exactly two Graph API calls in order — a media upload, 
 });
 
 test('sendImage: no caption sends an image message with no caption field, without attempting to filter anything', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   markInboundNow(adapter, '64211234567');
   const { calls, fetchMock } = mockFetch([{ ok: true, json: { id: 'media-999' } }, { ok: true }]);
   const originalFetch = globalThis.fetch;
@@ -1167,7 +1170,7 @@ test('sendImage: no caption sends an image message with no caption field, withou
 });
 
 test('sendImage outside the 24h customer-service window: throws the same descriptive error sendText throws, without attempting the media upload (issue #356)', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   // No markInboundNow — this user has no recent inbound message.
   const { calls, fetchMock } = mockFetch([{ ok: true, json: { id: 'media-123' } }, { ok: true }]);
   const originalFetch = globalThis.fetch;
@@ -1189,7 +1192,7 @@ test('sendImage outside the 24h customer-service window: throws the same descrip
 });
 
 test('SECURITY: sendImage routes the caption through filterOutbound — a secret is redacted before either Graph API call is made (issue #356)', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   markInboundNow(adapter, '64211234567');
   const { calls, fetchMock } = mockFetch([{ ok: true, json: { id: 'media-123' } }, { ok: true }]);
   const originalFetch = globalThis.fetch;
@@ -1219,7 +1222,7 @@ test('SECURITY: sendImage routes the caption through filterOutbound — a secret
 });
 
 test('sendImage: a failed media-upload call invokes recordSendFailure(), participating in the disconnect-alert threshold (issue #356)', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   (adapter as unknown as { server: object }).server = {};
   markInboundNow(adapter, '64211234567');
   const { fetchMock } = mockFetch([{ ok: false, status: 500 }]);
@@ -1246,7 +1249,7 @@ test('sendImage: a failed media-upload call invokes recordSendFailure(), partici
 });
 
 test('sendImage: a failed message-send call (after a successful media upload) also invokes recordSendFailure(), crossing the same threshold (issue #356)', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   (adapter as unknown as { server: object }).server = {};
   markInboundNow(adapter, '64211234567');
   const calls: string[] = [];
@@ -1291,7 +1294,7 @@ test('sendImage: a failed message-send call (after a successful media upload) al
 });
 
 test('webhook dedup: two deliveries with the identical message id result in exactly one handler call', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   let handlerCalls = 0;
   adapter.onMessage(async () => {
     handlerCalls++;
@@ -1308,7 +1311,7 @@ test('SECURITY: dedup check happens before any await — a retry arriving mid-tu
   // landing WHILE the first delivery's turn is still in flight. This proves
   // the check-and-insert is synchronous (no await before it), not just that
   // dedup works when the two deliveries never overlap.
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   let handlerCalls = 0;
   let releaseHandler: () => void = () => {};
   const handlerGate = new Promise<void>((resolve) => {
@@ -1334,7 +1337,7 @@ test('SECURITY: dedup check happens before any await — a retry arriving mid-tu
 });
 
 test('webhook dedup: two deliveries with different message ids are both processed (no over-suppression)', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   let handlerCalls = 0;
   adapter.onMessage(async () => {
     handlerCalls++;
@@ -1346,7 +1349,7 @@ test('webhook dedup: two deliveries with different message ids are both processe
 });
 
 test('webhook dedup: the sweep prunes ids older than the dedup window, and a duplicate of an evicted id is treated as new', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   let handlerCalls = 0;
   adapter.onMessage(async () => {
     handlerCalls++;
@@ -1373,7 +1376,7 @@ test('webhook dedup: the sweep prunes ids older than the dedup window, and a dup
 });
 
 test('SECURITY: a payload that fails verifySignature never reaches the dedup set or the handler', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   let handlerCalls = 0;
   adapter.onMessage(async () => {
     handlerCalls++;
@@ -1419,7 +1422,7 @@ test('SECURITY: a payload that fails verifySignature never reaches the dedup set
 });
 
 test('SECURITY: the dedup set stores only the opaque wamid and a timestamp, never message content', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   adapter.onMessage(async () => {});
   const internal = dedupInternals(adapter);
   const secretText = 'this is the actual message body and must never be stored in the dedup set';
@@ -1436,7 +1439,7 @@ test('SECURITY: the dedup set stores only the opaque wamid and a timestamp, neve
 });
 
 test('messageId parity: onCloudMessage sets IncomingMessage.messageId to the Meta wamid (parity with baileysAdapter.ts)', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   let received: { messageId?: string } | undefined;
   adapter.onMessage(async (message) => {
     received = message;
@@ -1453,7 +1456,7 @@ test('first-contact welcome: WHATSAPP_CLOUD_WELCOME_ENABLED unset/false is a pin
   resetPolicyCacheForTests();
   t.mock.method(pool, 'query', stubWelcomeQuery({ known: false }));
 
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   let handlerCalls = 0;
   adapter.onMessage(async () => {
     handlerCalls++;
@@ -1476,7 +1479,7 @@ test('first-contact welcome: enabled + never-before-seen sender sends exactly on
   resetPolicyCacheForTests();
   t.mock.method(pool, 'query', stubWelcomeQuery({ known: false }));
 
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   let handlerCalls = 0;
   adapter.onMessage(async () => {
     handlerCalls++;
@@ -1508,7 +1511,7 @@ test("first-contact welcome: a DB error in the known-check never drops the sende
     return { rows: [], rowCount: 0 };
   });
 
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   let handlerCalls = 0;
   adapter.onMessage(async () => {
     handlerCalls++;
@@ -1541,7 +1544,7 @@ test('first-contact welcome: welcomedThisRun is swept so it cannot grow unbounde
   resetPolicyCacheForTests();
   t.mock.method(pool, 'query', stubWelcomeQuery({ known: false }));
 
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   adapter.onMessage(async () => {});
   const { fetchMock } = mockFetch([{ ok: true }]);
   const originalFetch = globalThis.fetch;
@@ -1572,7 +1575,7 @@ test('first-contact welcome: community guidelines are appended when set (parity 
   const guidelines = 'Be respectful. No spam. Keep discussion on-topic.';
   t.mock.method(pool, 'query', stubWelcomeQuery({ known: false, guidelines }));
 
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   adapter.onMessage(async () => {});
   const { calls, fetchMock } = mockFetch([{ ok: true }]);
   const originalFetch = globalThis.fetch;
@@ -1601,7 +1604,7 @@ test('first-contact welcome: uses the configured welcome message in place of the
   const guidelines = 'Be respectful. No spam.';
   t.mock.method(pool, 'query', stubWelcomeQuery({ known: false, guidelines, welcomeMessage }));
 
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   adapter.onMessage(async () => {});
   const { calls, fetchMock } = mockFetch([{ ok: true }]);
   const originalFetch = globalThis.fetch;
@@ -1629,7 +1632,7 @@ test('first-contact welcome: uses the configured welcome message with no guideli
   const welcomeMessage = 'Welcome to our community!';
   t.mock.method(pool, 'query', stubWelcomeQuery({ known: false, welcomeMessage }));
 
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   adapter.onMessage(async () => {});
   const { calls, fetchMock } = mockFetch([{ ok: true }]);
   const originalFetch = globalThis.fetch;
@@ -1651,7 +1654,7 @@ test('SECURITY: falls back to the hardcoded default welcome when the welcome_mes
   resetPolicyCacheForTests();
   t.mock.method(pool, 'query', stubWelcomeQuery({ known: false, throwFor: 'welcome_message' }));
 
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   let handlerCalls = 0;
   adapter.onMessage(async () => {
     handlerCalls++;
@@ -1685,7 +1688,7 @@ test('first-contact welcome: enabled + a known sender (isKnownConversation true)
   resetPolicyCacheForTests();
   t.mock.method(pool, 'query', stubWelcomeQuery({ known: true, welcomeMessage: 'Should never be sent' }));
 
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   let handlerCalls = 0;
   adapter.onMessage(async () => {
     handlerCalls++;
@@ -1714,7 +1717,7 @@ test('first-contact welcome: a rapid burst of two messages from the same never-b
   resetPolicyCacheForTests();
   t.mock.method(pool, 'query', stubWelcomeQuery({ known: false }));
 
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   let handlerCalls = 0;
   adapter.onMessage(async () => {
     handlerCalls++;
@@ -1743,7 +1746,7 @@ test('first-contact welcome: the sent text never includes sender-supplied conten
   resetPolicyCacheForTests();
   t.mock.method(pool, 'query', stubWelcomeQuery({ known: false }));
 
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   adapter.onMessage(async () => {});
   const { calls, fetchMock } = mockFetch([{ ok: true }]);
   const originalFetch = globalThis.fetch;
@@ -1776,7 +1779,7 @@ test('SECURITY: the first-contact welcome routes through the same sendText/filte
   const secret = 'sk-ant-' + 'y'.repeat(30);
   t.mock.method(pool, 'query', stubWelcomeQuery({ known: false, guidelines: `Be nice. ${secret}` }));
 
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   adapter.onMessage(async () => {});
   const { calls, fetchMock } = mockFetch([{ ok: true }]);
   const originalFetch = globalThis.fetch;
@@ -1805,7 +1808,7 @@ test(
     resetPolicyCacheForTests();
     t.mock.method(pool, 'query', stubWelcomeQuery({ known: false }));
 
-    const adapter = new WhatsAppCloudAdapter();
+    const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
     adapter.onMessage(async () => {});
     const { calls, fetchMock } = mockFetch([{ ok: true }]);
     const originalFetch = globalThis.fetch;
@@ -1839,7 +1842,7 @@ test(
     resetPolicyCacheForTests();
     t.mock.method(pool, 'query', stubWelcomeQuery({ known: false }));
 
-    const adapter = new WhatsAppCloudAdapter();
+    const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
     adapter.onMessage(async () => {});
     const { calls, fetchMock } = mockFetch([{ ok: true }]);
     const originalFetch = globalThis.fetch;
@@ -1870,7 +1873,7 @@ test('first-contact welcome: an admin-configured welcome message overrides the o
   const welcomeMessage = 'Custom welcome for our open-mode number!';
   t.mock.method(pool, 'query', stubWelcomeQuery({ known: false, welcomeMessage }));
 
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   adapter.onMessage(async () => {});
   const { calls, fetchMock } = mockFetch([{ ok: true }]);
   const originalFetch = globalThis.fetch;
@@ -1900,7 +1903,7 @@ test('first-contact welcome: community guidelines are appended identically to th
   const guidelines = 'Be respectful. No spam. Keep discussion on-topic.';
   t.mock.method(pool, 'query', stubWelcomeQuery({ known: false, guidelines }));
 
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   adapter.onMessage(async () => {});
   const { calls, fetchMock } = mockFetch([{ ok: true }]);
   const originalFetch = globalThis.fetch;
@@ -1930,7 +1933,7 @@ test(
     resetPolicyCacheForTests();
     t.mock.method(pool, 'query', stubWelcomeQuery({ known: false }));
 
-    const adapter = new WhatsAppCloudAdapter();
+    const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
     adapter.onMessage(async () => {});
     const { calls, fetchMock } = mockFetch([{ ok: true }]);
     const originalFetch = globalThis.fetch;
@@ -1962,8 +1965,7 @@ test(
 );
 
 test('first-contact welcome: Discord and Baileys welcome constants are unaffected by this change', async () => {
-  const { WELCOME_MESSAGE } = await import('../src/platforms/discord/adapter.js');
-  const { WHATSAPP_GROUP_WELCOME_MESSAGE } = await import('../src/platforms/whatsapp/baileysAdapter.js');
+  const { WELCOME_MESSAGE, WHATSAPP_GROUP_WELCOME_MESSAGE } = await import('../src/platforms/textPacks.js');
   assert.notEqual(WELCOME_MESSAGE, WHATSAPP_CLOUD_WELCOME_MESSAGE);
   assert.notEqual(WHATSAPP_GROUP_WELCOME_MESSAGE, WHATSAPP_CLOUD_WELCOME_MESSAGE);
 });
@@ -1972,7 +1974,7 @@ test(
   'SECURITY: WhatsAppCloudAdapter does not implement canPostTo — WhatsApp keeps isKnownConversation as ' +
     'its sole reachability gate, since any phone number is dialable (issue #270)',
   () => {
-    const adapter = new WhatsAppCloudAdapter();
+    const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
     assert.equal(adapter.canPostTo, undefined);
   },
 );
@@ -1982,7 +1984,7 @@ test(
     'implements no scheduled-events primitive — mirrors the sendImage/reactToMessage unsupported-platform ' +
     'pattern (issue #388)',
   async () => {
-    const adapter = new WhatsAppCloudAdapter();
+    const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
     assert.equal(
       adapter.listUpcomingEvents,
       undefined,
@@ -2016,7 +2018,7 @@ test(
 // --- reactToMessage: native Graph API reaction (issue #528) -----
 
 test('reactToMessage: POSTs a type: reaction Graph API message with the exact body shape and URL (issue #528)', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   markInboundNow(adapter, '64211234567');
   const { calls, fetchMock } = mockFetch([{ ok: true }]);
   const originalFetch = globalThis.fetch;
@@ -2037,7 +2039,7 @@ test('reactToMessage: POSTs a type: reaction Graph API message with the exact bo
 });
 
 test('SECURITY: reactToMessage outside the 24h customer-service window throws before any Graph API call (issue #528)', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   // No markInboundNow — this recipient has no recent inbound message.
   const { calls, fetchMock } = mockFetch([{ ok: true }]);
   const originalFetch = globalThis.fetch;
@@ -2054,7 +2056,7 @@ test('SECURITY: reactToMessage outside the 24h customer-service window throws be
 });
 
 test('reactToMessage: a failed send (non-OK response) calls recordSendFailure() and throws, participating in the isConnected() threshold (issue #528)', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   (adapter as unknown as { server: object }).server = {};
   markInboundNow(adapter, '64211234567');
   const { calls, fetchMock } = mockFetch([{ ok: false, status: 500 }]);
@@ -2079,7 +2081,7 @@ test('reactToMessage: a failed send (non-OK response) calls recordSendFailure() 
 });
 
 test('reactToMessage: a REJECTED fetch (network error) also calls recordSendFailure() and re-throws the original error (issue #528)', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   (adapter as unknown as { server: object }).server = {};
   markInboundNow(adapter, '64211234567');
   const rejectingFetch = async () => {
@@ -2102,7 +2104,7 @@ test('reactToMessage: a REJECTED fetch (network error) also calls recordSendFail
 });
 
 test('reactToMessage: a successful send after crossing the failure threshold resets the counter and restores isConnected() (issue #528)', async () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   (adapter as unknown as { server: object }).server = {};
   markInboundNow(adapter, '64211234567');
   const originalFetch = globalThis.fetch;
@@ -2132,7 +2134,7 @@ test('SECURITY: react_to_message refuses a WhatsApp-Cloud reaction to a messageI
   cloud.phoneNumberId = 'test-phone-id';
   cloud.accessToken = 'test-access-token';
 
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   markInboundNow(adapter, '64211234567');
   const { calls, fetchMock } = mockFetch([{ ok: true }]);
   const originalFetch = globalThis.fetch;
@@ -2174,7 +2176,7 @@ test('SECURITY: react_to_message refuses a WhatsApp-Cloud reaction to a messageI
 });
 
 test('adminCapabilities includes block_user/unblock_user (issue #572) — the Cloud API otherwise has no moderation surface', () => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   assert.ok(adapter.adminCapabilities.has('block_user'));
   assert.ok(adapter.adminCapabilities.has('unblock_user'));
   assert.equal(
@@ -2188,7 +2190,7 @@ test(
   'SECURITY: performAdminAction(block_user)/unblock_user are a pure DB write, no Graph API call — unlike ' +
     'every other Cloud action, a block/unblock never makes a fetch() request (issue #572)',
   async (t) => {
-    const adapter = new WhatsAppCloudAdapter();
+    const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
     const calls: Array<{ sql: string; params: unknown[] }> = [];
     t.mock.method(pool, 'query', async (sql: string, params: unknown[]) => {
       calls.push({ sql, params });

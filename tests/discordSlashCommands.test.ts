@@ -1,5 +1,9 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
+// The adapters take their community text pack as a required constructor
+// parameter now (agent-base plan item 6) — production hands it over in
+// src/platforms/factories.ts, so these constructions pass the same pack.
+import { DISCORD_TEXT_PACK } from '../src/platforms/textPacks.js';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
@@ -200,7 +204,7 @@ test('SECURITY: with DISCORD_SLASH_COMMANDS_ENABLED unset, no InteractionCreate 
     flag.slashCommandsEnabled = was;
   });
 
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const client = (
     adapter as unknown as {
       client: {
@@ -237,7 +241,7 @@ test('with DISCORD_SLASH_COMMANDS_ENABLED=true, the four commands are registered
     flag.slashCommandsEnabled = was;
   });
 
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const client = (
     adapter as unknown as {
       client: {
@@ -330,7 +334,7 @@ test('buildSlashCommands defines exactly the five approved read-only commands, e
 
 test('SECURITY: authorization is resolved via resolveRole(platform, userId) only — a spoofed admin-looking field on the interaction payload changes nothing (acceptance criterion 3)', async (t) => {
   const calls = mockPool(t, { memberRole: null }); // 'guest-1' has no community_users row
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction, replies } = fakeInteraction({
     commandName: 'whois',
     userId: 'guest-1',
@@ -351,7 +355,7 @@ test('SECURITY: authorization is resolved via resolveRole(platform, userId) only
 
 test("SECURITY: a guest caller is rejected on /whois without who_is_into's repository function ever being invoked (acceptance criteria 4, 12)", async (t) => {
   const calls = mockPool(t, { memberRole: null });
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction, replies } = fakeInteraction({
     commandName: 'whois',
     userId: 'guest-1',
@@ -371,7 +375,7 @@ test("SECURITY: a guest caller is rejected on /whois without who_is_into's repos
 
 test("SECURITY: a guest caller is rejected on /projects without list_projects's repository function ever being invoked (acceptance criteria 4, 12)", async (t) => {
   const calls = mockPool(t, { memberRole: null });
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction, replies } = fakeInteraction({ commandName: 'projects', userId: 'guest-1' });
 
   await handleInteraction(interaction as never, adapterDeps(adapter));
@@ -386,7 +390,7 @@ test("SECURITY: a guest caller is rejected on /projects without list_projects's 
 
 test('SECURITY: a guest caller is rejected on /projects regardless of the seeking_collaborators option value (issue #854 AC #6)', async (t) => {
   const calls = mockPool(t, { memberRole: null });
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction, replies } = fakeInteraction({
     commandName: 'projects',
     userId: 'guest-1',
@@ -405,7 +409,7 @@ test('SECURITY: a guest caller is rejected on /projects regardless of the seekin
 
 test('/projects seeking_collaborators:true threads the same filter through as list_projects, on both the no-query and query paths (issue #854 AC #5)', async (t) => {
   const calls = mockPool(t, { memberRole: 'member', projectRows: [] });
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
 
   const noQuery = fakeInteraction({
     commandName: 'projects',
@@ -451,7 +455,7 @@ test('/projects seeking_collaborators:true threads the same filter through as li
 
 test('/projects seeking_collaborators:true with no matching rows replies with the distinct filtered empty-state message (issue #854 AC #4, #5)', async (t) => {
   mockPool(t, { memberRole: 'member', projectRows: [] });
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction, replies } = fakeInteraction({
     commandName: 'projects',
     userId: 'member-1',
@@ -465,7 +469,7 @@ test('/projects seeking_collaborators:true with no matching rows replies with th
 
 test('SECURITY: a guest caller is rejected on /projects regardless of the mine option value (issue #867)', async (t) => {
   const calls = mockPool(t, { memberRole: null });
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction, replies } = fakeInteraction({
     commandName: 'projects',
     userId: 'guest-1',
@@ -484,7 +488,7 @@ test('SECURITY: a guest caller is rejected on /projects regardless of the mine o
 
 test('/projects mine:true calls listOwnProjects scoped to the caller identity, ignores query/seeking_collaborators, and has a distinct empty-state message (issue #867)', async (t) => {
   const calls = mockPool(t, { memberRole: 'member', projectRows: [] });
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction, replies } = fakeInteraction({
     commandName: 'projects',
     userId: 'member-1',
@@ -520,7 +524,7 @@ test("SECURITY: /kb tracks knowledge_search's own toolsForRole reachability rath
       },
     ],
   });
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction, replies } = fakeInteraction({
     commandName: 'kb',
     userId: 'guest-1',
@@ -539,7 +543,7 @@ test("SECURITY: /kb tracks knowledge_search's own toolsForRole reachability rath
 
 test('a member caller passes the /whois and /projects gates (not rejected)', async (t) => {
   mockPool(t, { memberRole: 'member', interestRows: [], projectRows: [] });
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
 
   const whois = fakeInteraction({ commandName: 'whois', userId: 'member-1', options: { query: 'rag' } });
   await handleInteraction(whois.interaction as never, adapterDeps(adapter));
@@ -561,7 +565,7 @@ test('acceptance criterion 5: every one of the four commands replies ephemerally
     projectRows: [],
     guidelines: 'Be kind.',
   });
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
 
   for (const commandName of ['kb', 'whois', 'projects', 'guidelines']) {
     const { interaction, replies } = fakeInteraction({
@@ -577,7 +581,7 @@ test('acceptance criterion 5: every one of the four commands replies ephemerally
 
 test('acceptance criterion 5: a rejection reply is ephemeral too, not just a successful answer', async (t) => {
   mockPool(t, { memberRole: null });
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction, replies } = fakeInteraction({ commandName: 'whois', userId: 'guest-2' });
   await handleInteraction(interaction as never, adapterDeps(adapter));
   assert.equal(replies[0].ephemeral, true);
@@ -593,7 +597,7 @@ test('PR #748 review: every command calls deferReply before its first reply/DB r
     projectRows: [],
     guidelines: 'Be kind.',
   });
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
 
   for (const commandName of ['kb', 'whois', 'projects', 'guidelines']) {
     const { interaction, order } = fakeInteraction({
@@ -615,7 +619,7 @@ test('PR #748 review: deferReply happens before the (potentially slow) embedding
     }
     return { rows: [], rowCount: 0 };
   }) as typeof pool.query);
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction, order } = fakeInteraction({
     commandName: 'kb',
     userId: 'member-1',
@@ -650,7 +654,7 @@ test('SECURITY: /kb routes its reply through the same outbound filter as every o
       },
     ],
   });
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction, replies } = fakeInteraction({
     commandName: 'kb',
     userId: 'member-1',
@@ -668,7 +672,7 @@ test('SECURITY: /guidelines also routes through the outbound filter (every slash
   resetPolicyCacheForTests();
   const secret = 'sk-ant-' + 'z'.repeat(30);
   mockPool(t, { memberRole: 'member', guidelines: `Be nice. Contact ${secret} for help.` });
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction, replies } = fakeInteraction({ commandName: 'guidelines', userId: 'member-1' });
 
   await handleInteraction(interaction as never, adapterDeps(adapter));
@@ -701,7 +705,7 @@ test('SECURITY: /kb never direct-serves an unreviewed auto-provenance knowledge 
       },
     ],
   });
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction, replies } = fakeInteraction({
     commandName: 'kb',
     userId: 'member-1',
@@ -731,7 +735,7 @@ test('/kb replies with the no-match text when every hit is auto-provenance (all 
       },
     ],
   });
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction, replies } = fakeInteraction({
     commandName: 'kb',
     userId: 'member-1',
@@ -766,7 +770,7 @@ test('SECURITY: /kb reply includes KNOWLEDGE_CONFLICT_CAVEAT_TEXT when hasConfli
   ];
 
   mockPool(t, { memberRole: 'member', knowledgeRows, conflictExists: true });
-  const adapterConflict = new DiscordAdapter();
+  const adapterConflict = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction: iConflict, replies: repliesConflict } = fakeInteraction({
     commandName: 'kb',
     userId: 'member-1',
@@ -779,7 +783,7 @@ test('SECURITY: /kb reply includes KNOWLEDGE_CONFLICT_CAVEAT_TEXT when hasConfli
   );
 
   mockPool(t, { memberRole: 'member', knowledgeRows, conflictExists: false });
-  const adapterNoConflict = new DiscordAdapter();
+  const adapterNoConflict = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction: iNoConflict, replies: repliesNoConflict } = fakeInteraction({
     commandName: 'kb',
     userId: 'member-1',
@@ -821,7 +825,7 @@ test('SECURITY: /kb reply includes KNOWLEDGE_LOW_RATED_CAVEAT_TEXT on exactly th
     ],
     lowRatedIds: [1],
   });
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction, replies } = fakeInteraction({
     commandName: 'kb',
     userId: 'member-1',
@@ -889,7 +893,7 @@ test('SECURITY: /kb still replies successfully with the hits and no caveat when 
     return { rows: [], rowCount: 0 };
   }) as typeof pool.query);
 
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction, replies } = fakeInteraction({
     commandName: 'kb',
     userId: 'member-1',
@@ -926,7 +930,7 @@ test("SECURITY: /whois preserves who_is_into's untrusted-content quarantine — 
       },
     ],
   });
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction, replies } = fakeInteraction({
     commandName: 'whois',
     userId: 'member-1',
@@ -952,7 +956,7 @@ test('/whois with no query option and a published row for the caller renders the
     ],
     projectRows: [],
   });
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction, replies } = fakeInteraction({
     commandName: 'whois',
     userId: 'member-1',
@@ -967,7 +971,7 @@ test('/whois with no query option and a published row for the caller renders the
 
 test('/whois with no query option and no published row for the caller returns guidance to set_my_interests, mirroring who_is_into (issue #882 acceptance criterion 5)', async (t) => {
   mockPool(t, { memberRole: 'member', interestRows: [], projectRows: [] });
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction, replies } = fakeInteraction({
     commandName: 'whois',
     userId: 'member-1',
@@ -989,7 +993,7 @@ test('/whois with no query option and no published row for the caller browses re
     ],
     projectRows: [],
   });
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction, replies } = fakeInteraction({
     commandName: 'whois',
     userId: 'member-1',
@@ -1015,7 +1019,7 @@ test('/whois <query> remains byte-identical to today when a query IS supplied, e
     ],
     projectRows: [],
   });
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction, replies } = fakeInteraction({
     commandName: 'whois',
     userId: 'member-1',
@@ -1044,7 +1048,7 @@ test("SECURITY: /projects preserves list_projects's untrusted-content quarantine
       },
     ],
   });
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction, replies } = fakeInteraction({ commandName: 'projects', userId: 'member-1' });
 
   await handleInteraction(interaction as never, adapterDeps(adapter));
@@ -1057,7 +1061,7 @@ test("SECURITY: /projects preserves list_projects's untrusted-content quarantine
 
 test("SECURITY: /kb passes the caller's real (platform, conversationId) to searchKnowledge, never a hardcoded or global-only scope (acceptance criteria 9, 15)", async (t) => {
   const calls = mockPool(t, { memberRole: 'member', knowledgeRows: [] });
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction } = fakeInteraction({
     commandName: 'kb',
     userId: 'member-1',
@@ -1081,7 +1085,7 @@ test("SECURITY: /kb passes the caller's real (platform, conversationId) to searc
 
 test("SECURITY: a guest caller is rejected on /digest without buildMemberDigestContent's repository reads ever being invoked (acceptance criteria 4)", async (t) => {
   const calls = mockPool(t, { memberRole: null });
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction, replies } = fakeInteraction({ commandName: 'digest', userId: 'guest-1' });
 
   await handleInteraction(interaction as never, adapterDeps(adapter));
@@ -1130,7 +1134,7 @@ test("a member caller passes the /digest gate, defers before any DB read, and re
     return { rows: [], rowCount: 0 };
   }) as typeof pool.query);
 
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction, replies, order } = fakeInteraction({ commandName: 'digest', userId: 'member-1' });
 
   await handleInteraction(interaction as never, adapterDeps(adapter));
@@ -1162,7 +1166,7 @@ test('/digest replies with the fixed "Nothing to report right now." text when bu
     // null (formatMemberDigestMessage's own silence-over-noise contract).
     return { rows: [], rowCount: 0 };
   }) as typeof pool.query);
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction, replies } = fakeInteraction({ commandName: 'digest', userId: 'member-1' });
 
   await handleInteraction(interaction as never, adapterDeps(adapter));
@@ -1197,7 +1201,7 @@ test('SECURITY: /digest never wraps its reply in untrusted() — unlike communit
     if (sql.includes('FROM member_interests')) return { rows: [{ n: '0' }], rowCount: 0 };
     return { rows: [], rowCount: 0 };
   }) as typeof pool.query);
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction, replies } = fakeInteraction({ commandName: 'digest', userId: 'member-1' });
 
   await handleInteraction(interaction as never, adapterDeps(adapter));
@@ -1214,7 +1218,7 @@ test('SECURITY: /digest never wraps its reply in untrusted() — unlike communit
 
 test('a rejected caller receives a clear rejection message and no other side effects', async (t) => {
   mockPool(t, { memberRole: null });
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction, replies } = fakeInteraction({ commandName: 'projects', userId: 'guest-1' });
 
   await handleInteraction(interaction as never, adapterDeps(adapter));
@@ -1225,7 +1229,7 @@ test('a rejected caller receives a clear rejection message and no other side eff
 
 test('handleInteraction ignores every non-chat-input interaction (e.g. a button click) without throwing', async (t) => {
   mockPool(t);
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const nonCommand = { isChatInputCommand: () => false };
   await assert.doesNotReject(() => handleInteraction(nonCommand as never, adapterDeps(adapter)));
 });
@@ -1253,7 +1257,7 @@ test("a successful /kb invocation calls recordShortcutHit('slash_command') exact
       },
     ],
   });
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction } = fakeInteraction({
     commandName: 'kb',
     userId: 'guest-1',
@@ -1269,7 +1273,7 @@ test("a successful /kb invocation calls recordShortcutHit('slash_command') exact
 
 test("a successful /whois invocation calls recordShortcutHit('slash_command') exactly once (issue #863 acceptance criterion 1)", async (t) => {
   const calls = mockPool(t, { memberRole: 'member', interestRows: [] });
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction } = fakeInteraction({
     commandName: 'whois',
     userId: 'member-1',
@@ -1283,7 +1287,7 @@ test("a successful /whois invocation calls recordShortcutHit('slash_command') ex
 
 test("a successful /projects invocation calls recordShortcutHit('slash_command') exactly once (issue #863 acceptance criterion 1)", async (t) => {
   const calls = mockPool(t, { memberRole: 'member', projectRows: [] });
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction } = fakeInteraction({ commandName: 'projects', userId: 'member-1' });
 
   await handleInteraction(interaction as never, adapterDeps(adapter));
@@ -1294,7 +1298,7 @@ test("a successful /projects invocation calls recordShortcutHit('slash_command')
 test("a successful /guidelines invocation calls recordShortcutHit('slash_command') exactly once (issue #863 acceptance criterion 1)", async (t) => {
   resetPolicyCacheForTests();
   const calls = mockPool(t, { guidelines: 'Be kind.' });
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction } = fakeInteraction({ commandName: 'guidelines', userId: 'anyone-1' });
 
   await handleInteraction(interaction as never, adapterDeps(adapter));
@@ -1312,7 +1316,7 @@ test("a successful /digest invocation calls recordShortcutHit('slash_command') e
     if (sql.includes('FROM member_interests')) return { rows: [{ n: '0' }], rowCount: 0 };
     return { rows: [], rowCount: 0 };
   }) as typeof pool.query);
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction } = fakeInteraction({ commandName: 'digest', userId: 'member-1' });
 
   await handleInteraction(interaction as never, adapterDeps(adapter));
@@ -1322,7 +1326,7 @@ test("a successful /digest invocation calls recordShortcutHit('slash_command') e
 
 test('SECURITY: recordShortcutHit is never called on the NOT_AUTHORIZED_TEXT branch for /whois or /projects (issue #863 acceptance criterion 4/security criterion 5)', async (t) => {
   const calls = mockPool(t, { memberRole: null });
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
 
   const whois = fakeInteraction({ commandName: 'whois', userId: 'guest-1', options: { query: 'rag' } });
   await handleInteraction(whois.interaction as never, adapterDeps(adapter));

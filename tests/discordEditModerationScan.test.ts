@@ -1,5 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// The adapters take their community text pack as a required constructor
+// parameter now (agent-base plan item 6) — production hands it over in
+// src/platforms/factories.ts, so these constructions pass the same pack.
+import { DISCORD_TEXT_PACK } from '../src/platforms/textPacks.js';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
@@ -65,7 +69,7 @@ async function startAdapterWithScanSpy(): Promise<{
   client: { emit: (event: string, ...args: unknown[]) => void };
   scanned: ScannedContext[];
 }> {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   adapter.onMessage(async () => {});
   const scanned: ScannedContext[] = [];
   (adapter as unknown as { moderator: { scan: (ctx: ScannedContext) => Promise<void> } }).moderator.scan =

@@ -1,5 +1,9 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
+// The adapters take their community text pack as a required constructor
+// parameter now (agent-base plan item 6) — production hands it over in
+// src/platforms/factories.ts, so these constructions pass the same pack.
+import { DISCORD_TEXT_PACK, WELCOME_MESSAGE, WELCOME_MESSAGE_OPEN } from '../src/platforms/textPacks.js';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
@@ -28,8 +32,7 @@ process.env.DISCORD_MODERATION_ENABLED ??= 'true';
 // Fixed allowlist for the assign/remove_community_role tests below (issue #232).
 process.env.DISCORD_ASSIGNABLE_ROLES ??= 'role-cosmetic-1,role-cosmetic-2';
 
-const { DiscordAdapter, WELCOME_MESSAGE, WELCOME_MESSAGE_OPEN } =
-  await import('../src/platforms/discord/adapter.js');
+const { DiscordAdapter } = await import('../src/platforms/discord/adapter.js');
 const { config } = await import('../src/config.js');
 const { pool } = await import('../src/storage/db.js');
 const { resetPolicyCacheForTests } = await import('../src/storage/policyStore.js');
@@ -357,7 +360,7 @@ function stubClient(adapter: InstanceType<typeof DiscordAdapter>) {
 }
 
 test('SECURITY: sendMessage routes through filterOutbound — a secret cannot reach a Discord channel unredacted', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const sent = stubClient(adapter);
   await adapter.sendMessage({
     conversationId: 'chan-1',
@@ -369,7 +372,7 @@ test('SECURITY: sendMessage routes through filterOutbound — a secret cannot re
 });
 
 test('SECURITY: sendDirectMessage routes through filterOutbound — a secret cannot reach a Discord DM unredacted', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const sent = stubClient(adapter);
   await adapter.sendDirectMessage('user-1', 'secret is sk-ant-' + 'y'.repeat(30) + ' end');
   assert.equal(sent.length, 1);
@@ -407,7 +410,7 @@ function stubClientForSend(
 }
 
 test('sendMessage: a transient send failure is retried and the reply is still delivered (issue #846)', async () => {
-  const adapter = new DiscordAdapter(undefined, 0); // no send retry delay — asserting retry behaviour, not timing
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK, undefined, 0); // no send retry delay — asserting retry behaviour, not timing
   let calls = 0;
   stubClientForSend(adapter, async () => {
     calls += 1;
@@ -420,7 +423,7 @@ test('sendMessage: a transient send failure is retried and the reply is still de
 });
 
 test('sendDirectMessage: a transient send failure is retried and the DM is still delivered (issue #846)', async () => {
-  const adapter = new DiscordAdapter(undefined, 0);
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK, undefined, 0);
   let calls = 0;
   stubClientForSend(adapter, async () => {
     calls += 1;
@@ -432,7 +435,7 @@ test('sendDirectMessage: a transient send failure is retried and the DM is still
 });
 
 test('sendMessage: a send that fails on every attempt re-throws after DISCORD_SEND_MAX_ATTEMPTS, unchanged persistent-failure behaviour (issue #846)', async () => {
-  const adapter = new DiscordAdapter(undefined, 0);
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK, undefined, 0);
   let calls = 0;
   stubClientForSend(adapter, async () => {
     calls += 1;
@@ -446,7 +449,7 @@ test('sendMessage: a send that fails on every attempt re-throws after DISCORD_SE
 });
 
 test('sendDirectMessage: a send that fails on every attempt re-throws after DISCORD_SEND_MAX_ATTEMPTS (issue #846)', async () => {
-  const adapter = new DiscordAdapter(undefined, 0);
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK, undefined, 0);
   let calls = 0;
   stubClientForSend(adapter, async () => {
     calls += 1;
@@ -457,7 +460,7 @@ test('sendDirectMessage: a send that fails on every attempt re-throws after DISC
 });
 
 test('sendMessage: per-chunk retry re-sends only the failing chunk, never replays an already-sent chunk (issue #846)', async () => {
-  const adapter = new DiscordAdapter(undefined, 0);
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK, undefined, 0);
   const chunk1Calls = { count: 0 };
   const chunk2Calls = { count: 0 };
   stubClientForSend(adapter, async (opts) => {
@@ -477,7 +480,7 @@ test('sendMessage: per-chunk retry re-sends only the failing chunk, never replay
 });
 
 test('SECURITY: a retried Discord send still runs outbound filtering exactly once — the retried payload is byte-identical to the first attempt, not re-filtered per attempt (issue #846)', async () => {
-  const adapter = new DiscordAdapter(undefined, 0);
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK, undefined, 0);
   let filteredCalls = 0;
   const adapterInternals = adapter as unknown as { filtered: (...args: unknown[]) => Promise<string> };
   const originalFiltered = adapterInternals.filtered.bind(adapter);
@@ -537,7 +540,7 @@ function stubClientForPoll(adapter: InstanceType<typeof DiscordAdapter>) {
 }
 
 test('SECURITY: performAdminAction("create_poll") routes question/answers through filterOutbound — a secret cannot reach a Discord poll unredacted (issue #228)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const sent = stubClientForPoll(adapter);
   const secret = 'sk-ant-' + 'y'.repeat(30);
   await adapter.performAdminAction({
@@ -560,7 +563,7 @@ test('SECURITY: performAdminAction("create_poll") routes question/answers throug
 });
 
 test('performAdminAction("create_poll") sets allowMultiselect from params.multiChoice (single by default, multi when asked)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const sent = stubClientForPoll(adapter);
   await adapter.performAdminAction({
     kind: 'create_poll',
@@ -605,7 +608,7 @@ function stubClientForEndPoll(
 }
 
 test('performAdminAction("end_poll") ends a running poll and reports it final', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const spy = stubClientForEndPoll(adapter, { resultsFinalized: false });
   const result = await adapter.performAdminAction({
     kind: 'end_poll',
@@ -617,7 +620,7 @@ test('performAdminAction("end_poll") ends a running poll and reports it final', 
 });
 
 test('performAdminAction("end_poll") is a no-op on an already-finalized poll (never double-ends)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const spy = stubClientForEndPoll(adapter, { resultsFinalized: true });
   const result = await adapter.performAdminAction({
     kind: 'end_poll',
@@ -629,7 +632,7 @@ test('performAdminAction("end_poll") is a no-op on an already-finalized poll (ne
 });
 
 test('performAdminAction("end_poll") rejects a message that has no poll', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   stubClientForEndPoll(adapter, null);
   await assert.rejects(
     () =>
@@ -705,7 +708,7 @@ test(
   'SECURITY: performAdminAction("create_event") routes name/description through filterOutbound — a ' +
     'secret cannot reach a Discord event unredacted (issue #230)',
   async () => {
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const created = stubClientForEvent(adapter);
     const secret = 'sk-ant-' + 'y'.repeat(30);
     await adapter.performAdminAction({
@@ -734,7 +737,7 @@ test(
 );
 
 test('performAdminAction("create_event") treats an external/physical location as an EXTERNAL event with the location text filtered (issue #230)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const created = stubClientForEvent(adapter);
   await adapter.performAdminAction({
     kind: 'create_event',
@@ -755,7 +758,7 @@ test(
   'performAdminAction("create_event") returns a confirmation naming the event and its NZ-local ' +
     'start time, not raw UTC ISO (issue #577)',
   async () => {
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     stubClientForEvent(adapter);
     const result = await adapter.performAdminAction({
       kind: 'create_event',
@@ -776,7 +779,7 @@ test(
 );
 
 test('SECURITY: performAdminAction("create_event") refuses an external location with no endTime — Discord requires one for non-channel events (issue #230)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   stubClientForEvent(adapter);
   await assert.rejects(
     () =>
@@ -793,7 +796,7 @@ test('SECURITY: performAdminAction("create_event") refuses an external location 
 });
 
 test('performAdminAction("create_event") resolves a visible voice channel location to a channel-hosted VOICE event, endTime optional (issue #230)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const voiceChannel = fakeLocationChannel({ id: 'chan-voice-1', type: ChannelType.GuildVoice });
   const created = stubClientForEvent(adapter, async () => voiceChannel);
   await adapter.performAdminAction({
@@ -808,7 +811,7 @@ test('performAdminAction("create_event") resolves a visible voice channel locati
 });
 
 test('performAdminAction("create_event") resolves a visible stage channel location to a channel-hosted STAGE_INSTANCE event (issue #230)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const stageChannel = fakeLocationChannel({ id: 'chan-stage-1', type: ChannelType.GuildStageVoice });
   const created = stubClientForEvent(adapter, async () => stageChannel);
   await adapter.performAdminAction({
@@ -821,7 +824,7 @@ test('performAdminAction("create_event") resolves a visible stage channel locati
 });
 
 test('SECURITY: performAdminAction("create_event") falls back to an external location for a visible TEXT channel — only voice/stage channels are channel-hosted (issue #230)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const textChannel = fakeLocationChannel({ id: 'chan-text-1', type: ChannelType.GuildText });
   const created = stubClientForEvent(adapter, async () => textChannel);
   await adapter.performAdminAction({
@@ -839,7 +842,7 @@ test('SECURITY: performAdminAction("create_event") falls back to an external loc
 });
 
 test('SECURITY: performAdminAction("create_event") falls back to an external location for a voice channel in a DIFFERENT guild — a validated channel must be in THIS guild (issue #230)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const otherGuildVoiceChannel = fakeLocationChannel({
     id: 'chan-voice-other-guild',
     type: ChannelType.GuildVoice,
@@ -925,7 +928,7 @@ function stubClientForListEvents(
 }
 
 test('listUpcomingEvents returns only Scheduled/Active events, excludes Completed/Canceled, sorted by start time ascending (issue #388)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   stubClientForListEvents(adapter, [
     fakeScheduledEvent({
       name: 'Later Scheduled',
@@ -959,7 +962,7 @@ test('listUpcomingEvents returns only Scheduled/Active events, excludes Complete
 });
 
 test('listUpcomingEvents caps results at the given limit even when more events exist, earliest-first (issue #388)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   stubClientForListEvents(
     adapter,
     Array.from({ length: 5 }, (_, i) =>
@@ -979,7 +982,7 @@ test('listUpcomingEvents caps results at the given limit even when more events e
 });
 
 test("listUpcomingEvents resolves a voice/stage-hosted event's location to the channel name (issue #388)", async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   stubClientForListEvents(
     adapter,
     [fakeScheduledEvent({ channelId: 'chan-voice-1', entityMetadata: null })],
@@ -992,7 +995,7 @@ test("listUpcomingEvents resolves a voice/stage-hosted event's location to the c
 });
 
 test('listUpcomingEvents falls back to the raw entityMetadata.location string for an external/physical event (issue #388)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   stubClientForListEvents(adapter, [
     fakeScheduledEvent({ channelId: null, entityMetadata: { location: 'Wellington Central Library' } }),
   ]);
@@ -1006,7 +1009,7 @@ test(
   "listUpcomingEvents surfaces each event's own id (issue #424) — otherwise cancel_event has no " +
     'conversational path to discover a valid eventId to act on',
   async () => {
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     stubClientForListEvents(adapter, [fakeScheduledEvent({ id: 'real-event-id-42', name: 'Meetup' })]);
 
     const events = await adapter.listUpcomingEvents(10);
@@ -1016,7 +1019,7 @@ test(
 );
 
 test('listUpcomingEvents caches results for ~60s — a second call within the TTL does not re-invoke guild.scheduledEvents.fetch() (issue #388)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const calls = stubClientForListEvents(adapter, [fakeScheduledEvent()]);
 
   await adapter.listUpcomingEvents(10);
@@ -1030,7 +1033,7 @@ test(
     'id/name/time/location/description are ever read off the raw scheduled-event object, so a future ' +
     'discord.js field addition cannot silently leak through (issue #388)',
   async () => {
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const rawEventWithCreator = {
       ...fakeScheduledEvent({ name: 'Meetup with a creator field' }),
       creatorId: 'discord-user-id-99999',
@@ -1089,7 +1092,7 @@ function stubClientForCancelEvent(
 }
 
 test('performAdminAction("cancel_event") transitions a Scheduled event to Canceled via a real guild.scheduledEvents.edit call (issue #424)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const scheduled = fakeScheduledEvent({
     name: 'Wellington Meetup',
     status: GuildScheduledEventStatus.Scheduled,
@@ -1105,7 +1108,7 @@ test('performAdminAction("cancel_event") transitions a Scheduled event to Cancel
 });
 
 test('SECURITY: performAdminAction("cancel_event") refuses cleanly when the event is not found, rather than attempting an edit (issue #424)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const edits = stubClientForCancelEvent(adapter, async () => null);
 
   await assert.rejects(
@@ -1116,7 +1119,7 @@ test('SECURITY: performAdminAction("cancel_event") refuses cleanly when the even
 });
 
 test('SECURITY: performAdminAction("cancel_event") refuses an Active event rather than attempting an invalid status transition (issue #424)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const active = fakeScheduledEvent({ name: 'Live Now', status: GuildScheduledEventStatus.Active });
   const edits = stubClientForCancelEvent(adapter, async (id) => (id === 'event-active' ? active : null));
 
@@ -1128,7 +1131,7 @@ test('SECURITY: performAdminAction("cancel_event") refuses an Active event rathe
 });
 
 test('SECURITY: performAdminAction("cancel_event") refuses a Completed event rather than attempting an invalid status transition (issue #424)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const completed = fakeScheduledEvent({ name: 'Past Meetup', status: GuildScheduledEventStatus.Completed });
   const edits = stubClientForCancelEvent(adapter, async (id) =>
     id === 'event-completed' ? completed : null,
@@ -1142,7 +1145,7 @@ test('SECURITY: performAdminAction("cancel_event") refuses a Completed event rat
 });
 
 test('SECURITY: performAdminAction("cancel_event") refuses an already-Canceled event rather than attempting an invalid status transition (issue #424)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const canceled = fakeScheduledEvent({ name: 'Called Off', status: GuildScheduledEventStatus.Canceled });
   const edits = stubClientForCancelEvent(adapter, async (id) => (id === 'event-canceled' ? canceled : null));
 
@@ -1154,7 +1157,7 @@ test('SECURITY: performAdminAction("cancel_event") refuses an already-Canceled e
 });
 
 test('getScheduledEvent resolves a live event by id, mapping GuildScheduledEventStatus to the closed status union (issue #424)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const scheduled = fakeScheduledEvent({
     name: 'Wellington Meetup',
     status: GuildScheduledEventStatus.Scheduled,
@@ -1175,7 +1178,7 @@ test(
   'SECURITY: getScheduledEvent returns null (never throws) for an unknown or foreign-guild eventId — ' +
     "cancel_event's pre-CONFIRM target validation depends on a clean null, not an uncaught rejection (issue #424)",
   async () => {
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     stubClientForCancelEvent(adapter, async () => null);
 
     const result = await adapter.getScheduledEvent('event-does-not-exist');
@@ -1212,7 +1215,7 @@ function stubClientForImage(adapter: InstanceType<typeof DiscordAdapter>) {
 }
 
 test('sendImage sets the Discord attachment description (screen-reader alt-text) to the same caption used as the message content (issue #174)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const sent = stubClientForImage(adapter);
   await adapter.sendImage(
     'chan-1',
@@ -1229,7 +1232,7 @@ test('sendImage sets the Discord attachment description (screen-reader alt-text)
 });
 
 test('SECURITY: sendImage filters the caption once and reuses it for both content and attachment description — a secret cannot reach the alt-text unredacted (issue #174)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const sent = stubClientForImage(adapter);
   const secretPrompt = 'draw sk-ant-' + 'y'.repeat(30) + ' as a logo';
   await adapter.sendImage(
@@ -1263,7 +1266,7 @@ function fakeMessage(): IncomingMessage {
 }
 
 test("sendTypingIndicator: calls the channel's native sendTyping()", async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   let typingCalls = 0;
   const client = (adapter as unknown as { client: { channels: { fetch: (id: string) => Promise<unknown> } } })
     .client;
@@ -1278,7 +1281,7 @@ test("sendTypingIndicator: calls the channel's native sendTyping()", async () =>
 });
 
 test('sendTypingIndicator: a channel that cannot signal typing (no sendTyping) is a silent no-op', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const client = (adapter as unknown as { client: { channels: { fetch: (id: string) => Promise<unknown> } } })
     .client;
   client.channels.fetch = async () => ({ isTextBased: () => true }); // no sendTyping method
@@ -1315,7 +1318,7 @@ function stubClientForReact(adapter: InstanceType<typeof DiscordAdapter>) {
 }
 
 test('reactToMessage fetches the target message in the given channel and reacts with the given emoji', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { reacted, fetchCalls } = stubClientForReact(adapter);
   await adapter.reactToMessage('chan-1', 'msg-1', '👀');
   assert.deepEqual(fetchCalls, ['msg-1']);
@@ -1323,7 +1326,7 @@ test('reactToMessage fetches the target message in the given channel and reacts 
 });
 
 test('reactToMessage throws when the channel is not accessible/text-based, rather than reacting blind', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const client = (adapter as unknown as { client: { channels: { fetch: (id: string) => Promise<unknown> } } })
     .client;
   client.channels.fetch = async () => null;
@@ -1333,7 +1336,7 @@ test('reactToMessage throws when the channel is not accessible/text-based, rathe
 // --- onChannelCreate: new channels/categories inherit the muted role's overwrite immediately (issue #171) ---
 
 test('onChannelCreate: applies the muted-role deny-post overwrite to a new text channel when a muted role already exists', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const guild = fakeGuildRef({
     id: config.discord.guildId,
     mutedRole: { id: 'role-muted', name: config.moderation.mutedRoleName },
@@ -1347,7 +1350,7 @@ test('onChannelCreate: applies the muted-role deny-post overwrite to a new text 
 });
 
 test('onChannelCreate: applies the overwrite to a newly created category too', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const guild = fakeGuildRef({
     id: config.discord.guildId,
     mutedRole: { id: 'role-muted', name: config.moderation.mutedRoleName },
@@ -1362,7 +1365,7 @@ test('onChannelCreate: applies the overwrite to a newly created category too', a
 });
 
 test('SECURITY: onChannelCreate applies the muted-role deny to a new voice channel (its text chat is otherwise postable by a muted member)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const guild = fakeGuildRef({
     id: config.discord.guildId,
     mutedRole: { id: 'role-muted', name: config.moderation.mutedRoleName },
@@ -1378,7 +1381,7 @@ test('SECURITY: onChannelCreate applies the muted-role deny to a new voice chann
 });
 
 test("onChannelCreate: ignores thread channels — thread posting is blocked via the parent channel's SendMessagesInThreads:false instead", async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const guild = fakeGuildRef({
     id: config.discord.guildId,
     mutedRole: { id: 'role-muted', name: config.moderation.mutedRoleName },
@@ -1397,7 +1400,7 @@ test("onChannelCreate: ignores thread channels — thread posting is blocked via
 });
 
 test('onChannelCreate: does nothing when no muted role exists yet (nothing to inherit)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const guild = fakeGuildRef({ id: config.discord.guildId });
   const { channel, overwriteCalls } = fakeChannel({ id: 'chan-new', type: ChannelType.GuildText, guild });
   await fireChannelCreate(adapter, channel);
@@ -1405,7 +1408,7 @@ test('onChannelCreate: does nothing when no muted role exists yet (nothing to in
 });
 
 test('onChannelCreate: does nothing for a channel outside the configured guild', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const guild = fakeGuildRef({
     id: 'some-other-guild',
     mutedRole: { id: 'role-muted', name: config.moderation.mutedRoleName },
@@ -1419,7 +1422,7 @@ test('onChannelCreate: does nothing when moderation is disabled', async () => {
   const wasEnabled = config.moderation.enabled;
   config.moderation.enabled = false;
   try {
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const guild = fakeGuildRef({
       id: config.discord.guildId,
       mutedRole: { id: 'role-muted', name: config.moderation.mutedRoleName },
@@ -1435,7 +1438,7 @@ test('onChannelCreate: does nothing when moderation is disabled', async () => {
 // --- applyMutedRoleOverwrite: bounded retry + debounced alert on retry exhaustion (issue #276) ------
 
 test('onChannelCreate: a transient overwrite failure is retried and succeeds — no alert sent', async () => {
-  const adapter = new DiscordAdapter(0); // no retry delay — this test asserts on retry behaviour, not timing
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK, 0); // no retry delay — this test asserts on retry behaviour, not timing
   const wasSupers = config.rbac.superAdminDiscordIds;
   config.rbac.superAdminDiscordIds = ['admin-1'];
   try {
@@ -1459,7 +1462,7 @@ test('onChannelCreate: a transient overwrite failure is retried and succeeds —
 });
 
 test('muteUser -> ensureMutedRole: 3 channels that exhaust all retries produce exactly one summary DM per super admin', async () => {
-  const adapter = new DiscordAdapter(0);
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK, 0);
   const wasSupers = config.rbac.superAdminDiscordIds;
   config.rbac.superAdminDiscordIds = ['admin-1', 'admin-2'];
   try {
@@ -1509,7 +1512,7 @@ test('muteUser -> ensureMutedRole: 3 channels that exhaust all retries produce e
 });
 
 test('muteUser -> ensureMutedRole: a scan with zero failures sends no alert', async () => {
-  const adapter = new DiscordAdapter(0);
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK, 0);
   const wasSupers = config.rbac.superAdminDiscordIds;
   config.rbac.superAdminDiscordIds = ['admin-1'];
   try {
@@ -1531,7 +1534,7 @@ test('muteUser -> ensureMutedRole: a scan with zero failures sends no alert', as
 });
 
 test('SECURITY: a self-healing blip (fails once, succeeds on retry) during a scan never triggers the muted-role alert', async () => {
-  const adapter = new DiscordAdapter(0);
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK, 0);
   const wasSupers = config.rbac.superAdminDiscordIds;
   config.rbac.superAdminDiscordIds = ['admin-1'];
   try {
@@ -1557,7 +1560,7 @@ test('SECURITY: a self-healing blip (fails once, succeeds on retry) during a sca
 });
 
 test('SECURITY: two consecutive failing scans within the debounce window collapse into a single muted-role alert DM', async () => {
-  const adapter = new DiscordAdapter(0);
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK, 0);
   const wasSupers = config.rbac.superAdminDiscordIds;
   config.rbac.superAdminDiscordIds = ['admin-1'];
   try {
@@ -1595,7 +1598,7 @@ function stubRejoinQueries(opts: { activeWarnings: number; storedRole?: 'admin' 
 
 test('SECURITY: a member who leaves and rejoins while still at/above the strike limit is automatically re-muted, and admins are alerted', async (t) => {
   t.mock.method(pool, 'query', stubRejoinQueries({ activeWarnings: config.moderation.strikeLimit }));
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const recorded = stubMuteGuild(adapter);
   const member = fakeGuildMember({ id: 'user-rejoin', guildId: config.discord.guildId });
   await fireGuildMemberAdd(adapter, member);
@@ -1618,7 +1621,7 @@ test('SECURITY: the rejoin re-mute ignores MODERATION_STRIKE_WINDOW_DAYS — lea
       if (sql.includes('FROM member_warnings')) windowParam = params?.[2];
       return stub(sql);
     });
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const recorded = stubMuteGuild(adapter);
     const member = fakeGuildMember({ id: 'user-rejoin-window', guildId: config.discord.guildId });
     await fireGuildMemberAdd(adapter, member);
@@ -1635,7 +1638,7 @@ test('SECURITY: the rejoin re-mute ignores MODERATION_STRIKE_WINDOW_DAYS — lea
 
 test('onGuildMemberAdd: does not re-mute a rejoining member below the strike limit', async (t) => {
   t.mock.method(pool, 'query', stubRejoinQueries({ activeWarnings: config.moderation.strikeLimit - 1 }));
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const recorded = stubMuteGuild(adapter);
   const member = fakeGuildMember({ id: 'user-clean', guildId: config.discord.guildId });
   await fireGuildMemberAdd(adapter, member);
@@ -1649,7 +1652,7 @@ test('SECURITY: a member exempt via admin tier is never auto-re-muted on rejoin,
     'query',
     stubRejoinQueries({ activeWarnings: config.moderation.strikeLimit, storedRole: 'admin' }),
   );
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const recorded = stubMuteGuild(adapter);
   const member = fakeGuildMember({ id: 'user-admin', guildId: config.discord.guildId });
   await fireGuildMemberAdd(adapter, member);
@@ -1672,7 +1675,7 @@ test('onGuildMemberAdd: skips the rejoin re-mute check entirely when moderation 
       if (sql.includes('INSERT INTO server_roster')) return { rows: [], rowCount: 1 };
       return { rows: [], rowCount: 0 };
     });
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const recorded = stubMuteGuild(adapter);
     const member = fakeGuildMember({ id: 'user-x', guildId: config.discord.guildId });
     await fireGuildMemberAdd(adapter, member);
@@ -1688,7 +1691,7 @@ test('onGuildMemberAdd: the rejoin re-mute runs before any welcome-message logic
   config.discord.welcome.enabled = true;
   try {
     t.mock.method(pool, 'query', stubRejoinQueries({ activeWarnings: config.moderation.strikeLimit }));
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const order: string[] = [];
     stubMuteGuild(adapter, order);
     const member = fakeGuildMember({
@@ -1790,7 +1793,7 @@ async function withAutoEnroll(enabled: boolean, fn: () => Promise<void>): Promis
 test('onGuildMemberAdd: DISCORD_AUTO_ENROLL_MEMBERS unset/false leaves the join handler byte-identical — no community_users write', async (t) => {
   await withAutoEnroll(false, async () => {
     const calls = stubAutoEnrollQueries(t);
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     stubMuteGuild(adapter);
     const member = fakeGuildMember({ id: 'user-no-flag', guildId: config.discord.guildId });
     await fireGuildMemberAdd(adapter, member);
@@ -1802,7 +1805,7 @@ test('onGuildMemberAdd: DISCORD_AUTO_ENROLL_MEMBERS unset/false leaves the join 
 test('onGuildMemberAdd: with the flag true, a non-bot join with no existing community_users row is auto-enrolled as a member', async (t) => {
   await withAutoEnroll(true, async () => {
     const calls = stubAutoEnrollQueries(t);
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     stubMuteGuild(adapter);
     const member = fakeGuildMember({ id: 'user-fresh-join', guildId: config.discord.guildId });
     await fireGuildMemberAdd(adapter, member);
@@ -1815,7 +1818,7 @@ test('onGuildMemberAdd: with the flag true, a non-bot join with no existing comm
 test('SECURITY: with the flag true, a rejoining admin (leave + rejoin) keeps their admin role — the auto-enroll write never downgrades', async (t) => {
   await withAutoEnroll(true, async () => {
     const calls = stubAutoEnrollQueries(t, { storedRole: 'admin' });
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     stubMuteGuild(adapter);
     const member = fakeGuildMember({ id: 'user-admin-rejoin', guildId: config.discord.guildId });
     await fireGuildMemberAdd(adapter, member);
@@ -1835,7 +1838,7 @@ test('SECURITY: with the flag true, a rejoining admin (leave + rejoin) keeps the
 test('SECURITY: a bot account joining never triggers an auto-enroll write, regardless of the flag', async (t) => {
   await withAutoEnroll(true, async () => {
     const calls = stubAutoEnrollQueries(t);
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     stubMuteGuild(adapter);
     const member = fakeGuildMember({ id: 'user-bot', guildId: config.discord.guildId, bot: true });
     await fireGuildMemberAdd(adapter, member);
@@ -1847,7 +1850,7 @@ test('SECURITY: a bot account joining never triggers an auto-enroll write, regar
 test('SECURITY: every auto-enroll write produces an admin_audit row without requiring an admin caller, distinguishable from a human add_member grant', async (t) => {
   await withAutoEnroll(true, async () => {
     const calls = stubAutoEnrollQueries(t);
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     stubMuteGuild(adapter);
     const member = fakeGuildMember({ id: 'user-audited', guildId: config.discord.guildId });
     await fireGuildMemberAdd(adapter, member);
@@ -1870,7 +1873,7 @@ test('SECURITY: every auto-enroll write produces an admin_audit row without requ
 test('SECURITY: auto-enroll is atomic — the grant and its audit row are wrapped in one transaction, and an audit-insert failure rolls back rather than committing a member grant with no audit trail (issue #606)', async (t) => {
   await withAutoEnroll(true, async () => {
     const calls = stubAutoEnrollQueries(t, { failAuditInsert: true });
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     stubMuteGuild(adapter);
     const member = fakeGuildMember({ id: 'user-audit-fails', guildId: config.discord.guildId });
     // onGuildMemberAdd's own .catch swallows the failure (best-effort join
@@ -1892,7 +1895,7 @@ test('SECURITY: auto-enroll is atomic — the grant and its audit row are wrappe
 test('auto-enroll commits the grant and audit row together in one transaction (BEGIN … COMMIT) on the happy path (issue #606)', async (t) => {
   await withAutoEnroll(true, async () => {
     const calls = stubAutoEnrollQueries(t);
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     stubMuteGuild(adapter);
     const member = fakeGuildMember({ id: 'user-txn-ok', guildId: config.discord.guildId });
     await fireGuildMemberAdd(adapter, member);
@@ -1905,7 +1908,7 @@ test('auto-enroll commits the grant and audit row together in one transaction (B
 test('SECURITY: onGuildMemberAdd never sends the member-approval DM/notification from the auto-enroll path', async (t) => {
   await withAutoEnroll(true, async () => {
     const calls = stubAutoEnrollQueries(t);
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     stubMuteGuild(adapter);
     let dmSent = false;
     const member = fakeGuildMember({
@@ -1987,7 +1990,7 @@ test('onGuildMemberAdd: welcome DM stays byte-identical to today when no guideli
   config.discord.welcome.enabled = true;
   t.mock.method(pool, 'query', stubPoliciesQuery());
   try {
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const sent: string[] = [];
     const member = fakeGuildMember({
       id: 'user-no-guidelines',
@@ -2011,7 +2014,7 @@ test('onGuildMemberAdd: welcome DM appends community guidelines verbatim when se
   const guidelines = 'Be respectful. No spam. Keep discussion on-topic.';
   t.mock.method(pool, 'query', stubPoliciesQuery(guidelines));
   try {
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const sent: string[] = [];
     const member = fakeGuildMember({
       id: 'user-with-guidelines',
@@ -2037,7 +2040,7 @@ test('onGuildMemberAdd: the channel fallback also appends community guidelines v
   const guidelines = 'Be respectful. No spam.';
   t.mock.method(pool, 'query', stubPoliciesQuery(guidelines));
   try {
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const sent = stubClient(adapter);
     const member = fakeGuildMember({
       id: 'user-dm-closed',
@@ -2069,7 +2072,7 @@ test('onGuildMemberAdd: uses the configured welcome message in place of the hard
   const guidelines = 'Be respectful. No spam.';
   t.mock.method(pool, 'query', stubPoliciesQuery(guidelines, { welcomeMessage }));
   try {
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const sent: string[] = [];
     const member = fakeGuildMember({
       id: 'user-configured-welcome',
@@ -2096,7 +2099,7 @@ test('SECURITY: onGuildMemberAdd falls back to the hardcoded default welcome whe
   config.discord.welcome.enabled = true;
   t.mock.method(pool, 'query', stubPoliciesQuery(undefined, { throwFor: 'welcome_message' }));
   try {
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const sent: string[] = [];
     const member = fakeGuildMember({
       id: 'user-welcome-read-failure',
@@ -2127,7 +2130,7 @@ test('onGuildMemberAdd: a rejoining member with a standing mi preference and a w
   const welcomeMessageMi = 'Kia ora and welcome back to our community!';
   t.mock.method(pool, 'query', stubPoliciesQuery(guidelines, { welcomeMessageMi, languagePreference: 'mi' }));
   try {
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const sent: string[] = [];
     const member = fakeGuildMember({
       id: 'user-mi-rejoin',
@@ -2155,7 +2158,7 @@ test('onGuildMemberAdd: a member with a standing mi preference but no welcome_me
   const welcomeMessage = 'Welcome to our community!';
   t.mock.method(pool, 'query', stubPoliciesQuery(undefined, { welcomeMessage, languagePreference: 'mi' }));
   try {
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const sent: string[] = [];
     const member = fakeGuildMember({
       id: 'user-mi-no-variant',
@@ -2183,7 +2186,7 @@ test('onGuildMemberAdd: a member with no standing language preference gets the d
   const welcomeMessageMi = 'Kia ora and welcome back!';
   t.mock.method(pool, 'query', stubPoliciesQuery(undefined, { welcomeMessageMi }));
   try {
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const sent: string[] = [];
     const member = fakeGuildMember({
       id: 'user-no-preference',
@@ -2213,7 +2216,7 @@ test('onGuildMemberAdd: the channel fallback also uses the mi welcome variant id
   const welcomeMessageMi = 'Kia ora and welcome back!';
   t.mock.method(pool, 'query', stubPoliciesQuery(undefined, { welcomeMessageMi, languagePreference: 'mi' }));
   try {
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const sent = stubClient(adapter);
     const member = fakeGuildMember({
       id: 'user-mi-dm-closed',
@@ -2284,7 +2287,7 @@ test(
     'permission — the assign-time re-check is the load-bearing control, not the curation-time ' +
     'allowlist alone (issue #232)',
   async () => {
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     // Bit 3 (0x8) is Administrator — any nonzero bitfield must be refused, not just this one.
     const role = fakeRole({ id: 'role-cosmetic-1', name: 'Verified Builder', bitfield: 8n });
     const recorded = stubRoleGuild(adapter, { 'role-cosmetic-1': role });
@@ -2303,7 +2306,7 @@ test(
 );
 
 test('SECURITY: assign_community_role refuses a role id not on DISCORD_ASSIGNABLE_ROLES, even with zero permissions (issue #232)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const role = fakeRole({ id: 'role-not-allowed', name: 'Random Role', bitfield: 0n });
   const recorded = stubRoleGuild(adapter, { 'role-not-allowed': role });
 
@@ -2320,7 +2323,7 @@ test('SECURITY: assign_community_role refuses a role id not on DISCORD_ASSIGNABL
 });
 
 test('assign_community_role assigns an allowlisted, currently permission-less role (issue #232)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const role = fakeRole({ id: 'role-cosmetic-1', name: 'Auckland', bitfield: 0n });
   const recorded = stubRoleGuild(adapter, { 'role-cosmetic-1': role });
 
@@ -2335,7 +2338,7 @@ test('assign_community_role assigns an allowlisted, currently permission-less ro
 });
 
 test('remove_community_role removes an allowlisted role regardless of its current permissions (removal cannot escalate) (issue #232)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const role = fakeRole({ id: 'role-cosmetic-1', name: 'Auckland', bitfield: 0n });
   const recorded = stubRoleGuild(adapter, { 'role-cosmetic-1': role });
 
@@ -2350,7 +2353,7 @@ test('remove_community_role removes an allowlisted role regardless of its curren
 });
 
 test('SECURITY: remove_community_role refuses a role id not on DISCORD_ASSIGNABLE_ROLES (issue #232)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const role = fakeRole({ id: 'role-not-allowed', name: 'Random Role', bitfield: 0n });
   const recorded = stubRoleGuild(adapter, { 'role-not-allowed': role });
 
@@ -2367,7 +2370,7 @@ test('SECURITY: remove_community_role refuses a role id not on DISCORD_ASSIGNABL
 });
 
 test('assign_community_role throws when an allowlisted role id no longer resolves in the guild (issue #232)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   stubRoleGuild(adapter, {});
 
   await assert.rejects(
@@ -2382,7 +2385,7 @@ test('assign_community_role throws when an allowlisted role id no longer resolve
 });
 
 test('list_assignable_roles flags a configured role that currently carries permissions, and reports one missing from the guild (issue #232)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   stubRoleGuild(adapter, {
     'role-cosmetic-1': fakeRole({ id: 'role-cosmetic-1', name: 'Auckland', bitfield: 0n }),
     // role-cosmetic-2 is on the allowlist (see the env setup above) but deliberately absent here.
@@ -2428,7 +2431,7 @@ function stubBanGuild(adapter: Adapter, opts: { ban?: (userId: string, options: 
 }
 
 test('performAdminAction("ban_user") calls guild.members.ban with the target and reason, returning a success string (issue #445 acceptance criterion #6)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const calls = stubBanGuild(adapter, {});
 
   const result = await adapter.performAdminAction({
@@ -2442,7 +2445,7 @@ test('performAdminAction("ban_user") calls guild.members.ban with the target and
 });
 
 test('performAdminAction("ban_user") defaults the reason to "No reason given" when none is supplied (issue #445)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const calls = stubBanGuild(adapter, {});
 
   await adapter.performAdminAction({ kind: 'ban_user', targetUserId: 'user-1' });
@@ -2455,7 +2458,7 @@ test(
     'Members) rather than reporting a false success — the caller (audited()) turns this into "Failed: …", ' +
     'never an unhandled rejection or a false-success audit row (issue #445 acceptance criterion #6)',
   async () => {
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     stubBanGuild(adapter, {
       ban: async () => {
         throw new Error('Missing Permissions');
@@ -2479,7 +2482,7 @@ test(
     'community_users/resolveRole untouched (secondary guard; the primary guard is the assign-time ' +
     'permission re-check above) (issue #232)',
   async (t) => {
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const role = fakeRole({ id: 'role-cosmetic-1', name: 'Auckland', bitfield: 0n });
     stubRoleGuild(adapter, { 'role-cosmetic-1': role });
     const querySpy = t.mock.method(pool, 'query', async () => {
@@ -2530,7 +2533,7 @@ function stubClientForThreadCreate(
 }
 
 test('SECURITY: performAdminAction("create_thread") routes the thread name through filterOutbound — a secret cannot reach a Discord thread title unredacted (issue #229)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const calls = stubClientForThreadCreate(adapter);
   const secret = 'sk-ant-' + 'y'.repeat(30);
   const result = await adapter.performAdminAction({
@@ -2554,7 +2557,7 @@ test("SECURITY: the mi language override cannot leak beyond the router main-repl
   resetPolicyCacheForTests();
   const fence = '```js\nconsole.log("secret plan")\n```';
 
-  const dmAdapter = new DiscordAdapter();
+  const dmAdapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const dmSent = stubClient(dmAdapter);
   // sendDirectMessage/sendMessage/etc. never accept a `language` argument —
   // there is no way for a caller to make this leak 'mi', which is the
@@ -2564,7 +2567,7 @@ test("SECURITY: the mi language override cannot leak beyond the router main-repl
   assert.match(dmSent[0], /code omitted/, 'sendDirectMessage must still emit the English code-omitted note');
   assert.ok(!dmSent[0].includes('whakakorehia'), 'sendDirectMessage must never emit the Māori variant');
 
-  const pollAdapter = new DiscordAdapter();
+  const pollAdapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const pollSent = stubClientForPoll(pollAdapter);
   await pollAdapter.performAdminAction({
     kind: 'create_poll',
@@ -2577,7 +2580,7 @@ test("SECURITY: the mi language override cannot leak beyond the router main-repl
   assert.match(pollSent[0].poll.answers[0].text, /code omitted/, 'poll answer must stay English-only');
   assert.ok(!pollSent[0].poll.answers[0].text.includes('whakakorehia'));
 
-  const threadAdapter = new DiscordAdapter();
+  const threadAdapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const threadCalls = stubClientForThreadCreate(threadAdapter);
   await threadAdapter.performAdminAction({
     kind: 'create_thread',
@@ -2597,7 +2600,7 @@ test("sendMessage threads OutgoingMessage.style === 'plain' into filterOutbound 
     return { rows: [], rowCount: 0 };
   });
   resetPolicyCacheForTests();
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const sent = stubClient(adapter);
 
   await adapter.sendMessage({
@@ -2621,7 +2624,7 @@ test("SECURITY: the plain response-style override cannot leak beyond the router 
   resetPolicyCacheForTests();
   const fence = '```js\nconsole.log("secret plan")\n```';
 
-  const dmAdapter = new DiscordAdapter();
+  const dmAdapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const dmSent = stubClient(dmAdapter);
   // sendDirectMessage/etc. never accept a `style` argument — there is no way
   // for a caller to make this leak 'plain', which is the invariant this test
@@ -2634,7 +2637,7 @@ test("SECURITY: the plain response-style override cannot leak beyond the router 
     'sendDirectMessage must never emit the plain-language variant',
   );
 
-  const pollAdapter = new DiscordAdapter();
+  const pollAdapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const pollSent = stubClientForPoll(pollAdapter);
   await pollAdapter.performAdminAction({
     kind: 'create_poll',
@@ -2647,7 +2650,7 @@ test("SECURITY: the plain response-style override cannot leak beyond the router 
   assert.match(pollSent[0].poll.answers[0].text, /code omitted/, 'poll answer must stay English-only');
   assert.ok(!pollSent[0].poll.answers[0].text.includes('code removed'));
 
-  const threadAdapter = new DiscordAdapter();
+  const threadAdapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const threadCalls = stubClientForThreadCreate(threadAdapter);
   await threadAdapter.performAdminAction({
     kind: 'create_thread',
@@ -2663,7 +2666,7 @@ test(
   'performAdminAction("warn_user") sends the te reo Māori wrapper when params.language is "mi", with the ' +
     "admin's reason appended verbatim and untranslated (issue #618)",
   async () => {
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const dmSent = stubClient(adapter);
     const result = await adapter.performAdminAction({
       kind: 'warn_user',
@@ -2687,7 +2690,7 @@ test(
       { reason: 'spam', language: undefined },
       { reason: 'spam' },
     ]) {
-      const adapter = new DiscordAdapter();
+      const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
       const dmSent = stubClient(adapter);
       await adapter.performAdminAction({ kind: 'warn_user', targetUserId: 'user-1', params });
       assert.equal(dmSent.length, 1);
@@ -2697,7 +2700,7 @@ test(
 );
 
 test('performAdminAction("create_thread") passes seedMessageId through as the native startMessage option (issue #229)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const calls = stubClientForThreadCreate(adapter);
   await adapter.performAdminAction({
     kind: 'create_thread',
@@ -2708,7 +2711,7 @@ test('performAdminAction("create_thread") passes seedMessageId through as the na
 });
 
 test('performAdminAction("create_thread") throws on a channel type that does not support threads, e.g. a voice channel (issue #229)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   stubClientForThreadCreate(adapter, ChannelType.GuildVoice);
   await assert.rejects(
     () =>
@@ -2745,7 +2748,7 @@ function stubClientForThreadArchive(adapter: InstanceType<typeof DiscordAdapter>
 }
 
 test('performAdminAction("archive_thread") archives the thread with the given reason (issue #229)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const calls = stubClientForThreadArchive(adapter);
   const result = await adapter.performAdminAction({
     kind: 'archive_thread',
@@ -2758,7 +2761,7 @@ test('performAdminAction("archive_thread") archives the thread with the given re
 });
 
 test('performAdminAction("archive_thread") throws when the target channel is not a thread (issue #229)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   stubClientForThreadArchive(adapter, false);
   await assert.rejects(
     () => adapter.performAdminAction({ kind: 'archive_thread', conversationId: 'chan-1', params: {} }),
@@ -2772,7 +2775,7 @@ test('performAdminAction("archive_thread") throws when the target channel is not
 // stubClientForThreadCreate above, just invoked deterministically rather
 // than model-requested.
 test('startAutoAnswerThread creates a thread anchored to the given message id and returns its id (issue #477)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const calls = stubClientForThreadCreate(adapter);
   const threadId = await adapter.startAutoAnswerThread('chan-1', 'origin-msg-1', 'How do I use tool use?');
   assert.equal(calls.length, 1);
@@ -2782,7 +2785,7 @@ test('startAutoAnswerThread creates a thread anchored to the given message id an
 });
 
 test('startAutoAnswerThread throws on a channel type that does not support threads (issue #477)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   stubClientForThreadCreate(adapter, ChannelType.GuildVoice);
   await assert.rejects(
     () => adapter.startAutoAnswerThread('chan-1', 'origin-msg-1', 'Question'),
@@ -2791,7 +2794,7 @@ test('startAutoAnswerThread throws on a channel type that does not support threa
 });
 
 test('SECURITY: startAutoAnswerThread routes the thread name through filterOutbound — a secret pasted into the question cannot reach the (highly visible) thread title unredacted (issue #477)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const calls = stubClientForThreadCreate(adapter);
   const secret = 'sk-ant-' + 'z'.repeat(30);
   await adapter.startAutoAnswerThread('chan-1', 'origin-msg-1', `question about ${secret} end`);
@@ -2801,7 +2804,7 @@ test('SECURITY: startAutoAnswerThread routes the thread name through filterOutbo
 });
 
 test('SECURITY: an auto-answer reply is redacted end-to-end — thread creation, then sendMessage into the new thread, both filtered (issue #477)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   stubClientForThreadCreate(adapter);
   const threadId = await adapter.startAutoAnswerThread('chan-1', 'origin-msg-1', 'Question');
   assert.equal(threadId, 'thread-new-1');
@@ -2853,19 +2856,19 @@ function stubClientForCanPostTo(
 }
 
 test('canPostTo returns true for a real, sendable, in-guild text channel (issue #270)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   stubClientForCanPostTo(adapter, async () => fakeReachableChannel({}));
   assert.equal(await adapter.canPostTo('chan-new'), true);
 });
 
 test('SECURITY: canPostTo returns false for a channel in a different guild — must not widen reachability past the configured guild (issue #270)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   stubClientForCanPostTo(adapter, async () => fakeReachableChannel({ guildId: 'some-other-guild' }));
   assert.equal(await adapter.canPostTo('chan-other-guild'), false);
 });
 
 test('SECURITY: canPostTo returns false, never throws, for a nonexistent channel id (issue #270)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   stubClientForCanPostTo(adapter, async () => {
     throw new Error('Unknown Channel');
   });
@@ -2873,19 +2876,19 @@ test('SECURITY: canPostTo returns false, never throws, for a nonexistent channel
 });
 
 test('SECURITY: canPostTo returns false for a DM channel (issue #270)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   stubClientForCanPostTo(adapter, async () => fakeReachableChannel({ isDMBased: true, guildId: undefined }));
   assert.equal(await adapter.canPostTo('dm-1'), false);
 });
 
 test('SECURITY: canPostTo returns false for a non-text-based channel, e.g. a voice channel (issue #270)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   stubClientForCanPostTo(adapter, async () => fakeReachableChannel({ isTextBased: false }));
   assert.equal(await adapter.canPostTo('chan-voice'), false);
 });
 
 test('SECURITY: canPostTo returns false for a channel with no send method (issue #270)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   stubClientForCanPostTo(adapter, async () => fakeReachableChannel({ sendable: false }));
   assert.equal(await adapter.canPostTo('chan-nosend'), false);
 });
@@ -2894,7 +2897,7 @@ test('SECURITY: canPostTo returns false for a channel with no send method (issue
 
 test('onGuildMemberRemove invalidates the removed member’s membershipCache entry — the next conversationsForUser call re-fetches instead of returning the stale cached list', async (t) => {
   t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
 
   const first = await adapter.conversationsForUser('user-removed');
@@ -2923,7 +2926,7 @@ test(
     'membershipCache entry survives untouched (issue #286)',
   async (t) => {
     t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
 
     await adapter.conversationsForUser('user-a');
@@ -2943,7 +2946,7 @@ test(
 
 test('onGuildMemberRemove does not touch the cache for a removal event in a different guild', async (t) => {
   t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
 
   await adapter.conversationsForUser('user-a');
@@ -2967,7 +2970,7 @@ test(
     'in the same live check, without advancing the clock past MEMBERSHIP_CACHE_TTL_MS',
   async (t) => {
     t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const denied = new Set<string>();
     const calls = stubConversationsGuild(adapter, {
       channelIds: ['chan-x', 'chan-2'],
@@ -3013,7 +3016,7 @@ test(
     'edit) — a subsequent conversationsForUser within the TTL still returns the cached array unchanged',
   async (t) => {
     t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
 
     const first = await adapter.conversationsForUser('admin-1');
@@ -3046,7 +3049,7 @@ test(
     'subsequent conversationsForUser within the TTL still returns the cached array unchanged',
   async (t) => {
     t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
 
     const first = await adapter.conversationsForUser('admin-1');
@@ -3070,7 +3073,7 @@ test(
 
 test('onChannelUpdate ignores a non-text channel (e.g. a category) permission-overwrite change, same guard conversationsForUser applies', async (t) => {
   t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
 
   await adapter.conversationsForUser('admin-1');
@@ -3100,7 +3103,7 @@ test('onChannelUpdate ignores a non-text channel (e.g. a category) permission-ov
 
 test('onChannelUpdate ignores a DM channel update (channelUpdate can carry a DMChannel, which has no guild/permissionOverwrites)', async (t) => {
   t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
 
   await adapter.conversationsForUser('admin-1');
@@ -3118,7 +3121,7 @@ test(
     'result, never exceed it (issue #328)',
   async (t) => {
     t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
 
     await adapter.conversationsForUser('user-a');
@@ -3148,7 +3151,7 @@ test('onGuildMemberAdd: open access mode uses WELCOME_MESSAGE_OPEN, which states
   config.rbac.accessMode.discord = 'open';
   t.mock.method(pool, 'query', stubPoliciesQuery());
   try {
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const sent: string[] = [];
     const member = fakeGuildMember({
       id: 'user-open-mode',
@@ -3182,7 +3185,7 @@ test(
     config.rbac.accessMode.discord = 'gated';
     t.mock.method(pool, 'query', stubPoliciesQuery());
     try {
-      const adapter = new DiscordAdapter();
+      const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
       const sent: string[] = [];
       const member = fakeGuildMember({
         id: 'user-gated-mode',
@@ -3214,7 +3217,7 @@ test('onGuildMemberAdd: an admin-configured welcome message overrides the open-m
   const welcomeMessage = 'Custom welcome for our open-mode server!';
   t.mock.method(pool, 'query', stubPoliciesQuery(undefined, { welcomeMessage }));
   try {
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const sent: string[] = [];
     const member = fakeGuildMember({
       id: 'user-open-mode-custom',
@@ -3252,7 +3255,7 @@ test(
       stubPoliciesQuery(undefined, { welcomeMessageMi, languagePreference: 'mi' }),
     );
     try {
-      const adapter = new DiscordAdapter();
+      const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
       const sent: string[] = [];
       const member = fakeGuildMember({
         id: 'user-open-mode-mi',
@@ -3284,7 +3287,7 @@ test('onGuildMemberAdd: community guidelines are appended identically to the ope
   const guidelines = 'Be respectful. No spam. Keep discussion on-topic.';
   t.mock.method(pool, 'query', stubPoliciesQuery(guidelines));
   try {
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const sent: string[] = [];
     const member = fakeGuildMember({
       id: 'user-open-mode-guidelines',
@@ -3310,7 +3313,7 @@ test('SECURITY: WELCOME_MESSAGE_OPEN carries no sender-supplied data (issue #351
   config.rbac.accessMode.discord = 'open';
   t.mock.method(pool, 'query', stubPoliciesQuery());
   try {
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const sent: string[] = [];
     const member = fakeGuildMember({
       id: 'user-open-mode-injection-check',
@@ -3341,7 +3344,7 @@ test(
     'invalidates that member’s own membershipCache entry — the very next conversationsForUser recomputes live',
   async (t) => {
     t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
 
     const first = await adapter.conversationsForUser('admin-1');
@@ -3372,7 +3375,7 @@ test(
     'membershipCache entry survives untouched (issue #573)',
   async (t) => {
     t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
 
     await adapter.conversationsForUser('member-a');
@@ -3399,7 +3402,7 @@ test(
     'cache — a pre-seeded entry survives the event',
   async (t) => {
     t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
 
     const first = await adapter.conversationsForUser('admin-1');
@@ -3427,7 +3430,7 @@ test(
     'from what was cached — and an unrelated member’s entry survives untouched',
   async (t) => {
     t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
 
     await adapter.conversationsForUser('admin-1');
@@ -3465,7 +3468,7 @@ test(
 
 test('onGuildMemberUpdate does not touch the cache for an update event in a different guild', async (t) => {
   t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
 
   await adapter.conversationsForUser('admin-1');
@@ -3490,7 +3493,7 @@ test(
     'the whole membershipCache — the very next conversationsForUser recomputes live',
   async (t) => {
     t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
 
     await adapter.conversationsForUser('admin-1');
@@ -3516,7 +3519,7 @@ test(
     'the cache',
   async (t) => {
     t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
 
     const first = await adapter.conversationsForUser('admin-1');
@@ -3540,7 +3543,7 @@ test(
 
 test('onGuildRoleUpdate does not touch the cache for a role-update event in a different guild', async (t) => {
   t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
 
   await adapter.conversationsForUser('admin-1');
@@ -3562,7 +3565,7 @@ test('onGuildRoleUpdate does not touch the cache for a role-update event in a di
 
 test('SECURITY: a GuildRoleDelete for a role in the configured guild invalidates the whole membershipCache', async (t) => {
   t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
 
   await adapter.conversationsForUser('admin-1');
@@ -3580,7 +3583,7 @@ test('SECURITY: a GuildRoleDelete for a role in the configured guild invalidates
 
 test('onGuildRoleDelete does not touch the cache for a role-delete event in a different guild', async (t) => {
   t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
 
   await adapter.conversationsForUser('admin-1');
@@ -3603,7 +3606,7 @@ test(
     'handling alike)',
   async (t) => {
     const errorLog = t.mock.method(logger, 'error', () => {});
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const client = (
       adapter as unknown as {
         client: {
@@ -3632,7 +3635,7 @@ test(
 );
 
 test('isConnected() recovers after a re-identify: ShardReady restores connected, not only ShardResume (audit M4)', async () => {
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const client = (
     adapter as unknown as {
       client: { emit: (event: string, ...args: unknown[]) => void; login: (token: string) => Promise<void> };
@@ -3780,7 +3783,7 @@ function mockDiscordLanguagePref(t: TestContext, userId: string, language: 'en' 
 }
 
 test('Discord voice: an enabled super-admin voice message is transcribed and actioned as if typed (issue #732)', async () => {
-  const adapter = new DiscordAdapter() as unknown as DiscordVoiceAdapter;
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK) as unknown as DiscordVoiceAdapter;
   let seen: IncomingMessage | null = null;
   adapter.onMessage(async (m) => {
     seen = m;
@@ -3798,7 +3801,7 @@ test('Discord voice: an enabled super-admin voice message is transcribed and act
 
 test('SECURITY: a regular file attachment (no duration_secs) is never fetched or transcribed, flag on or off (issue #732)', async () => {
   for (const enabled of [true, false]) {
-    const adapter = new DiscordAdapter() as unknown as DiscordVoiceAdapter;
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK) as unknown as DiscordVoiceAdapter;
     let handlerCalls = 0;
     let seamCalls = 0;
     adapter.onMessage(async () => {
@@ -3833,7 +3836,7 @@ test('SECURITY: with the default DISCORD_VOICE_MIN_ROLE (super_admin), a non-sup
     dbCalls.push(sql);
     return { rows: [], rowCount: 0 };
   });
-  const adapter = new DiscordAdapter() as unknown as DiscordVoiceAdapter;
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK) as unknown as DiscordVoiceAdapter;
   let seamCalls = 0;
   adapter.onMessage(async () => {});
   adapter.transcribeAttachment = async () => {
@@ -3856,7 +3859,7 @@ test('SECURITY: with the default DISCORD_VOICE_MIN_ROLE (super_admin), a non-sup
 
 test('SECURITY: a below-DISCORD_VOICE_MIN_ROLE sender (role resolved via platform identity -> DB, never message content) has their voice message left as empty text, with zero fetch/model call (issue #732)', async (t) => {
   mockDiscordMemberRole(t, 'user-732-4', null); // no stored row => resolves to 'guest'
-  const adapter = new DiscordAdapter() as unknown as DiscordVoiceAdapter;
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK) as unknown as DiscordVoiceAdapter;
   let seen: IncomingMessage | null = null;
   let seamCalls = 0;
   adapter.onMessage(async (m) => {
@@ -3881,7 +3884,7 @@ test('SECURITY: a below-DISCORD_VOICE_MIN_ROLE sender (role resolved via platfor
 });
 
 test('SECURITY: a voice message longer than DISCORD_VOICE_MAX_SECONDS is refused with zero fetch calls (issue #732)', async () => {
-  const adapter = new DiscordAdapter() as unknown as DiscordVoiceAdapter;
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK) as unknown as DiscordVoiceAdapter;
   let seamCalls = 0;
   adapter.onMessage(async () => {});
   adapter.transcribeAttachment = async () => {
@@ -3899,7 +3902,7 @@ test('SECURITY: a voice message longer than DISCORD_VOICE_MAX_SECONDS is refused
 
 test('SECURITY: DISCORD_VOICE_RATE_LIMIT_PER_HOUR bounds a single sender — the (N+1)th voice message within the rolling hour is refused before any fetch (issue #732)', async (t) => {
   mockDiscordMemberRole(t, 'user-732-6', 'member');
-  const adapter = new DiscordAdapter() as unknown as DiscordVoiceAdapter;
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK) as unknown as DiscordVoiceAdapter;
   const seen: IncomingMessage[] = [];
   let seamCalls = 0;
   adapter.onMessage(async (m) => {
@@ -3934,7 +3937,7 @@ test('SECURITY: DISCORD_VOICE_RATE_LIMIT_PER_HOUR bounds a single sender — the
 
 test('SECURITY: DISCORD_VOICE_ENABLED unset/false leaves every voice-message case byte-identical to today — empty text, no fetch, no model call (issue #732)', async () => {
   assert.equal(config.discord.voice.enabled, false, 'precondition: default env has Discord voice off');
-  const adapter = new DiscordAdapter() as unknown as DiscordVoiceAdapter;
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK) as unknown as DiscordVoiceAdapter;
   let seen: IncomingMessage | null = null;
   let seamCalls = 0;
   adapter.onMessage(async (m) => {
@@ -3958,7 +3961,7 @@ test('SECURITY: DISCORD_VOICE_ENABLED unset/false leaves every voice-message cas
 
 test("Discord voice: a sender with a stored 'mi' language preference gets exactly one voice-language caveat DM after a successful transcription, and none on a second voice message within the debounce window (issue #732)", async (t) => {
   mockDiscordLanguagePref(t, 'user-732-8', 'mi');
-  const adapter = new DiscordAdapter() as unknown as DiscordVoiceAdapter;
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK) as unknown as DiscordVoiceAdapter;
   adapter.onMessage(async () => {});
   const sent = stubClient(adapter);
   adapter.transcribeAttachment = async () => 'kei te pehea koe';
@@ -3988,7 +3991,7 @@ test("Discord voice: senders with an 'en', 'auto', or unset language preference 
     ['user-732-9b', undefined],
   ] as const) {
     mockDiscordLanguagePref(t, userId, language);
-    const adapter = new DiscordAdapter() as unknown as DiscordVoiceAdapter;
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK) as unknown as DiscordVoiceAdapter;
     adapter.onMessage(async () => {});
     const sent = stubClient(adapter);
     adapter.transcribeAttachment = async () => 'hello there';
@@ -4001,7 +4004,7 @@ test("Discord voice: senders with an 'en', 'auto', or unset language preference 
 
 test('SECURITY: a guild voice message is auto-moderation-scanned using the transcript, not the empty native content (issue #732/#735)', async (t) => {
   mockDiscordMemberRole(t, 'user-732-10', 'member');
-  const adapter = new DiscordAdapter() as unknown as DiscordVoiceAdapter;
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK) as unknown as DiscordVoiceAdapter;
   adapter.onMessage(async () => {});
   adapter.transcribeAttachment = async () => 'transcribed message content';
   const scanned: Array<{ text: string }> = [];

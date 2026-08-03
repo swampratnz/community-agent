@@ -1,5 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// The adapters take their community text pack as a required constructor
+// parameter now (agent-base plan item 6) — production hands it over in
+// src/platforms/factories.ts, so these constructions pass the same pack.
+import { WHATSAPP_CLOUD_TEXT_PACK } from '../src/platforms/textPacks.js';
 import type { PlatformAdapter } from '../src/platforms/types.js';
 
 // Issue #644: #602 gave notifySuperAdmins/notifyAdmins a recovery path for
@@ -259,7 +263,7 @@ test(
       run: (adapter: InstanceType<typeof WhatsAppCloudAdapter>) => Promise<unknown>,
       recipientId: string,
     ) {
-      const adapter = new WhatsAppCloudAdapter();
+      const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
       // Every live send rejects as window-closed, regardless of recipient —
       // this test is only exercising the queue side, never a real Graph API call.
       adapter.sendDirectMessage = async () => {

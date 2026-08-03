@@ -1,5 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// The adapters take their community text pack as a required constructor
+// parameter now (agent-base plan item 6) — production hands it over in
+// src/platforms/factories.ts, so these constructions pass the same pack.
+import { BAILEYS_TEXT_PACK } from '../src/platforms/textPacks.js';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
@@ -34,7 +38,7 @@ function fireWhatsappMessage(
 }
 
 test('onWhatsappMessage: populates IncomingMessage.messageId from the WhatsApp message key (issue #103)', async () => {
-  const adapter = new BaileysAdapter();
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
   let received: IncomingMessage | undefined;
   adapter.onMessage(async (msg) => {
     received = msg;
@@ -71,7 +75,7 @@ function mockPool(t: { mock: { method: typeof import('node:test').mock.method } 
 test('SECURITY: a revoked WhatsApp message by its own author in an archived group hard-deletes the stored row, scoped to the conversation', async (t) => {
   const calls = mockPool(t, '64211111111'); // stored author == revoker below
 
-  const adapter = new BaileysAdapter();
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
   let handlerCalls = 0;
   adapter.onMessage(async () => {
     handlerCalls += 1;
@@ -106,7 +110,7 @@ test('SECURITY: a revoked WhatsApp message by its own author in an archived grou
 test('SECURITY: a revoke/edit forged for ANOTHER member’s message (non-author, non-admin) is ignored — no delete, no re-embed', async (t) => {
   const calls = mockPool(t, '64299999999'); // stored author differs from the revoker
 
-  const adapter = new BaileysAdapter();
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
   adapter.onMessage(async () => {});
 
   // A modified client broadcasts a revoke keyed to someone else's stanza id.
@@ -148,7 +152,7 @@ test('SECURITY: a revoke/edit forged for ANOTHER member’s message (non-author,
 test('a revoked WhatsApp message in a group NOT on the archive allowlist triggers no delete', async (t) => {
   const calls = mockPool(t, '64211111111');
 
-  const adapter = new BaileysAdapter();
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
   await fireWhatsappMessage(adapter, {
     key: {
       remoteJid: OTHER_GROUP,
@@ -171,7 +175,7 @@ test('a revoked WhatsApp message in a group NOT on the archive allowlist trigger
 test('an edited WhatsApp message by its own author in an archived group updates the stored row, scoped to the conversation (best-effort, issue #103)', async (t) => {
   const calls = mockPool(t, '64211111111');
 
-  const adapter = new BaileysAdapter();
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
   let handlerCalls = 0;
   adapter.onMessage(async () => {
     handlerCalls += 1;

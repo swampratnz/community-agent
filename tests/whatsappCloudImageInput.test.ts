@@ -1,5 +1,9 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
+// The adapters take their community text pack as a required constructor
+// parameter now (agent-base plan item 6) — production hands it over in
+// src/platforms/factories.ts, so these constructions pass the same pack.
+import { WHATSAPP_CLOUD_TEXT_PACK } from '../src/platforms/textPacks.js';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
@@ -125,7 +129,7 @@ test('precondition: WHATSAPP_CLOUD_IMAGE_INPUT_MIN_ROLE defaults to super_admin 
 });
 
 test('happy path: an enabled, in-cap, in-byte, allowlisted image from an at-or-above-MIN_ROLE sender resolves + downloads exactly once and grounds the turn (acceptance criterion 5)', async () => {
-  const adapter = new WhatsAppCloudAdapter() as unknown as ImageAdapter;
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK) as unknown as ImageAdapter;
   let seen: IncomingMessage | null = null;
   adapter.onMessage(async (m) => {
     seen = m;
@@ -147,7 +151,7 @@ test('happy path: an enabled, in-cap, in-byte, allowlisted image from an at-or-a
 test('SECURITY: with WHATSAPP_CLOUD_IMAGE_INPUT_ENABLED unset/false, an inbound image produces no IncomingMessage.image and no reply at all — the same total silence as before #891 (acceptance criterion 1)', async () => {
   assert.equal(config.whatsapp.cloud.image.enabled, false, 'precondition: default env has image input off');
   for (const opts of [{ caption: 'help!' }, {}]) {
-    const adapter = new WhatsAppCloudAdapter() as unknown as ImageAdapter;
+    const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK) as unknown as ImageAdapter;
     let seen: IncomingMessage | null = null;
     adapter.onMessage(async (m) => {
       seen = m;
@@ -197,7 +201,7 @@ test('SECURITY: caption survives extractMessages onto the new image field and is
   );
   assert.equal(extracted[0].text, '', 'text stays empty at the wire level — only promoted once accepted');
 
-  const adapter = new WhatsAppCloudAdapter() as unknown as ImageAdapter;
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK) as unknown as ImageAdapter;
   let seen: IncomingMessage | null = null;
   adapter.onMessage(async (m) => {
     seen = m;
@@ -219,7 +223,7 @@ test('SECURITY: (gate order a1) a below-WHATSAPP_CLOUD_IMAGE_INPUT_MIN_ROLE send
     dbCalls.push(sql);
     return { rows: [], rowCount: 0 };
   });
-  const adapter = new WhatsAppCloudAdapter() as unknown as ImageAdapter;
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK) as unknown as ImageAdapter;
   let seen: IncomingMessage | null = null;
   adapter.onMessage(async (m) => {
     seen = m;
@@ -240,7 +244,7 @@ test('SECURITY: (gate order a1) a below-WHATSAPP_CLOUD_IMAGE_INPUT_MIN_ROLE send
 
 test('SECURITY: (gate order a2) a below-WHATSAPP_CLOUD_IMAGE_INPUT_MIN_ROLE sender (role resolved via platform identity -> DB) is refused with zero Graph calls (acceptance criterion 3)', async (t) => {
   mockWhatsappMemberRole(t, '64211230005', null); // no stored row => resolves to 'guest'
-  const adapter = new WhatsAppCloudAdapter() as unknown as ImageAdapter;
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK) as unknown as ImageAdapter;
   let seen: IncomingMessage | null = null;
   adapter.onMessage(async (m) => {
     seen = m;
@@ -255,7 +259,7 @@ test('SECURITY: (gate order a2) a below-WHATSAPP_CLOUD_IMAGE_INPUT_MIN_ROLE send
 });
 
 test('SECURITY: (gate order b) WHATSAPP_CLOUD_IMAGE_INPUT_DAILY_LIMIT_PER_USER bounds a sender — the (N+1)th image is refused with zero Graph calls (acceptance criterion 3)', async () => {
-  const adapter = new WhatsAppCloudAdapter() as unknown as ImageAdapter;
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK) as unknown as ImageAdapter;
   const seen: IncomingMessage[] = [];
   adapter.onMessage(async (m) => {
     seen.push(m);
@@ -284,7 +288,7 @@ test('SECURITY: (gate order b) WHATSAPP_CLOUD_IMAGE_INPUT_DAILY_LIMIT_PER_USER b
 });
 
 test('SECURITY: (gate order c) a non-allowlisted MIME (per Meta webhook metadata) is refused with zero Graph calls (acceptance criterion 3)', async () => {
-  const adapter = new WhatsAppCloudAdapter() as unknown as ImageAdapter;
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK) as unknown as ImageAdapter;
   let seen: IncomingMessage | null = null;
   adapter.onMessage(async (m) => {
     seen = m;
@@ -299,7 +303,7 @@ test('SECURITY: (gate order c) a non-allowlisted MIME (per Meta webhook metadata
 });
 
 test('SECURITY: (gate order d) an attachment over WHATSAPP_CLOUD_IMAGE_INPUT_MAX_BYTES is refused after the metadata resolve but with zero byte-download calls (acceptance criterion 3)', async () => {
-  const adapter = new WhatsAppCloudAdapter() as unknown as ImageAdapter;
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK) as unknown as ImageAdapter;
   let seen: IncomingMessage | null = null;
   adapter.onMessage(async (m) => {
     seen = m;
@@ -318,7 +322,7 @@ test('SECURITY: (gate order d) an attachment over WHATSAPP_CLOUD_IMAGE_INPUT_MAX
 });
 
 test("SECURITY: a resolve/download failure is logged and swallowed — the attachment is dropped, not a crash (mirrors #879's failure posture)", async () => {
-  const adapter = new WhatsAppCloudAdapter() as unknown as ImageAdapter;
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK) as unknown as ImageAdapter;
   let seen: IncomingMessage | null = null;
   adapter.onMessage(async (m) => {
     seen = m;
@@ -344,7 +348,7 @@ test('SECURITY: enabling Baileys WHATSAPP_IMAGE_INPUT_ENABLED (or Discord IMAGE_
     baileysImage.enabled = prevBaileys;
     discordImage.enabled = prevDiscord;
   });
-  const adapter = new WhatsAppCloudAdapter() as unknown as ImageAdapter;
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK) as unknown as ImageAdapter;
   let seen: IncomingMessage | null = null;
   adapter.onMessage(async (m) => {
     seen = m;

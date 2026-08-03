@@ -8,9 +8,10 @@
  * Credentials are saved to WHATSAPP_AUTH_DIR and reused by the service.
  */
 import { BaileysAdapter } from './baileysAdapter.js';
+import { BAILEYS_TEXT_PACK } from '../textPacks.js';
 import { logger } from '../../logger.js';
 
-const adapter = new BaileysAdapter();
+const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
 adapter.onMessage(() => {
   /* no-op during linking */
 });

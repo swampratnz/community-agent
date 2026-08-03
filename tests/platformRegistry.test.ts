@@ -1,5 +1,13 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
+// The adapters take their community text pack as a required constructor
+// parameter now (agent-base plan item 6) — production hands it over in
+// src/platforms/factories.ts, so these constructions pass the same pack.
+import {
+  BAILEYS_TEXT_PACK,
+  DISCORD_TEXT_PACK,
+  WHATSAPP_CLOUD_TEXT_PACK,
+} from '../src/platforms/textPacks.js';
 import type { PlatformAdapter } from '../src/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
@@ -134,9 +142,9 @@ test('SECURITY: an inconsistent platform restriction is rejected by the invarian
 test('SECURITY: the declared capability sets are honest — each adapter instance implements exactly what its declaration claims', () => {
   // Typed through the contract so the optional-method probes below are
   // legal on providers whose class never declares them.
-  const discord: PlatformAdapter = new DiscordAdapter();
-  const baileys: PlatformAdapter = new BaileysAdapter();
-  const cloud: PlatformAdapter = new WhatsAppCloudAdapter();
+  const discord: PlatformAdapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const baileys: PlatformAdapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
+  const cloud: PlatformAdapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
 
   // The instances expose the SAME admin-capability sets the factories
   // declare from (shared consts, so drift is impossible by construction).

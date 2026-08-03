@@ -1,5 +1,9 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
+// The adapters take their community text pack as a required constructor
+// parameter now (agent-base plan item 6) — production hands it over in
+// src/platforms/factories.ts, so these constructions pass the same pack.
+import { WHATSAPP_CLOUD_TEXT_PACK } from '../src/platforms/textPacks.js';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
@@ -119,7 +123,7 @@ test('precondition: WHATSAPP_CLOUD_VOICE_MIN_ROLE defaults to super_admin, match
 });
 
 test('happy path: an enabled, in-cap, at-or-above-MIN_ROLE sender resolves + downloads + transcribes exactly once and grounds the turn as ordinary text', async () => {
-  const adapter = new WhatsAppCloudAdapter() as unknown as VoiceAdapter;
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK) as unknown as VoiceAdapter;
   let seen: IncomingMessage | null = null;
   adapter.onMessage(async (m) => {
     seen = m;
@@ -142,7 +146,7 @@ test('happy path: an enabled, in-cap, at-or-above-MIN_ROLE sender resolves + dow
 
 test('SECURITY: with WHATSAPP_CLOUD_VOICE_ENABLED unset/false, an inbound voice note produces zero Graph API calls and no reply at all — total silence (acceptance criterion 2)', async () => {
   assert.equal(config.whatsapp.cloud.voice.enabled, false, 'precondition: default env has voice input off');
-  const adapter = new WhatsAppCloudAdapter() as unknown as VoiceAdapter;
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK) as unknown as VoiceAdapter;
   let seen: IncomingMessage | null = null;
   adapter.onMessage(async (m) => {
     seen = m;
@@ -165,7 +169,7 @@ test('SECURITY: (gate order a1) a below-WHATSAPP_CLOUD_VOICE_MIN_ROLE sender at 
     dbCalls.push(sql);
     return { rows: [], rowCount: 0 };
   });
-  const adapter = new WhatsAppCloudAdapter() as unknown as VoiceAdapter;
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK) as unknown as VoiceAdapter;
   let seen: IncomingMessage | null = null;
   adapter.onMessage(async (m) => {
     seen = m;
@@ -187,7 +191,7 @@ test('SECURITY: (gate order a1) a below-WHATSAPP_CLOUD_VOICE_MIN_ROLE sender at 
 
 test('SECURITY: (gate order a2) a below-WHATSAPP_CLOUD_VOICE_MIN_ROLE sender (role resolved via platform identity -> DB) is refused with zero Graph calls (acceptance criterion 4)', async (t) => {
   mockWhatsappMemberRole(t, '64211240004', null); // no stored row => resolves to 'guest'
-  const adapter = new WhatsAppCloudAdapter() as unknown as VoiceAdapter;
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK) as unknown as VoiceAdapter;
   let seen: IncomingMessage | null = null;
   adapter.onMessage(async (m) => {
     seen = m;
@@ -202,7 +206,7 @@ test('SECURITY: (gate order a2) a below-WHATSAPP_CLOUD_VOICE_MIN_ROLE sender (ro
 });
 
 test('SECURITY: WHATSAPP_CLOUD_VOICE_RATE_LIMIT_PER_HOUR bounds a sender — the (N+1)th voice note within the hour is refused with zero Graph calls', async () => {
-  const adapter = new WhatsAppCloudAdapter() as unknown as VoiceAdapter;
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK) as unknown as VoiceAdapter;
   const seen: IncomingMessage[] = [];
   adapter.onMessage(async (m) => {
     seen.push(m);
@@ -224,7 +228,7 @@ test('SECURITY: WHATSAPP_CLOUD_VOICE_RATE_LIMIT_PER_HOUR bounds a sender — the
 });
 
 test('SECURITY: (gate order — size cap) an attachment over WHATSAPP_CLOUD_VOICE_MAX_BYTES is refused after the metadata resolve but with zero byte-download calls (acceptance criterion 6)', async () => {
-  const adapter = new WhatsAppCloudAdapter() as unknown as VoiceAdapter;
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK) as unknown as VoiceAdapter;
   let seen: IncomingMessage | null = null;
   adapter.onMessage(async (m) => {
     seen = m;
@@ -244,7 +248,7 @@ test('SECURITY: (gate order — size cap) an attachment over WHATSAPP_CLOUD_VOIC
 });
 
 test("SECURITY: a resolve/download/transcription failure is logged and swallowed — the note is dropped, not a crash (mirrors #891's image failure posture)", async () => {
-  const adapter = new WhatsAppCloudAdapter() as unknown as VoiceAdapter;
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK) as unknown as VoiceAdapter;
   let seen: IncomingMessage | null = null;
   adapter.onMessage(async (m) => {
     seen = m;
@@ -271,7 +275,7 @@ test('SECURITY: enabling Baileys WHATSAPP_VOICE_ENABLED (or Discord DISCORD_VOIC
     baileysVoice.enabled = prevBaileys;
     discordVoice.enabled = prevDiscord;
   });
-  const adapter = new WhatsAppCloudAdapter() as unknown as VoiceAdapter;
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK) as unknown as VoiceAdapter;
   let seen: IncomingMessage | null = null;
   adapter.onMessage(async (m) => {
     seen = m;
@@ -295,7 +299,7 @@ test('SECURITY: enabling WHATSAPP_CLOUD_VOICE_ENABLED does not enable WHATSAPP_C
     image.enabled = prevImage;
   });
   image.enabled = true;
-  const adapter = new WhatsAppCloudAdapter() as unknown as VoiceAdapter;
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK) as unknown as VoiceAdapter;
   let seen: IncomingMessage | null = null;
   adapter.onMessage(async (m) => {
     seen = m;
@@ -313,7 +317,7 @@ test('SECURITY: enabling WHATSAPP_CLOUD_VOICE_ENABLED does not enable WHATSAPP_C
 });
 
 test('SECURITY: no raw audio bytes ever reach the IncomingMessage handed to the router — only the transcript text (acceptance criterion 5)', async () => {
-  const adapter = new WhatsAppCloudAdapter() as unknown as VoiceAdapter;
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK) as unknown as VoiceAdapter;
   let seen: IncomingMessage | null = null;
   adapter.onMessage(async (m) => {
     seen = m;

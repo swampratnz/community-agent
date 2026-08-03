@@ -115,47 +115,6 @@ function mapScheduledEventStatus(status: GuildScheduledEventStatus): ScheduledEv
   }
 }
 
-// Fixed wrapper prefix for a manual warn_user DM (the admin's `reason` is
-// appended verbatim, untranslated — same scope boundary as router.ts's
-// FAILED_PREFIX_MI/DONE_PREFIX_MI). Reused as-is (no interpolation) for
-// byte-for-byte backward compatibility with the pre-#618 inline template.
-const WARN_USER_DM_PREFIX = '⚠️ Warning from NZ Claude Community moderators:';
-
-// Fixed, human-authored te reo Māori variant of WARN_USER_DM_PREFIX (issue
-// #618), served when the target has a standing 'mi' language_prefs row
-// (getLanguagePreference, issue #189) — same `_MI` pattern moderator.ts's
-// warnDmTextMi (#333) already established for auto-moderation's warn DM.
-const WARN_USER_DM_PREFIX_MI = '⚠️ He whakatūpato nā ngā kaiwhakahaere o NZ Claude Community:';
-
-export const WELCOME_MESSAGE =
-  "Kia ora, welcome! 👋 This server's bot answers Claude/Anthropic questions and remembers context, " +
-  'but it only replies to registered members. Ask an admin to add you, or just say hi to the bot here ' +
-  'and an admin will see your request.';
-
-// Selected instead of WELCOME_MESSAGE when config.rbac.accessMode.discord is
-// 'open' (issue #351) — that mode already lets a guest message the bot with
-// no admin approval (router.ts gates on this exact value), so the default
-// text must say so rather than claim gating that isn't in effect. Generic
-// and static like WELCOME_MESSAGE — no joiner-supplied data interpolated.
-export const WELCOME_MESSAGE_OPEN =
-  "Kia ora, welcome! 👋 This server's bot answers Claude/Anthropic questions and remembers context — " +
-  'go ahead and message me any time, no admin approval needed. Ask me "what can you do?" any time for ' +
-  'a quick rundown.';
-
-/**
- * The default injected text pack (agent-base plan item 6, `AdapterTextPack`
- * in ../types.ts): exactly today's constants, so a constructor that passes
- * nothing is byte-identical to the pre-pack behaviour. A future module can
- * swap the pack via the constructor; whatever it injects still leaves
- * through this adapter's `filtered()` send paths.
- */
-export const DISCORD_TEXT_PACK: AdapterTextPack = {
-  welcomeMessage: WELCOME_MESSAGE,
-  welcomeMessageOpen: WELCOME_MESSAGE_OPEN,
-  warnUserDmPrefix: WARN_USER_DM_PREFIX,
-  warnUserDmPrefixMi: WARN_USER_DM_PREFIX_MI,
-};
-
 /** Every `AdminAction` kind this adapter's `performAdminAction` implements — hoisted to a module const so the factory registry (agent-base plan item 9) can declare it without an instance. */
 export const DISCORD_ADMIN_CAPABILITIES: ReadonlySet<string> = new Set([
   'timeout_user',
@@ -217,10 +176,15 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
   // checked via `shouldNotifyVoiceLanguageCaveat` (mirrors baileysAdapter.ts).
   private readonly voiceLanguageCaveatNotified = new Map<string, number>();
 
+  // The text pack is REQUIRED and comes first (agent-base plan item 6): this
+  // adapter owns no community prose of its own, so there is no default to
+  // fall back to — platforms/factories.ts hands it DISCORD_TEXT_PACK
+  // (platforms/textPacks.ts). The two retry delays stay optional test knobs
+  // behind it.
   constructor(
+    private readonly textPack: AdapterTextPack,
     private readonly mutedRoleOverwriteRetryDelayMs = MUTED_ROLE_OVERWRITE_RETRY_DELAY_MS,
     private readonly sendRetryDelayMs = DISCORD_SEND_RETRY_DELAY_MS,
-    private readonly textPack: AdapterTextPack = DISCORD_TEXT_PACK,
   ) {
     this.moderator = createModerator(this);
     this.client = new Client({

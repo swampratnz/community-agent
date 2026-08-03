@@ -79,45 +79,6 @@ const SENT_MESSAGE_CACHE_TTL_MS = 6 * 60 * 60_000; // 6h
 // per sender per week" per the proposal's cost story.
 const VOICE_LANGUAGE_CAVEAT_WINDOW_MS = 7 * 24 * 60 * 60_000;
 
-// Fixed wrapper prefix for a manual warn_user DM (the admin's `reason` is
-// appended verbatim, untranslated). Byte-for-byte the pre-#618 inline
-// template's wording (no "moderators" — same as cloudAdapter.ts's wording,
-// kept independent per-adapter rather than unified).
-const WARN_USER_DM_PREFIX = '⚠️ Warning from NZ Claude Community:';
-
-// Fixed, human-authored te reo Māori variant of WARN_USER_DM_PREFIX (issue
-// #618), served when the target has a standing 'mi' language_prefs row
-// (getLanguagePreference, issue #189) — same `_MI` pattern moderator.ts's
-// warnDmTextMi (#333) already established.
-const WARN_USER_DM_PREFIX_MI = '⚠️ He whakatūpato nā NZ Claude Community:';
-
-// Generic and static — no @-mention or echo of the joiner, so a bulk add
-// can't be turned into a mass-ping and no participant JID reaches the chat.
-export const WHATSAPP_GROUP_WELCOME_MESSAGE =
-  "Kia ora! 👋 This bot only replies to registered members. If you're new here, ask an admin in this group to add you as a member.";
-
-// Selected instead of WHATSAPP_GROUP_WELCOME_MESSAGE when
-// config.rbac.accessMode.whatsapp is 'open' (issue #351) — same
-// generic/static, no-@-mention shape, adapted to state that no admin
-// approval is needed in that mode.
-export const WHATSAPP_GROUP_WELCOME_MESSAGE_OPEN =
-  'Kia ora! 👋 This bot answers Claude/Anthropic questions and remembers context — go ahead and message ' +
-  'me any time, no admin approval needed. Ask me "what can you do?" any time for a quick rundown.';
-
-/**
- * The default injected text pack (agent-base plan item 6, `AdapterTextPack`
- * in ../types.ts): exactly today's constants, so a constructor that passes
- * nothing is byte-identical to the pre-pack behaviour. A future module can
- * swap the pack via the constructor; whatever it injects still leaves
- * through this adapter's `filtered()` send paths.
- */
-export const BAILEYS_TEXT_PACK: AdapterTextPack = {
-  welcomeMessage: WHATSAPP_GROUP_WELCOME_MESSAGE,
-  welcomeMessageOpen: WHATSAPP_GROUP_WELCOME_MESSAGE_OPEN,
-  warnUserDmPrefix: WARN_USER_DM_PREFIX,
-  warnUserDmPrefixMi: WARN_USER_DM_PREFIX_MI,
-};
-
 export interface WelcomeCooldownState {
   readonly lastSentAt: Readonly<Record<string, number>>;
 }
@@ -199,9 +160,14 @@ export class BaileysAdapter implements PlatformAdapter {
   private cachedVersion: [number, number, number] | null = null;
   private welcomeCooldown: WelcomeCooldownState = initialWelcomeCooldownState();
 
+  // The text pack is REQUIRED and comes first (agent-base plan item 6): this
+  // adapter owns no community prose of its own, so there is no default to
+  // fall back to — platforms/factories.ts hands it BAILEYS_TEXT_PACK
+  // (platforms/textPacks.ts). The send-retry delay stays an optional test
+  // knob behind it.
   constructor(
+    private readonly textPack: AdapterTextPack,
     private readonly sendRetryDelayMs = BAILEYS_SEND_RETRY_DELAY_MS,
-    private readonly textPack: AdapterTextPack = BAILEYS_TEXT_PACK,
   ) {}
   /**
    * Bounded cache of the messages we've SENT (id -> content), so `getMessage`

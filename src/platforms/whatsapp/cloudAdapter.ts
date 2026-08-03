@@ -99,25 +99,6 @@ const SEND_RETRY_MAX_BACKOFF_MS = 5_000;
  */
 const VOICE_LANGUAGE_CAVEAT_WINDOW_MS = 7 * 24 * 60 * 60_000;
 
-// Fixed wrapper prefix for a manual warn_user DM (the admin's `reason` is
-// appended verbatim, untranslated). Byte-for-byte the pre-#618 inline
-// template's wording (no "moderators" — this platform's existing wording
-// already differs from Discord's, kept as-is rather than unified).
-const WARN_USER_DM_PREFIX = '⚠️ Warning from NZ Claude Community:';
-
-// Fixed, human-authored te reo Māori variant of WARN_USER_DM_PREFIX (issue
-// #618), served when the target has a standing 'mi' language_prefs row
-// (getLanguagePreference, issue #189) — same `_MI` pattern moderator.ts's
-// warnDmTextMi (#333) already established.
-const WARN_USER_DM_PREFIX_MI = '⚠️ He whakatūpato nā NZ Claude Community:';
-
-// Generic and static — no @-mention or echo of the sender, so nothing
-// user-supplied (msg.name/msg.from) ever reaches the text. Mirrors
-// WHATSAPP_GROUP_WELCOME_MESSAGE's shape, adapted for a 1:1 first contact.
-export const WHATSAPP_CLOUD_WELCOME_MESSAGE =
-  'Kia ora! 👋 Thanks for messaging the NZ Claude Community bot. I can help answer Claude/Anthropic ' +
-  "questions here in our 1:1 chat. If you're new, an admin may need to register you as a member first.";
-
 /**
  * Thrown by `assertWithinCustomerServiceWindow` (issue #602) instead of a
  * bare `Error`, so a caller can tell "this recipient's 24h window is closed,
@@ -131,29 +112,6 @@ export const WHATSAPP_CLOUD_WELCOME_MESSAGE =
  * re-export keeps existing import sites working.
  */
 export { WindowClosedError } from '../types.js';
-
-// Selected instead of WHATSAPP_CLOUD_WELCOME_MESSAGE when
-// config.rbac.accessMode.whatsapp is 'open' (issue #351) — same
-// generic/static, no-sender-data shape, adapted to state that no admin
-// approval is needed in that mode.
-export const WHATSAPP_CLOUD_WELCOME_MESSAGE_OPEN =
-  'Kia ora! 👋 Thanks for messaging the NZ Claude Community bot. I can help answer Claude/Anthropic ' +
-  'questions here in our 1:1 chat any time, no admin approval needed. Ask me "what can you do?" any ' +
-  'time for a quick rundown.';
-
-/**
- * The default injected text pack (agent-base plan item 6, `AdapterTextPack`
- * in ../types.ts): exactly today's constants, so a constructor that passes
- * nothing is byte-identical to the pre-pack behaviour. A future module can
- * swap the pack via the constructor; whatever it injects still leaves
- * through this adapter's `filtered()` send paths.
- */
-export const WHATSAPP_CLOUD_TEXT_PACK: AdapterTextPack = {
-  welcomeMessage: WHATSAPP_CLOUD_WELCOME_MESSAGE,
-  welcomeMessageOpen: WHATSAPP_CLOUD_WELCOME_MESSAGE_OPEN,
-  warnUserDmPrefix: WARN_USER_DM_PREFIX,
-  warnUserDmPrefixMi: WARN_USER_DM_PREFIX_MI,
-};
 
 /**
  * WhatsApp via the official Meta Business Cloud API. ToS-compliant
@@ -185,7 +143,11 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
   readonly platform = 'whatsapp' as const;
   readonly adminCapabilities = WHATSAPP_CLOUD_ADMIN_CAPABILITIES;
 
-  constructor(private readonly textPack: AdapterTextPack = WHATSAPP_CLOUD_TEXT_PACK) {}
+  // The text pack is REQUIRED (agent-base plan item 6): this adapter owns no
+  // community prose of its own, so there is no default to fall back to —
+  // platforms/factories.ts hands it WHATSAPP_CLOUD_TEXT_PACK
+  // (platforms/textPacks.ts).
+  constructor(private readonly textPack: AdapterTextPack) {}
 
   private handler: MessageHandler | null = null;
   private server: Server | null = null;

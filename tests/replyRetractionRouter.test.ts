@@ -1,5 +1,13 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
+// The adapters take their community text pack as a required constructor
+// parameter now (agent-base plan item 6) — production hands it over in
+// src/platforms/factories.ts, so these constructions pass the same pack.
+import {
+  BAILEYS_TEXT_PACK,
+  DISCORD_TEXT_PACK,
+  WHATSAPP_CLOUD_TEXT_PACK,
+} from '../src/platforms/textPacks.js';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
@@ -121,7 +129,7 @@ function discordMessage(overrides: Partial<IncomingMessage> = {}): IncomingMessa
 
 test('Discord: a delete of an addressed message that received a bot reply within the TTL window triggers exactly one deleteOwnMessage call for the bot reply id (acceptance criterion 2)', async (t) => {
   const router = makeReplyRouter();
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { sentMessages } = stubDiscordChannel(adapter);
   router.register(adapter);
   const handler = getHandler(adapter);
@@ -154,7 +162,7 @@ test('Discord: a delete of an addressed message that received a bot reply within
 
 test('Discord: no false positives — an unaddressed/ambient message with no mapped reply triggers zero deleteOwnMessage calls (acceptance criterion 3)', async (t) => {
   const router = makeReplyRouter();
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   stubDiscordChannel(adapter);
   router.register(adapter);
   const handler = getHandler(adapter);
@@ -172,7 +180,7 @@ test('Discord: no false positives — a delete arriving after the 30-minute TTL 
   t.mock.timers.enable({ apis: ['Date'], now: 0 });
   try {
     const router = makeReplyRouter();
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const { sentMessages } = stubDiscordChannel(adapter);
     router.register(adapter);
     const handler = getHandler(adapter);
@@ -199,7 +207,7 @@ test(
     'being registered when only autoRetractReplyEnabled is set) would be caught (PR #576 review)',
   async (t) => {
     const router = makeReplyRouter();
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const { sentMessages } = stubDiscordChannel(adapter);
     router.register(adapter);
     const handler = getHandler(adapter);
@@ -255,7 +263,7 @@ test('Discord: a multi-chunk reply (longer than the 2000-char cap) is retracted 
   const router = new Router(
     makeRouterDeps({ runTurn: async () => ({ text: longText, ok: true }), typingRefireMs: 1_000_000 }),
   );
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { sentMessages } = stubDiscordChannel(adapter);
   router.register(adapter);
   const handler = getHandler(adapter);
@@ -290,7 +298,7 @@ test("Discord: one chunk failing to delete (e.g. already manually removed) does 
   const router = new Router(
     makeRouterDeps({ runTurn: async () => ({ text: longText, ok: true }), typingRefireMs: 1_000_000 }),
   );
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { sentMessages } = stubDiscordChannel(adapter);
   router.register(adapter);
   const handler = getHandler(adapter);
@@ -329,7 +337,7 @@ test(
     "wiring, not just the retraction primitive (acceptance criteria 2 + 3, issue #595's MessageDelete follow-up)",
   async (t) => {
     const router = makeReplyRouter();
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const { sentMessages } = stubDiscordChannel(adapter);
     router.register(adapter);
     const handler = getHandler(adapter);
@@ -372,7 +380,7 @@ test(
     'retracts only the mapped one (acceptance criterion 4, issue #595)',
   async (t) => {
     const router = makeReplyRouter();
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const { sentMessages } = stubDiscordChannel(adapter);
     router.register(adapter);
     const handler = getHandler(adapter);
@@ -467,7 +475,7 @@ const SENDER_C = '64233333333'; // a group admin who did NOT author the original
 test('SECURITY: WhatsApp — a revoke from a non-author, non-admin participant does not retract the mapped reply, and does not burn the mapping: the true author (or a group admin) can still retract it afterward (acceptance criterion 4)', async () => {
   const admins = new Set([SENDER_C]);
   const router = makeReplyRouter();
-  const adapter = new BaileysAdapter();
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
   const { deleteCalls } = stubBaileysSocket(adapter, admins);
   router.register(adapter);
   const handler = getHandler(adapter);
@@ -545,7 +553,7 @@ test('WhatsApp Cloud: has no deleteOwnMessage capability, and enabling the flag 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = fetchMock as typeof fetch;
   try {
-    const adapter = new WhatsAppCloudAdapter();
+    const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
     assert.equal(
       typeof adapter.deleteOwnMessage,
       'undefined',

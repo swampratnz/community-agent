@@ -6,6 +6,7 @@ import { descriptorFor } from './registry.js';
 import { DiscordAdapter, DISCORD_TOOL_CAPABILITIES } from './discord/adapter.js';
 import { BaileysAdapter, BAILEYS_TOOL_CAPABILITIES } from './whatsapp/baileysAdapter.js';
 import { WhatsAppCloudAdapter, WHATSAPP_CLOUD_TOOL_CAPABILITIES } from './whatsapp/cloudAdapter.js';
+import { BAILEYS_TEXT_PACK, DISCORD_TEXT_PACK, WHATSAPP_CLOUD_TEXT_PACK } from './textPacks.js';
 
 /**
  * The adapter factory registrations (agent-base plan item 9, §3 `adapters`
@@ -31,11 +32,13 @@ export const WHATSAPP_TOOL_CAPABILITIES: ReadonlySet<string> = new Set([
 /**
  * The provider switch that used to live inline in index.ts step 3, verbatim
  * semantics: `baileys` and `cloud` select their adapter; anything else (the
- * `'disabled'` enum value) logs the same warning and yields no adapter.
+ * `'disabled'` enum value) logs the same warning and yields no adapter. Each
+ * provider is handed its own community text pack (agent-base plan item 6) —
+ * the adapters carry no default of their own.
  */
 function createWhatsAppAdapter(): PlatformAdapter | null {
-  if (config.whatsapp.provider === 'baileys') return new BaileysAdapter();
-  if (config.whatsapp.provider === 'cloud') return new WhatsAppCloudAdapter();
+  if (config.whatsapp.provider === 'baileys') return new BaileysAdapter(BAILEYS_TEXT_PACK);
+  if (config.whatsapp.provider === 'cloud') return new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   logger.warn('WhatsApp provider disabled');
   return null;
 }
@@ -49,7 +52,7 @@ export const ADAPTER_FACTORIES: readonly AdapterFactory[] = [
   {
     platform: 'discord',
     toolCapabilities: DISCORD_TOOL_CAPABILITIES,
-    create: () => new DiscordAdapter(),
+    create: () => new DiscordAdapter(DISCORD_TEXT_PACK),
   },
   {
     platform: 'whatsapp',

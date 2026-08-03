@@ -1,5 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// The adapters take their community text pack as a required constructor
+// parameter now (agent-base plan item 6) — production hands it over in
+// src/platforms/factories.ts, so these constructions pass the same pack.
+import { DISCORD_TEXT_PACK } from '../src/platforms/textPacks.js';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
@@ -52,7 +56,7 @@ test('SECURITY: a thread message edit/delete is honoured when its PARENT channel
     return { rowCount: 0, rows: [] };
   });
 
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
 
   // Parent IS allowlisted → scope resolves to the parent → honoured. The DB
   // update is keyed on the THREAD id (where the row was stored), not the parent.
@@ -77,7 +81,7 @@ test('SECURITY: a thread message edit/delete is honoured when its PARENT channel
 
 test('SECURITY: with DISCORD_MODERATION_ENABLED unset (default), a genuinely content-changed edit never reaches Moderator.scan() — byte-identical to pre-#798 archive-sync-only behaviour (issue #798)', async (t) => {
   t.mock.method(pool, 'query', async () => ({ rowCount: 0, rows: [] }));
-  const adapter = new DiscordAdapter();
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const scanCalls: unknown[] = [];
   t.mock.method(
     (adapter as unknown as { moderator: { scan: (ctx: unknown) => Promise<void> } }).moderator,

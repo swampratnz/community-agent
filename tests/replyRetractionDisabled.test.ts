@@ -1,5 +1,9 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
+// The adapters take their community text pack as a required constructor
+// parameter now (agent-base plan item 6) — production hands it over in
+// src/platforms/factories.ts, so these constructions pass the same pack.
+import { BAILEYS_TEXT_PACK, DISCORD_TEXT_PACK } from '../src/platforms/textPacks.js';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
@@ -149,7 +153,7 @@ test('SECURITY: with AUTO_RETRACT_REPLY_ENABLED unset, deleting/revoking a messa
       typingRefireMs: 1_000_000,
     }),
   );
-  const discordAdapter = new DiscordAdapter();
+  const discordAdapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { sentMessages } = stubDiscordChannel(discordAdapter);
   discordRouter.register(discordAdapter);
   const discordHandler = getHandler(discordAdapter);
@@ -192,7 +196,7 @@ test('SECURITY: with AUTO_RETRACT_REPLY_ENABLED unset, deleting/revoking a messa
       typingRefireMs: 1_000_000,
     }),
   );
-  const waAdapter = new BaileysAdapter();
+  const waAdapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
   const { deleteCalls } = stubBaileysSocket(waAdapter);
   waRouter.register(waAdapter);
   const waHandler = getHandler(waAdapter);
@@ -236,7 +240,7 @@ test(
         typingRefireMs: 1_000_000,
       }),
     );
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const { sentMessages } = stubDiscordChannel(adapter);
     router.register(adapter);
     const handler = getHandler(adapter);

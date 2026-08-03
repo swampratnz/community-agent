@@ -1,5 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// The adapters take their community text pack as a required constructor
+// parameter now (agent-base plan item 6) — production hands it over in
+// src/platforms/factories.ts, so these constructions pass the same pack.
+import { WHATSAPP_CLOUD_TEXT_PACK } from '../src/platforms/textPacks.js';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
@@ -499,7 +503,7 @@ test(
 );
 
 test('a WhatsApp Cloud adapter whose consecutive-send-failure counter has crossed the threshold is reported disconnected, and health.ts still fires the sustained-disconnect error log even with no other adapter to DM through', (t) => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   // Simulate `start()` having succeeded (listener up) and 3 consecutive
   // real-message send failures (e.g. a revoked access token), without
   // spinning up a real HTTP server or making real Graph API calls.

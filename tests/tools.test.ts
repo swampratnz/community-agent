@@ -1,5 +1,9 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
+// The adapters take their community text pack as a required constructor
+// parameter now (agent-base plan item 6) — production hands it over in
+// src/platforms/factories.ts, so these constructions pass the same pack.
+import { DISCORD_TEXT_PACK, WHATSAPP_CLOUD_TEXT_PACK } from '../src/platforms/textPacks.js';
 import { ENABLED_SKILLS } from '../src/agent/enabledSkills.js';
 import { readFileSync, readdirSync } from 'node:fs';
 import type { AdapterLookup, Platform, PlatformAdapter, UpcomingEvent } from '../src/platforms/types.js';
@@ -5188,7 +5192,7 @@ test(
     'criterion #6)',
   async () => {
     const { DiscordAdapter } = await import('../src/platforms/discord/adapter.js');
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     assert.equal(adapter.adminCapabilities.has('block_user'), false);
     assert.equal(adapter.adminCapabilities.has('unblock_user'), false);
     assert.equal(
@@ -12882,7 +12886,7 @@ test(
     cloud.phoneNumberId = 'test-phone-id';
     cloud.accessToken = 'test-access-token';
 
-    const adapter = new WhatsAppCloudAdapter();
+    const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
     // Marks the reporter's number as within the 24h customer-service window
     // without a real webhook round-trip, same as markInboundNow in
     // tests/whatsappCloudAdapter.test.ts.
