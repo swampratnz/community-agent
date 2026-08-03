@@ -16,12 +16,33 @@ tests / pipeline / tooling), so they deliberately get no member-facing entry.
 Listing a PR number here satisfies scripts/check-changelog-coverage.mjs (any
 `#NNN` occurrence in this file counts as documented), which is what lets the
 daily tracking issue converge and auto-close. This comment sits in the H1
-preamble, which src/agent/changelog.ts skips, so `whats_new` never shows it
-to members. Append numbers; never remove them.
+preamble, which src/module/agent/changelog.ts skips, so `whats_new` never
+shows it to members. Append numbers; never remove them.
 Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #775 #784 #804 #807 #809 #810 #812 #814 #816 #817 #818 #819 #821 #824 #825
-#868 #896 #899 #904 #949 #950 #951 #952 #953 #954 #955 #956 #957 #958
+#868 #896 #899 #904 #949 #950 #951 #952 #953 #954 #955 #956 #957 #958 #959
 -->
+
+
+## 2026-08-03
+
+### Changed
+- **Under the hood: the code is now split into a reusable agent framework and
+  this community's own content** (#959). Nothing you can see has changed —
+  same tools, same replies, same wording, same permissions. What moved is
+  where the code lives: one half is now the community-agnostic framework (the
+  agent turn engine, the Discord and WhatsApp adapters, memory and storage,
+  the router's security checks, the roles system), and the other half is
+  everything specific to the NZ Claude Community (the tools themselves, the
+  charter and guidelines, Dave's persona, the te reo Māori and plain-language
+  wording, our digests and integrations). The framework half is not allowed to
+  reach into the community half, and that rule is checked automatically on
+  every change — which is what will eventually let the framework be reused for
+  other agents without dragging this community's content along. The
+  security-critical machinery (which tools each role is offered, the CONFIRM
+  step before anything destructive, the filtering applied to everything the
+  bot sends) all sits on the framework side, where community content cannot
+  reorder or bypass it.
 
 
 ## 2026-08-01
