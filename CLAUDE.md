@@ -96,6 +96,13 @@ postinstall shim that used to add them is gone.)
   DIFFERENT new files land in different hunks and merge cleanly instead of
   colliding at a shared append point — when you add a new file's entry by hand,
   put it in alphabetical position (or just run the fix command).
+  **The gate is blind to loss in transit.** It protects against deleting cases
+  WITHIN this repo; a test file arriving in ANOTHER repo gets whatever count it
+  shows up with, and that repo's manifest records the smaller number as
+  correct. Moving tests to `agent-base` therefore needs a name-level diff
+  against the source commit, not a count comparison — `gatedNotice.test.ts`
+  crossed over having silently dropped 6 of its 7 cases, and both manifests
+  agreed with each other the whole time.
 - `tests/knowledgeEval.test.ts` + `tests/fixtures/knowledgeEval.json` — a
   golden-query regression eval for `knowledge_search` retrieval quality
   (precision@K against a curated, paraphrased query set with distractors).
