@@ -1,5 +1,6 @@
 import type { AgentModuleManifest } from '@swampratnz/agent-base';
 import { config } from '@swampratnz/agent-base/config.js';
+import type { ToolContext } from '@swampratnz/agent-base/agent/tools/types.js';
 import { NOTICE_AXES, NOTICE_ENTRIES } from './strings/notices.js';
 import { COMMUNITY_POLICY_KEYS } from './storage/policies.js';
 import { DEFAULT_BAD_WORDS } from './moderation/badWords.js';
@@ -60,27 +61,24 @@ function assertDisplaySettings(): void {
  * registrations → readiness probe → migrations → start — and rejects an
  * incomplete composition before the process has registered anything at all.
  *
+ * Pinned to this deployment's own `ToolContext`: agent-base 0.1.1 made the
+ * manifest generic in it, so every tool handler in `toolServerParts.registry`
+ * is checked against the context `makeContext` actually builds instead of
+ * riding on the unknown-default's bivariance.
+ *
  * Adding an extension point is a two-line change: export the value from the
  * file that owns the content, name it here. Do NOT re-add module-scope
  * `register*()` calls in those files — a value registered twice throws, and
  * the whole point of the manifest is that the surface is inspectable as data.
  */
-export const nzCommunityModule: AgentModuleManifest = {
+export const nzCommunityModule: AgentModuleManifest<ToolContext> = {
   name: 'nz-claude-community',
   init: assertDisplaySettings,
 
   // Singleton registries — exactly one module may supply each.
   notices: { axes: NOTICE_AXES, entries: NOTICE_ENTRIES },
   toolTiers: COMMUNITY_TOOL_TIERS,
-  // The cast is a shim for an agent-base defect, not a real widening:
-  // `AgentModule.toolServerParts` is typed `ToolServerParts<never>`, and
-  // because `makeContext` RETURNS the context type, no module can ever satisfy
-  // it — a real parts object is `ToolServerParts<ToolContext>`. Base's own
-  // storage is `ToolServerParts<any>` and `registerToolServerParts` is
-  // generic, so the value is handled correctly at runtime; only the manifest
-  // field's type is wrong. Drop the cast once agent-base fixes it (see the PR
-  // body's "needs a fix in agent-base").
-  toolServerParts: COMMUNITY_TOOL_SERVER_PARTS as unknown as AgentModuleManifest['toolServerParts'],
+  toolServerParts: COMMUNITY_TOOL_SERVER_PARTS,
   flaggedToolPredicates: COMMUNITY_FLAGGED_TOOL_PREDICATES,
   skills: COMMUNITY_SKILLS,
   promptSections: COMMUNITY_PROMPT_SECTIONS,
