@@ -29,9 +29,11 @@ process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER = 'baileys';
 
 const { closeDb } = await import('@swampratnz/agent-base/storage/db.js');
-// factories.ts builds the Discord adapter, whose slash-command module binds
-// onto the command registry at import time — so the command list has to be
-// registered first (the manifest's `commands` field in production).
+// createConfiguredAdapters() binds the slash commands onto the registry as
+// its first act (bindCommunitySlashCommands), so the command list has to be
+// registered before this file calls it — the manifest's `commands` field in
+// production. Nothing binds at import time any more: that ordering could not
+// hold under createAgent and was the startup crash #961 fixed.
 await import('./support/registerCommands.js');
 await import('./support/registerToolRegistry.js');
 const { TOOL_REGISTRY } = await import('../src/module/agent/tools/index.js');
