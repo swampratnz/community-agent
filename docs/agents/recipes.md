@@ -19,8 +19,18 @@ so a red PR only makes rework:
 ```
 npm run typecheck && npm run lint && npm run format:check \
   && npm run migrate && npm test && npm run build \
-  && npm run test:security && npm run context:check
+  && npm run test:security && npm run context:check && npm run imports:check
 ```
+
+**Which half of `src/` does your change belong in?** `src/base/` is the
+community-agnostic framework, `src/module/` is this deployment's NZ-community
+content and wiring, and `src/index.ts` is the composition root that imports
+both. Base may **never** import module (`npm run imports:check` and eslint both
+fail on it, including on a type-only import). If a base file needs something a
+module owns, invert it: declare a registry slot in base, register into it from
+the module at its own import time, and let `index.ts` carry the side-effect
+import — `src/base/agent/turnState.ts`, `src/base/strings/catalogue.ts` and
+`src/base/commands/registry.ts` are the worked examples.
 
 `npm run typecheck` also typechecks the **allowlisted** test files
 (`tsconfig.tests.json`, an incremental ratchet — `tests/` has a backlog of

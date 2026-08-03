@@ -84,6 +84,19 @@ same diff — `npm run context:check` (CI's lint job) fails otherwise, and
 authority: read the code before trusting a one-liner, and fix the line if it is
 wrong.
 
+## The one-way import rule
+
+`src/` has two halves and a composition root: `src/base/` is the
+community-agnostic framework, `src/module/` is this deployment's NZ-community
+content and wiring, and `src/index.ts` is the only file that may import both.
+**Base may never import module**, not even a type. When a base file needs
+something a module owns, declare a registry slot in base and register into it
+from the module at its own import time — `src/base/agent/turnState.ts`,
+`src/base/strings/catalogue.ts` and `src/base/commands/registry.ts` are the
+worked examples — or write the type structurally in base rather than as
+`typeof <community export>`. Enforced by eslint and, authoritatively, by
+`npm run imports:check` (CI's lint job).
+
 ## Commits and PRs
 
 - No model identifiers in commit messages, PR titles/bodies, or code.

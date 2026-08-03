@@ -28,6 +28,7 @@
     "src/**/*.ts",
     "tests/backgroundJobCostAlert.test.ts",
     "tests/configSlices.test.ts",
+    "tests/importDirection.test.ts",
     "tests/jobsRegistry.test.ts",
     "tests/memberDigest.test.ts",
     "tests/memberId.test.ts",

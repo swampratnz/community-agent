@@ -107,6 +107,12 @@ jobs:
       # moved. Lives in the lint job because it is a pure static check: no DB,
       # no model, milliseconds.
       - run: npm run context:check
+      # The one-way import rule between src/base/ and src/module/ (agent-base
+      # plan §Phase-2). eslint above catches the same edge from the specifier
+      # text; this resolves every specifier against the file system, so it sees
+      # through any depth of `../` and has no config of its own to weaken.
+      # Same rationale for living here: pure static check, no DB, milliseconds.
+      - run: npm run imports:check
 
   security-invariants:
     # No postgres service here, deliberately: this job pins the security

@@ -61,6 +61,22 @@ orientation and never authority. If it is wrong, fix it in your PR.
   discoverable by a new phrasing, add a matching golden query there —
   queries must be paraphrases of the target entry, never near-verbatim
   quotes, or the eval proves nothing.
+- `npm run imports:check` — the ONE-WAY IMPORT RULE between the two halves of
+  `src/`. `src/base/` is the community-agnostic framework, `src/module/` is
+  this deployment's NZ-community content and wiring, and `src/index.ts` is the
+  composition root — the only file allowed to import both. Base may never
+  import module, because Phase 3 lifts `src/base/` into the agent-base package
+  on its own and one edge the wrong way makes it un-liftable. Invert instead:
+  base declares a registry slot, the module registers into it at its own import
+  time (`turnState.ts`, `strings/catalogue.ts`, `commands/registry.ts` are the
+  worked examples), and `index.ts` carries the side-effect import. A type-only
+  import counts — a `typeof <community export>` in a deps interface is the edge
+  this repo kept re-growing; write the signature structurally in base instead.
+  Enforced twice on purpose: eslint's `no-restricted-imports` on
+  `src/base/**` gives the fast local signal from the specifier text, and
+  `scripts/check-import-direction.mjs` resolves every specifier against the
+  file system, so it sees through any depth of `../` and has no config of its
+  own to weaken. Runs in CI's `lint` job; pinned by `tests/importDirection.test.ts`.
 - `npm run context:check` — freshness gate on the agent context pack
   (`docs/agents/`). Fails if a `src/` subsystem or top-level module has no
   entry in `docs/agents/module-map.md`, if an entry names a path that no longer
