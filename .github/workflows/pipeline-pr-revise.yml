@@ -229,6 +229,11 @@ jobs:
           DISCORD_BOT_TOKEN: ci-dummy-token
           DISCORD_GUILD_ID: ci-dummy-guild
           WHATSAPP_PROVIDER: disabled
+      # This deployment renders member-facing times in NZ local time; the
+      # framework package defaults them to UTC/en-GB and the module manifest's
+      # init() refuses to boot on anything else (see .env.example).
+      DISPLAY_TIMEZONE: Pacific/Auckland
+      DISPLAY_LOCALE: en-NZ
           # migrate loads config.ts which requires this; migrate never calls
           # Claude, so a dummy satisfies the schema (see pipeline-build.yml).
           CLAUDE_CODE_OAUTH_TOKEN: ci-dummy-token
@@ -246,6 +251,11 @@ jobs:
           DISCORD_BOT_TOKEN: ci-dummy-token
           DISCORD_GUILD_ID: ci-dummy-guild
           WHATSAPP_PROVIDER: disabled
+      # This deployment renders member-facing times in NZ local time; the
+      # framework package defaults them to UTC/en-GB and the module manifest's
+      # init() refuses to boot on anything else (see .env.example).
+      DISPLAY_TIMEZONE: Pacific/Auckland
+      DISPLAY_LOCALE: en-NZ
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # The dispatched run's actor is github-actions[bot] (the review
