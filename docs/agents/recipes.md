@@ -26,11 +26,12 @@ npm run typecheck && npm run lint && npm run format:check \
 community-agnostic framework, `src/module/` is this deployment's NZ-community
 content and wiring, and `src/index.ts` is the composition root that imports
 both. Base may **never** import module (`npm run imports:check` and eslint both
-fail on it, including on a type-only import). If a base file needs something a
-module owns, invert it: declare a registry slot in base, register into it from
-the module at its own import time, and let `index.ts` carry the side-effect
-import — `src/base/agent/turnState.ts`, `src/base/strings/catalogue.ts` and
-`src/base/commands/registry.ts` are the worked examples.
+fail on it, including on a type-only import), and module may never import
+`src/index.ts`. A new **base** file must also carry no community content — no
+Claude/Anthropic/NZ prose, no te reo or plain-language strings, no product
+decision — even if nothing imports it back; that content belongs in
+`src/module/`. See "I got an `imports:check` failure" below for the inversion
+pattern.
 
 `npm run typecheck` also typechecks the **allowlisted** test files
 (`tsconfig.tests.json`, an incremental ratchet — `tests/` has a backlog of
@@ -65,8 +66,9 @@ The single most common change, and the one with the most gates.
 
 | File | Why |
 |---|---|
-| `src/module/agent/tools.ts` | The tool definition, its input schema, and its **tier requirement**. |
-| `src/base/agent/core.ts` | Only if the tool needs a new gating rule — the tool surface is derived from the caller's tier here. |
+| `src/module/agent/tools/<domain>.ts` | The `defineTool` entry: description, input schema, **`minTier`**, optional `platforms`/`featureFlag`/`confirm`/`audit`, and the handler. Find the right domain file by tool name first (`moderation.ts`, `knowledgeAdmin.ts`, `social.ts`, …); a brand-new domain file also needs a `docs/agents/module-map.md` entry. |
+| `src/module/agent/tools/index.ts` | Spread the domain array into `TOOL_REGISTRY`. Nothing else: the tier lists (`registerToolTiers`), the tool server's inventory (`registerToolServerParts`) and the feature-flag filter (`registerFlaggedToolPredicates`) are all **derived** from the registry at this file's module scope. Do not hand-add the name to a tier array — there isn't one to add it to any more. |
+| `src/base/agent/core.ts` | Only if the tool needs a genuinely new *kind* of gating rule. Tier and flag filtering already flow from the registry. |
 | `src/base/agent/pendingActions.ts` | **If the tool is destructive.** It must register a pending action for the router to execute after an explicit confirmation, never act directly. |
 | `src/module/agent/communityPromptSections.ts` | Only if members need to be told the capability exists (the community prose sections; `systemPrompt.ts`/`promptSpine.ts` own assembly and the security spine). Any prompt-text change must regenerate `tests/fixtures/systemPromptByteStability.json` in the same diff. |
 | `tests/` + `tests/security-floor.json` | A `SECURITY:` test for the tier gate, plus the manifest bump in the **same diff**. |
@@ -76,9 +78,15 @@ tier** inside its own implementation rather than trusting that gating kept it
 out of reach, and the caller's identity comes from the platform envelope only —
 never from message content.
 
+A `platforms` restriction is not free-form: `assertToolAvailabilityConsistent`
+(startup + `tests/platformRegistry.test.ts`) requires the offered set to equal
+exactly the platforms whose registered adapters declare the capability the tool
+needs, so restrict by capability or not at all.
+
 **Gates:** `npm run test:security` fails on a missing manifest bump (use
-`npm run test:security:fix`). CI's `security-invariants` job additionally
-refuses a PR that lowers the floor versus its base.
+`npm run test:security:fix`). `tests/toolRegistry.test.ts` pins the derivation
+invariants. CI's `security-invariants` job additionally refuses a PR that
+lowers the floor versus its base.
 
 ---
 
@@ -108,6 +116,15 @@ unset is a silent breaking change for the running deployment.
 Run `npm run migrate` before `npm test` locally, or the DB tests fail with
 `relation does not exist` rather than skipping.
 
+**Fragments live in base even when the table is community.** The numbering
+carries the distinction instead: `00`–`27` base, `50`–`54` community, `70`
+adapter, with deliberate gaps for insertion. Per-module migration contribution
+is Phase 3 work (`docs/AGENT-BASE-PLAN.md`) — until then, add a community table
+to a `5x` fragment and list it in `manifest.ts`. If the erasure promise has to
+reach it, call `registerPurgeContributor` (`src/base/storage/lifecycle.ts`) from
+the repository domain module that owns the table, the way every existing
+domain does, rather than adding another delete to a central purge query.
+
 **Widening an enum `CHECK` (a new `kind`, `status`, …):** edit the existing
 `DROP CONSTRAINT IF EXISTS` / `ADD CONSTRAINT` pair's value list **in place**.
 Never append a second pair for the same constraint name — in any fragment.
@@ -129,8 +146,8 @@ one has it.
 
 | File | Why |
 |---|---|
-| `src/<job>.ts` (or `src/module/backgroundJobs.ts`) | The run function + `startX` starter via `startTrackedJob` (tracked, cost-accounted, health-monitored), and the module's exported `JobSpec`. |
-| `src/module/jobs/registry.ts` | Add the spec to `JOB_REGISTRY` (at the END — start order is pinned). `index.ts` needs no edit: it starts and stops whatever the registry holds. |
+| `src/module/<job>.ts` (or `src/module/backgroundJobs.ts`) | The run function + `startX` starter via `startTrackedJob` (tracked, cost-accounted, health-monitored), and the module's exported `JobSpec`. A community job is module code — the base half is only the mechanism (`src/base/jobs/`: `types.ts`, `runner.ts`, `trackedJob.ts`), and it must not learn this job's name. |
+| `src/module/jobs/registry.ts` | Add the spec to `JOB_REGISTRY` (at the END — start order is pinned). `index.ts` needs no edit: `startRegisteredJobs`/`stopRegisteredJobs` sweep whatever list the composition root hands them. |
 | `src/base/config/<slice>.ts` + `src/base/config.ts` | Its enable flag and schedule (slice fragment + barrel surface). Background jobs are **opt-in**. |
 | `tests/jobsRegistry.test.ts` | Add the job's row (name, enabling env) to the table the registry-completeness test pins. |
 
@@ -146,14 +163,20 @@ There is a strong existing convention here: one small file per notice, holding
 (where the notice repeats) a **pure debounce helper** with no config, HTTP or
 DB imports, so it is directly unit-testable.
 
-The text itself now lives in the strings catalogue
-(`src/module/strings/notices.ts`): add one entry with the English base plus any
-`mi`/`plain` variants, and select it at the call site with
-`notice(id, { language, style })` — never re-encode the "'mi' beats 'plain'"
-precedence per site; the catalogue owns it (`src/base/strings/catalogue.ts`), and
+The text itself lives in the **module** notice pack
+(`src/module/strings/notices.ts`) — never in a base file, whichever half the
+notice is *sent* from: add one entry with the English base plus any `mi`/`plain`
+variants (and its `NoticeIdMap` augmentation, which keeps the per-id return
+type), and select it at the call site with `notice(id, { language, style })`.
+Never re-encode the "'mi' beats 'plain'" precedence per site; the catalogue
+mechanism owns it (`src/base/strings/catalogue.ts`), and
 `tests/stringsCatalogue.test.ts` pins the semantics for every entry
 automatically. If other files need the value as a constant, export a derived
-const (`export const X = notice('id')`) the way `rateLimitNotice.ts` does.
+const (`export const X = notice('id')`) the way `rateLimitNotice.ts` does —
+several base leaf modules do exactly this at their own module scope, which is
+why `notice()` **throws** when the pack was never registered rather than
+returning an empty string: a forgotten side-effect import in `src/index.ts`
+fails at load, not as blank text in someone's DM.
 
 Copy the shape of `rateLimitNotice.ts` — `pauseNotice.ts`,
 `budgetCheckFailureNotice.ts` and `mutedRoleAlertNotice.ts` are all deliberate
@@ -180,6 +203,58 @@ ToolDef, which `assertToolAvailabilityConsistent` and
 `tests/platformRegistry.test.ts` check against the declared capabilities.
 Model-facing platform zod enums stay CLOSED; widen them only as a conscious
 security decision.
+
+---
+
+## I got an `imports:check` failure — the inversion pattern
+
+The failure looks like this, and names the file, line, specifier and resolved
+target:
+
+```
+check-import-direction: the one-way rule between src/base/ and src/module/ is broken.
+  src/base/agent/core.ts:42  ../../module/agent/foo.js  ->  src/module/agent/foo.ts
+    src/base/ must not import src/module/
+```
+
+There are exactly four legitimate fixes, in the order to consider them:
+
+1. **The base file is in the wrong half.** If it carries community content
+   (Claude/Anthropic/NZ prose, te reo strings, a product decision) it was
+   always module code. `git mv` it to `src/module/` and update the module map.
+2. **The type is the only thing you needed.** Write it **structurally** in
+   base instead of importing it. `src/base/agent/toolServer.ts`'s
+   `ToolServerToolDef` declares only the slice of a tool definition the kernel
+   touches; the module's much richer `ToolDef` satisfies it and base never
+   names it. A `typeof <community export>` in a deps interface is the specific
+   edge this repo kept re-growing, and eslint deliberately does not set
+   `allowTypeImports`.
+3. **Invert it with a registry.** Base declares the slot; the module fills it
+   at its own module scope; `src/index.ts` carries the side-effect import.
+   Worked examples, smallest first: `src/base/strings/catalogue.ts`
+   (`registerNoticePack`), `src/base/commands/registry.ts` (`registerCommands`),
+   `src/base/storage/policyStore.ts` (`registerPolicyKeys`),
+   `src/base/auth/rbac.ts` (`registerToolTiers`) and
+   `src/base/agent/toolServer.ts` (`registerToolServerParts`).
+4. **Inject it instead.** For a value the caller already has, add it to the
+   deps object rather than importing a default — `src/module/routerWiring.ts`
+   is the one place production names the real implementation behind every
+   `RouterDeps` field, and it is module code precisely so the router mechanism
+   need not be.
+
+A new slot must **fail closed**: throw on a read before registration if it
+holds required content, or reject a duplicate/unknown name if it is additive.
+Never silently return `[]`.
+
+**Never** the fifth option: relaxing the eslint block, adding an
+`eslint-disable`, or editing `scripts/check-import-direction.mjs`. The script
+has no config surface on purpose. Both layers are pinned by
+`tests/importDirection.test.ts`, and the whole point of the rule is that
+`src/base/` stays liftable on its own.
+
+**Also flagged:** `src/module/ must not import the composition root`. Nothing
+`index.ts` wires may reach back up to it — take the value as a parameter or a
+deps field instead.
 
 ---
 

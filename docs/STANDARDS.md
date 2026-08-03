@@ -84,18 +84,42 @@ same diff — `npm run context:check` (CI's lint job) fails otherwise, and
 authority: read the code before trusting a one-liner, and fix the line if it is
 wrong.
 
-## The one-way import rule
+## Base and module, and the one-way import rule
 
-`src/` has two halves and a composition root: `src/base/` is the
-community-agnostic framework, `src/module/` is this deployment's NZ-community
-content and wiring, and `src/index.ts` is the only file that may import both.
-**Base may never import module**, not even a type. When a base file needs
-something a module owns, declare a registry slot in base and register into it
-from the module at its own import time — `src/base/agent/turnState.ts`,
-`src/base/strings/catalogue.ts` and `src/base/commands/registry.ts` are the
-worked examples — or write the type structurally in base rather than as
-`typeof <community export>`. Enforced by eslint and, authoritatively, by
-`npm run imports:check` (CI's lint job).
+`src/` has two halves and a composition root:
+
+- **`src/base/`** — the community-agnostic framework: agent kernel and prompt
+  spine, adapters, storage, router spine, jobs mechanism, RBAC, config, the
+  notice-catalogue mechanism, alert/health infra, leaf utils. A new base file
+  must carry **no community content** — no Claude/Anthropic/NZ prose, no te reo
+  or plain-language strings, no product decision this deployment made. If it
+  does, it belongs in `src/module/`.
+- **`src/module/`** — this deployment's content and wiring: the tool registry
+  and its `ToolDef` domain files, prose, personas, skills, the notice pack,
+  community jobs, the integrations, and the composition wiring.
+- **`src/index.ts`** — the composition root, the only file that may import
+  both halves and where the community side-effect imports live.
+
+**Base may never import module**, not even a type; **module may never import
+the composition root**. When a base file needs something a module owns, don't
+weaken the rule — invert it: declare a registry slot in base, register into it
+from the module at its own import time, and add the side-effect import to
+`index.ts`. `src/base/agent/turnState.ts`, `src/base/strings/catalogue.ts` and
+`src/base/commands/registry.ts` are the worked examples. For a `typeof
+<community export>` in a base deps interface, write the type structurally in
+base instead (`src/base/agent/toolServer.ts`'s `ToolServerToolDef` shows the
+shape).
+
+Keep new slots **fail-closed** like the existing ones: a slot holding required
+content throws when read before registration rather than returning an empty
+value, and an additive slot rejects a duplicate or unknown name rather than
+shadowing what is already registered. An empty-on-unregistered tier list or
+bad-word list is a silent downgrade nobody sees.
+
+Enforced by eslint and, authoritatively, by `npm run imports:check` (CI's lint
+job); see `docs/ARCHITECTURE.md` → "Two halves and a composition root" for the
+full picture and `docs/SECURITY.md` → "Where the controls live" for why the
+boundary matters.
 
 ## Commits and PRs
 

@@ -107,6 +107,14 @@ deploy/                   Ubuntu provisioning script + systemd unit
 docs/                     ARCHITECTURE, SECURITY, DEPLOYMENT, VISION, PIPELINE, PERSONAS, …
 ```
 
+The split is one-way and enforced (`npm run imports:check` plus an eslint
+rule): `src/base/` may never import `src/module/`, not even a type, so the
+framework half stays liftable on its own. Anything base needs from the
+community side arrives through a registry slot the module fills at import
+time, and `src/index.ts` carries those side-effect imports. See
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) → "Two halves and a composition
+root".
+
 ## Quick start (local dev)
 ```bash
 npm install

@@ -18,6 +18,37 @@ otherwise re-derive this repo's layout on every single run. Use it instead of a
 broad exploration sweep — then read the actual code, because the pack is
 orientation and never authority. If it is wrong, fix it in your PR.
 
+## Base and module
+
+`src/` has two halves and a composition root:
+
+- **`src/base/`** — the community-agnostic framework: agent kernel and prompt
+  spine, adapters, storage, router spine, jobs mechanism, RBAC, config, the
+  notice-catalogue mechanism, alert/health infra, leaf utils. **No community
+  content**: a new base file must not carry Claude/Anthropic/NZ prose, te reo
+  or plain-language strings, or one of this deployment's product decisions. If
+  it does, it belongs in `src/module/`.
+- **`src/module/`** — this deployment's content and wiring: the tool registry
+  and its `ToolDef` domain files, prose, personas, skills, the notice pack,
+  community jobs and digests, the integrations, and the composition wiring
+  (`routerWiring.ts`, `platforms/factories.ts`, `jobs/registry.ts`,
+  `commands.ts`).
+- **`src/index.ts`** — the composition root: the only file that may import
+  both, and where the community side-effect imports live.
+
+**Base may never import module — not even a type — and module may never import
+the composition root.** Gated by `npm run imports:check` (below) and eslint.
+When a base file needs something a module owns, do NOT weaken the rule:
+invert it. Declare a registry slot in base, register into it from the module
+at its own import time, and add the side-effect import to `index.ts`
+(`registerToolTiers`, `registerToolServerParts`, `registerNoticePack`,
+`registerPolicyKeys`, `registerCommands` are the worked examples). For a
+`typeof <community export>` in a base deps interface, write the type
+structurally in base instead. Keep every slot **fail-closed**: content slots
+throw when read before registration, additive slots reject a duplicate or
+unknown name. A slot that degrades to an empty list is a silent downgrade
+nobody sees.
+
 ## Build / test / verify
 
 - `npm run typecheck` — must be clean. This now also runs

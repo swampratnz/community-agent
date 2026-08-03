@@ -14,6 +14,94 @@ a living document — review it whenever you add a tool or a platform.
 5. **Moderation authority** — the ability to timeout/kick/ban/announce, and
    (when auto-moderation is enabled) to mute/block members via a Discord role.
 
+## Where the controls live: base, module, and what a module cannot do
+
+`src/` has two halves and a composition root (docs/ARCHITECTURE.md → "Two
+halves and a composition root"): `src/base/` is the community-agnostic
+framework, `src/module/` is this deployment's NZ-community content and wiring,
+and `src/index.ts` is the only file allowed to import both. **Every control in
+this document is implemented in `src/base/`.** The tool-gating derivation, the
+CONFIRM flow, outbound filtering, the prompt's security clauses, the router's
+pre-turn spine, SQL conversation scoping, the purge path, provenance→trust and
+the secret-redaction list are all base files; `src/module/` supplies content
+for base-declared slots and can never take a control's place.
+
+That is a security statement, not just an architectural one, because it
+bounds what a change on the module side can do. A module registers content —
+tool definitions, prompt sections, notice text, policy keys, personas, a
+skills manifest, a command list — and base decides where each lands and in
+what order. Concretely, module content **cannot**:
+
+- **Reorder or bypass the router's pre-turn spine.** `PRE_TURN_SPINE`
+  (`src/base/routerIntercepts.ts`) is a frozen array the Router builds itself;
+  `registerPreTurnIntercept` appends to a region that starts *after* the last
+  spine step and rejects any name that collides with one. See §1.
+- **Insert, rename or precede a prompt security clause.**
+  `registerPromptSections` (`src/base/agent/promptSpine.ts`) accepts exactly
+  the closed, base-declared slot set and throws on an unknown key — the
+  unknown-key check runs *before* the already-registered check, so a hostile
+  attempt to name a new slot is rejected as such rather than masked as a
+  duplicate. See §1.
+- **Widen skill activation.** `registerSkillsManifest`
+  (`src/base/agent/skillsManifest.ts`) rejects a non-array or any entry equal
+  to `'all'`, then copies and freezes the list, and a second registration
+  throws. A module can only ever narrow what its own bundled directory
+  offers. See §19.
+- **Reach the wire without outbound filtering.** Filtering and chunking live
+  at the adapters' send paths in `src/base/platforms/`, downstream of anything
+  a module produces — including every notice-catalogue string, which is a
+  fixed human-authored literal that still leaves through `filtered()`.
+- **Grant itself a tier.** Tier resolution is `src/base/auth/` over env plus
+  `community_users`; a `ToolDef` declares the tier it *requires*, never who
+  holds one.
+
+**The security-relevant registration points**, all called from
+`src/module/agent/tools/index.ts` at module scope and all fail-closed:
+
+- **`registerToolTiers`** (`src/base/auth/rbac.ts`) — the four tier lists
+  (member/admin/superAdmin/discordOnly), derived from each `ToolDef.minTier`
+  and `ToolDef.platforms` rather than hand-maintained beside them. `minTier`
+  is therefore the single source of truth, and the old failure mode where a
+  tool was hosted on the server but missing from (or wrongly present in) a
+  tier array is structurally gone. `toolsForRole` **throws** if the registry
+  was never imported: an empty list would look like a working deployment with
+  no tools, and a wrong-but-plausible list is exactly what this replaced.
+  Registration happens once — a second call throws rather than swapping the
+  lists after boot — and each list is frozen on the way in.
+- **`registerToolServerParts`** (`src/base/agent/toolServer.ts`) — the MCP
+  server name, the tool inventory attached to a turn, and the per-turn context
+  factory (the kernel that owns `audited`/`requireConfirm`). `buildToolServer`
+  throws before registration, so there is no path that yields a tool server
+  with an empty or partial inventory. Same once-only, no-swap-after-boot rule.
+- **`registerFlaggedToolPredicates`** (`src/base/agent/featureFlags.ts`) — the
+  subtractive per-turn feature-flag filter's input, derived from each
+  `ToolDef.featureFlag`. Predicates are evaluated against the *current* config
+  at call time, never frozen as a boolean at import (the trap the old
+  hand-maintained flag groups had), and the read fails closed.
+
+The same fail-closed discipline covers the non-tool slots:
+`registerNoticePack`, `registerPolicyKeys`, `registerCommands` and
+`registerDefaultBadWords` all throw on an unregistered read rather than
+degrading — a bad-word list that silently returned `[]` is a moderation
+downgrade nobody would see, and a policy key that silently defaulted is a
+phantom policy that always reads null.
+
+The rule that keeps this true is mechanical: `src/base/` may never import
+`src/module/` (not even a type), enforced by an eslint
+`no-restricted-imports` block on `src/base/**` and, authoritatively, by
+`scripts/check-import-direction.mjs` (`npm run imports:check`, CI's lint job),
+which resolves every specifier against the file system and has no config of
+its own to weaken. `src/module/` may not import the composition root either.
+Pinned by `tests/importDirection.test.ts`.
+
+**What this split does not claim.** It is a structural boundary inside one
+process, not a sandbox: module code runs with the same privileges as base
+code, and a hostile *commit* to `src/module/` is a supply-chain problem that
+CODEOWNERS review and branch protection address, not this rule. What the rule
+buys is that the spine cannot be displaced by *registration* — the ordinary
+way community behaviour is added — and that a reviewer can tell the two apart
+by path.
+
 ## Threat model & controls
 
 ### 1. Privilege escalation via chat ("prompt injection")
@@ -36,6 +124,15 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   *sender's* resolved tier (super_admin > admin > member > guest), not from
   anything in the message. A lower tier's turn never has higher-tier tools
   attached, so the model cannot call them even if convinced to.
+- **The tier lists are derived and fail closed**: `toolsForRole`
+  (`src/base/auth/rbac.ts`) reads lists the tool registry REGISTERS at import
+  time (`registerToolTiers`), each derived from a `ToolDef`'s own `minTier`
+  and `platforms`. There is no second, hand-kept copy that can drift out of
+  step with the tool it gates, registration is once-only and frozen, and a
+  read before registration throws rather than returning an empty (or stale)
+  list. Same for the tool inventory itself (`registerToolServerParts`) and the
+  feature-flag filter (`registerFlaggedToolPredicates`). See "Where the
+  controls live" above.
 - **Admin scoping is data-layer**: admins' cross-conversation tools filter in
   SQL against the admin's *platform-verified* conversation membership
   (Discord channel visibility / WhatsApp group participation, cached ~60s).

@@ -37,7 +37,115 @@ Claude-powered agent, with a Postgres-backed memory for learning.
                      └──────────────────────────────┘
 ```
 
+## Two halves and a composition root
+
+`src/` is not flat. It is split along the line the extraction plan
+(docs/AGENT-BASE-PLAN.md) draws, so the framework can eventually be lifted into
+its own package with this deployment's behaviour left behind as a module:
+
+| Path | What lives there |
+|---|---|
+| `src/base/` (121 files) | The community-agnostic framework: the agent turn engine and prompt spine, the platform abstraction and the three adapters, Postgres/pgvector storage and the repositories, the router's pre-turn security spine, the job-runner mechanism, RBAC, config, the notice-catalogue mechanism, health/notification/alert infrastructure, and the leaf utilities. |
+| `src/module/` (64 files) | This deployment's NZ Claude Community module: the tool registry and its per-domain `ToolDef` files, the community prose (charter, behaviour guidelines, the Dave persona, the bundled skills), the notice pack with its te reo Māori and plain-language variants, the community jobs and digests, the optional integrations (Grok image gen, dev-team dispatch, GitHub issues, Anthropic status), and the composition wiring that names all of it. |
+| `src/index.ts` | The composition root — the only file allowed to import both halves. |
+
+**The line is drawn by dependency, not by feel.** A file is base if it is
+mechanism with no community content and no community imports; it is module if
+it names Claude, Anthropic, this community, te reo Māori, or one of this
+deployment's product decisions. Two classifications look wrong at a glance and
+are not: `base/media/voiceTranscribe.ts` is base (on-host Whisper decoding, no
+community content, used by three base adapters) and `base/context/docTitles.ts`
+is base for the same reason, even though the docs ingest that consumes it is
+module. Everything else follows the reverse-transitive closure of the community
+seeds.
+
+The composition root does three things and no more: it loads config and wires
+adapters, the router and the job registry (see "Concurrency model" and the
+shutdown sweep below); it owns the ordering of startup and shutdown; and it
+carries the **side-effect imports** that make the community registrations
+below actually run. It contains no behaviour of its own.
+
+### Registration at import time
+
+Because base never imports module, anything base needs FROM the community
+arrives by registration instead. Each slot is declared in base and filled by
+the owning community file at that file's own module scope — importing the file
+*is* the registration, and `src/index.ts` is what imports it:
+
+| Slot (declared in `src/base/`) | Registered by |
+|---|---|
+| `auth/rbac.ts` — `registerToolTiers` | `module/agent/tools/index.ts`, derived from each `ToolDef.minTier`/`platforms` |
+| `agent/toolServer.ts` — `registerToolServerParts` | the same file: the MCP server name, the tool inventory, and the per-turn context factory |
+| `agent/featureFlags.ts` — `registerFlaggedToolPredicates` | the same file, derived from each `ToolDef.featureFlag` |
+| `agent/promptSpine.ts` — `registerPromptSections` | `module/agent/communityPromptSections.ts` |
+| `agent/personaRegistry.ts` — `registerPersona` | `module/agent/personas.ts` |
+| `agent/skillsManifest.ts` — `registerSkillsManifest` | `module/agent/enabledSkills.ts` |
+| `agent/turnState.ts` — `registerTurnStateFinalizer` | `module/agent/communityTurnState.ts` |
+| `strings/catalogue.ts` — `registerNoticePack` | `module/strings/notices.ts` |
+| `storage/policyStore.ts` — `registerPolicyKeys` | `module/storage/policies.ts` |
+| `moderation/wordlist.ts` — `registerDefaultBadWords` | `module/moderation/badWords.ts` |
+| `commands/registry.ts` — `registerCommands` | `module/commands.ts` |
+
+Alongside those, base owns additive extension registries for its own
+sequences: `routerIntercepts.ts`'s post-spine intercepts and post-turn
+handlers, `storage/lifecycle.ts`'s purge contributors and
+interaction/member/roster hooks, and `storage/provenance.ts`'s trust
+registrations.
+
+**Every registry fails closed**, in one of two shapes depending on what it
+holds:
+
+- **Content slots throw when read before registration.** Tool tiers,
+  tool-server parts, flagged predicates, prompt sections, the skills manifest,
+  the notice pack, the command list and the bad-word defaults all raise rather
+  than returning an empty value. That is a correctness property, not tidiness:
+  an unregistered tier read returning `[]` would look like a healthy
+  deployment with no tools; an unregistered bad-word list returning `[]` is a
+  silent moderation downgrade; an unregistered notice pack returning `''`
+  sends members blank text. Several notice consumers derive exported consts
+  from `notice()` at their own module scope, so a missing registration import
+  surfaces as a throw at load time rather than as blank text hours later.
+- **Additive slots start empty legitimately and fail closed on collision.**
+  Intercepts, lifecycle hooks, personas and provenance ids reject a duplicate
+  name, a second registration, or an unknown slot key rather than shadowing or
+  swapping what is already there — and the security-relevant ones refuse
+  outright to name a spine step: `registerPreTurnIntercept` appends to a
+  region that starts *after* the frozen `PRE_TURN_SPINE`, and rejects any name
+  that collides with one of its steps (docs/SECURITY.md §1).
+
+### The one-way import rule
+
+`src/base/` may never import `src/module/`, and `src/module/` may never import
+the composition root. The first is the property the extraction depends on:
+base has to be liftable into the agent-base package on its own, and a single
+edge the wrong way makes it un-liftable. The second keeps the graph acyclic —
+`index.ts` sits above both halves and nothing it wires may reach back up to
+it.
+
+A **type-only** import counts. A `typeof <community export>` in a base deps
+interface is a design dependency even though it emits no runtime edge, and it
+is the edge this repo kept re-growing. The fix is to state the type
+structurally in base: `agent/toolServer.ts`'s `ToolServerToolDef` declares
+only the slice of a tool definition the kernel actually touches
+(name/description/schema/handler/`readOnlyHint`), and the module's much richer
+`ToolDef` satisfies it without base ever naming it.
+
+Enforced twice, on purpose:
+
+- **eslint** — a `no-restricted-imports` block scoped to `src/base/**`. Fast,
+  in-editor, matched against the specifier text; `allowTypeImports` is
+  deliberately not set.
+- **`scripts/check-import-direction.mjs`** (`npm run imports:check`, CI's lint
+  job) — the authoritative layer. It resolves every relative specifier against
+  the file system, so it sees through any depth of `../`, and it is a plain
+  node script with no config of its own to weaken. Pinned by
+  `tests/importDirection.test.ts`, which drives it against fixture trees in
+  both directions rather than only against this repo's passing state.
+
 ## Components
+
+Paths below say which half each component is on; `docs/agents/module-map.md`
+has the per-module one-liners.
 
 | Module | Responsibility |
 |---|---|
@@ -54,6 +162,8 @@ Claude-powered agent, with a Postgres-backed memory for learning.
 | `src/base/storage/*` | Postgres pool, schema, migrations, embeddings, repository. |
 | `src/base/router.ts` | Orchestrates inbound → agent → outbound and persistence. |
 | `src/base/health.ts` / `src/base/healthState.ts` | `/healthz` endpoint + sustained-disconnect super-admin alerting; `healthState.ts` holds the pure, tested debounce/payload logic. |
+| `src/module/routerWiring.ts` | `makeRouterDeps()` — the one place the real implementation behind every `RouterDeps` field is named, so the router mechanism itself never imports the community content its wiring points at. |
+| `src/index.ts` | The composition root (above): config, adapters, router, job registry, shutdown ordering, and the community side-effect imports. |
 
 ## Ambient archiving
 
@@ -677,11 +787,18 @@ default):
   — the skill replaces the bullet, never duplicates it. `buildQueryOptions`
   (`src/base/agent/core.ts`) adds `'Skill'` to the base `tools` array (uniformly
   for every role, matching the checklist's pre-#741 ungated behaviour) and
-  loads `plugins: [{ type: 'local', path: <bundled skills dir> }]` with
-  `skills: ['prompt-review', 'agent-architecture-review', 'project-showcase',
-  'claude-code-setup']` — an explicit, hand-written literal array, never
-  `'all'`, so a future skill added to the directory needs a deliberate second
-  edit to activate. The bundled plugin directory (`src/module/agent/skills/`)
+  loads `plugins: [{ type: 'local', path: skillsManifest().skillsDir }]` with
+  `skills: [...skillsManifest().enabledSkills]`. Both come from the manifest
+  the module registers at import time (`ENABLED_SKILLS` in
+  `src/module/agent/enabledSkills.ts` → `registerSkillsManifest` in
+  `src/base/agent/skillsManifest.ts`): an explicit, hand-written literal
+  array, never `'all'`, so a future skill added to the directory needs a
+  deliberate second edit to activate. Registration enforces that — a
+  non-array, an empty name, or the literal `'all'` is rejected, the list is
+  copied and frozen, and a second registration throws — and `feature_flags`
+  reports the same array rather than a hand-written sentence about it, which
+  is how the label used to fall behind the real set.
+  The bundled plugin directory (`src/module/agent/skills/`)
   contains only a `.claude-plugin/plugin.json` manifest and one `SKILL.md`
   per bundled skill — no `hooks/`, `agents/`, `commands/`, or `.mcp.json` —
   so nothing beyond those static, code-reviewed markdown bodies is ever
