@@ -11,6 +11,15 @@ authenticated with a **Claude subscription** (no per-token API billing). The rep
 also runs a **self-improving development pipeline** (see below) that proposes,
 reviews, and builds its own features.
 
+> **The framework is a package.** The turn engine, router spine, platform
+> adapters, storage, RBAC and config live in
+> [`@swampratnz/agent-base`](https://github.com/swampratnz/agent-base) and are
+> consumed as a dependency. What is in this repo is `src/module/` — this
+> community's tools, prose, personas, skills, jobs and integrations — plus
+> `src/index.ts`, which hands `src/module/agentModule.ts`'s manifest to the
+> package's `createAgent`. Paths spelled `@swampratnz/agent-base/…` below name
+> a module inside that package, not a file here.
+
 ## What it does
 
 **Answers & knowledge**
@@ -93,7 +102,7 @@ src/
     storage/              Postgres pool, schema, migrations, embeddings, repo
     media/                on-host voice-note transcription
     jobs/                 background-job registry mechanism
-  module/                 the NZ Claude Community module (free to import src/base/)
+  module/                 the NZ Claude Community module (free to import @swampratnz/agent-base/)
     agent/                MCP tool registry, prompt sections, personas, skills bundle
     context/              offline context builder, docs ingest, export, knowledge refresh
     platforms/            adapter text packs, slash commands, adapter factories
@@ -108,7 +117,7 @@ docs/                     ARCHITECTURE, SECURITY, DEPLOYMENT, VISION, PIPELINE, 
 ```
 
 The split is one-way and enforced (`npm run imports:check` plus an eslint
-rule): `src/base/` may never import `src/module/`, not even a type, so the
+rule): `@swampratnz/agent-base/` may never import `src/module/`, not even a type, so the
 framework half stays liftable on its own. Anything base needs from the
 community side arrives through a registry slot the module fills at import
 time, and `src/index.ts` carries those side-effect imports. See

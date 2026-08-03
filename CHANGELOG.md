@@ -27,6 +27,20 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-08-03
 
 ### Changed
+- **Under the hood: the framework half is now a separate, reusable package**
+  and this repo installs it like any other dependency. Nothing you can see has
+  changed — same tools, same replies, same wording, same permissions. The
+  agent turn engine, the Discord and WhatsApp adapters, memory and storage,
+  the router's security checks and the roles system all moved out to
+  `@swampratnz/agent-base`, and what stays here is the NZ Claude Community
+  itself: the tools, the charter and guidelines, Dave's persona, the te reo
+  Māori and plain-language wording, our digests and integrations. The bot is
+  assembled at startup from a single manifest of "what this community
+  contributes", which is checked for completeness before it will serve a
+  message at all — so a missing piece is a refused startup rather than a blank
+  reply to somebody. Two settings become explicit rather than assumed: the
+  timezone and locale used to render event times (still New Zealand's), which
+  the bot now refuses to start without.
 - **Under the hood: the code is now split into a reusable agent framework and
   this community's own content** (#959). Nothing you can see has changed —
   same tools, same replies, same wording, same permissions. What moved is

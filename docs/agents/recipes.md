@@ -22,16 +22,24 @@ npm run typecheck && npm run lint && npm run format:check \
   && npm run test:security && npm run context:check && npm run imports:check
 ```
 
-**Which half of `src/` does your change belong in?** `src/base/` is the
-community-agnostic framework, `src/module/` is this deployment's NZ-community
-content and wiring, and `src/index.ts` is the composition root that imports
-both. Base may **never** import module (`npm run imports:check` and eslint both
-fail on it, including on a type-only import), and module may never import
-`src/index.ts`. A new **base** file must also carry no community content — no
-Claude/Anthropic/NZ prose, no te reo or plain-language strings, no product
-decision — even if nothing imports it back; that content belongs in
-`src/module/`. See "I got an `imports:check` failure" below for the inversion
-pattern.
+**Does your change belong here at all?** The framework is
+**`@swampratnz/agent-base`**, a package: the turn engine, the router spine, the
+platform adapters, storage, RBAC, config, the notice mechanism. This repo is
+`src/module/` (this deployment's NZ-community content and wiring),
+`src/index.ts` (the composition root, which hands
+`src/module/agentModule.ts`'s manifest to the package's `createAgent`) and
+`src/migrate.ts`. A framework-level fix belongs upstream in agent-base and
+reaches this repo through a version bump — **do not** re-create `src/base/`,
+`npm run imports:check` fails outright if it reappears. Module code may never
+import `src/index.ts`, and may never import `createAgent` (only the composition
+root composes); both are gated by that script and by eslint.
+
+**Adding an extension point?** Export the value from the file that owns the
+content and name it in `src/module/agentModule.ts` — do not add a module-scope
+`register*()` call, and never render a `notice()` at module scope: the pack is
+registered by `createAgent`, after every module has been imported, so an
+import-time render throws. Tests opt into the same registrations one at a time
+through `tests/support/register*.ts`.
 
 `npm run typecheck` also typechecks the **allowlisted** test files
 (`tsconfig.tests.json`, an incremental ratchet — `tests/` has a backlog of
@@ -68,8 +76,8 @@ The single most common change, and the one with the most gates.
 |---|---|
 | `src/module/agent/tools/<domain>.ts` | The `defineTool` entry: description, input schema, **`minTier`**, optional `platforms`/`featureFlag`/`confirm`/`audit`, and the handler. Find the right domain file by tool name first (`moderation.ts`, `knowledgeAdmin.ts`, `social.ts`, …); a brand-new domain file also needs a `docs/agents/module-map.md` entry. |
 | `src/module/agent/tools/index.ts` | Spread the domain array into `TOOL_REGISTRY`. Nothing else: the tier lists (`registerToolTiers`), the tool server's inventory (`registerToolServerParts`) and the feature-flag filter (`registerFlaggedToolPredicates`) are all **derived** from the registry at this file's module scope. Do not hand-add the name to a tier array — there isn't one to add it to any more. |
-| `src/base/agent/core.ts` | Only if the tool needs a genuinely new *kind* of gating rule. Tier and flag filtering already flow from the registry. |
-| `src/base/agent/pendingActions.ts` | **If the tool is destructive.** It must register a pending action for the router to execute after an explicit confirmation, never act directly. |
+| `@swampratnz/agent-base/agent/core.ts` | Only if the tool needs a genuinely new *kind* of gating rule. Tier and flag filtering already flow from the registry. |
+| `@swampratnz/agent-base/agent/pendingActions.ts` | **If the tool is destructive.** It must register a pending action for the router to execute after an explicit confirmation, never act directly. |
 | `src/module/agent/communityPromptSections.ts` | Only if members need to be told the capability exists (the community prose sections; `systemPrompt.ts`/`promptSpine.ts` own assembly and the security spine). Any prompt-text change must regenerate `tests/fixtures/systemPromptByteStability.json` in the same diff. |
 | `tests/` + `tests/security-floor.json` | A `SECURITY:` test for the tier gate, plus the manifest bump in the **same diff**. |
 
@@ -94,8 +102,8 @@ lowers the floor versus its base.
 
 | File | Why |
 |---|---|
-| `src/base/config/<slice>.ts` | The var's zod chain + doc comment, in its domain slice (llm, discord, whatsapp, alerts, behaviour, …). Slice-local floors/refinements live here too. |
-| `src/base/config.ts` | The composition barrel — surface the parsed var in the `config` object literal, or nothing reads it. Still what fails loudly on a bad deploy. |
+| `@swampratnz/agent-base/config/<slice>.ts` | ⚠️ **UPSTREAM.** The var's zod chain + doc comment live in the package's domain slice (llm, discord, whatsapp, alerts, behaviour, …), so a new setting is an agent-base change plus a version bump here. There is no per-module config slice yet — `AgentModule` has no `configSchema` field (plan §3 has one; `createAgent` does not implement it). |
+| `@swampratnz/agent-base/config.ts` | ⚠️ **UPSTREAM**, same story: the composition barrel is where the parsed var reaches the `config` object literal. |
 | `.env.example` | So an operator can discover the setting. Never a real value. |
 | `docs/DEPLOYMENT.md` | If an operator has to do something about it. |
 
@@ -108,9 +116,8 @@ unset is a silent breaking change for the running deployment.
 
 | File | Why |
 |---|---|
-| `src/base/storage/schema/<NN-domain>.sql` | Schema changes go in the owning fragment (`migrate` concatenates them in `manifest.ts` order and replays the result as ONE query). **Every statement must be `IF NOT EXISTS`** — the replay is idempotent and re-runs on every deploy. A brand-new fragment must also be listed in `src/base/storage/schema/manifest.ts` (explicit array, never a glob — the sync test in `tests/schemaConstraintIdempotency.test.ts` fails otherwise). |
-| `src/base/storage/repository/<domain>.ts` | Put a new query in its **domain module** (`preferences`, `memberNotes`, …). `repository.ts` re-exports them, so callers still import from `repository.js`. Admin-facing reads are **conversation-scoped in SQL**, not by the caller. |
-| `src/base/storage/repository.ts` | Pure `export *` barrel (the audit-L14 split is complete) — the only edit it ever takes is one new `export *` line for a brand-new domain module, which also needs its `docs/agents/module-map.md` entry in the same diff. |
+| `src/module/storage/schema/<NN>-<domain>.sql` | This deployment's schema changes go in a MODULE fragment (the 80+ band), listed in `src/module/storage/schema/manifest.ts` and contributed through `AgentModule.migrations` — `migrate` concatenates base's fragments first, then these, and replays the result as ONE query. **Every statement must be `IF NOT EXISTS`**, and a CHECK needs its own DROP/ADD pair. Never re-declare a fragment the package ships, and never DROP or reshape a constraint it owns — `tests/schemaConstraintIdempotency.test.ts` fails on both. Changing a BASE table's shape is ⚠️ **upstream**. |
+| `@swampratnz/agent-base/storage/repository/<domain>.ts` | ⚠️ **UPSTREAM.** Queries over the BASE tables live in the package's domain modules (`preferences`, `memberNotes`, …), re-exported from `repository.js`. Admin-facing reads are **conversation-scoped in SQL**, not by the caller — keep it that way upstream too. |
 | `tests/repository.test.ts` | DB tests skip cleanly without `DATABASE_URL` and run in CI against a real `pgvector/pgvector:pg16` service. |
 
 Run `npm run migrate` before `npm test` locally, or the DB tests fail with
@@ -121,7 +128,7 @@ carries the distinction instead: `00`–`27` base, `50`–`54` community, `70`
 adapter, with deliberate gaps for insertion. Per-module migration contribution
 is Phase 3 work (`docs/AGENT-BASE-PLAN.md`) — until then, add a community table
 to a `5x` fragment and list it in `manifest.ts`. If the erasure promise has to
-reach it, call `registerPurgeContributor` (`src/base/storage/lifecycle.ts`) from
+reach it, call `registerPurgeContributor` (`@swampratnz/agent-base/storage/lifecycle.ts`) from
 the repository domain module that owns the table, the way every existing
 domain does, rather than adding another delete to a central purge query.
 
@@ -146,9 +153,9 @@ one has it.
 
 | File | Why |
 |---|---|
-| `src/module/<job>.ts` (or `src/module/backgroundJobs.ts`) | The run function + `startX` starter via `startTrackedJob` (tracked, cost-accounted, health-monitored), and the module's exported `JobSpec`. A community job is module code — the base half is only the mechanism (`src/base/jobs/`: `types.ts`, `runner.ts`, `trackedJob.ts`), and it must not learn this job's name. |
+| `src/module/<job>.ts` (or `src/module/backgroundJobs.ts`) | The run function + `startX` starter via `startTrackedJob` (tracked, cost-accounted, health-monitored), and the module's exported `JobSpec`. A community job is module code — the base half is only the mechanism (`@swampratnz/agent-base/jobs/`: `types.ts`, `runner.ts`, `trackedJob.ts`), and it must not learn this job's name. |
 | `src/module/jobs/registry.ts` | Add the spec to `JOB_REGISTRY` (at the END — start order is pinned). `index.ts` needs no edit: `startRegisteredJobs`/`stopRegisteredJobs` sweep whatever list the composition root hands them. |
-| `src/base/config/<slice>.ts` + `src/base/config.ts` | Its enable flag and schedule (slice fragment + barrel surface). Background jobs are **opt-in**. |
+| `@swampratnz/agent-base/config/<slice>.ts` + `@swampratnz/agent-base/config.ts` | Its enable flag and schedule (slice fragment + barrel surface). Background jobs are **opt-in**. |
 | `tests/jobsRegistry.test.ts` | Add the job's row (name, enabling env) to the table the registry-completeness test pins. |
 
 Cost and consecutive-failure alerting come free from registration — do not
@@ -169,34 +176,39 @@ notice is *sent* from: add one entry with the English base plus any `mi`/`plain`
 variants (and its `NoticeIdMap` augmentation, which keeps the per-id return
 type), and select it at the call site with `notice(id, { language, style })`.
 Never re-encode the "'mi' beats 'plain'" precedence per site; the catalogue
-mechanism owns it (`src/base/strings/catalogue.ts`), and
+mechanism owns it (`@swampratnz/agent-base/strings/catalogue.ts`), and
 `tests/stringsCatalogue.test.ts` pins the semantics for every entry
-automatically. If other files need the value as a constant, export a derived
-const (`export const X = notice('id')`) the way `rateLimitNotice.ts` does —
-several base leaf modules do exactly this at their own module scope, which is
-why `notice()` **throws** when the pack was never registered rather than
-returning an empty string: a forgotten side-effect import in `src/index.ts`
-fails at load, not as blank text in someone's DM.
+automatically.
 
-Copy the shape of `rateLimitNotice.ts` — `pauseNotice.ts`,
-`budgetCheckFailureNotice.ts` and `mutedRoleAlertNotice.ts` are all deliberate
-mirrors of it. Pick the right window: per-user for a per-user event, once
-process-wide for a systemic one.
+**Never render a notice at module scope** — no `export const X = notice('id')`.
+The pack is registered by `createAgent`, after every module in the composition
+has been imported, so an import-time render throws before the process can even
+report why. (agent-base deleted its own `X`/`X_MI`/`X_PLAIN` families for
+exactly this reason; the tests that pinned their values now derive them in
+`tests/support/legacyNotices.ts`.) `notice()` throws rather than returning an
+empty string, so a missing registration fails loudly instead of as blank text
+in someone's DM.
+
+If the notice repeats, copy the debounce shape of the package's
+`rateLimitNotice.ts`/`pauseNotice.ts` leaf modules. Pick the right window:
+per-user for a per-user event, once process-wide for a systemic one.
 
 ---
 
 ## Change a platform adapter
 
 Adapters normalise native events into `IncomingMessage` and own the **send
-path**, which is where outbound filtering (`src/base/agent/outbound.ts`) and
-chunking (`src/base/platforms/textChunk.ts`) apply. A new send path that bypasses
+path**, which is where outbound filtering (`@swampratnz/agent-base/agent/outbound.ts`) and
+chunking (`@swampratnz/agent-base/platforms/textChunk.ts`) apply. A new send path that bypasses
 the filter is a security bug, not a style issue.
 
 Keep pure wire helpers in their own files (`whatsapp/wire.ts`,
 `whatsapp/cloudWire.ts`) so they stay testable without a socket.
 
-Platforms are registered, not typed: adding one means a descriptor in
-`src/base/platforms/registry.ts` (id + `memberIdRules.ts`), a factory in
+Adapters themselves are the package's (⚠️ a change to one is upstream); what
+lives here is the wiring. Platforms are registered, not typed: adding one means
+a descriptor in `@swampratnz/agent-base/platforms/registry.ts` (⚠️ upstream:
+id + `memberIdRules.ts`), a factory in
 `src/module/platforms/factories.ts` (constructor + declared tool-capability set),
 and — if any tool should be restricted to it — a `requiresCapability` on the
 ToolDef, which `assertToolAvailabilityConsistent` and
@@ -206,57 +218,50 @@ security decision.
 
 ---
 
-## I got an `imports:check` failure — the inversion pattern
+## I got an `imports:check` failure
 
-The failure looks like this, and names the file, line, specifier and resolved
-target:
+Three rules, each with its own message:
 
 ```
-check-import-direction: the one-way rule between src/base/ and src/module/ is broken.
-  src/base/agent/core.ts:42  ../../module/agent/foo.js  ->  src/module/agent/foo.ts
-    src/base/ must not import src/module/
+check-import-direction: src/base/ exists again.
 ```
 
-There are exactly four legitimate fixes, in the order to consider them:
+The framework is `@swampratnz/agent-base`, a package. A local `src/base/` forks
+it silently — the same file compiling in two places, with only one of them
+getting upstream fixes. Put framework-level work upstream and take it here as a
+version bump; put this deployment's content in `src/module/`.
 
-1. **The base file is in the wrong half.** If it carries community content
-   (Claude/Anthropic/NZ prose, te reo strings, a product decision) it was
-   always module code. `git mv` it to `src/module/` and update the module map.
-2. **The type is the only thing you needed.** Write it **structurally** in
-   base instead of importing it. `src/base/agent/toolServer.ts`'s
-   `ToolServerToolDef` declares only the slice of a tool definition the kernel
-   touches; the module's much richer `ToolDef` satisfies it and base never
-   names it. A `typeof <community export>` in a deps interface is the specific
-   edge this repo kept re-growing, and eslint deliberately does not set
-   `allowTypeImports`.
-3. **Invert it with a registry.** Base declares the slot; the module fills it
-   at its own module scope; `src/index.ts` carries the side-effect import.
-   Worked examples, smallest first: `src/base/strings/catalogue.ts`
-   (`registerNoticePack`), `src/base/commands/registry.ts` (`registerCommands`),
-   `src/base/storage/policyStore.ts` (`registerPolicyKeys`),
-   `src/base/auth/rbac.ts` (`registerToolTiers`) and
-   `src/base/agent/toolServer.ts` (`registerToolServerParts`).
-4. **Inject it instead.** For a value the caller already has, add it to the
-   deps object rather than importing a default — `src/module/routerWiring.ts`
-   is the one place production names the real implementation behind every
-   `RouterDeps` field, and it is module code precisely so the router mechanism
-   need not be.
+```
+check-import-direction: the composition-direction rules are broken.
+  src/module/foo.ts:12  ../index.js  ->  src/index.ts
+    src/module/ must not import the composition root
+```
 
-A new slot must **fail closed**: throw on a read before registration if it
-holds required content, or reject a duplicate/unknown name if it is additive.
-Never silently return `[]`.
+`src/index.ts` sits at the top of the graph. If a module file needs something
+the composition root has, inject it (`src/module/routerWiring.ts` is the one
+place production names the real implementation behind every `RouterDeps`
+field) or export it from the module and let the root wire it.
 
-**Never** the fifth option: relaxing the eslint block, adding an
-`eslint-disable`, or editing `scripts/check-import-direction.mjs`. The script
-has no config surface on purpose. Both layers are pinned by
-`tests/importDirection.test.ts`, and the whole point of the rule is that
-`src/base/` stays liftable on its own.
+```
+  src/module/foo.ts:3  @swampratnz/agent-base (createAgent)
+    only the composition root may compose the agent
+```
 
-**Also flagged:** `src/module/ must not import the composition root`. Nothing
-`index.ts` wires may reach back up to it — take the value as a parameter or a
-deps field instead.
+A module CONTRIBUTES a manifest; it never composes one. Add your extension
+point to `src/module/agentModule.ts` and let `src/index.ts` hand the manifest
+to `createAgent`, which owns the ordering (plan → init → singleton
+registrations → additive registrations → readiness probe → migrate → start).
+Importing the manifest TYPE (`AgentModuleManifest`) is fine.
 
----
+## The framework needs something it doesn't have
+
+When a change genuinely belongs upstream — a new base config var, a new slot,
+a wrong signature — the honest sequence is: fix it in `swampratnz/agent-base`,
+publish, bump the dependency here. Do NOT re-create the file locally to work
+around it. Two known gaps to expect, both real today: `AgentModule` has no
+`configSchema` field (so a new env var is an upstream change), and the package
+publishes no subpath exports of its own (`scripts/patch-agent-base-exports.mjs`
+is the temporary shim that makes `@swampratnz/agent-base/<module>.js` resolve).
 
 ## Change the pipeline itself
 

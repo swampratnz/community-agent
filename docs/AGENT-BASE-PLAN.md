@@ -8,8 +8,9 @@ further agents (e.g. a personal finance agent) can be built on the same base.
 Produced from a full classification sweep of `src/`, `tests/`, `scripts/`,
 `.github/workflows/` and `docs/` (2026-08).
 
-**Status (2026-08-03): Phase 0 done, Phase 1 DONE, Phase 2 DONE. Phase 3 is
-next and has not started.** The plan text below is left as written — it is the
+**Status (2026-08-03): Phase 0 done, Phase 1 DONE, Phase 2 DONE, Phase 3 IN
+PROGRESS — the framework is extracted to `swampratnz/agent-base` and this repo
+now consumes it as a package (see §Phase 3 for what that left).** The plan text below is left as written — it is the
 record of what was decided, not a status board. Per-phase status notes are
 inserted at each heading, and the residue Phase 3 inherits is listed in §6.
 
@@ -266,6 +267,33 @@ single-`src/` assumption, `check-security-test-count.mjs` hardcoded
 `tests/`).
 
 ### Phase 3 — extract to agent-base
+
+> **The runtime half is DONE.** `src/base/` is gone; `@swampratnz/agent-base`
+> is a dependency; every `src/module/**` import points at it; `src/index.ts`
+> composes through `createAgent({ modules: [nzCommunityModule] })` over ONE
+> manifest (`src/module/agentModule.ts`); this deployment contributes its own
+> schema fragments through `AgentModule.migrations`; and the residue §6 listed
+> is resolved on the base side — `DISPLAY_TIMEZONE`/`DISPLAY_LOCALE`,
+> `DOCS_INGEST_INDEX_URL` and `STATUS_CHECK_API_URL` are env, the gated-notice
+> sentence and the `Community guidelines:` header are notice-pack entries
+> (`gatedNoticeWithAdmins`, `guidelinesHeading`), and base's locale literals
+> became `isRegisteredLanguage()`/`isRegisteredStyle()` probes over the
+> registered axes.
+>
+> What Phase 3 still owes, in rough order:
+>
+> - **Publish.** Until the package is on the registry this repo cannot install
+>   it from a lockfile; the flip was verified against a local `npm pack`
+>   tarball.
+> - **Subpath exports.** The package publishes only `.`; a consumer needs its
+>   ~50 modules. `scripts/patch-agent-base-exports.mjs` shims it locally.
+> - **The remaining §3 extension points.** `AgentModule` has no `configSchema`,
+>   `adapters`, `jobs`, `ingestSources`, `digestSignals` or `moderationPolicy`
+>   field, so those still bind through this repo's own wiring
+>   (`platforms/factories.ts`, `jobs/registry.ts`, `routerWiring.ts`) against
+>   base's fixed config schema.
+> - **The pipeline as reusable workflows**, and the repo template, both
+>   untouched.
 
 - Lift `src/base/` + base tests + the injection corpus + gate scripts into
   `swampratnz/agent-base`; publish; this repo consumes the package and keeps

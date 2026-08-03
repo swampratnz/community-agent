@@ -27,9 +27,9 @@ git rm --cached -r . && git reset --hard
 
 - `npm run typecheck`, `npm test`, and `npm run build` must all be green
   before a PR is opened or updated (see root `CLAUDE.md`).
-- If your change touches a gated area — tool gating (`src/base/auth/`), the
-  CONFIRM flow (`src/base/agent/pendingActions.ts`), outbound filtering
-  (`src/base/agent/outbound.ts`), or anything else on the security spine — extend
+- If your change touches a gated area — tool gating (`@swampratnz/agent-base/auth/`), the
+  CONFIRM flow (`@swampratnz/agent-base/agent/pendingActions.ts`), outbound filtering
+  (`@swampratnz/agent-base/agent/outbound.ts`), or anything else on the security spine — extend
   the matching test file under `tests/` (e.g. `rbac.test.ts`,
   `pendingActions.test.ts`, `outbound.test.ts`) rather than relying on
   incidental coverage. Don't weaken or delete an existing security assertion
@@ -88,7 +88,7 @@ wrong.
 
 `src/` has two halves and a composition root:
 
-- **`src/base/`** — the community-agnostic framework: agent kernel and prompt
+- **`@swampratnz/agent-base/`** — the community-agnostic framework: agent kernel and prompt
   spine, adapters, storage, router spine, jobs mechanism, RBAC, config, the
   notice-catalogue mechanism, alert/health infra, leaf utils. A new base file
   must carry **no community content** — no Claude/Anthropic/NZ prose, no te reo
@@ -104,10 +104,10 @@ wrong.
 the composition root**. When a base file needs something a module owns, don't
 weaken the rule — invert it: declare a registry slot in base, register into it
 from the module at its own import time, and add the side-effect import to
-`index.ts`. `src/base/agent/turnState.ts`, `src/base/strings/catalogue.ts` and
-`src/base/commands/registry.ts` are the worked examples. For a `typeof
+`index.ts`. `@swampratnz/agent-base/agent/turnState.ts`, `@swampratnz/agent-base/strings/catalogue.ts` and
+`@swampratnz/agent-base/commands/registry.ts` are the worked examples. For a `typeof
 <community export>` in a base deps interface, write the type structurally in
-base instead (`src/base/agent/toolServer.ts`'s `ToolServerToolDef` shows the
+base instead (`@swampratnz/agent-base/agent/toolServer.ts`'s `ToolServerToolDef` shows the
 shape).
 
 Keep new slots **fail-closed** like the existing ones: a slot holding required
@@ -125,7 +125,7 @@ boundary matters.
 
 - No model identifiers in commit messages, PR titles/bodies, or code.
 - Never commit secrets: `.env` is git-ignored; `whatsapp-auth/` and
-  `src/base/auth/` are distinct — the latter is source and stays tracked.
+  `@swampratnz/agent-base/auth/` are distinct — the latter is source and stays tracked.
 - Every PR uses the template (`.github/pull_request_template.md`): Summary,
   Security / privacy impact, How verified. Keep those sections scoped to the
   diff — no secrets, tokens, env values, or hostnames in a PR body.
