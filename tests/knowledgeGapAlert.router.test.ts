@@ -3,8 +3,12 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/module/strings/notices.js';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
+import './support/registerNotices.js';
+import type {
+  IncomingMessage,
+  OutgoingMessage,
+  PlatformAdapter,
+} from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment before
 // importing anything that (transitively) loads it, matching
@@ -23,8 +27,8 @@ process.env.KNOWLEDGE_GAP_ALERT_ENABLED = 'true';
 // Small cap so the rate-cap test below doesn't need to fire dozens of calls.
 process.env.KNOWLEDGE_GAP_ALERT_RATE_LIMIT_PER_HOUR = '3';
 
-const { config } = await import('../src/base/config.js');
-const { Router } = await import('../src/base/router.js');
+const { config } = await import('@swampratnz/agent-base/config.js');
+const { Router } = await import('@swampratnz/agent-base/router.js');
 const { makeRouterDeps } = await import('../src/module/routerWiring.js');
 
 function makeAdapter(): {

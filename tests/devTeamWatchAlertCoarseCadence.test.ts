@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
+import type { OutgoingMessage, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
 // Companion to tests/devTeamWatchAlert.test.ts, pinning the OTHER end of
 // statusCheckAlertThreshold's floor (issue #452 acceptance criterion #2):

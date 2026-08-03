@@ -3,9 +3,13 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/module/strings/notices.js';
-import type { AgentReply } from '../src/base/agent/core.js';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
+import './support/registerNotices.js';
+import type { AgentReply } from '@swampratnz/agent-base/agent/core.js';
+import type {
+  IncomingMessage,
+  OutgoingMessage,
+  PlatformAdapter,
+} from '@swampratnz/agent-base/platforms/types.js';
 
 // Ambient archiving OFF — the default (issue #48). This file pins the "flag
 // off means zero behaviour change" acceptance criterion: a gated guest's
@@ -25,9 +29,9 @@ const skip = hasDb
   ? false
   : 'DATABASE_URL not set — skipping DB-integration tests (CLAUDE.md: exercise against a local Postgres 16 + pgvector)';
 
-const { Router } = await import('../src/base/router.js');
+const { Router } = await import('@swampratnz/agent-base/router.js');
 const { makeRouterDeps } = await import('../src/module/routerWiring.js');
-const { pool, closeDb } = await import('../src/base/storage/db.js');
+const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
 
 const RUN = `amboff${Date.now()}${Math.floor(Math.random() * 1e6)}`;
 
@@ -94,7 +98,7 @@ test(
   'SECURITY: WhatsApp archiving off (default, WHATSAPP_ARCHIVE_GROUP_JIDS unset) — a gated guest group message stores nothing, identical to pre-#103 behaviour',
   { skip },
   async () => {
-    const { config } = await import('../src/base/config.js');
+    const { config } = await import('@swampratnz/agent-base/config.js');
     assert.deepEqual(
       config.whatsapp.archiveGroupJids,
       [],

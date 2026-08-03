@@ -1,19 +1,22 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { AgentReply } from '../src/base/agent/core.js';
+import type { AgentReply } from '@swampratnz/agent-base/agent/core.js';
 import type {
   IncomingMessage,
   OutgoingMessage,
   Platform,
   PlatformAdapter,
-} from '../src/base/platforms/types.js';
+} from '@swampratnz/agent-base/platforms/types.js';
 import type {
   MemberInterestRow,
   MemberInterestSearchHit,
   SelfInterestMatchResult,
-} from '../src/base/storage/repository/memberDiscovery.js';
-import type { MemberProject, MemberProjectSearchHit } from '../src/base/storage/repository/memberProjects.js';
-import type { ShortcutKind } from '../src/base/storage/repository/shortcutHits.js';
+} from '@swampratnz/agent-base/storage/repository/memberDiscovery.js';
+import type {
+  MemberProject,
+  MemberProjectSearchHit,
+} from '@swampratnz/agent-base/storage/repository/memberProjects.js';
+import type { ShortcutKind } from '@swampratnz/agent-base/storage/repository/shortcutHits.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -45,16 +48,19 @@ process.env.WHATSAPP_TEXT_COMMANDS_ENABLED = 'true';
 const BUDGET_USER_ID = `wa-cmd-budget-${process.pid}-${Date.now()}`;
 process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 
-const { pool, closeDb } = await import('../src/base/storage/db.js');
-const { config } = await import('../src/base/config.js');
+const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
+const { config } = await import('@swampratnz/agent-base/config.js');
 // Side-effect import (mechanism/content split): the router's text-command
 // dispatcher reads commands/registry.ts's registered list, which only the
 // community commands module populates — src/index.ts does this in
 // production.
-await import('../src/module/commands.js');
-const { Router } = await import('../src/base/router.js');
+await import('./support/registerCommands.js');
+// The community policy keys (guidelines/welcome message) — the manifest's
+// `policyKeys` registration in production (src/module/agentModule.ts).
+await import('./support/registerPolicyKeys.js');
+const { Router } = await import('@swampratnz/agent-base/router.js');
 const { makeRouterDeps } = await import('../src/module/routerWiring.js');
-const { countRepliesToUser } = await import('../src/base/storage/repository.js');
+const { countRepliesToUser } = await import('@swampratnz/agent-base/storage/repository.js');
 
 const RUN = `wa-cmd-router-${Date.now()}`;
 
@@ -138,9 +144,9 @@ interface RouterOpts {
   searchProjectsFn?: (query: string, limit?: number) => Promise<MemberProjectSearchHit[]>;
   listRecentProjectsFn?: (limit?: number) => Promise<MemberProject[]>;
   listOwnProjectsFn?: (platform: Platform, userId: string) => Promise<MemberProject[]>;
-  buildMemberDigestContentFn?: () => Promise<string | null>;
-  getCommunityGuidelinesFn?: () => Promise<string | null>;
-  getCommunityGuidelinesMiFn?: () => Promise<string | null>;
+  buildDigestContentFn?: () => Promise<string | null>;
+  getConductGuidelinesFn?: () => Promise<string | null>;
+  getLocalisedConductGuidelinesFn?: () => Promise<string | null>;
   getLangPref?: () => Promise<'auto' | 'en' | 'mi'>;
   recordShortcutHitFn?: (kind: ShortcutKind) => Promise<void>;
   listRecentInterestsFn?: (limit?: number) => Promise<MemberInterestRow[]>;
@@ -177,9 +183,9 @@ function makeRouter(opts: RouterOpts = {}): Router {
       // 10 getRespStyle
       recordShortcutHit: opts.recordShortcutHitFn,
       // 17 markStaleKnowledgeAlertedFn
-      getCommunityGuidelinesFn: opts.getCommunityGuidelinesFn,
+      getConductGuidelinesFn: opts.getConductGuidelinesFn,
       // 18
-      getCommunityGuidelinesMiFn: opts.getCommunityGuidelinesMiFn,
+      getLocalisedConductGuidelinesFn: opts.getLocalisedConductGuidelinesFn,
       // 19
       searchMemberInterestsFn: opts.searchMemberInterestsFn,
       // 20
@@ -187,7 +193,7 @@ function makeRouter(opts: RouterOpts = {}): Router {
       // 21
       listRecentProjectsFn: opts.listRecentProjectsFn,
       // 22
-      buildMemberDigestContentFn: opts.buildMemberDigestContentFn,
+      buildDigestContentFn: opts.buildDigestContentFn,
       // 24 recentQuestionClustersFn
       searchMemberInterestsForSelfFn: opts.searchMemberInterestsForSelfFn,
       // 26 checkKnowledgeConflict
@@ -595,7 +601,7 @@ test('!guidelines has no tier gate — served even for a guest caller', async (t
   mockPoolRole(t, null); // no community_users row -> guest
   const router = makeRouter({
     runTurn: throwingRunTurn,
-    getCommunityGuidelinesFn: async () => 'Be kind.',
+    getConductGuidelinesFn: async () => 'Be kind.',
   });
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -610,8 +616,8 @@ test("!guidelines is language-preference-aware, matching handleGuidelines' 'mi' 
   const router = makeRouter({
     runTurn: throwingRunTurn,
     getLangPref: async () => 'mi',
-    getCommunityGuidelinesMiFn: async () => 'Kia atawhai.',
-    getCommunityGuidelinesFn: async () => {
+    getLocalisedConductGuidelinesFn: async () => 'Kia atawhai.',
+    getConductGuidelinesFn: async () => {
       throw new Error('the English fallback must not be read when the Māori text is present');
     },
   });
@@ -627,7 +633,7 @@ test('!guidelines replies with the not-set-yet text when no guidelines exist', a
   mockPoolRole(t, 'member');
   const router = makeRouter({
     runTurn: throwingRunTurn,
-    getCommunityGuidelinesFn: async () => null,
+    getConductGuidelinesFn: async () => null,
   });
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -639,11 +645,11 @@ test('!guidelines replies with the not-set-yet text when no guidelines exist', a
 
 // --- !digest --------------------------------------------------------------------
 
-test('!digest from a member uses buildMemberDigestContentFn', async (t) => {
+test('!digest from a member uses buildDigestContentFn', async (t) => {
   mockPoolRole(t, 'member');
   const router = makeRouter({
     runTurn: throwingRunTurn,
-    buildMemberDigestContentFn: async () => 'This week: 2 new projects.',
+    buildDigestContentFn: async () => 'This week: 2 new projects.',
   });
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -653,9 +659,9 @@ test('!digest from a member uses buildMemberDigestContentFn', async (t) => {
   assert.equal(sent[0].text, 'This week: 2 new projects.');
 });
 
-test('!digest replies with the fixed "Nothing to report" text when buildMemberDigestContentFn resolves null', async (t) => {
+test('!digest replies with the fixed "Nothing to report" text when buildDigestContentFn resolves null', async (t) => {
   mockPoolRole(t, 'member');
-  const router = makeRouter({ runTurn: throwingRunTurn, buildMemberDigestContentFn: async () => null });
+  const router = makeRouter({ runTurn: throwingRunTurn, buildDigestContentFn: async () => null });
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -678,8 +684,8 @@ test('acceptance criterion 1: each of !whois/!projects/!guidelines/!digest recor
       { platform: 'whatsapp', userId: 'target-1', interests: 'rust', similarity: 0.9 },
     ],
     listRecentProjectsFn: async () => [],
-    getCommunityGuidelinesFn: async () => 'Be kind.',
-    buildMemberDigestContentFn: async () => 'Nothing much.',
+    getConductGuidelinesFn: async () => 'Be kind.',
+    buildDigestContentFn: async () => 'Nothing much.',
   });
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -766,8 +772,8 @@ async function assertGuestFallsThroughSilently(
     listRecentInterestsFn: async () => {
       throw new Error('listRecentInterestsFn must never be invoked for a rejected caller');
     },
-    buildMemberDigestContentFn: async () => {
-      throw new Error('buildMemberDigestContentFn must never be invoked for a rejected caller');
+    buildDigestContentFn: async () => {
+      throw new Error('buildDigestContentFn must never be invoked for a rejected caller');
     },
   });
   const { adapter, sent, trigger } = makeAdapter();
@@ -883,7 +889,7 @@ test('SECURITY: a served text-command reply is sent via adapter.sendMessage exac
   mockPoolRole(t, 'member');
   const router = makeRouter({
     runTurn: throwingRunTurn,
-    getCommunityGuidelinesFn: async () => 'Be kind.',
+    getConductGuidelinesFn: async () => 'Be kind.',
   });
   let directMessageCalls = 0;
   const { adapter, sent, trigger } = makeAdapter({
@@ -919,7 +925,7 @@ test(
         typingRefireMs: 20,
         checkPaused: async () => false,
         countReplies: countRepliesToUser,
-        getCommunityGuidelinesFn: async () => 'Be kind.',
+        getConductGuidelinesFn: async () => 'Be kind.',
       }),
     );
     const { adapter, sent, trigger } = makeAdapter();

@@ -3,9 +3,13 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/module/strings/notices.js';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
-import type { isKnowledgeLowRated, searchKnowledge } from '../src/base/storage/repository.js';
+import './support/registerNotices.js';
+import type {
+  IncomingMessage,
+  OutgoingMessage,
+  PlatformAdapter,
+} from '@swampratnz/agent-base/platforms/types.js';
+import type { isKnowledgeLowRated, searchKnowledge } from '@swampratnz/agent-base/storage/repository.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -24,12 +28,20 @@ process.env.KNOWLEDGE_SHORTCUT_ENABLED = 'true';
 process.env.GUEST_KNOWLEDGE_SHORTCUT_ENABLED = 'true';
 process.env.KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL = '2';
 
-const { config } = await import('../src/base/config.js');
-const { Router } = await import('../src/base/router.js');
+const { config } = await import('@swampratnz/agent-base/config.js');
+const { Router } = await import('@swampratnz/agent-base/router.js');
 const { makeRouterDeps } = await import('../src/module/routerWiring.js');
-const { KNOWLEDGE_LOW_RATED_CAVEAT_TEXT, KNOWLEDGE_LOW_RATED_CAVEAT_TEXT_MI, KNOWLEDGE_STALE_NOTE_MI } =
-  await import('../src/module/agent/tools.js');
-const { embed } = await import('../src/base/storage/embeddings.js');
+await import('./support/registerToolRegistry.js');
+// The two low-rated/stale caveat texts came from exported constants in
+// src/module/agent/tools/helpers.ts until the agent-base package flip removed
+// every module-scope `notice()` render (the pack is registered by
+// `createAgent`, after imports). Same catalogue entries, same selection — the
+// assertions below pin exactly what they did before.
+const { notice } = await import('../src/module/strings/notices.js');
+const KNOWLEDGE_LOW_RATED_CAVEAT_TEXT = notice('knowledgeLowRatedCaveat');
+const KNOWLEDGE_LOW_RATED_CAVEAT_TEXT_MI = notice('knowledgeLowRatedCaveat', { language: 'mi' });
+const KNOWLEDGE_STALE_NOTE_MI = notice('knowledgeStaleNote', { language: 'mi' });
+const { embed } = await import('@swampratnz/agent-base/storage/embeddings.js');
 
 await embed('warmup').catch(() => {});
 

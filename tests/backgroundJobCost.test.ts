@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/module/strings/notices.js';
+import './support/registerNotices.js';
 
 // Issue #401: classifyAbuseWithLlm, summarizeCluster, and researchTopic each
 // spawn a standalone query() against the shared Max pool but wrote no
@@ -55,7 +55,7 @@ async function spyRecordBackgroundJobCost(job: string, costUsd: number): Promise
 // trap as tests/classifierModelTiering.test.ts) — install both mocks once
 // and reuse the cached imports across every test in this file.
 let modulesPromise: Promise<{
-  classifyAbuseWithLlm: typeof import('../src/base/moderation/moderator.js').classifyAbuseWithLlm;
+  classifyAbuseWithLlm: typeof import('@swampratnz/agent-base/moderation/moderator.js').classifyAbuseWithLlm;
   summarizeCluster: typeof import('../src/module/context/builder.js').summarizeCluster;
   researchTopic: typeof import('../src/module/context/knowledgeRefresh.js').researchTopic;
 }> | null = null;
@@ -63,20 +63,20 @@ async function modules(t: { mock: { module: (specifier: string, opts: unknown) =
   if (!modulesPromise) {
     const realSdk = await import('@anthropic-ai/claude-agent-sdk');
     t.mock.module('@anthropic-ai/claude-agent-sdk', { namedExports: { ...realSdk, query: mockQuery } });
-    const realRepo = await import('../src/base/storage/repository.js');
-    t.mock.module('../src/base/storage/repository.js', {
+    const realRepo = await import('@swampratnz/agent-base/storage/repository.js');
+    t.mock.module('@swampratnz/agent-base/storage/repository.js', {
       namedExports: { ...realRepo, recordBackgroundJobCost: spyRecordBackgroundJobCost },
     });
     // builder.ts/knowledgeRefresh.ts import recordBackgroundJobCost from the
     // owning domain module directly (the storage-split cycle break repointed
     // src/module/context/ off the barrel), so the spy must cover that specifier too —
     // moderator.ts still reaches it through the barrel mock above.
-    const realAdminStats = await import('../src/base/storage/repository/adminStats.js');
-    t.mock.module('../src/base/storage/repository/adminStats.js', {
+    const realAdminStats = await import('@swampratnz/agent-base/storage/repository/adminStats.js');
+    t.mock.module('@swampratnz/agent-base/storage/repository/adminStats.js', {
       namedExports: { ...realAdminStats, recordBackgroundJobCost: spyRecordBackgroundJobCost },
     });
     modulesPromise = Promise.all([
-      import('../src/base/moderation/moderator.js'),
+      import('@swampratnz/agent-base/moderation/moderator.js'),
       import('../src/module/context/builder.js'),
       import('../src/module/context/knowledgeRefresh.js'),
     ]).then(([moderator, builder, knowledgeRefresh]) => ({

@@ -1,7 +1,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
-import type { ContextDigest } from '../src/base/storage/repository.js';
+import type { OutgoingMessage, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
+import type { ContextDigest } from '@swampratnz/agent-base/storage/repository.js';
 import type { MemberDigestContentDeps, MemberDigestRunDeps } from '../src/module/memberDigest.js';
 
 // config.ts validates env at import time — provide a dummy environment
@@ -28,7 +28,7 @@ process.env.MEMBER_DIGEST_CHANNEL_ID = 'configured-channel-1';
 
 const { formatMemberDigestMessage, makeDefaultMemberDigestRun, startMemberDigest, buildMemberDigestContent } =
   await import('../src/module/memberDigest.js');
-const { pool, closeDb } = await import('../src/base/storage/db.js');
+const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
 const {
   wasMemberDigestSentRecently,
   recordMemberDigestSent,
@@ -41,8 +41,8 @@ const {
   countInterestsPublishedSince,
   setMemberInterests,
   setHelperAvailability,
-} = await import('../src/base/storage/repository.js');
-const { config } = await import('../src/base/config.js');
+} = await import('@swampratnz/agent-base/storage/repository.js');
+const { config } = await import('@swampratnz/agent-base/config.js');
 
 after(async () => {
   await closeDb();

@@ -3,14 +3,14 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/module/strings/notices.js';
-import type { CallerContext } from '../src/base/auth/rbac.js';
-import type { OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
+import './support/registerNotices.js';
+import type { CallerContext } from '@swampratnz/agent-base/auth/rbac.js';
+import type { OutgoingMessage, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 // Community content registrations (prompt sections + persona roster) — the
 // composition-root contract: src/index.ts registers these in production, so
 // tests that assemble prompts register them explicitly here.
-import '../src/module/agent/communityPromptSections.js';
-import '../src/module/agent/personas.js';
+import './support/registerPromptSections.js';
+import './support/registerPersonas.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it. Separate process
@@ -28,7 +28,13 @@ process.env.SUPER_ADMIN_DISCORD_IDS = 'super-1';
 // The tool registry's module-scope registrations (tool tiers, tool-server
 // parts, feature-flag predicates) — the composition-root contract, matching
 // tests/rbac.test.ts.
-await import('../src/module/agent/tools/index.js');
+await import('./support/registerToolRegistry.js');
+
+// Notice constants agent-base deleted in the package flip (they named this
+// community's axis values in framework code, and rendered at import time). Same
+// catalogue entries, same values — see tests/support/legacyNotices.ts.
+const { USAGE_LIMIT_REPLY_ADMIN_NOTIFIED_MI, USAGE_LIMIT_REPLY_MI } =
+  await import('./support/legacyNotices.js');
 
 let langBehavior: 'auto' | 'en' | 'mi' = 'mi';
 
@@ -50,16 +56,16 @@ function mockQuery() {
 
 // See tests/agentCoreFailureFallbacksMi.test.ts for why both mocks must be
 // installed once, before core.js's first dynamic import, and reused.
-let corePromise: Promise<typeof import('../src/base/agent/core.js')> | null = null;
+let corePromise: Promise<typeof import('@swampratnz/agent-base/agent/core.js')> | null = null;
 async function core(t: { mock: { module: (specifier: string, opts: unknown) => void } }) {
   if (!corePromise) {
     const realSdk = await import('@anthropic-ai/claude-agent-sdk');
     t.mock.module('@anthropic-ai/claude-agent-sdk', { namedExports: { ...realSdk, query: mockQuery } });
-    const realRepo = await import('../src/base/storage/repository.js');
-    t.mock.module('../src/base/storage/repository.js', {
+    const realRepo = await import('@swampratnz/agent-base/storage/repository.js');
+    t.mock.module('@swampratnz/agent-base/storage/repository.js', {
       namedExports: { ...realRepo, getLanguagePreference: async () => langBehavior },
     });
-    corePromise = import('../src/base/agent/core.js');
+    corePromise = import('@swampratnz/agent-base/agent/core.js');
   }
   return corePromise;
 }
@@ -97,8 +103,6 @@ function makeCaller(): CallerContext {
 
 test("runAgentTurn: a usage-limit-classified failure for a 'mi' caller returns USAGE_LIMIT_REPLY_ADMIN_NOTIFIED_MI when the admin-alert flag is on (issue #396)", async (t) => {
   const { runAgentTurn } = await core(t);
-  const { USAGE_LIMIT_REPLY_ADMIN_NOTIFIED_MI, USAGE_LIMIT_REPLY_MI } =
-    await import('../src/base/agent/upstreamFailure.js');
   langBehavior = 'mi';
   behavior = { mode: 'throw', message: 'overloaded_error: Overloaded' };
 

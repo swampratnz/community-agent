@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/module/strings/notices.js';
-import type { OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
+import './support/registerNotices.js';
+import type { OutgoingMessage, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
 // Shared pending-alert queue extension for usageAlert.ts (issue #593). Own
 // process because USAGE_ALERT_DAILY_REPLIES must be pinned ON here, and
@@ -23,7 +23,9 @@ process.env.USAGE_ALERT_DAILY_REPLIES = '10';
 
 const POLL_MS = 60 * 60_000; // usageAlert.ts's fixed hourly CHECK_INTERVAL_MS
 
-type UsageStats = Awaited<ReturnType<typeof import('../src/base/storage/repository.js').usageStats>>;
+type UsageStats = Awaited<
+  ReturnType<typeof import('@swampratnz/agent-base/storage/repository.js').usageStats>
+>;
 
 const BASE_STATS: Omit<UsageStats, 'outbound'> = {
   inbound: 10,
@@ -48,18 +50,18 @@ async function mockUsageStats(): Promise<UsageStats> {
 // tests/usageAlertFailureTracker.test.ts) — install the mock once and reuse
 // the cached import across every test in this file.
 let modulesPromise: Promise<{
-  startUsageAlert: typeof import('../src/base/usageAlert.js').startUsageAlert;
-  getPendingAlertsForTests: typeof import('../src/base/pendingAlertQueue.js').getPendingAlertsForTests;
-  getPendingAlertEntriesForTests: typeof import('../src/base/pendingAlertQueue.js').getPendingAlertEntriesForTests;
-  resetPendingAlertsForTests: typeof import('../src/base/pendingAlertQueue.js').resetPendingAlertsForTests;
-  queuePendingAlert: typeof import('../src/base/pendingAlertQueue.js').queuePendingAlert;
+  startUsageAlert: typeof import('@swampratnz/agent-base/usageAlert.js').startUsageAlert;
+  getPendingAlertsForTests: typeof import('@swampratnz/agent-base/pendingAlertQueue.js').getPendingAlertsForTests;
+  getPendingAlertEntriesForTests: typeof import('@swampratnz/agent-base/pendingAlertQueue.js').getPendingAlertEntriesForTests;
+  resetPendingAlertsForTests: typeof import('@swampratnz/agent-base/pendingAlertQueue.js').resetPendingAlertsForTests;
+  queuePendingAlert: typeof import('@swampratnz/agent-base/pendingAlertQueue.js').queuePendingAlert;
   PENDING_ALERT_QUEUE_CAP: number;
 }> | null = null;
 async function modules(t: { mock: { module: (specifier: string, opts: unknown) => void } }) {
   if (!modulesPromise) {
     modulesPromise = (async () => {
-      const realRepo = await import('../src/base/storage/repository.js');
-      t.mock.module('../src/base/storage/repository.js', {
+      const realRepo = await import('@swampratnz/agent-base/storage/repository.js');
+      t.mock.module('@swampratnz/agent-base/storage/repository.js', {
         namedExports: { ...realRepo, usageStats: mockUsageStats },
       });
       const [
@@ -72,8 +74,8 @@ async function modules(t: { mock: { module: (specifier: string, opts: unknown) =
           PENDING_ALERT_QUEUE_CAP,
         },
       ] = await Promise.all([
-        import('../src/base/usageAlert.js'),
-        import('../src/base/pendingAlertQueue.js'),
+        import('@swampratnz/agent-base/usageAlert.js'),
+        import('@swampratnz/agent-base/pendingAlertQueue.js'),
       ]);
       return {
         startUsageAlert,
@@ -280,7 +282,7 @@ test('SECURITY: usageAlert.ts queues the message byte-identical to what a live s
 test("startUsageAlert: a WindowClosedError rejection queues via queueForWindowReopen at 'system' priority instead of only logging (issue #888 acceptance criterion 1/2)", async (t) => {
   const { startUsageAlert } = await modules(t);
   outbound = 15;
-  const { WindowClosedError } = await import('../src/base/platforms/whatsapp/cloudAdapter.js');
+  const { WindowClosedError } = await import('@swampratnz/agent-base/platforms/whatsapp/cloudAdapter.js');
   const { adapter, dms, queued } = makeCloudAdapter({
     'admin-closed': new WindowClosedError('admin-closed'),
   });
@@ -329,7 +331,7 @@ test('SECURITY: startUsageAlert — a rejection that is NOT a WindowClosedError 
 test('startUsageAlert: an adapter with no queueForWindowReopen (Discord/Baileys shape) falls through to log-and-drop for a WindowClosedError rejection — no crash, byte-identical to today (issue #888 acceptance criterion 5)', async (t) => {
   const { startUsageAlert } = await modules(t);
   outbound = 15;
-  const { WindowClosedError } = await import('../src/base/platforms/whatsapp/cloudAdapter.js');
+  const { WindowClosedError } = await import('@swampratnz/agent-base/platforms/whatsapp/cloudAdapter.js');
   const { adapter } = makeAdapter(true);
   adapter.sendDirectMessage = async () => {
     throw new WindowClosedError('super-1');

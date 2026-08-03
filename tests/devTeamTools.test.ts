@@ -1,6 +1,6 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { PlatformAdapter } from '../src/base/platforms/types.js';
+import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment before
 // anything that (transitively) loads it. This file's process has the dev-team
@@ -23,8 +23,9 @@ process.env.DEV_TEAM_AUTH_TOKEN ??= 'dev-team-secret-token';
 
 const hasDb = Boolean(process.env.DATABASE_URL) && !process.env.DATABASE_URL.includes('test:test');
 
-const { closeDb } = await import('../src/base/storage/db.js');
-const { hasPendingAction, cancelPendingAction } = await import('../src/base/agent/pendingActions.js');
+const { closeDb } = await import('@swampratnz/agent-base/storage/db.js');
+const { hasPendingAction, cancelPendingAction } =
+  await import('@swampratnz/agent-base/agent/pendingActions.js');
 
 after(async () => {
   await closeDb();
@@ -98,7 +99,13 @@ function tools(t: { mock: { module: (specifier: string, opts: unknown) => void }
         },
       },
     });
-    toolsPromise = import('../src/module/agent/tools.js');
+    // The tool-registry registrations (the manifest's `toolTiers`/
+    // `toolServerParts`/`flaggedToolPredicates` in production) load the whole
+    // registry, so they must come AFTER the mock above — importing the
+    // registry is what caches the real module this test replaces.
+    toolsPromise = import('./support/registerToolRegistry.js').then(
+      () => import('../src/module/agent/tools.js'),
+    );
   }
   return toolsPromise;
 }
@@ -150,7 +157,7 @@ async function handlerFor(
 }
 
 test('SECURITY: dev_team_dispatch with mode:"deliver" registers a pending action and does NOT dispatch until confirmed', async (t) => {
-  const { config } = await import('../src/base/config.js');
+  const { config } = await import('@swampratnz/agent-base/config.js');
   assert.equal(config.devTeam.enabled, true, 'precondition: dev-team feature is ON in this test process');
   const before = dispatchCalls.length;
   const handler = await handlerFor(t, 'dev_team_dispatch', 'super_admin', 'convo-deliver');
@@ -203,7 +210,7 @@ test(
       'assess must not register a pending action',
     );
     // Best-effort: clear the watch row the dispatch inserted so repeat runs stay clean.
-    const { markDevTeamWatchNotified } = await import('../src/base/storage/repository.js');
+    const { markDevTeamWatchNotified } = await import('@swampratnz/agent-base/storage/repository.js');
     await markDevTeamWatchNotified('job-mock-1');
   },
 );
@@ -248,7 +255,7 @@ test('dev_team_backlog maps the contract 404 ("no assessment for that job") to a
 });
 
 test('SECURITY: dev_team_backlog error replies are devTeamScrub-ed — the service bearer token never reaches chat and the text is capped', async (t) => {
-  const { config } = await import('../src/base/config.js');
+  const { config } = await import('@swampratnz/agent-base/config.js');
   const token = config.devTeam.authToken!;
   backlogImpl = async () => {
     throw new Error(
@@ -392,12 +399,12 @@ test(
       false,
       'verify is read-only against the target repo and small-cost — it must not register a CONFIRM',
     );
-    const { listUnnotifiedDevTeamWatches } = await import('../src/base/storage/repository.js');
+    const { listUnnotifiedDevTeamWatches } = await import('@swampratnz/agent-base/storage/repository.js');
     const watch = (await listUnnotifiedDevTeamWatches()).find((w) => w.jobId === verifyJobId);
     assert.ok(watch, 'a completion watch is inserted for the verify job so the poller DMs the verdict');
     assert.equal(watch?.mode, 'verify', 'the watch mode routes the poller to the verdict-bearing DM');
     assert.equal(watch?.repo, 'job-src-1', 'the watch stores the SOURCE assessment id for the DM text');
-    const { pool } = await import('../src/base/storage/db.js');
+    const { pool } = await import('@swampratnz/agent-base/storage/db.js');
     await pool.query('DELETE FROM dev_team_watches WHERE job_id = $1', [verifyJobId]);
   },
 );
@@ -428,7 +435,7 @@ test('SECURITY: reserveDevTeamDispatchDaily bounds dispatch frequency per super 
 
 test('SECURITY: dev_team_verify is bounded by the per-super-admin daily cap (shares the DEV_TEAM_DAILY_LIMIT bucket; a capped call never POSTs)', async (t) => {
   const { buildToolServer, reserveDevTeamDispatchDaily } = await tools(t);
-  const { config } = await import('../src/base/config.js');
+  const { config } = await import('@swampratnz/agent-base/config.js');
   const capUser = 'super-cap';
   const key = `discord:${capUser}`;
   // Exhaust this super admin's day directly (isolated from super-1's tests).

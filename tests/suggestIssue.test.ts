@@ -1,6 +1,6 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { PlatformAdapter } from '../src/base/platforms/types.js';
+import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment before
 // anything that (transitively) loads it, matching tests/tools.test.ts. The
@@ -16,8 +16,8 @@ process.env.GITHUB_ISSUE_TOKEN ??= 'ghp_testtoken';
 
 const hasDb = Boolean(process.env.DATABASE_URL) && !process.env.DATABASE_URL.includes('test:test');
 
-const { closeDb } = await import('../src/base/storage/db.js');
-const { takePendingAction } = await import('../src/base/agent/pendingActions.js');
+const { closeDb } = await import('@swampratnz/agent-base/storage/db.js');
+const { takePendingAction } = await import('@swampratnz/agent-base/agent/pendingActions.js');
 
 after(async () => {
   await closeDb();
@@ -39,7 +39,13 @@ function tools(t: { mock: { module: (specifier: string, opts: unknown) => void }
         },
       },
     });
-    toolsPromise = import('../src/module/agent/tools.js');
+    // The tool-registry registrations (the manifest's `toolTiers`/
+    // `toolServerParts`/`flaggedToolPredicates` in production) load the whole
+    // registry, so they must come AFTER the mock above — importing the
+    // registry is what caches the real module this test replaces.
+    toolsPromise = import('./support/registerToolRegistry.js').then(
+      () => import('../src/module/agent/tools.js'),
+    );
   }
   return toolsPromise;
 }

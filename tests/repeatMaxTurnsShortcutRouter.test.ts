@@ -3,8 +3,12 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/module/strings/notices.js';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
+import './support/registerNotices.js';
+import type {
+  IncomingMessage,
+  OutgoingMessage,
+  PlatformAdapter,
+} from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -36,13 +40,17 @@ process.env.SUPER_ADMIN_DISCORD_IDS ??= `super-1,super-2,${BUDGET_USER_ID}`;
 process.env.SUPER_ADMIN_WHATSAPP_NUMBERS ??= 'super-1';
 process.env.REPEAT_MAX_TURNS_SHORTCUT_ENABLED = 'true';
 
-const { pool, closeDb } = await import('../src/base/storage/db.js');
-const { config } = await import('../src/base/config.js');
-const { Router } = await import('../src/base/router.js');
+const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
+const { config } = await import('@swampratnz/agent-base/config.js');
+const { Router } = await import('@swampratnz/agent-base/router.js');
 const { makeRouterDeps } = await import('../src/module/routerWiring.js');
-const { embed } = await import('../src/base/storage/embeddings.js');
-const { countRepliesToUser } = await import('../src/base/storage/repository.js');
-const { MAX_TURNS_REPLY, MAX_TURNS_REPLY_MI } = await import('../src/base/agent/core.js');
+const { embed } = await import('@swampratnz/agent-base/storage/embeddings.js');
+const { countRepliesToUser } = await import('@swampratnz/agent-base/storage/repository.js');
+
+// Notice constants agent-base deleted in the package flip (they named this
+// community's axis values in framework code, and rendered at import time). Same
+// catalogue entries, same values — see tests/support/legacyNotices.ts.
+const { MAX_TURNS_REPLY, MAX_TURNS_REPLY_MI } = await import('./support/legacyNotices.js');
 
 await embed('warmup').catch(() => {});
 

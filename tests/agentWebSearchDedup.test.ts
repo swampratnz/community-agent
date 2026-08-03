@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/module/strings/notices.js';
+import './support/registerNotices.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -16,9 +16,9 @@ process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 // The tool registry's module-scope registrations (tool tiers, tool-server
 // parts, feature-flag predicates) — the composition-root contract, matching
 // tests/rbac.test.ts.
-await import('../src/module/agent/tools/index.js');
+await import('./support/registerToolRegistry.js');
 
-const { buildQueryOptions } = await import('../src/base/agent/core.js');
+const { buildQueryOptions } = await import('@swampratnz/agent-base/agent/core.js');
 
 type PreToolUseResult = {
   continue?: boolean;
@@ -165,7 +165,7 @@ test('AC-3: WebSearch dedup state is scoped per conversation — an identical qu
 });
 
 test('AC-7: the existing rate-limit behaviour is unchanged when the query differs — a non-duplicate call still consumes a volume slot', async () => {
-  const { config } = await import('../src/base/config.js');
+  const { config } = await import('@swampratnz/agent-base/config.js');
   const conversationId = 'ws-dedup-rate-unaffected';
   const fn = webSearchHook(buildQueryOptions('admin', 'prompt', {}, null, conversationId));
 
@@ -195,7 +195,7 @@ test('AC-7: the existing rate-limit behaviour is unchanged when the query differ
 });
 
 test('AC-8: the dedup history evicts the oldest query once more than historySize distinct queries have been recorded', async () => {
-  const { config } = await import('../src/base/config.js');
+  const { config } = await import('@swampratnz/agent-base/config.js');
   const conversationId = 'ws-dedup-eviction';
   const fn = webSearchHook(buildQueryOptions('admin', 'prompt', {}, null, conversationId));
   const historySize = config.llm.webSearchDedupHistorySize;
@@ -226,7 +226,7 @@ test('AC-8: the dedup history evicts the oldest query once more than historySize
 });
 
 test('AC-9: a query denied by the volume cap is never recorded into the dedup history — a retry of it is denied by the SAME rate-limit reason, not misreported as "already searched"', async () => {
-  const { config } = await import('../src/base/config.js');
+  const { config } = await import('@swampratnz/agent-base/config.js');
   const conversationId = 'ws-dedup-rate-then-retry';
   const fn = webSearchHook(buildQueryOptions('admin', 'prompt', {}, null, conversationId));
 

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 // The default bad-word list is community content registered at its own module
 // scope (src/index.ts imports it in production); the moderation wordlist fails
 // closed until then, and constructing a Discord adapter builds a Moderator.
-import '../src/module/moderation/badWords.js';
+import './support/registerBadWords.js';
 // The adapters take their community text pack as a required constructor
 // parameter now (agent-base plan item 6) — production hands it over in
 // src/module/platforms/factories.ts, so these constructions pass the same pack.
@@ -15,13 +15,13 @@ import {
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/module/strings/notices.js';
+import './support/registerNotices.js';
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ChannelType, Events, GuildScheduledEventEntityType, GuildScheduledEventStatus } from 'discord.js';
-import type { IncomingMessage } from '../src/base/platforms/types.js';
-import { formatNzEventTime } from '../src/base/util/nzTime.js';
+import type { IncomingMessage } from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it. DATABASE_URL
@@ -40,12 +40,25 @@ process.env.DISCORD_MODERATION_ENABLED ??= 'true';
 // Fixed allowlist for the assign/remove_community_role tests below (issue #232).
 process.env.DISCORD_ASSIGNABLE_ROLES ??= 'role-cosmetic-1,role-cosmetic-2';
 
-const { DiscordAdapter } = await import('../src/base/platforms/discord/adapter.js');
-const { config } = await import('../src/base/config.js');
-const { pool } = await import('../src/base/storage/db.js');
-const { resetPolicyCacheForTests } = await import('../src/base/storage/policyStore.js');
-const { logger } = await import('../src/base/logger.js');
-const { VOICE_LANGUAGE_CAVEAT_TEXT_MI } = await import('../src/base/voiceLanguageCaveatNotice.js');
+const { DiscordAdapter } = await import('@swampratnz/agent-base/platforms/discord/adapter.js');
+const { config } = await import('@swampratnz/agent-base/config.js');
+const { pool } = await import('@swampratnz/agent-base/storage/db.js');
+const { resetPolicyCacheForTests } = await import('@swampratnz/agent-base/storage/policyStore.js');
+const { logger } = await import('@swampratnz/agent-base/logger.js');
+// `formatEventTime` is imported DYNAMICALLY, after the dummy env below:
+// agent-base's util/eventTime.ts reads DISPLAY_TIMEZONE/DISPLAY_LOCALE off the
+// config singleton (community-agent's util/nzTime.ts hardcoded them and
+// imported nothing), so a static import here would validate the env before
+// this file sets it.
+const { formatEventTime } = await import('@swampratnz/agent-base/util/eventTime.js');
+// The community policy keys (guidelines/welcome message) — the manifest's
+// `policyKeys` registration in production (src/module/agentModule.ts).
+await import('./support/registerPolicyKeys.js');
+
+// Notice constants agent-base deleted in the package flip (they named this
+// community's axis values in framework code, and rendered at import time). Same
+// catalogue entries, same values — see tests/support/legacyNotices.ts.
+const { VOICE_LANGUAGE_CAVEAT_TEXT_MI } = await import('./support/legacyNotices.js');
 
 type Adapter = InstanceType<typeof DiscordAdapter>;
 
@@ -779,10 +792,7 @@ test(
     });
     assert.doesNotMatch(result, /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/, 'must not render a raw ISO timestamp');
     assert.doesNotMatch(result, /Z(?=[.\s]|$)/, 'must not render a bare Z-suffixed UTC timestamp');
-    assert.equal(
-      result,
-      `Created event "Auckland Meetup" starting ${formatNzEventTime(EVENT_FUTURE_START)}.`,
-    );
+    assert.equal(result, `Created event "Auckland Meetup" starting ${formatEventTime(EVENT_FUTURE_START)}.`);
   },
 );
 
@@ -1938,9 +1948,11 @@ test('SECURITY: onGuildMemberAdd never sends the member-approval DM/notification
 });
 
 test('SECURITY: the auto-enroll write path adds no new Agent-SDK/query() call — it is a deterministic, non-agent DB write', () => {
-  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  // Read from the INSTALLED package: the adapter is agent-base's now, and what
+  // this deployment ships is the compiled copy in node_modules, so scanning
+  // that is the honest subject (and the only one that exists here).
   const adapterSrc = readFileSync(
-    path.join(repoRoot, 'src', 'base', 'platforms', 'discord', 'adapter.ts'),
+    createRequire(import.meta.url).resolve('@swampratnz/agent-base/platforms/discord/adapter.js'),
     'utf8',
   );
   assert.ok(

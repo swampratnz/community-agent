@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 // The default bad-word list is community content registered at its own module
 // scope (src/index.ts imports it in production); the moderation wordlist fails
 // closed until then, and constructing a Discord adapter builds a Moderator.
-import '../src/module/moderation/badWords.js';
+import './support/registerBadWords.js';
 // The adapters take their community text pack as a required constructor
 // parameter now (agent-base plan item 6) — production hands it over in
 // src/module/platforms/factories.ts, so these constructions pass the same pack.
@@ -11,7 +11,7 @@ import { BAILEYS_TEXT_PACK, DISCORD_TEXT_PACK } from '../src/module/platforms/te
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/module/strings/notices.js';
+import './support/registerNotices.js';
 import { EventEmitter } from 'node:events';
 
 // config.ts validates env at import time.
@@ -39,14 +39,14 @@ const modelCalls: string[] = [];
 // tests/agentCoreMaxTurns.test.ts). Install both mocks once, before the first
 // import, and reuse the cached modules across tests.
 let modulesPromise: Promise<{
-  DiscordAdapter: typeof import('../src/base/platforms/discord/adapter.js').DiscordAdapter;
-  BaileysAdapter: typeof import('../src/base/platforms/whatsapp/baileysAdapter.js').BaileysAdapter;
-  config: typeof import('../src/base/config.js').config;
+  DiscordAdapter: typeof import('@swampratnz/agent-base/platforms/discord/adapter.js').DiscordAdapter;
+  BaileysAdapter: typeof import('@swampratnz/agent-base/platforms/whatsapp/baileysAdapter.js').BaileysAdapter;
+  config: typeof import('@swampratnz/agent-base/config.js').config;
 }> | null = null;
 
 async function modules(t: { mock: { module: (specifier: string, opts: unknown) => void } }) {
   if (!modulesPromise) {
-    t.mock.module('../src/base/media/voiceTranscribe.js', {
+    t.mock.module('@swampratnz/agent-base/media/voiceTranscribe.js', {
       namedExports: {
         transcribeVoiceNote: async (_audio: Buffer, model: string) => {
           modelCalls.push(model);
@@ -70,9 +70,9 @@ async function modules(t: { mock: { module: (specifier: string, opts: unknown) =
       },
     });
     modulesPromise = (async () => {
-      const { DiscordAdapter } = await import('../src/base/platforms/discord/adapter.js');
-      const { BaileysAdapter } = await import('../src/base/platforms/whatsapp/baileysAdapter.js');
-      const { config } = await import('../src/base/config.js');
+      const { DiscordAdapter } = await import('@swampratnz/agent-base/platforms/discord/adapter.js');
+      const { BaileysAdapter } = await import('@swampratnz/agent-base/platforms/whatsapp/baileysAdapter.js');
+      const { config } = await import('@swampratnz/agent-base/config.js');
       return { DiscordAdapter, BaileysAdapter, config };
     })();
   }

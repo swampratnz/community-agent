@@ -1,30 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { selectNoticeVariant, type NoticeValue } from '../src/base/strings/catalogue.js';
+import {
+  selectNoticeVariant,
+  type NoticeEntry,
+  type NoticeValue,
+} from '@swampratnz/agent-base/strings/catalogue.js';
 import { NOTICE_AXES, NOTICE_ENTRIES, notice, type NoticeId } from '../src/module/strings/notices.js';
-// Leaf notice modules only (no config/DB import chain), to prove the
-// zero-churn barrel discipline: the old exported constants are derived from
-// the catalogue and stay identical.
-import {
-  RATE_LIMIT_NOTICE_TEXT,
-  RATE_LIMIT_NOTICE_TEXT_MI,
-  RATE_LIMIT_NOTICE_TEXT_PLAIN,
-} from '../src/base/rateLimitNotice.js';
-import { PAUSE_NOTICE_TEXT, PAUSE_NOTICE_TEXT_MI, PAUSE_NOTICE_TEXT_PLAIN } from '../src/base/pauseNotice.js';
-import {
-  DAILY_REPLY_BUDGET_WARNING_TEXT,
-  DAILY_REPLY_BUDGET_WARNING_TEXT_MI,
-  DAILY_REPLY_BUDGET_WARNING_TEXT_PLAIN,
-} from '../src/base/dailyReplyBudgetWarning.js';
-import {
-  USAGE_LIMIT_REPLY,
-  USAGE_LIMIT_REPLY_ADMIN_NOTIFIED,
-  USAGE_LIMIT_REPLY_ADMIN_NOTIFIED_MI,
-  USAGE_LIMIT_REPLY_ADMIN_NOTIFIED_PLAIN,
-  USAGE_LIMIT_REPLY_MI,
-  USAGE_LIMIT_REPLY_PLAIN,
-} from '../src/base/agent/upstreamFailure.js';
+
+import './support/registerNotices.js';
 
 /**
  * Representative arguments for every template (function-valued) entry, so
@@ -110,7 +94,10 @@ test('unregistered axis values always render the default text', () => {
 });
 
 test("a registered language claims the turn: 'mi' + 'plain' renders the mi variant (or base when the entry has no mi variant)", () => {
-  for (const [id, entry] of Object.entries(NOTICE_ENTRIES)) {
+  for (const [id, rawEntry] of Object.entries(NOTICE_ENTRIES)) {
+    // Widened: some entries are base-only (`gatedNoticeWithAdmins`,
+    // `guidelinesHeading`), so the union has members with no `language` key.
+    const entry = rawEntry as NoticeEntry<NoticeValue>;
     const argSets = SAMPLE_ARGS[id as NoticeId] ?? [[]];
     const expected = entry.language?.mi ?? entry.base;
     for (const args of argSets) {
@@ -123,40 +110,18 @@ test("a registered language claims the turn: 'mi' + 'plain' renders the mi varia
   }
 });
 
-test('legacy exported constants are byte-identical to their catalogue lookups', () => {
-  assert.equal(RATE_LIMIT_NOTICE_TEXT, notice('rateLimitNotice'));
-  assert.equal(RATE_LIMIT_NOTICE_TEXT_MI, notice('rateLimitNotice', { language: 'mi' }));
-  assert.equal(RATE_LIMIT_NOTICE_TEXT_PLAIN, notice('rateLimitNotice', { style: 'plain' }));
-  assert.equal(PAUSE_NOTICE_TEXT, notice('pauseNotice'));
-  assert.equal(PAUSE_NOTICE_TEXT_MI, notice('pauseNotice', { language: 'mi' }));
-  assert.equal(PAUSE_NOTICE_TEXT_PLAIN, notice('pauseNotice', { style: 'plain' }));
-  assert.equal(DAILY_REPLY_BUDGET_WARNING_TEXT(1), notice('dailyReplyBudgetWarning')(1));
-  assert.equal(
-    DAILY_REPLY_BUDGET_WARNING_TEXT_MI(2),
-    notice('dailyReplyBudgetWarning', { language: 'mi' })(2),
-  );
-  assert.equal(
-    DAILY_REPLY_BUDGET_WARNING_TEXT_PLAIN(3),
-    notice('dailyReplyBudgetWarning', { style: 'plain' })(3),
-  );
-  assert.equal(USAGE_LIMIT_REPLY, notice('usageLimitReply'));
-  assert.equal(USAGE_LIMIT_REPLY_MI, notice('usageLimitReply', { language: 'mi' }));
-  assert.equal(USAGE_LIMIT_REPLY_PLAIN, notice('usageLimitReply', { style: 'plain' }));
-  assert.equal(USAGE_LIMIT_REPLY_ADMIN_NOTIFIED, notice('usageLimitReplyAdminNotified'));
-  assert.equal(
-    USAGE_LIMIT_REPLY_ADMIN_NOTIFIED_MI,
-    notice('usageLimitReplyAdminNotified', { language: 'mi' }),
-  );
-  assert.equal(
-    USAGE_LIMIT_REPLY_ADMIN_NOTIFIED_PLAIN,
-    notice('usageLimitReplyAdminNotified', { style: 'plain' }),
-  );
-  // The admin-notified variants are the shared shell + a fixed suffix, per
-  // variant — composition must survive the catalogue move.
-  assert.ok(USAGE_LIMIT_REPLY_ADMIN_NOTIFIED.startsWith(USAGE_LIMIT_REPLY));
-  assert.ok(USAGE_LIMIT_REPLY_ADMIN_NOTIFIED_MI.startsWith(USAGE_LIMIT_REPLY_MI));
-  assert.ok(USAGE_LIMIT_REPLY_ADMIN_NOTIFIED_PLAIN.startsWith(USAGE_LIMIT_REPLY_PLAIN));
-});
+// The 'legacy exported constants are byte-identical to their catalogue
+// lookups' case is gone with the package flip. It pinned the Phase-1 refactor:
+// base leaf modules (rateLimitNotice.ts, pauseNotice.ts, upstreamFailure.ts,
+// dailyReplyBudgetWarning.ts) kept exporting `X`/`X_MI`/`X_PLAIN` consts
+// DERIVED from the catalogue, so the move could be proved byte-neutral.
+// agent-base deleted every one of them: they named this community's two axis
+// values in framework code, and — worse — rendering a notice at import time
+// made merely importing a base module throw unless a pack was already
+// registered, which is unimplementable for a package whose entry point is
+// `createAgent`. Base serves those ids at the call site now, and the two
+// remaining cases here (precedence equivalence over the whole pack, and the
+// literal CONFIRM/CANCEL tokens) still cover the community-owned half.
 
 test('CONFIRM/CANCEL stay literal, untranslated tokens in every pending-notice variant', () => {
   // classifyConfirmReply (agent/pendingActions.ts) matches exactly these

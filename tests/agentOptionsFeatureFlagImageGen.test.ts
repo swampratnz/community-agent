@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/module/strings/notices.js';
+import './support/registerNotices.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -22,11 +22,11 @@ process.env.GROK_BIN ??= '/usr/bin/grok';
 // The tool registry's module-scope registrations (tool tiers, tool-server
 // parts, feature-flag predicates) — the composition-root contract, matching
 // tests/rbac.test.ts.
-await import('../src/module/agent/tools/index.js');
+await import('./support/registerToolRegistry.js');
 
-const { config } = await import('../src/base/config.js');
-const { buildQueryOptions } = await import('../src/base/agent/core.js');
-const { toolsForRole } = await import('../src/base/auth/rbac.js');
+const { config } = await import('@swampratnz/agent-base/config.js');
+const { buildQueryOptions } = await import('@swampratnz/agent-base/agent/core.js');
+const { toolsForRole } = await import('@swampratnz/agent-base/auth/rbac.js');
 
 test('issue #535 acceptance criterion 2 — IMAGE_GEN_ENABLED=true (others default): generate_image is present and allowedTools is byte-identical to pre-#535 toolsForRole for the eligible tier/platform', () => {
   assert.equal(config.imageGen.enabled, true, 'precondition: image-gen is on in this test process');

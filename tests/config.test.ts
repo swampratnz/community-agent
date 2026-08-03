@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/module/strings/notices.js';
+import './support/registerNotices.js';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -24,7 +24,7 @@ process.env.WHATSAPP_CLOUD_WEBHOOK_PORT = '';
 process.env.INTERACTION_RETENTION_DAYS = '';
 process.env.ROSTER_DEPARTED_RETENTION_DAYS = '';
 
-const { config, emptyStringsToUndefined } = await import('../src/base/config.js');
+const { config, emptyStringsToUndefined } = await import('@swampratnz/agent-base/config.js');
 
 test('emptyStringsToUndefined: blank values become undefined, everything else passes through', () => {
   const result = emptyStringsToUndefined({
@@ -183,10 +183,15 @@ test('config: WhatsApp group welcome is off by default with a sensible cooldown'
   assert.equal(config.whatsapp.welcome.cooldownMinutes, 180);
 });
 
-test('config: Anthropic status check (issue #206) is off by default, pointed at the real status endpoint, on a 5-minute poll', () => {
+test('config: Anthropic status check (issue #206) is off by default, takes its endpoint from the environment, on a 5-minute poll', () => {
   assert.equal(config.statusCheck.enabled, false);
-  assert.equal(config.statusCheck.apiUrl, 'https://status.claude.com/api/v2/summary.json');
   assert.equal(config.statusCheck.pollMinutes, 5);
+  // agent-base ships NO default for this URL — a framework must not hard-code
+  // one vendor's status page — so it is undefined unless the deployment sets
+  // it, and required (a boot error) whenever STATUS_CHECK_ENABLED is on. This
+  // process's env deliberately doesn't set it; .env.example and deploy/ do,
+  // with the same endpoint the old default carried.
+  assert.equal(config.statusCheck.apiUrl, process.env.STATUS_CHECK_API_URL);
 });
 
 test('SECURITY: STATUS_CHECK_API_URL must be https — a non-https override fails config validation at startup, same enforcement as DOCS_INGEST_INDEX_URL', () => {

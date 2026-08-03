@@ -3,9 +3,13 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/module/strings/notices.js';
-import type { AgentReply } from '../src/base/agent/core.js';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
+import './support/registerNotices.js';
+import type { AgentReply } from '@swampratnz/agent-base/agent/core.js';
+import type {
+  IncomingMessage,
+  OutgoingMessage,
+  PlatformAdapter,
+} from '@swampratnz/agent-base/platforms/types.js';
 
 // Regression cover for the CONFIRM-in-thread hazard the automated review on
 // #482 named: an auto-answer reply is contained in a NEW Discord thread, but a
@@ -36,11 +40,17 @@ const RUN = `autoanswer-confirm-router-${Date.now()}`;
 const AUTO_CHAN = `${RUN}-chan`;
 process.env.AUTO_ANSWER_CHANNEL_IDS = AUTO_CHAN;
 
-const { pool, closeDb } = await import('../src/base/storage/db.js');
-const { Router, CANCEL_TEXT } = await import('../src/base/router.js');
+const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
+const { Router } = await import('@swampratnz/agent-base/router.js');
 const { makeRouterDeps } = await import('../src/module/routerWiring.js');
-const { registerPendingAction, hasPendingAction } = await import('../src/base/agent/pendingActions.js');
-const { embed } = await import('../src/base/storage/embeddings.js');
+const { registerPendingAction, hasPendingAction } =
+  await import('@swampratnz/agent-base/agent/pendingActions.js');
+const { embed } = await import('@swampratnz/agent-base/storage/embeddings.js');
+
+// Notice constants agent-base deleted in the package flip (they named this
+// community's axis values in framework code, and rendered at import time). Same
+// catalogue entries, same values — see tests/support/legacyNotices.ts.
+const { CANCEL_TEXT } = await import('./support/legacyNotices.js');
 
 await embed('warmup').catch(() => {});
 

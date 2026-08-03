@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { ContextDigest } from '../src/base/storage/repository.js';
+import type { ContextDigest } from '@swampratnz/agent-base/storage/repository.js';
 
 // The renderer is pure (digests in, markdown out), so the issue #53 egress
 // invariants are pinned here without a database or network.

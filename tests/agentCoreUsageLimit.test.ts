@@ -3,14 +3,14 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/module/strings/notices.js';
-import type { CallerContext } from '../src/base/auth/rbac.js';
-import type { OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
+import './support/registerNotices.js';
+import type { CallerContext } from '@swampratnz/agent-base/auth/rbac.js';
+import type { OutgoingMessage, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 // Community content registrations (prompt sections + persona roster) — the
 // composition-root contract: src/index.ts registers these in production, so
 // tests that assemble prompts register them explicitly here.
-import '../src/module/agent/communityPromptSections.js';
-import '../src/module/agent/personas.js';
+import './support/registerPromptSections.js';
+import './support/registerPersonas.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -27,7 +27,13 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 // The tool registry's module-scope registrations (tool tiers, tool-server
 // parts, feature-flag predicates) — the composition-root contract, matching
 // tests/rbac.test.ts.
-await import('../src/module/agent/tools/index.js');
+await import('./support/registerToolRegistry.js');
+
+// Notice constants agent-base deleted in the package flip (they named this
+// community's axis values in framework code, and rendered at import time). Same
+// catalogue entries, same values — see tests/support/legacyNotices.ts.
+const { USAGE_LIMIT_REPLY, USAGE_LIMIT_REPLY_ADMIN_NOTIFIED, INTERNAL_ERROR_REPLY } =
+  await import('./support/legacyNotices.js');
 
 type QueryBehavior = { mode: 'throw'; message: string } | { mode: 'success'; text: string };
 let behavior: QueryBehavior = { mode: 'success', text: 'ok' };
@@ -51,7 +57,7 @@ function mockQuery() {
 // for the same trap). Install the mock once via the first test's context and
 // reuse the cached import; `behavior` is mutated per-test to vary the
 // underlying query() outcome instead.
-let corePromise: Promise<typeof import('../src/base/agent/core.js')> | null = null;
+let corePromise: Promise<typeof import('@swampratnz/agent-base/agent/core.js')> | null = null;
 async function core(t: { mock: { module: (specifier: string, opts: unknown) => void } }) {
   if (!corePromise) {
     // Preserve the real createSdkMcpServer/tool (agent/tools.ts needs them to
@@ -59,7 +65,7 @@ async function core(t: { mock: { module: (specifier: string, opts: unknown) => v
     // this file's classifier tests actually exercise.
     const real = await import('@anthropic-ai/claude-agent-sdk');
     t.mock.module('@anthropic-ai/claude-agent-sdk', { namedExports: { ...real, query: mockQuery } });
-    corePromise = import('../src/base/agent/core.js');
+    corePromise = import('@swampratnz/agent-base/agent/core.js');
   }
   return corePromise;
 }
@@ -100,8 +106,6 @@ function makeCaller(): CallerContext {
 
 test('runAgentTurn: a usage-limit/overload error gets the honest reply, without a false "admin notified" claim when the DM flag is off (default)', async (t) => {
   const { runAgentTurn } = await core(t);
-  const { USAGE_LIMIT_REPLY, USAGE_LIMIT_REPLY_ADMIN_NOTIFIED } =
-    await import('../src/base/agent/upstreamFailure.js');
   const { adapter, dms } = makeAdapter();
 
   behavior = { mode: 'throw', message: 'rate_limit_error: Number of request tokens has exceeded your limit' };
@@ -118,7 +122,7 @@ test('runAgentTurn: a usage-limit/overload error gets the honest reply, without 
 });
 
 test('runAgentTurn: an unrelated thrown error still returns the exact existing INTERNAL_ERROR_REPLY (no regression)', async (t) => {
-  const { runAgentTurn, INTERNAL_ERROR_REPLY } = await core(t);
+  const { runAgentTurn } = await core(t);
   const { adapter } = makeAdapter();
 
   behavior = { mode: 'throw', message: 'ECONNRESET' };

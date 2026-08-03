@@ -3,14 +3,14 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/module/strings/notices.js';
-import type { CallerContext } from '../src/base/auth/rbac.js';
-import type { OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
+import './support/registerNotices.js';
+import type { CallerContext } from '@swampratnz/agent-base/auth/rbac.js';
+import type { OutgoingMessage, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 // Community content registrations (prompt sections + persona roster) — the
 // composition-root contract: src/index.ts registers these in production, so
 // tests that assemble prompts register them explicitly here.
-import '../src/module/agent/communityPromptSections.js';
-import '../src/module/agent/personas.js';
+import './support/registerPromptSections.js';
+import './support/registerPersonas.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -26,7 +26,23 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 // The tool registry's module-scope registrations (tool tiers, tool-server
 // parts, feature-flag predicates) — the composition-root contract, matching
 // tests/rbac.test.ts.
-await import('../src/module/agent/tools/index.js');
+await import('./support/registerToolRegistry.js');
+
+// Notice constants agent-base deleted in the package flip (they named this
+// community's axis values in framework code, and rendered at import time). Same
+// catalogue entries, same values — see tests/support/legacyNotices.ts.
+const {
+  USAGE_LIMIT_REPLY_PLAIN,
+  USAGE_LIMIT_REPLY_ADMIN_NOTIFIED_PLAIN,
+  USAGE_LIMIT_REPLY,
+  INTERNAL_ERROR_REPLY_PLAIN,
+  MAX_TURNS_REPLY_PLAIN,
+  TURN_FAILED_REPLY_PLAIN,
+  INTERNAL_ERROR_REPLY,
+  MAX_TURNS_REPLY,
+  TURN_FAILED_REPLY,
+  INTERNAL_ERROR_REPLY_MI,
+} = await import('./support/legacyNotices.js');
 
 type LangBehavior = { mode: 'value'; value: 'auto' | 'en' | 'mi' | undefined } | { mode: 'throw' };
 let langBehavior: LangBehavior = { mode: 'value', value: 'auto' };
@@ -70,13 +86,13 @@ function mockQuery() {
 // for the same trap). Install all mocks once and reuse the cached import;
 // `behavior`/`langBehavior`/`styleBehavior` are mutated per-test to vary the
 // underlying outcomes.
-let corePromise: Promise<typeof import('../src/base/agent/core.js')> | null = null;
+let corePromise: Promise<typeof import('@swampratnz/agent-base/agent/core.js')> | null = null;
 async function core(t: { mock: { module: (specifier: string, opts: unknown) => void } }) {
   if (!corePromise) {
     const realSdk = await import('@anthropic-ai/claude-agent-sdk');
     t.mock.module('@anthropic-ai/claude-agent-sdk', { namedExports: { ...realSdk, query: mockQuery } });
-    const realRepo = await import('../src/base/storage/repository.js');
-    t.mock.module('../src/base/storage/repository.js', {
+    const realRepo = await import('@swampratnz/agent-base/storage/repository.js');
+    t.mock.module('@swampratnz/agent-base/storage/repository.js', {
       namedExports: {
         ...realRepo,
         getLanguagePreference: async () => {
@@ -89,7 +105,7 @@ async function core(t: { mock: { module: (specifier: string, opts: unknown) => v
         },
       },
     });
-    corePromise = import('../src/base/agent/core.js');
+    corePromise = import('@swampratnz/agent-base/agent/core.js');
   }
   return corePromise;
 }
@@ -126,7 +142,7 @@ function makeCaller(): CallerContext {
 }
 
 test("runAgentTurn: a thrown error for a caller with 'plain' response style (and 'auto' language) returns INTERNAL_ERROR_REPLY_PLAIN (issue #430)", async (t) => {
-  const { runAgentTurn, INTERNAL_ERROR_REPLY_PLAIN } = await core(t);
+  const { runAgentTurn } = await core(t);
   langBehavior = { mode: 'value', value: 'auto' };
   styleBehavior = { mode: 'value', value: 'plain' };
   behavior = { mode: 'throw', message: 'ECONNRESET' };
@@ -138,7 +154,7 @@ test("runAgentTurn: a thrown error for a caller with 'plain' response style (and
 });
 
 test("runAgentTurn: resultSubtype === 'error_max_turns' for a 'plain' caller returns MAX_TURNS_REPLY_PLAIN (issue #430)", async (t) => {
-  const { runAgentTurn, MAX_TURNS_REPLY_PLAIN } = await core(t);
+  const { runAgentTurn } = await core(t);
   langBehavior = { mode: 'value', value: 'auto' };
   styleBehavior = { mode: 'value', value: 'plain' };
   behavior = { mode: 'nonSuccess', subtype: 'error_max_turns' };
@@ -151,7 +167,7 @@ test("runAgentTurn: resultSubtype === 'error_max_turns' for a 'plain' caller ret
 });
 
 test("runAgentTurn: any other non-success subtype for a 'plain' caller returns TURN_FAILED_REPLY_PLAIN (issue #430)", async (t) => {
-  const { runAgentTurn, TURN_FAILED_REPLY_PLAIN } = await core(t);
+  const { runAgentTurn } = await core(t);
   langBehavior = { mode: 'value', value: 'auto' };
   styleBehavior = { mode: 'value', value: 'plain' };
   behavior = { mode: 'nonSuccess', subtype: 'error_during_execution' };
@@ -164,8 +180,6 @@ test("runAgentTurn: any other non-success subtype for a 'plain' caller returns T
 
 test("runAgentTurn: a usage-limit-classified failure for a 'plain' caller returns USAGE_LIMIT_REPLY_PLAIN when the admin-alert flag is off (default, issue #430)", async (t) => {
   const { runAgentTurn } = await core(t);
-  const { USAGE_LIMIT_REPLY_PLAIN, USAGE_LIMIT_REPLY_ADMIN_NOTIFIED_PLAIN } =
-    await import('../src/base/agent/upstreamFailure.js');
   langBehavior = { mode: 'value', value: 'auto' };
   styleBehavior = { mode: 'value', value: 'plain' };
   behavior = { mode: 'throw', message: 'rate_limit_error: Number of request tokens has exceeded your limit' };
@@ -179,8 +193,7 @@ test("runAgentTurn: a usage-limit-classified failure for a 'plain' caller return
 
 for (const value of ['standard'] as const) {
   test(`runAgentTurn: all four failure fallbacks stay byte-identical English text for responseStyle=${value} (regression, issue #430)`, async (t) => {
-    const { runAgentTurn, INTERNAL_ERROR_REPLY, MAX_TURNS_REPLY, TURN_FAILED_REPLY } = await core(t);
-    const { USAGE_LIMIT_REPLY } = await import('../src/base/agent/upstreamFailure.js');
+    const { runAgentTurn } = await core(t);
     langBehavior = { mode: 'value', value: 'auto' };
     styleBehavior = { mode: 'value', value };
 
@@ -205,7 +218,7 @@ for (const value of ['standard'] as const) {
 }
 
 test("SECURITY: 'mi' takes precedence over 'plain' when both are set — a caller with both returns the _MI variant, never _PLAIN (issue #430 acceptance criterion 3)", async (t) => {
-  const { runAgentTurn, INTERNAL_ERROR_REPLY_MI, INTERNAL_ERROR_REPLY_PLAIN } = await core(t);
+  const { runAgentTurn } = await core(t);
   langBehavior = { mode: 'value', value: 'mi' };
   styleBehavior = { mode: 'value', value: 'plain' };
   behavior = { mode: 'throw', message: 'ECONNRESET' };
@@ -217,7 +230,7 @@ test("SECURITY: 'mi' takes precedence over 'plain' when both are set — a calle
 });
 
 test('SECURITY: the plain substitution never fires when outcome.ok === true, even when the genuine answer text literally equals a fixed fallback constant (issue #430)', async (t) => {
-  const { runAgentTurn, INTERNAL_ERROR_REPLY_PLAIN, INTERNAL_ERROR_REPLY } = await core(t);
+  const { runAgentTurn } = await core(t);
   langBehavior = { mode: 'value', value: 'auto' };
   styleBehavior = { mode: 'value', value: 'plain' };
   // Contrive a successful turn whose real answer text happens to equal the
@@ -238,8 +251,7 @@ test('SECURITY: the plain substitution never fires when outcome.ok === true, eve
 });
 
 test('SECURITY: when getResponseStyle rejects during a turn, all four failure fallbacks still return their English default rather than throwing (issue #430, fail-open per #52)', async (t) => {
-  const { runAgentTurn, INTERNAL_ERROR_REPLY, MAX_TURNS_REPLY, TURN_FAILED_REPLY } = await core(t);
-  const { USAGE_LIMIT_REPLY } = await import('../src/base/agent/upstreamFailure.js');
+  const { runAgentTurn } = await core(t);
   langBehavior = { mode: 'value', value: 'auto' };
   styleBehavior = { mode: 'throw' };
 

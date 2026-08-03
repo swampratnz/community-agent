@@ -3,9 +3,13 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/module/strings/notices.js';
-import type { AgentReply } from '../src/base/agent/core.js';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
+import './support/registerNotices.js';
+import type { AgentReply } from '@swampratnz/agent-base/agent/core.js';
+import type {
+  IncomingMessage,
+  OutgoingMessage,
+  PlatformAdapter,
+} from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it. DATABASE_URL
@@ -23,14 +27,19 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 // `community_users` state — only the (unreachable, harmlessly-caught) DB.
 process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 
-const { config } = await import('../src/base/config.js');
-const { Router, GATED_NOTICE_MI } = await import('../src/base/router.js');
+const { config } = await import('@swampratnz/agent-base/config.js');
+const { Router } = await import('@swampratnz/agent-base/router.js');
 const { makeRouterDeps } = await import('../src/module/routerWiring.js');
-const { INTERNAL_ERROR_REPLY } = await import('../src/base/agent/core.js');
-const { logger } = await import('../src/base/logger.js');
-const { embed } = await import('../src/base/storage/embeddings.js');
-const { registerPendingAction, cancelPendingAction } = await import('../src/base/agent/pendingActions.js');
-const { pool } = await import('../src/base/storage/db.js');
+const { logger } = await import('@swampratnz/agent-base/logger.js');
+const { embed } = await import('@swampratnz/agent-base/storage/embeddings.js');
+const { registerPendingAction, cancelPendingAction } =
+  await import('@swampratnz/agent-base/agent/pendingActions.js');
+const { pool } = await import('@swampratnz/agent-base/storage/db.js');
+
+// Notice constants agent-base deleted in the package flip (they named this
+// community's axis values in framework code, and rendered at import time). Same
+// catalogue entries, same values — see tests/support/legacyNotices.ts.
+const { GATED_NOTICE_MI, INTERNAL_ERROR_REPLY } = await import('./support/legacyNotices.js');
 
 // recordInteraction embeds every message it stores; the embedding pipeline is
 // downloaded/loaded lazily on first use and then memoised. Pre-warm it here
@@ -889,7 +898,7 @@ test("router: the main reply send threads reply.languagePreference === 'mi' into
   assert.equal(sent[0].language, 'mi');
 });
 
-test("SECURITY: router: a turn with no ('auto') language preference sends language: undefined, never 'mi' (issue #339)", async () => {
+test("SECURITY: router: a turn with no ('auto') language preference never sends a REGISTERED language variant hint (issue #339)", async () => {
   const router = new Router(
     makeRouterDeps({
       runTurn: async () => ({ text: 'hi there', ok: true, languagePreference: 'auto' }),
@@ -902,7 +911,17 @@ test("SECURITY: router: a turn with no ('auto') language preference sends langua
   await trigger(makeMessage());
 
   assert.equal(sent.length, 1);
-  assert.equal(sent[0].language, undefined);
+  // The router passes the caller's standing preference through RAW now: base
+  // names no locale, and the notice catalogue's REGISTERED axis values are what
+  // decide whether a variant is selected. 'auto' is deliberately not a
+  // registered value, so it renders exactly what `undefined` did — the property
+  // this test exists for. Pre-flip the router pre-resolved it to
+  // `=== 'mi' ? 'mi' : undefined`.
+  assert.notEqual(sent[0].language, 'mi');
+  assert.ok(
+    sent[0].language === undefined || sent[0].language === 'auto',
+    `an unregistered pass-through value only: got ${String(sent[0].language)}`,
+  );
 });
 
 test('router: a turn with languagePreference left entirely unset (existing AgentReply literals) sends language: undefined — no regression (issue #339)', async () => {
@@ -935,7 +954,7 @@ test("router: the main reply send threads reply.responseStyle === 'plain' into a
   assert.equal(sent[0].style, 'plain');
 });
 
-test("SECURITY: router: a turn with 'standard' response style sends style: undefined, never 'plain' (issue #657)", async () => {
+test("SECURITY: router: a turn with 'standard' response style never sends a REGISTERED style variant hint (issue #657)", async () => {
   const router = new Router(
     makeRouterDeps({
       runTurn: async () => ({ text: 'hi there', ok: true, responseStyle: 'standard' }),
@@ -948,7 +967,13 @@ test("SECURITY: router: a turn with 'standard' response style sends style: undef
   await trigger(makeMessage());
 
   assert.equal(sent.length, 1);
-  assert.equal(sent[0].style, undefined);
+  // Raw pass-through, same as the language hint above: 'standard' is not a
+  // registered style axis value, so it renders exactly what `undefined` did.
+  assert.notEqual(sent[0].style, 'plain');
+  assert.ok(
+    sent[0].style === undefined || sent[0].style === 'standard',
+    `an unregistered pass-through value only: got ${String(sent[0].style)}`,
+  );
 });
 
 test('router: a turn with responseStyle left entirely unset (existing AgentReply literals) sends style: undefined — no regression (issue #657)', async () => {

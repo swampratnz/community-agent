@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/module/strings/notices.js';
-import type { OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
+import './support/registerNotices.js';
+import type { OutgoingMessage, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -29,21 +29,21 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS = 'super-1';
 process.env.SUPER_ADMIN_WHATSAPP_NUMBERS ??= 'admin-open,admin-closed';
 
-const { WindowClosedError } = await import('../src/base/platforms/whatsapp/cloudAdapter.js');
+const { WindowClosedError } = await import('@swampratnz/agent-base/platforms/whatsapp/cloudAdapter.js');
 const {
   formatUsageCostDigestMessage,
   formatCacheHitRateTrendLine,
   makeDefaultUsageCostDigestRun,
   startUsageCostDigest,
 } = await import('../src/module/usageCostDigest.js');
-const { pool, closeDb } = await import('../src/base/storage/db.js');
+const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
 const {
   wasUsageCostDigestSentRecently,
   getLastUsageCostDigestTotal,
   getLastUsageCostDigestCacheHitRate,
   recordUsageCostDigestSent,
   upsertMember,
-} = await import('../src/base/storage/repository.js');
+} = await import('@swampratnz/agent-base/storage/repository.js');
 
 const NO_CACHE_ACTIVITY = { readTokens: 0, creationTokens: 0 };
 

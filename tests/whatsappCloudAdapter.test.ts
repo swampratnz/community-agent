@@ -11,10 +11,10 @@ import {
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/module/strings/notices.js';
+import './support/registerNotices.js';
 import { EventEmitter } from 'node:events';
 import type { IncomingMessage as HttpRequest, ServerResponse } from 'node:http';
-import type { CloudInboundMessage } from '../src/base/platforms/whatsapp/cloudWire.js';
+import type { CloudInboundMessage } from '@swampratnz/agent-base/platforms/whatsapp/cloudWire.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // (including WHATSAPP_PROVIDER=cloud config) before importing anything that
@@ -32,10 +32,14 @@ process.env.WHATSAPP_CLOUD_VERIFY_TOKEN ??= 'test-verify-token';
 process.env.WHATSAPP_CLOUD_APP_SECRET ??= 'test-app-secret';
 
 const { WhatsAppCloudAdapter, WindowClosedError } =
-  await import('../src/base/platforms/whatsapp/cloudAdapter.js');
-const { config } = await import('../src/base/config.js');
-const { pool } = await import('../src/base/storage/db.js');
-const { resetPolicyCacheForTests } = await import('../src/base/storage/policyStore.js');
+  await import('@swampratnz/agent-base/platforms/whatsapp/cloudAdapter.js');
+const { config } = await import('@swampratnz/agent-base/config.js');
+const { pool } = await import('@swampratnz/agent-base/storage/db.js');
+const { resetPolicyCacheForTests } = await import('@swampratnz/agent-base/storage/policyStore.js');
+await import('./support/registerToolRegistry.js');
+// The community policy keys (guidelines/welcome message) — the manifest's
+// `policyKeys` registration in production (src/module/agentModule.ts).
+await import('./support/registerPolicyKeys.js');
 const { buildToolServer } = await import('../src/module/agent/tools.js');
 
 /**

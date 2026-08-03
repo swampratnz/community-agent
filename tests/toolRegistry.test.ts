@@ -9,13 +9,14 @@ process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 
-const { closeDb } = await import('../src/base/storage/db.js');
-const { config } = await import('../src/base/config.js');
+const { closeDb } = await import('@swampratnz/agent-base/storage/db.js');
+const { config } = await import('@swampratnz/agent-base/config.js');
+await import('./support/registerToolRegistry.js');
 const { TOOL_REGISTRY, flaggedToolPredicates } = await import('../src/module/agent/tools/index.js');
 const { buildToolServer } = await import('../src/module/agent/tools.js');
 const { MEMBER_TOOLS, ADMIN_TOOLS, SUPER_ADMIN_TOOLS, toolsForRole } =
-  await import('../src/base/auth/rbac.js');
-const { filterFeatureFlaggedTools } = await import('../src/base/agent/core.js');
+  await import('@swampratnz/agent-base/auth/rbac.js');
+const { filterFeatureFlaggedTools } = await import('@swampratnz/agent-base/agent/core.js');
 
 after(async () => {
   await closeDb();
@@ -52,7 +53,7 @@ test('registry names are unique, exactly 117 defs, and every def is registered o
     performAdminAction: async () => {
       throw new Error('not implemented in stub');
     },
-  } as unknown as import('../src/base/platforms/types.js').PlatformAdapter;
+  } as unknown as import('@swampratnz/agent-base/platforms/types.js').PlatformAdapter;
   const server = buildToolServer(
     {
       platform: 'discord',

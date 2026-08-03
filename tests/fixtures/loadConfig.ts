@@ -5,6 +5,6 @@
 // config on success so a caller can assert on values that depend on an env
 // combination the shared test-file process can't reproduce (config.js
 // resolves once per process, at import time).
-import { config } from '../../src/base/config.js';
+import { config } from '@swampratnz/agent-base/config.js';
 
 console.log(JSON.stringify(config));

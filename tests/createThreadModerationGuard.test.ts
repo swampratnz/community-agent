@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { PlatformAdapter } from '../src/base/platforms/types.js';
+import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
 // create_thread's defensive self-refuse guard (issue #229 adversarial review:
 // a bot-created thread must never open a space moderation wouldn't scan)
@@ -24,6 +24,7 @@ const skip = hasDb
   ? false
   : 'DATABASE_URL not set — skipping DB-integration tests (CLAUDE.md: exercise against a local Postgres 16 + pgvector)';
 
+await import('./support/registerToolRegistry.js');
 const { buildToolServer } = await import('../src/module/agent/tools.js');
 
 function stubAdapter(
