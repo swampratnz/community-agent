@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { shouldNotifyBudgetCheckFailed } from '../src/budgetCheckFailureNotice.js';
+import { shouldNotifyBudgetCheckFailed } from '../src/base/budgetCheckFailureNotice.js';
 
 const WINDOW_MS = 900_000;
 

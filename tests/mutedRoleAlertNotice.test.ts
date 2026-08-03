@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { shouldNotifyMutedRoleOverwriteFailed } from '../src/mutedRoleAlertNotice.js';
+import { shouldNotifyMutedRoleOverwriteFailed } from '../src/base/mutedRoleAlertNotice.js';
 
 const WINDOW_MS = 900_000;
 

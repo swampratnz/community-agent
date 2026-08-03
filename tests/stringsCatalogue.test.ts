@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { selectNoticeVariant, type NoticeValue } from '../src/strings/catalogue.js';
-import { NOTICE_AXES, NOTICE_ENTRIES, notice, type NoticeId } from '../src/strings/notices.js';
+import { selectNoticeVariant, type NoticeValue } from '../src/base/strings/catalogue.js';
+import { NOTICE_AXES, NOTICE_ENTRIES, notice, type NoticeId } from '../src/module/strings/notices.js';
 // Leaf notice modules only (no config/DB import chain), to prove the
 // zero-churn barrel discipline: the old exported constants are derived from
 // the catalogue and stay identical.
@@ -10,13 +10,13 @@ import {
   RATE_LIMIT_NOTICE_TEXT,
   RATE_LIMIT_NOTICE_TEXT_MI,
   RATE_LIMIT_NOTICE_TEXT_PLAIN,
-} from '../src/rateLimitNotice.js';
-import { PAUSE_NOTICE_TEXT, PAUSE_NOTICE_TEXT_MI, PAUSE_NOTICE_TEXT_PLAIN } from '../src/pauseNotice.js';
+} from '../src/base/rateLimitNotice.js';
+import { PAUSE_NOTICE_TEXT, PAUSE_NOTICE_TEXT_MI, PAUSE_NOTICE_TEXT_PLAIN } from '../src/base/pauseNotice.js';
 import {
   DAILY_REPLY_BUDGET_WARNING_TEXT,
   DAILY_REPLY_BUDGET_WARNING_TEXT_MI,
   DAILY_REPLY_BUDGET_WARNING_TEXT_PLAIN,
-} from '../src/dailyReplyBudgetWarning.js';
+} from '../src/base/dailyReplyBudgetWarning.js';
 import {
   USAGE_LIMIT_REPLY,
   USAGE_LIMIT_REPLY_ADMIN_NOTIFIED,
@@ -24,7 +24,7 @@ import {
   USAGE_LIMIT_REPLY_ADMIN_NOTIFIED_PLAIN,
   USAGE_LIMIT_REPLY_MI,
   USAGE_LIMIT_REPLY_PLAIN,
-} from '../src/agent/upstreamFailure.js';
+} from '../src/base/agent/upstreamFailure.js';
 
 /**
  * Representative arguments for every template (function-valued) entry, so

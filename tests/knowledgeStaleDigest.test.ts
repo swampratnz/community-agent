@@ -1,6 +1,6 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { PlatformAdapter } from '../src/platforms/types.js';
+import type { PlatformAdapter } from '../src/base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -21,16 +21,16 @@ const skip = hasDb
   ? false
   : 'DATABASE_URL not set — skipping DB-integration tests (CLAUDE.md: exercise against a local Postgres 16 + pgvector)';
 
-const { pool, closeDb } = await import('../src/storage/db.js');
-const { config } = await import('../src/config.js');
+const { pool, closeDb } = await import('../src/base/storage/db.js');
+const { config } = await import('../src/base/config.js');
 const {
   upsertMember,
   saveKnowledge,
   countAccessRequests,
   countPendingSuggestions,
   countPendingKnowledgeCandidates,
-} = await import('../src/storage/repository.js');
-const { runAdminDigestOnce } = await import('../src/adminDigest.js');
+} = await import('../src/base/storage/repository.js');
+const { runAdminDigestOnce } = await import('../src/module/adminDigest.js');
 
 const RUN = `t${Date.now()}${Math.floor(Math.random() * 1e6)}`;
 

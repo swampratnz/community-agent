@@ -3,17 +3,17 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/strings/notices.js';
-import type { CallerContext } from '../src/auth/rbac.js';
-import type { OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+import '../src/module/strings/notices.js';
+import type { CallerContext } from '../src/base/auth/rbac.js';
+import type { OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
 // Community content registrations (prompt sections + persona roster) — the
 // composition-root contract: src/index.ts registers these in production, so
 // tests that assemble prompts register them explicitly here.
-import '../src/agent/communityPromptSections.js';
-import '../src/agent/personas.js';
+import '../src/module/agent/communityPromptSections.js';
+import '../src/module/agent/personas.js';
 // Community turn-state registration — the finalizer that surfaces this
 // module's keys on AgentReply.turnState (src/index.ts loads it in production).
-import '../src/agent/communityTurnState.js';
+import '../src/module/agent/communityTurnState.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -28,7 +28,7 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 // The tool registry's module-scope registrations (tool tiers, tool-server
 // parts, feature-flag predicates) — the composition-root contract, matching
 // tests/rbac.test.ts.
-await import('../src/agent/tools/index.js');
+await import('../src/module/agent/tools/index.js');
 
 type ToolCallScript =
   | { kind: 'none' }
@@ -79,17 +79,17 @@ function mockQuery(params: { options: { mcpServers: Record<string, unknown> } })
   })();
 }
 
-// query() is a static import inside src/agent/core.ts, so once the module
+// query() is a static import inside src/base/agent/core.ts, so once the module
 // has been dynamically imported anywhere in this process the binding is
 // fixed — a later t.mock.module call can't retarget it (see
 // tests/agentCoreMaxTurns.test.ts for the same trap). Install the mock once
 // and reuse the cached import; `script` is mutated per-test.
-let corePromise: Promise<typeof import('../src/agent/core.js')> | null = null;
+let corePromise: Promise<typeof import('../src/base/agent/core.js')> | null = null;
 async function core(t: { mock: { module: (specifier: string, opts: unknown) => void } }) {
   if (!corePromise) {
     const realSdk = await import('@anthropic-ai/claude-agent-sdk');
     t.mock.module('@anthropic-ai/claude-agent-sdk', { namedExports: { ...realSdk, query: mockQuery } });
-    corePromise = import('../src/agent/core.js');
+    corePromise = import('../src/base/agent/core.js');
   }
   return corePromise;
 }

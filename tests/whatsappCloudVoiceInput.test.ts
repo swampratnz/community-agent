@@ -2,14 +2,14 @@ import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 // The adapters take their community text pack as a required constructor
 // parameter now (agent-base plan item 6) — production hands it over in
-// src/platforms/factories.ts, so these constructions pass the same pack.
-import { WHATSAPP_CLOUD_TEXT_PACK } from '../src/platforms/textPacks.js';
+// src/module/platforms/factories.ts, so these constructions pass the same pack.
+import { WHATSAPP_CLOUD_TEXT_PACK } from '../src/module/platforms/textPacks.js';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/strings/notices.js';
-import type { IncomingMessage } from '../src/platforms/types.js';
-import type { CloudInboundMessage } from '../src/platforms/whatsapp/cloudWire.js';
+import '../src/module/strings/notices.js';
+import type { IncomingMessage } from '../src/base/platforms/types.js';
+import type { CloudInboundMessage } from '../src/base/platforms/whatsapp/cloudWire.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -24,9 +24,9 @@ process.env.WHATSAPP_CLOUD_ACCESS_TOKEN ??= 'test-access-token';
 process.env.WHATSAPP_CLOUD_VERIFY_TOKEN ??= 'test-verify-token';
 process.env.WHATSAPP_CLOUD_APP_SECRET ??= 'test-app-secret';
 
-const { WhatsAppCloudAdapter } = await import('../src/platforms/whatsapp/cloudAdapter.js');
-const { config } = await import('../src/config.js');
-const { pool } = await import('../src/storage/db.js');
+const { WhatsAppCloudAdapter } = await import('../src/base/platforms/whatsapp/cloudAdapter.js');
+const { config } = await import('../src/base/config.js');
+const { pool } = await import('../src/base/storage/db.js');
 
 type Adapter = InstanceType<typeof WhatsAppCloudAdapter>;
 

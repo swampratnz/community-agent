@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/strings/notices.js';
+import '../src/module/strings/notices.js';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,13 +21,13 @@ process.env.AGENT_SKILLS_ENABLED = 'true';
 // The tool registry's module-scope registrations (tool tiers, tool-server
 // parts, feature-flag predicates) — the composition-root contract, matching
 // tests/rbac.test.ts.
-await import('../src/agent/tools/index.js');
+await import('../src/module/agent/tools/index.js');
 
-const { buildQueryOptions } = await import('../src/agent/core.js');
+const { buildQueryOptions } = await import('../src/base/agent/core.js');
 
 const SKILL_PATH = join(
   dirname(fileURLToPath(import.meta.url)),
-  '../src/agent/skills/getting-started/SKILL.md',
+  '../src/module/agent/skills/getting-started/SKILL.md',
 );
 const SKILL_BODY = readFileSync(SKILL_PATH, 'utf8');
 

@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/strings/notices.js';
+import '../src/module/strings/notices.js';
 
-import { PAUSE_NOTICE_TEXT, shouldNotifyPaused } from '../src/pauseNotice.js';
+import { PAUSE_NOTICE_TEXT, shouldNotifyPaused } from '../src/base/pauseNotice.js';
 
 const WINDOW_MS = 3_600_000;
 

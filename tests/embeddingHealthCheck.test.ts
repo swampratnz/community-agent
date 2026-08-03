@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+import type { OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -23,10 +23,10 @@ process.env.SUPER_ADMIN_DISCORD_IDS = 'super-1';
 let embedShouldFail = false;
 let lastProbe: string | null = null;
 
-let bgJobsPromise: Promise<typeof import('../src/backgroundJobs.js')> | null = null;
+let bgJobsPromise: Promise<typeof import('../src/module/backgroundJobs.js')> | null = null;
 function bgJobs(t: { mock: { module: (specifier: string, opts: unknown) => void } }) {
   if (!bgJobsPromise) {
-    t.mock.module('../src/storage/embeddings.js', {
+    t.mock.module('../src/base/storage/embeddings.js', {
       namedExports: {
         embed: async (text: string) => {
           lastProbe = text;
@@ -35,7 +35,7 @@ function bgJobs(t: { mock: { module: (specifier: string, opts: unknown) => void 
         },
       },
     });
-    bgJobsPromise = import('../src/backgroundJobs.js');
+    bgJobsPromise = import('../src/module/backgroundJobs.js');
   }
   return bgJobsPromise;
 }

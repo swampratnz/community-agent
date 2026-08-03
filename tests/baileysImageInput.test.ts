@@ -2,13 +2,13 @@ import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 // The adapters take their community text pack as a required constructor
 // parameter now (agent-base plan item 6) — production hands it over in
-// src/platforms/factories.ts, so these constructions pass the same pack.
-import { BAILEYS_TEXT_PACK } from '../src/platforms/textPacks.js';
+// src/module/platforms/factories.ts, so these constructions pass the same pack.
+import { BAILEYS_TEXT_PACK } from '../src/module/platforms/textPacks.js';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/strings/notices.js';
-import type { IncomingMessage } from '../src/platforms/types.js';
+import '../src/module/strings/notices.js';
+import type { IncomingMessage } from '../src/base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -21,9 +21,9 @@ process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 
-const { BaileysAdapter } = await import('../src/platforms/whatsapp/baileysAdapter.js');
-const { config } = await import('../src/config.js');
-const { pool } = await import('../src/storage/db.js');
+const { BaileysAdapter } = await import('../src/base/platforms/whatsapp/baileysAdapter.js');
+const { config } = await import('../src/base/config.js');
+const { pool } = await import('../src/base/storage/db.js');
 
 type Adapter = InstanceType<typeof BaileysAdapter>;
 

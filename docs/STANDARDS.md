@@ -27,9 +27,9 @@ git rm --cached -r . && git reset --hard
 
 - `npm run typecheck`, `npm test`, and `npm run build` must all be green
   before a PR is opened or updated (see root `CLAUDE.md`).
-- If your change touches a gated area — tool gating (`src/auth/`), the
-  CONFIRM flow (`src/agent/pendingActions.ts`), outbound filtering
-  (`src/agent/outbound.ts`), or anything else on the security spine — extend
+- If your change touches a gated area — tool gating (`src/base/auth/`), the
+  CONFIRM flow (`src/base/agent/pendingActions.ts`), outbound filtering
+  (`src/base/agent/outbound.ts`), or anything else on the security spine — extend
   the matching test file under `tests/` (e.g. `rbac.test.ts`,
   `pendingActions.test.ts`, `outbound.test.ts`) rather than relying on
   incidental coverage. Don't weaken or delete an existing security assertion
@@ -88,7 +88,7 @@ wrong.
 
 - No model identifiers in commit messages, PR titles/bodies, or code.
 - Never commit secrets: `.env` is git-ignored; `whatsapp-auth/` and
-  `src/auth/` are distinct — the latter is source and stays tracked.
+  `src/base/auth/` are distinct — the latter is source and stays tracked.
 - Every PR uses the template (`.github/pull_request_template.md`): Summary,
   Security / privacy impact, How verified. Keep those sections scoped to the
   diff — no secrets, tokens, env values, or hostnames in a PR body.

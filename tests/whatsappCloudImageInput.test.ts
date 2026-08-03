@@ -2,14 +2,14 @@ import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 // The adapters take their community text pack as a required constructor
 // parameter now (agent-base plan item 6) — production hands it over in
-// src/platforms/factories.ts, so these constructions pass the same pack.
-import { WHATSAPP_CLOUD_TEXT_PACK } from '../src/platforms/textPacks.js';
+// src/module/platforms/factories.ts, so these constructions pass the same pack.
+import { WHATSAPP_CLOUD_TEXT_PACK } from '../src/module/platforms/textPacks.js';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/strings/notices.js';
-import type { IncomingMessage } from '../src/platforms/types.js';
-import type { CloudInboundMessage } from '../src/platforms/whatsapp/cloudWire.js';
+import '../src/module/strings/notices.js';
+import type { IncomingMessage } from '../src/base/platforms/types.js';
+import type { CloudInboundMessage } from '../src/base/platforms/whatsapp/cloudWire.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -27,13 +27,14 @@ process.env.WHATSAPP_CLOUD_ACCESS_TOKEN ??= 'test-access-token';
 process.env.WHATSAPP_CLOUD_VERIFY_TOKEN ??= 'test-verify-token';
 process.env.WHATSAPP_CLOUD_APP_SECRET ??= 'test-app-secret';
 
-const { WhatsAppCloudAdapter } = await import('../src/platforms/whatsapp/cloudAdapter.js');
-const { config } = await import('../src/config.js');
-const { pool } = await import('../src/storage/db.js');
+const { WhatsAppCloudAdapter } = await import('../src/base/platforms/whatsapp/cloudAdapter.js');
+const { config } = await import('../src/base/config.js');
+const { pool } = await import('../src/base/storage/db.js');
 // The tier lists are registered by the tool registry at ITS module scope
 // (rbac.ts fails closed until then), so import the registry first.
-await import('../src/agent/tools/index.js');
-const { toolsForRole, MEMBER_TOOLS, ADMIN_TOOLS, SUPER_ADMIN_TOOLS } = await import('../src/auth/rbac.js');
+await import('../src/module/agent/tools/index.js');
+const { toolsForRole, MEMBER_TOOLS, ADMIN_TOOLS, SUPER_ADMIN_TOOLS } =
+  await import('../src/base/auth/rbac.js');
 
 type Adapter = InstanceType<typeof WhatsAppCloudAdapter>;
 
@@ -169,7 +170,7 @@ test('SECURITY: with WHATSAPP_CLOUD_IMAGE_INPUT_ENABLED unset/false, an inbound 
 });
 
 test('SECURITY: caption survives extractMessages onto the new image field and is promoted to `text` only once the image is accepted — never discarded, never silently swapped (acceptance criterion 2)', async () => {
-  const { extractMessages } = await import('../src/platforms/whatsapp/cloudWire.js');
+  const { extractMessages } = await import('../src/base/platforms/whatsapp/cloudWire.js');
   const wirePayload = {
     object: 'whatsapp_business_account',
     entry: [
@@ -380,7 +381,7 @@ test("SECURITY: WHATSAPP_CLOUD_IMAGE_INPUT_ENABLED adds no tool and does not ele
     assert.deepEqual(toolsForRole('member'), before.member);
     assert.deepEqual(toolsForRole('admin'), before.admin);
     assert.deepEqual(toolsForRole('super_admin'), before.super_admin);
-    // toolsForRole is a pure role -> tool-list mapping (src/auth/rbac.ts) with
+    // toolsForRole is a pure role -> tool-list mapping (src/base/auth/rbac.ts) with
     // no config import at all, so this also pins the tool-surface SHAPE for
     // every tier, not just that it's unchanged by the flag.
     assert.deepEqual(toolsForRole('guest'), [...MEMBER_TOOLS]);

@@ -3,14 +3,14 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/strings/notices.js';
-import type { CallerContext } from '../src/auth/rbac.js';
-import type { OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+import '../src/module/strings/notices.js';
+import type { CallerContext } from '../src/base/auth/rbac.js';
+import type { OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
 // Community content registrations (prompt sections + persona roster) — the
 // composition-root contract: src/index.ts registers these in production, so
 // tests that assemble prompts register them explicitly here.
-import '../src/agent/communityPromptSections.js';
-import '../src/agent/personas.js';
+import '../src/module/agent/communityPromptSections.js';
+import '../src/module/agent/personas.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it. Separate process
@@ -29,7 +29,7 @@ process.env.SUPER_ADMIN_WHATSAPP_NUMBERS = 'super-wa-1,super-wa-2';
 // The tool registry's module-scope registrations (tool tiers, tool-server
 // parts, feature-flag predicates) — the composition-root contract, matching
 // tests/rbac.test.ts.
-await import('../src/agent/tools/index.js');
+await import('../src/module/agent/tools/index.js');
 
 type QueryBehavior = { mode: 'throw'; message: string } | { mode: 'success'; text: string };
 let behavior: QueryBehavior = { mode: 'success', text: 'ok' };
@@ -49,14 +49,14 @@ function mockQuery() {
 
 // See tests/agentCoreUsageLimit.test.ts for why the mock must be installed
 // once, before core.js's first dynamic import, and reused thereafter.
-let corePromise: Promise<typeof import('../src/agent/core.js')> | null = null;
+let corePromise: Promise<typeof import('../src/base/agent/core.js')> | null = null;
 async function core(t: { mock: { module: (specifier: string, opts: unknown) => void } }) {
   if (!corePromise) {
     // Preserve the real createSdkMcpServer/tool (agent/tools.ts needs them to
     // build the MCP tool server) and override only query.
     const real = await import('@anthropic-ai/claude-agent-sdk');
     t.mock.module('@anthropic-ai/claude-agent-sdk', { namedExports: { ...real, query: mockQuery } });
-    corePromise = import('../src/agent/core.js');
+    corePromise = import('../src/base/agent/core.js');
   }
   return corePromise;
 }
@@ -107,7 +107,7 @@ function flush(): Promise<void> {
 
 test('runAgentTurn: a usage-limit/overload error DMs super admins once, then stays silent while it persists, and re-arms on recovery (issue #131)', async (t) => {
   const { runAgentTurn } = await core(t);
-  const { USAGE_LIMIT_REPLY_ADMIN_NOTIFIED } = await import('../src/agent/upstreamFailure.js');
+  const { USAGE_LIMIT_REPLY_ADMIN_NOTIFIED } = await import('../src/base/agent/upstreamFailure.js');
   const { adapter, dms } = makeAdapter();
   const caller = makeCaller();
 
@@ -178,7 +178,7 @@ test('runAgentTurn: a usage-limit failure on a Discord-originated turn also DMs 
 
 test('runAgentTurn: an unregistered or disconnected second platform is silently skipped — no throw, no DM there, member-facing reply unchanged (issue #325)', async (t) => {
   const { runAgentTurn } = await core(t);
-  const { USAGE_LIMIT_REPLY_ADMIN_NOTIFIED } = await import('../src/agent/upstreamFailure.js');
+  const { USAGE_LIMIT_REPLY_ADMIN_NOTIFIED } = await import('../src/base/agent/upstreamFailure.js');
   const caller = makeCaller();
 
   // (a) getAdapter resolves nothing for whatsapp — platform unregistered in this deployment.
@@ -227,7 +227,7 @@ test('runAgentTurn: an unregistered or disconnected second platform is silently 
 
 test("SECURITY: the all-platform usage-limit alert only ever reaches ids in that platform's configured superAdminIds(), and only for a connected, resolvable adapter (issue #325)", async (t) => {
   const { runAgentTurn } = await core(t);
-  const { superAdminIds } = await import('../src/auth/roles.js');
+  const { superAdminIds } = await import('../src/base/auth/roles.js');
   const { adapter, dms } = makeAdapter('discord');
   const { adapter: waAdapter, dms: waDms } = makeAdapter('whatsapp');
   const { dms: unregisteredDms } = makeAdapter('discord'); // never returned by getAdapter — must never receive anything
@@ -264,7 +264,7 @@ test("SECURITY: the all-platform usage-limit alert only ever reaches ids in that
 test('runAgentTurn: a usage-limit alert with EVERY platform disconnected is queued exactly ONCE (not once per platform), and no send is attempted anywhere (issue #593)', async (t) => {
   const { runAgentTurn } = await core(t);
   const { getPendingAlertsForTests, resetPendingAlertsForTests } =
-    await import('../src/pendingAlertQueue.js');
+    await import('../src/base/pendingAlertQueue.js');
   resetPendingAlertsForTests();
   const { adapter, dms } = makeAdapter('discord', false);
   const { adapter: waAdapter, dms: waDms } = makeAdapter('whatsapp', false);
@@ -296,7 +296,7 @@ test('runAgentTurn: a usage-limit alert with EVERY platform disconnected is queu
 test("SECURITY: agent/core.ts's usage-limit alert queues an entry with no `recipients` field — issue #625 only added an opt-in recipient set for notifyAdmins; this producer is unaffected and still flushes to superAdminIds()", async (t) => {
   const { runAgentTurn } = await core(t);
   const { getPendingAlertEntriesForTests, resetPendingAlertsForTests } =
-    await import('../src/pendingAlertQueue.js');
+    await import('../src/base/pendingAlertQueue.js');
   resetPendingAlertsForTests();
   const { adapter } = makeAdapter('discord', false);
   const { adapter: waAdapter } = makeAdapter('whatsapp', false);
@@ -322,7 +322,7 @@ test("SECURITY: agent/core.ts's usage-limit alert queues an entry with no `recip
 test('runAgentTurn: with at least one connected platform, behaviour stays byte-identical to before #593 — live send, nothing queued', async (t) => {
   const { runAgentTurn } = await core(t);
   const { getPendingAlertsForTests, resetPendingAlertsForTests } =
-    await import('../src/pendingAlertQueue.js');
+    await import('../src/base/pendingAlertQueue.js');
   resetPendingAlertsForTests();
   const { adapter, dms } = makeAdapter('discord', true);
   const caller = makeCaller();
@@ -349,7 +349,7 @@ test('runAgentTurn: with at least one connected platform, behaviour stays byte-i
 test('SECURITY: the usage-limit alert queues the message byte-identical to its live-send text, at "system" priority, surviving a low-priority flood (issue #593)', async (t) => {
   const { runAgentTurn } = await core(t);
   const { getPendingAlertsForTests, resetPendingAlertsForTests, queuePendingAlert, PENDING_ALERT_QUEUE_CAP } =
-    await import('../src/pendingAlertQueue.js');
+    await import('../src/base/pendingAlertQueue.js');
   resetPendingAlertsForTests();
   const caller = makeCaller();
 

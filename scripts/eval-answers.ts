@@ -5,7 +5,7 @@
  * `tests/knowledgeEval.test.ts` (issue #62) proves `knowledge_search`
  * *retrieval* precision@K against a curated query set — this proves the
  * other half: that the model turns a retrieved entry into a correctly
- * grounded reply. It calls the real pipeline, `runAgentTurn` (src/agent/
+ * grounded reply. It calls the real pipeline, `runAgentTurn` (src/base/agent/
  * core.ts), through a stub `PlatformAdapter` whose `sendMessage` just
  * captures text instead of hitting Discord/WhatsApp, so it exercises the
  * actual system-prompt/tool-selection pipeline a member's message goes
@@ -43,12 +43,12 @@ if (!process.env.CLAUDE_CODE_OAUTH_TOKEN) {
   process.exit(0);
 }
 
-const { pool, closeDb } = await import('../src/storage/db.js');
-const { saveKnowledge } = await import('../src/storage/repository.js');
-const { runAgentTurn } = await import('../src/agent/core.js');
-type CallerContextType = import('../src/auth/rbac.js').CallerContext;
-type PlatformAdapterType = import('../src/platforms/types.js').PlatformAdapter;
-type OutgoingMessageType = import('../src/platforms/types.js').OutgoingMessage;
+const { pool, closeDb } = await import('../src/base/storage/db.js');
+const { saveKnowledge } = await import('../src/base/storage/repository.js');
+const { runAgentTurn } = await import('../src/base/agent/core.js');
+type CallerContextType = import('../src/base/auth/rbac.js').CallerContext;
+type PlatformAdapterType = import('../src/base/platforms/types.js').PlatformAdapter;
+type OutgoingMessageType = import('../src/base/platforms/types.js').OutgoingMessage;
 
 interface FixtureCase {
   question: string;

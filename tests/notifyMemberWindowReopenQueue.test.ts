@@ -2,9 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 // The adapters take their community text pack as a required constructor
 // parameter now (agent-base plan item 6) — production hands it over in
-// src/platforms/factories.ts, so these constructions pass the same pack.
-import { WHATSAPP_CLOUD_TEXT_PACK } from '../src/platforms/textPacks.js';
-import type { PlatformAdapter } from '../src/platforms/types.js';
+// src/module/platforms/factories.ts, so these constructions pass the same pack.
+import { WHATSAPP_CLOUD_TEXT_PACK } from '../src/module/platforms/textPacks.js';
+import type { PlatformAdapter } from '../src/base/platforms/types.js';
 
 // Issue #644: #602 gave notifySuperAdmins/notifyAdmins a recovery path for
 // the WhatsApp Cloud API's connected-but-this-recipient's-24h-window-is-
@@ -15,7 +15,7 @@ import type { PlatformAdapter } from '../src/platforms/types.js';
 // coverage to the MEMBER-facing resolution DMs that never got it:
 // notifyMemberApproved, notifySuggestionResolved, notifyReportResolved,
 // notifyAppealResolved, and (issue #703) notifyKnowledgeTipResolved (all in
-// src/agent/tools.ts).
+// src/module/agent/tools.ts).
 //
 // Unlike tools.ts's admin-alert path, none of these functions touch
 // listAdmins() or any other static repository import — they take the
@@ -34,8 +34,9 @@ const {
   notifyReportResolved,
   notifyAppealResolved,
   notifyKnowledgeTipResolved,
-} = await import('../src/agent/tools.js');
-const { WhatsAppCloudAdapter, WindowClosedError } = await import('../src/platforms/whatsapp/cloudAdapter.js');
+} = await import('../src/module/agent/tools.js');
+const { WhatsAppCloudAdapter, WindowClosedError } =
+  await import('../src/base/platforms/whatsapp/cloudAdapter.js');
 
 /**
  * Reflection helper into the REAL WhatsAppCloudAdapter's private

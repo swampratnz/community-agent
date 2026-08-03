@@ -1,5 +1,5 @@
-import { config } from './config.js';
-import { logger } from './logger.js';
+import { config } from './base/config.js';
+import { logger } from './base/logger.js';
 // Side-effect imports: the community content registrations (prompt sections
 // into promptSpine.ts's slot set, the turn-state finalizer into
 // agent/turnState.ts, the persona roster into personaRegistry.ts, the skills
@@ -14,26 +14,26 @@ import { logger } from './logger.js';
 // must land before any import whose subtree evaluates a notice consumer
 // (router.ts, agent/core.ts and the leaf notice modules derive exported
 // consts from `notice()` at their own module scope).
-import './strings/notices.js';
-import './storage/policies.js';
-import './moderation/badWords.js';
-import './agent/communityPromptSections.js';
-import './agent/communityTurnState.js';
-import './agent/personas.js';
-import './agent/enabledSkills.js';
-import './commands.js';
-import { installCrashHandlers } from './crashHandlers.js';
-import { configureSubscriptionAuth } from './agent/auth.js';
-import { Router } from './router.js';
-import { makeRouterDeps } from './routerWiring.js';
-import { closeDb, healthcheck } from './storage/db.js';
-import { verifyEmbeddingDim } from './storage/repository.js';
-import { JOB_REGISTRY } from './jobs/registry.js';
-import { startRegisteredJobs, stopRegisteredJobs } from './jobs/runner.js';
-import { startHealthServer } from './health.js';
-import { assertToolAvailabilityConsistent } from './platforms/registry.js';
-import { ADAPTER_FACTORIES, createConfiguredAdapters } from './platforms/factories.js';
-import { TOOL_REGISTRY } from './agent/tools/index.js';
+import './module/strings/notices.js';
+import './module/storage/policies.js';
+import './module/moderation/badWords.js';
+import './module/agent/communityPromptSections.js';
+import './module/agent/communityTurnState.js';
+import './module/agent/personas.js';
+import './module/agent/enabledSkills.js';
+import './module/commands.js';
+import { installCrashHandlers } from './base/crashHandlers.js';
+import { configureSubscriptionAuth } from './base/agent/auth.js';
+import { Router } from './base/router.js';
+import { makeRouterDeps } from './module/routerWiring.js';
+import { closeDb, healthcheck } from './base/storage/db.js';
+import { verifyEmbeddingDim } from './base/storage/repository.js';
+import { JOB_REGISTRY } from './module/jobs/registry.js';
+import { startRegisteredJobs, stopRegisteredJobs } from './base/jobs/runner.js';
+import { startHealthServer } from './base/health.js';
+import { assertToolAvailabilityConsistent } from './base/platforms/registry.js';
+import { ADAPTER_FACTORIES, createConfiguredAdapters } from './module/platforms/factories.js';
+import { TOOL_REGISTRY } from './module/agent/tools/index.js';
 
 async function main(): Promise<void> {
   logger.info('Starting Community Agent');

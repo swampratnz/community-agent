@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/strings/notices.js';
+import '../src/module/strings/notices.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -16,10 +16,10 @@ process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 // The tool registry's module-scope registrations (tool tiers, tool-server
 // parts, feature-flag predicates) — the composition-root contract, matching
 // tests/rbac.test.ts.
-await import('../src/agent/tools/index.js');
+await import('../src/module/agent/tools/index.js');
 
-const { config } = await import('../src/config.js');
-const { buildQueryOptions } = await import('../src/agent/core.js');
+const { config } = await import('../src/base/config.js');
+const { buildQueryOptions } = await import('../src/base/agent/core.js');
 
 type PreToolUseResult = {
   continue?: boolean;

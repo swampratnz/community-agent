@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/strings/notices.js';
+import '../src/module/strings/notices.js';
 
 // config.ts validates env at import time — gatedNotice.ts imports
 // storage/repository.js (for the real listAdminDisplayNames default), so it
@@ -22,7 +22,7 @@ const {
   makeGatedNoticeBuilder,
   renderGatedNotice,
   waitDaysSince,
-} = await import('../src/gatedNotice.js');
+} = await import('../src/base/gatedNotice.js');
 
 // Pure-renderer tests (acceptance criteria 2/3/4 for issue #360) — no DB, no
 // Router, mirroring rateLimitNotice.test.ts's pure-function unit tests.

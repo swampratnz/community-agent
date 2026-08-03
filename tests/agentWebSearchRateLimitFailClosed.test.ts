@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/strings/notices.js';
+import '../src/module/strings/notices.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -16,7 +16,7 @@ process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 // The tool registry's module-scope registrations (tool tiers, tool-server
 // parts, feature-flag predicates) — the composition-root contract, matching
 // tests/rbac.test.ts.
-await import('../src/agent/tools/index.js');
+await import('../src/module/agent/tools/index.js');
 
 test('SECURITY: AC-5 — a thrown error inside the WebSearch rate-limit check fails closed (denies), never lets the call through unbounded', async (t) => {
   // Mock BEFORE the first import of core.js — a later t.mock.module call
@@ -25,8 +25,8 @@ test('SECURITY: AC-5 — a thrown error inside the WebSearch rate-limit check fa
   // reserveWebSearchSlot, which is replaced with one that always throws, so
   // this exercises buildQueryOptions's own fail-closed try/catch rather than
   // any unverifiable SDK default behaviour on a hook exception.
-  const real = await import('../src/agent/webSearchGuard.js');
-  t.mock.module('../src/agent/webSearchGuard.js', {
+  const real = await import('../src/base/agent/webSearchGuard.js');
+  t.mock.module('../src/base/agent/webSearchGuard.js', {
     namedExports: {
       ...real,
       reserveWebSearchSlot: () => {
@@ -35,7 +35,7 @@ test('SECURITY: AC-5 — a thrown error inside the WebSearch rate-limit check fa
     },
   });
 
-  const { buildQueryOptions } = await import('../src/agent/core.js');
+  const { buildQueryOptions } = await import('../src/base/agent/core.js');
   const opts = buildQueryOptions('admin', 'prompt', {}, null, 'ws-cap-fail-closed') as {
     hooks?: {
       PreToolUse?: Array<{

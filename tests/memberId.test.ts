@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeMemberId, resolveWhatsappLid } from '../src/auth/memberId.js';
+import { normalizeMemberId, resolveWhatsappLid } from '../src/base/auth/memberId.js';
 
 test('accepts a valid WhatsApp E.164 number and strips a leading +', () => {
   assert.equal(normalizeMemberId('whatsapp', '64273938855'), '64273938855');

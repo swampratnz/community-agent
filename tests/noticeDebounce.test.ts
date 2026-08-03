@@ -3,14 +3,14 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/strings/notices.js';
+import '../src/module/strings/notices.js';
 
-import { shouldNotifyAfterWindow } from '../src/util/noticeDebounce.js';
-import { shouldNotifyRateLimited } from '../src/rateLimitNotice.js';
-import { shouldNotifyPaused } from '../src/pauseNotice.js';
-import { shouldNotifyBudgetCheckFailed } from '../src/budgetCheckFailureNotice.js';
-import { shouldNotifyMutedRoleOverwriteFailed } from '../src/mutedRoleAlertNotice.js';
-import { shouldNotify as shouldNotifyVoiceLanguageCaveat } from '../src/voiceLanguageCaveatNotice.js';
+import { shouldNotifyAfterWindow } from '../src/base/util/noticeDebounce.js';
+import { shouldNotifyRateLimited } from '../src/base/rateLimitNotice.js';
+import { shouldNotifyPaused } from '../src/base/pauseNotice.js';
+import { shouldNotifyBudgetCheckFailed } from '../src/base/budgetCheckFailureNotice.js';
+import { shouldNotifyMutedRoleOverwriteFailed } from '../src/base/mutedRoleAlertNotice.js';
+import { shouldNotify as shouldNotifyVoiceLanguageCaveat } from '../src/base/voiceLanguageCaveatNotice.js';
 
 const WINDOW_MS = 60_000;
 

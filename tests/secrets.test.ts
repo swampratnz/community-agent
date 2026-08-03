@@ -20,8 +20,8 @@ process.env.DEV_TEAM_AUTH_TOKEN ??= 'test-dev-team-token';
 // token when enabled) — runtimeSecrets() must cover it regardless (audit M2).
 process.env.GITHUB_ISSUE_TOKEN ??= 'github_pat_testtoken0123456789abcdef';
 
-const { runtimeSecrets } = await import('../src/agent/secrets.js');
-const { filterOutbound } = await import('../src/agent/outbound.js');
+const { runtimeSecrets } = await import('../src/base/agent/secrets.js');
+const { filterOutbound } = await import('../src/base/agent/outbound.js');
 
 test('SECURITY: runtimeSecrets() includes the WhatsApp Cloud app secret', () => {
   const secrets = runtimeSecrets();

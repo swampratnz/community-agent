@@ -2,12 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 // The adapters take their community text pack as a required constructor
 // parameter now (agent-base plan item 6) — production hands it over in
-// src/platforms/factories.ts, so these constructions pass the same pack.
-import { BAILEYS_TEXT_PACK } from '../src/platforms/textPacks.js';
+// src/module/platforms/factories.ts, so these constructions pass the same pack.
+import { BAILEYS_TEXT_PACK } from '../src/module/platforms/textPacks.js';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/strings/notices.js';
+import '../src/module/strings/notices.js';
 import { EventEmitter } from 'node:events';
 
 // Audit M5: the Baileys connection.update / messages.upsert handlers are wired
@@ -64,7 +64,7 @@ async function loadAdapter(t: { mock: { module: (specifier: string, opts: unknow
       proto: {},
     },
   });
-  const { BaileysAdapter } = await import('../src/platforms/whatsapp/baileysAdapter.js');
+  const { BaileysAdapter } = await import('../src/base/platforms/whatsapp/baileysAdapter.js');
   return {
     adapter: new BaileysAdapter(BAILEYS_TEXT_PACK) as unknown as {
       start: () => Promise<void>;

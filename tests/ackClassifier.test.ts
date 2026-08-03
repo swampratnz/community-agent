@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { isPureAcknowledgement } from '../src/ackClassifier.js';
+import { isPureAcknowledgement } from '../src/base/ackClassifier.js';
 
 test('isPureAcknowledgement: exact-match text acks', () => {
   assert.equal(isPureAcknowledgement('thanks'), true);

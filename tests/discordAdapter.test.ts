@@ -3,26 +3,30 @@ import assert from 'node:assert/strict';
 // The default bad-word list is community content registered at its own module
 // scope (src/index.ts imports it in production); the moderation wordlist fails
 // closed until then, and constructing a Discord adapter builds a Moderator.
-import '../src/moderation/badWords.js';
+import '../src/module/moderation/badWords.js';
 // The adapters take their community text pack as a required constructor
 // parameter now (agent-base plan item 6) — production hands it over in
-// src/platforms/factories.ts, so these constructions pass the same pack.
-import { DISCORD_TEXT_PACK, WELCOME_MESSAGE, WELCOME_MESSAGE_OPEN } from '../src/platforms/textPacks.js';
+// src/module/platforms/factories.ts, so these constructions pass the same pack.
+import {
+  DISCORD_TEXT_PACK,
+  WELCOME_MESSAGE,
+  WELCOME_MESSAGE_OPEN,
+} from '../src/module/platforms/textPacks.js';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/strings/notices.js';
+import '../src/module/strings/notices.js';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ChannelType, Events, GuildScheduledEventEntityType, GuildScheduledEventStatus } from 'discord.js';
-import type { IncomingMessage } from '../src/platforms/types.js';
-import { formatNzEventTime } from '../src/util/nzTime.js';
+import type { IncomingMessage } from '../src/base/platforms/types.js';
+import { formatNzEventTime } from '../src/base/util/nzTime.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it. DATABASE_URL
 // points nowhere; policy reads fail and fall back to defaults (see
-// src/storage/policies.ts), so no real DB is needed for this adapter-level
+// src/module/storage/policies.ts), so no real DB is needed for this adapter-level
 // test. Moderation is on so the mute-enforcement tests below (issue #171)
 // exercise their real gates instead of a hardcoded early return; the
 // DB-touching queries those gates need (member_warnings / community_users /
@@ -36,12 +40,12 @@ process.env.DISCORD_MODERATION_ENABLED ??= 'true';
 // Fixed allowlist for the assign/remove_community_role tests below (issue #232).
 process.env.DISCORD_ASSIGNABLE_ROLES ??= 'role-cosmetic-1,role-cosmetic-2';
 
-const { DiscordAdapter } = await import('../src/platforms/discord/adapter.js');
-const { config } = await import('../src/config.js');
-const { pool } = await import('../src/storage/db.js');
-const { resetPolicyCacheForTests } = await import('../src/storage/policyStore.js');
-const { logger } = await import('../src/logger.js');
-const { VOICE_LANGUAGE_CAVEAT_TEXT_MI } = await import('../src/voiceLanguageCaveatNotice.js');
+const { DiscordAdapter } = await import('../src/base/platforms/discord/adapter.js');
+const { config } = await import('../src/base/config.js');
+const { pool } = await import('../src/base/storage/db.js');
+const { resetPolicyCacheForTests } = await import('../src/base/storage/policyStore.js');
+const { logger } = await import('../src/base/logger.js');
+const { VOICE_LANGUAGE_CAVEAT_TEXT_MI } = await import('../src/base/voiceLanguageCaveatNotice.js');
 
 type Adapter = InstanceType<typeof DiscordAdapter>;
 
@@ -1935,7 +1939,10 @@ test('SECURITY: onGuildMemberAdd never sends the member-approval DM/notification
 
 test('SECURITY: the auto-enroll write path adds no new Agent-SDK/query() call — it is a deterministic, non-agent DB write', () => {
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-  const adapterSrc = readFileSync(path.join(repoRoot, 'src', 'platforms', 'discord', 'adapter.ts'), 'utf8');
+  const adapterSrc = readFileSync(
+    path.join(repoRoot, 'src', 'base', 'platforms', 'discord', 'adapter.ts'),
+    'utf8',
+  );
   assert.ok(
     !adapterSrc.includes('@anthropic-ai/claude-agent-sdk'),
     'the Discord adapter (which now issues the auto-enroll write) must never import the Agent SDK — the ' +

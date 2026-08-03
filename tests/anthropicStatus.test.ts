@@ -17,7 +17,7 @@ const {
   formatStatusResolvedAlert,
   getStatusCache,
   resetStatusCacheForTests,
-} = await import('../src/status/anthropicStatus.js');
+} = await import('../src/module/status/anthropicStatus.js');
 
 const ALL_OPERATIONAL_BODY = JSON.stringify({
   page: { id: 'abc' },

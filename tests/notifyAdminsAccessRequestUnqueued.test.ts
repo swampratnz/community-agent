@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/strings/notices.js';
-import type { OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+import '../src/module/strings/notices.js';
+import type { OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
 
 // Regression coverage for issue #593's binding acceptance criterion 6:
 // tools.ts's notifyAdmins and router.ts's notifyAccessRequest source
@@ -15,8 +15,8 @@ import type { OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js
 // the queue to either site.
 //
 // Issue #625 closed that gap for notifyAdmins specifically, via a structured
-// queue entry that carries its own recipient set (see src/pendingAlertQueue.ts
-// and src/health.ts's flushPendingAlerts) — the reviewer-named fix #571 was
+// queue entry that carries its own recipient set (see src/base/pendingAlertQueue.ts
+// and src/base/health.ts's flushPendingAlerts) — the reviewer-named fix #571 was
 // rejected for lacking. notifyAccessRequest (router.ts) was deliberately left
 // as the one remaining growth-path item, to keep #625's diff reviewable.
 //
@@ -49,20 +49,20 @@ let adminRoster: Array<{ platform: 'discord' | 'whatsapp'; platformUserId: strin
 ];
 
 let modulesPromise: Promise<{
-  notifyAdmins: typeof import('../src/agent/tools.js').notifyAdmins;
-  notifyAccessRequest: typeof import('../src/router.js').notifyAccessRequest;
-  flushPendingAlerts: typeof import('../src/health.js').flushPendingAlerts;
-  getPendingAlertsForTests: typeof import('../src/pendingAlertQueue.js').getPendingAlertsForTests;
-  getPendingAlertEntriesForTests: typeof import('../src/pendingAlertQueue.js').getPendingAlertEntriesForTests;
-  resetPendingAlertsForTests: typeof import('../src/pendingAlertQueue.js').resetPendingAlertsForTests;
-  queuePendingAlert: typeof import('../src/pendingAlertQueue.js').queuePendingAlert;
+  notifyAdmins: typeof import('../src/module/agent/tools.js').notifyAdmins;
+  notifyAccessRequest: typeof import('../src/base/router.js').notifyAccessRequest;
+  flushPendingAlerts: typeof import('../src/base/health.js').flushPendingAlerts;
+  getPendingAlertsForTests: typeof import('../src/base/pendingAlertQueue.js').getPendingAlertsForTests;
+  getPendingAlertEntriesForTests: typeof import('../src/base/pendingAlertQueue.js').getPendingAlertEntriesForTests;
+  resetPendingAlertsForTests: typeof import('../src/base/pendingAlertQueue.js').resetPendingAlertsForTests;
+  queuePendingAlert: typeof import('../src/base/pendingAlertQueue.js').queuePendingAlert;
   PENDING_ALERT_QUEUE_CAP: number;
 }> | null = null;
 async function modules(t: { mock: { module: (specifier: string, opts: unknown) => void } }) {
   if (!modulesPromise) {
     modulesPromise = (async () => {
-      const realRepo = await import('../src/storage/repository.js');
-      t.mock.module('../src/storage/repository.js', {
+      const realRepo = await import('../src/base/storage/repository.js');
+      t.mock.module('../src/base/storage/repository.js', {
         namedExports: {
           ...realRepo,
           listAdmins: async () => {
@@ -73,10 +73,10 @@ async function modules(t: { mock: { module: (specifier: string, opts: unknown) =
       });
       const [{ notifyAdmins }, { notifyAccessRequest }, { flushPendingAlerts }, pendingAlertQueue] =
         await Promise.all([
-          import('../src/agent/tools.js'),
-          import('../src/router.js'),
-          import('../src/health.js'),
-          import('../src/pendingAlertQueue.js'),
+          import('../src/module/agent/tools.js'),
+          import('../src/base/router.js'),
+          import('../src/base/health.js'),
+          import('../src/base/pendingAlertQueue.js'),
         ]);
       return {
         notifyAdmins,

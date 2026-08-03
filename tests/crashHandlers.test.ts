@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { Logger } from '../src/logger.js';
-import { installCrashHandlers } from '../src/crashHandlers.js';
+import type { Logger } from '../src/base/logger.js';
+import { installCrashHandlers } from '../src/base/crashHandlers.js';
 
 // crashHandlers.ts only *type*-imports the logger (erased at runtime), so this
 // file loads without touching config/env or a DB.

@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/strings/notices.js';
+import '../src/module/strings/notices.js';
 import { readFileSync } from 'node:fs';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
-import type { Platform } from '../src/platforms/types.js';
+import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
+import type { Platform } from '../src/base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -25,9 +25,9 @@ process.env.SUPER_ADMIN_WHATSAPP_NUMBERS ??= 'super-1';
 process.env.ACCESS_MODE_DISCORD = 'open';
 process.env.ESCALATION_TO_ADMIN_ENABLED = 'true';
 
-const { config } = await import('../src/config.js');
-const { Router, ESCALATION_RATE_LIMIT_PER_HOUR } = await import('../src/router.js');
-const { makeRouterDeps } = await import('../src/routerWiring.js');
+const { config } = await import('../src/base/config.js');
+const { Router, ESCALATION_RATE_LIMIT_PER_HOUR } = await import('../src/base/router.js');
+const { makeRouterDeps } = await import('../src/module/routerWiring.js');
 
 const RUN = `unhelpful-escalation-router-${Date.now()}`;
 
@@ -247,7 +247,7 @@ test('SECURITY: router (unhelpful-answer escalation): the producer shares — ne
 test('SECURITY: rate_answer tool handler never calls notifyAdmins directly — the notification fires only from router.ts reading the turn-scoped flag post-turn (issue #598 acceptance criterion 5)', () => {
   // The handler moved from the tools.ts closure into the feedback ToolDef
   // domain (docs/TOOL-REGISTRY-DESIGN.md §3); same body, new home.
-  const source = readFileSync(new URL('../src/agent/tools/feedback.ts', import.meta.url), 'utf8');
+  const source = readFileSync(new URL('../src/module/agent/tools/feedback.ts', import.meta.url), 'utf8');
   const defStart = source.indexOf("'rate_answer',");
   assert.notEqual(defStart, -1, 'rate_answer tool definition not found');
   // The handler body runs from its `handler: async (args, {…}) => {` opener

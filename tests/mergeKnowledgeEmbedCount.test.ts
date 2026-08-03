@@ -28,7 +28,7 @@ test(
   { skip: dbSkip },
   async (t) => {
     let embedCalls = 0;
-    t.mock.module('../src/storage/embeddings.js', {
+    t.mock.module('../src/base/storage/embeddings.js', {
       namedExports: {
         // Call-count is this test's only concern; semantic accuracy of the
         // merge itself is covered with REAL embeddings in
@@ -40,8 +40,8 @@ test(
       },
     });
 
-    const { pool, closeDb } = await import('../src/storage/db.js');
-    const { saveKnowledge, mergeKnowledgeEntries } = await import('../src/storage/repository.js');
+    const { pool, closeDb } = await import('../src/base/storage/db.js');
+    const { saveKnowledge, mergeKnowledgeEntries } = await import('../src/base/storage/repository.js');
     const RUN = `mkembedcount${Date.now()}${Math.floor(Math.random() * 1e6)}`;
 
     try {

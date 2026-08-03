@@ -26,7 +26,7 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 
 test('SECURITY: candidateTopicAlreadyReviewed short-circuits an exact (case-insensitive) topic match WITHOUT ever calling embed() — proves the fast path is a true short circuit, not just cheap (issue #503, AC1)', async (t) => {
   let embedCalls = 0;
-  t.mock.module('../src/storage/embeddings.js', {
+  t.mock.module('../src/base/storage/embeddings.js', {
     namedExports: {
       embed: async () => {
         embedCalls += 1;
@@ -35,7 +35,7 @@ test('SECURITY: candidateTopicAlreadyReviewed short-circuits an exact (case-inse
     },
   });
 
-  const { pool } = await import('../src/storage/db.js');
+  const { pool } = await import('../src/base/storage/db.js');
   const queries: string[] = [];
   t.mock.method(pool, 'query', async (sql: string) => {
     queries.push(sql);
@@ -43,7 +43,7 @@ test('SECURITY: candidateTopicAlreadyReviewed short-circuits an exact (case-inse
     return { rows: [{ '?column?': 1 }] };
   });
 
-  const { candidateTopicAlreadyReviewed } = await import('../src/storage/repository.js');
+  const { candidateTopicAlreadyReviewed } = await import('../src/base/storage/repository.js');
   const result = await candidateTopicAlreadyReviewed('an already-queued topic');
 
   assert.equal(result.blocked, true, 'the exact match still blocks re-emission');
@@ -53,7 +53,7 @@ test('SECURITY: candidateTopicAlreadyReviewed short-circuits an exact (case-inse
 });
 
 test("candidateTopicAlreadyReviewed fails open (not blocked) when embedding the topic throws, matching knowledgeCoversTopic's existing posture — a transient embedding outage never blocks the builder run (issue #503, AC4)", async (t) => {
-  t.mock.module('../src/storage/embeddings.js', {
+  t.mock.module('../src/base/storage/embeddings.js', {
     namedExports: {
       embed: async () => {
         throw new Error('embedding backend unavailable');
@@ -61,8 +61,8 @@ test("candidateTopicAlreadyReviewed fails open (not blocked) when embedding the 
     },
   });
 
-  const { pool } = await import('../src/storage/db.js');
-  const { logger } = await import('../src/logger.js');
+  const { pool } = await import('../src/base/storage/db.js');
+  const { logger } = await import('../src/base/logger.js');
   const warn = t.mock.method(logger, 'warn');
   const queries: string[] = [];
   t.mock.method(pool, 'query', async (sql: string) => {
@@ -70,7 +70,7 @@ test("candidateTopicAlreadyReviewed fails open (not blocked) when embedding the 
     return { rows: [] }; // no exact match
   });
 
-  const { candidateTopicAlreadyReviewed } = await import('../src/storage/repository.js');
+  const { candidateTopicAlreadyReviewed } = await import('../src/base/storage/repository.js');
   const result = await candidateTopicAlreadyReviewed('a brand new topic never seen before');
 
   assert.equal(result.blocked, false, 'a failed embedding degrades to "not previously reviewed"');

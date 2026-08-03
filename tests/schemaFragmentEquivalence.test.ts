@@ -12,9 +12,9 @@ const skip = hasDb
   ? false
   : 'DATABASE_URL not set — skipping DB-integration tests (CLAUDE.md: exercise against a local Postgres 16 + pgvector)';
 
-const { pool, closeDb } = await import('../src/storage/db.js');
-const { bootConfig } = await import('../src/config/boot.js');
-const { loadSchemaSql } = await import('../src/storage/schema/manifest.js');
+const { pool, closeDb } = await import('../src/base/storage/db.js');
+const { bootConfig } = await import('../src/base/config/boot.js');
+const { loadSchemaSql } = await import('../src/base/storage/schema/manifest.js');
 
 /**
  * REPLAY-IDEMPOTENCY proof for the fragment split (docs/AGENT-BASE-PLAN.md

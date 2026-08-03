@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/strings/notices.js';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+import '../src/module/strings/notices.js';
+import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
 
 // GUEST_KNOWLEDGE_SHORTCUT_ENABLED=true DB-integration tests (issue #165) —
 // exercise the real searchKnowledge/recordAccessRequest/recordKnowledgeRetrieval
@@ -27,8 +27,8 @@ const skip = hasDb
   ? false
   : 'DATABASE_URL not set — skipping DB-integration tests (CLAUDE.md: exercise against a local Postgres 16 + pgvector)';
 
-const { config } = await import('../src/config.js');
-const { pool, closeDb } = await import('../src/storage/db.js');
+const { config } = await import('../src/base/config.js');
+const { pool, closeDb } = await import('../src/base/storage/db.js');
 
 // Unique per test-run tag so fixtures never collide across runs, mirroring
 // the RUN-tag convention in tests/knowledgeScope.test.ts.
@@ -66,13 +66,13 @@ after(async () => {
 // context and reuse the same imported bindings across the remaining tests,
 // matching tests/knowledgeScope.test.ts's `repo(t)` helper.
 let modsPromise: Promise<{
-  Router: typeof import('../src/router.js').Router;
-  makeRouterDeps: typeof import('../src/routerWiring.js').makeRouterDeps;
-  saveKnowledge: typeof import('../src/storage/repository.js').saveKnowledge;
+  Router: typeof import('../src/base/router.js').Router;
+  makeRouterDeps: typeof import('../src/module/routerWiring.js').makeRouterDeps;
+  saveKnowledge: typeof import('../src/base/storage/repository.js').saveKnowledge;
 }> | null = null;
 function mods(t: { mock: { module: (specifier: string, opts: unknown) => void } }) {
   if (!modsPromise) {
-    t.mock.module('../src/storage/embeddings.js', {
+    t.mock.module('../src/base/storage/embeddings.js', {
       namedExports: {
         embed: async (text: string) => {
           const vec = EMBED_FIXTURES[text];
@@ -84,9 +84,9 @@ function mods(t: { mock: { module: (specifier: string, opts: unknown) => void } 
       },
     });
     modsPromise = (async () => {
-      const { Router } = await import('../src/router.js');
-      const { makeRouterDeps } = await import('../src/routerWiring.js');
-      const { saveKnowledge } = await import('../src/storage/repository.js');
+      const { Router } = await import('../src/base/router.js');
+      const { makeRouterDeps } = await import('../src/module/routerWiring.js');
+      const { saveKnowledge } = await import('../src/base/storage/repository.js');
       return { Router, makeRouterDeps, saveKnowledge };
     })();
   }

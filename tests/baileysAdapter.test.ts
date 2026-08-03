@@ -2,22 +2,22 @@ import { test, beforeEach, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 // The adapters take their community text pack as a required constructor
 // parameter now (agent-base plan item 6) — production hands it over in
-// src/platforms/factories.ts, so these constructions pass the same pack.
+// src/module/platforms/factories.ts, so these constructions pass the same pack.
 import {
   BAILEYS_TEXT_PACK,
   WHATSAPP_GROUP_WELCOME_MESSAGE,
   WHATSAPP_GROUP_WELCOME_MESSAGE_OPEN,
-} from '../src/platforms/textPacks.js';
+} from '../src/module/platforms/textPacks.js';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/strings/notices.js';
-import type { IncomingMessage } from '../src/platforms/types.js';
+import '../src/module/strings/notices.js';
+import type { IncomingMessage } from '../src/base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it. Locally
 // DATABASE_URL points nowhere and policy reads fail over to defaults (see
-// src/storage/policies.ts); in CI (ci.yml) DATABASE_URL is a REAL pgvector
+// src/module/storage/policies.ts); in CI (ci.yml) DATABASE_URL is a REAL pgvector
 // Postgres shared by the whole test job, not just tests/repository.test.ts.
 // Either way this file must stay DB-independent — see the blanket
 // `beforeEach` pool.query stub below.
@@ -27,14 +27,14 @@ process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 
 const { BaileysAdapter, initialWelcomeCooldownState, stepWelcomeCooldown } =
-  await import('../src/platforms/whatsapp/baileysAdapter.js');
-const { config } = await import('../src/config.js');
-const { pool } = await import('../src/storage/db.js');
-const { logger } = await import('../src/logger.js');
-const { resetPolicyCacheForTests } = await import('../src/storage/policyStore.js');
-const { buildToolServer } = await import('../src/agent/tools.js');
-const { toolsForRole, ADMIN_TOOLS, SUPER_ADMIN_TOOLS } = await import('../src/auth/rbac.js');
-const { VOICE_LANGUAGE_CAVEAT_TEXT_MI } = await import('../src/voiceLanguageCaveatNotice.js');
+  await import('../src/base/platforms/whatsapp/baileysAdapter.js');
+const { config } = await import('../src/base/config.js');
+const { pool } = await import('../src/base/storage/db.js');
+const { logger } = await import('../src/base/logger.js');
+const { resetPolicyCacheForTests } = await import('../src/base/storage/policyStore.js');
+const { buildToolServer } = await import('../src/module/agent/tools.js');
+const { toolsForRole, ADMIN_TOOLS, SUPER_ADMIN_TOOLS } = await import('../src/base/auth/rbac.js');
+const { VOICE_LANGUAGE_CAVEAT_TEXT_MI } = await import('../src/base/voiceLanguageCaveatNotice.js');
 
 /**
  * Issue #407: `onGroupParticipantsUpdate` now unconditionally writes to

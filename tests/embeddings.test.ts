@@ -13,7 +13,7 @@ process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 
-const { config } = await import('../src/config.js');
+const { config } = await import('../src/base/config.js');
 
 test('embed(): a rejected model load does not wedge getExtractor forever — the NEXT call retries pipeline() instead of replaying the cached rejection (issue #376)', async (t) => {
   let pipelineCalls = 0;
@@ -33,7 +33,7 @@ test('embed(): a rejected model load does not wedge getExtractor forever — the
     },
   });
 
-  const { embed } = await import('../src/storage/embeddings.js');
+  const { embed } = await import('../src/base/storage/embeddings.js');
 
   await assert.rejects(() => embed('first call'), /sentinel-model-load-failure/);
   assert.equal(pipelineCalls, 1, 'the first call attempts the model load exactly once');

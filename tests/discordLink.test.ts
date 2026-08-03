@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { discordJumpLink, memoryHitJumpLink } from '../src/agent/discordLink.js';
-import type { MemoryHit } from '../src/storage/repository.js';
+import { discordJumpLink, memoryHitJumpLink } from '../src/base/agent/discordLink.js';
+import type { MemoryHit } from '../src/base/storage/repository.js';
 
 test('discordJumpLink: guild channel hit uses the guild id segment', () => {
   assert.equal(

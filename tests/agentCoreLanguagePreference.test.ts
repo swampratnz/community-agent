@@ -3,14 +3,14 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/strings/notices.js';
-import type { CallerContext } from '../src/auth/rbac.js';
-import type { OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+import '../src/module/strings/notices.js';
+import type { CallerContext } from '../src/base/auth/rbac.js';
+import type { OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
 // Community content registrations (prompt sections + persona roster) — the
 // composition-root contract: src/index.ts registers these in production, so
 // tests that assemble prompts register them explicitly here.
-import '../src/agent/communityPromptSections.js';
-import '../src/agent/personas.js';
+import '../src/module/agent/communityPromptSections.js';
+import '../src/module/agent/personas.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -30,7 +30,7 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 // The tool registry's module-scope registrations (tool tiers, tool-server
 // parts, feature-flag predicates) — the composition-root contract, matching
 // tests/rbac.test.ts.
-await import('../src/agent/tools/index.js');
+await import('../src/module/agent/tools/index.js');
 
 type LangBehavior = { mode: 'value'; value: 'auto' | 'en' | 'mi' } | { mode: 'throw' };
 let langBehavior: LangBehavior = { mode: 'value', value: 'auto' };
@@ -48,18 +48,18 @@ function mockQuery() {
 }
 
 // Both query() and getLanguagePreference() are static imports inside
-// src/agent/core.ts, so once core.js has been dynamically imported anywhere
+// src/base/agent/core.ts, so once core.js has been dynamically imported anywhere
 // in this process the bindings are fixed — a later t.mock.module call can't
 // retarget them (see tests/agentCoreMaxTurns.test.ts for the same trap).
 // Install both mocks once and reuse the cached import; `langBehavior` is
 // mutated per-test to vary the underlying getLanguagePreference outcome.
-let corePromise: Promise<typeof import('../src/agent/core.js')> | null = null;
+let corePromise: Promise<typeof import('../src/base/agent/core.js')> | null = null;
 async function core(t: { mock: { module: (specifier: string, opts: unknown) => void } }) {
   if (!corePromise) {
     const realSdk = await import('@anthropic-ai/claude-agent-sdk');
     t.mock.module('@anthropic-ai/claude-agent-sdk', { namedExports: { ...realSdk, query: mockQuery } });
-    const realRepo = await import('../src/storage/repository.js');
-    t.mock.module('../src/storage/repository.js', {
+    const realRepo = await import('../src/base/storage/repository.js');
+    t.mock.module('../src/base/storage/repository.js', {
       namedExports: {
         ...realRepo,
         getLanguagePreference: async () => {
@@ -68,7 +68,7 @@ async function core(t: { mock: { module: (specifier: string, opts: unknown) => v
         },
       },
     });
-    corePromise = import('../src/agent/core.js');
+    corePromise = import('../src/base/agent/core.js');
   }
   return corePromise;
 }

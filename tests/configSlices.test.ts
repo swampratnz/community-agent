@@ -11,7 +11,7 @@ process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 
-const { config, loadConfig } = await import('../src/config.js');
+const { config, loadConfig } = await import('../src/base/config.js');
 
 // The minimal valid environment: exactly the four required vars, nothing
 // inherited from this process, so every other key exercises its default.
@@ -158,7 +158,7 @@ function importInBootEnv(code: string) {
 
 test("boot decoupling: migrate's import chain (storage/db + logger) loads with only DATABASE_URL set — no exit(1) for missing CLAUDE_CODE_OAUTH_TOKEN/DISCORD_*", () => {
   const result = importInBootEnv(
-    "await import('./src/storage/db.js'); await import('./src/logger.js'); console.log('BOOT OK')",
+    "await import('./src/base/storage/db.js'); await import('./src/base/logger.js'); console.log('BOOT OK')",
   );
   assert.equal(
     result.status,
@@ -169,7 +169,7 @@ test("boot decoupling: migrate's import chain (storage/db + logger) loads with o
 });
 
 test('boot decoupling control: the FULL config barrel still fails fast in that same env — proving the rig would catch a re-coupling', () => {
-  const result = importInBootEnv("await import('./src/config.js'); console.log('BARREL LOADED')");
+  const result = importInBootEnv("await import('./src/base/config.js'); console.log('BARREL LOADED')");
   assert.notEqual(result.status, 0, 'the full barrel must still demand its required vars');
   assert.doesNotMatch(result.stdout, /BARREL LOADED/);
   assert.match(`${result.stderr}${result.stdout}`, /CLAUDE_CODE_OAUTH_TOKEN/);

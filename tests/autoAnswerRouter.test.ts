@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/strings/notices.js';
-import type { AgentReply } from '../src/agent/core.js';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+import '../src/module/strings/notices.js';
+import type { AgentReply } from '../src/base/agent/core.js';
+import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -46,15 +46,16 @@ const AUTO_CHAN = `${RUN}-chan`;
 process.env.AUTO_ANSWER_CHANNEL_IDS = AUTO_CHAN;
 process.env.AUTO_ANSWER_RATE_LIMIT_PER_HOUR = '2';
 
-const { pool, closeDb } = await import('../src/storage/db.js');
-const { config } = await import('../src/config.js');
-const { Router } = await import('../src/router.js');
-const { makeRouterDeps } = await import('../src/routerWiring.js');
-const { ADMIN_TOOLS, MEMBER_TOOLS, SUPER_ADMIN_TOOLS, toolsForRole } = await import('../src/auth/rbac.js');
-const { resolveRole } = await import('../src/auth/roles.js');
+const { pool, closeDb } = await import('../src/base/storage/db.js');
+const { config } = await import('../src/base/config.js');
+const { Router } = await import('../src/base/router.js');
+const { makeRouterDeps } = await import('../src/module/routerWiring.js');
+const { ADMIN_TOOLS, MEMBER_TOOLS, SUPER_ADMIN_TOOLS, toolsForRole } =
+  await import('../src/base/auth/rbac.js');
+const { resolveRole } = await import('../src/base/auth/roles.js');
 type Tier = Parameters<typeof toolsForRole>[0];
-const { DAILY_BUDGET_NOTICE_TEXT } = await import('../src/dailyBudgetNotice.js');
-const { embed } = await import('../src/storage/embeddings.js');
+const { DAILY_BUDGET_NOTICE_TEXT } = await import('../src/base/dailyBudgetNotice.js');
+const { embed } = await import('../src/base/storage/embeddings.js');
 
 await embed('warmup').catch(() => {});
 

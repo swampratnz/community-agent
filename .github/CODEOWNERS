@@ -3,21 +3,21 @@
 # (see the proposal in issue #43). GitHub still auto-requests these owners
 # and shows them on the relevant files/PRs.
 
-/.github/                     @swampratnz
-/scripts/                     @swampratnz
-/src/auth/                    @swampratnz
-/src/agent/core.ts            @swampratnz
-/src/agent/outbound.ts        @swampratnz
-/src/agent/pendingActions.ts  @swampratnz
-/src/agent/promptSpine.ts     @swampratnz
-/src/agent/tools/context.ts   @swampratnz
-/src/agent/tools/index.ts     @swampratnz
-/src/agent/webSearchGuard.ts  @swampratnz
-/src/router.ts                @swampratnz
-/src/routerIntercepts.ts      @swampratnz
-/src/storage/lifecycle.ts     @swampratnz
-/src/storage/provenance.ts    @swampratnz
-/src/storage/repository/      @swampratnz
-/src/storage/schema/          @swampratnz
-/tests/security-floor.json    @swampratnz
-/docs/SECURITY.md             @swampratnz
+/.github/                            @swampratnz
+/scripts/                            @swampratnz
+/src/base/auth/                      @swampratnz
+/src/base/agent/core.ts              @swampratnz
+/src/base/agent/outbound.ts          @swampratnz
+/src/base/agent/pendingActions.ts    @swampratnz
+/src/base/agent/promptSpine.ts       @swampratnz
+/src/base/agent/webSearchGuard.ts    @swampratnz
+/src/base/router.ts                  @swampratnz
+/src/base/routerIntercepts.ts        @swampratnz
+/src/base/storage/lifecycle.ts       @swampratnz
+/src/base/storage/provenance.ts      @swampratnz
+/src/base/storage/repository/        @swampratnz
+/src/base/storage/schema/            @swampratnz
+/src/module/agent/tools/context.ts   @swampratnz
+/src/module/agent/tools/index.ts     @swampratnz
+/tests/security-floor.json           @swampratnz
+/docs/SECURITY.md                    @swampratnz

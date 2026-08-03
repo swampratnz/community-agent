@@ -13,7 +13,7 @@ process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 
-const { startAccessRequestRetentionPurge } = await import('../src/retention.js');
+const { startAccessRequestRetentionPurge } = await import('../src/base/retention.js');
 
 test('startAccessRequestRetentionPurge: ACCESS_REQUEST_RETENTION_DAYS unset (default) creates no timer', () => {
   const timer = startAccessRequestRetentionPurge([]);

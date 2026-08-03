@@ -16,9 +16,9 @@ const skip = hasDb
   ? false
   : 'DATABASE_URL not set — skipping DB-integration tests (CLAUDE.md: exercise against a local Postgres 16 + pgvector)';
 
-const { pool, closeDb } = await import('../src/storage/db.js');
-const { config } = await import('../src/config.js');
-const { embed } = await import('../src/storage/embeddings.js');
+const { pool, closeDb } = await import('../src/base/storage/db.js');
+const { config } = await import('../src/base/config.js');
+const { embed } = await import('../src/base/storage/embeddings.js');
 const pgvector = (await import('pgvector/pg')).default;
 const {
   recordInteraction,
@@ -198,7 +198,7 @@ const {
   PROJECT_CONNECTION_OWNER_WEEKLY_LIMIT,
   PROJECT_CONNECTION_REQUESTER_DAILY_LIMIT,
   responseLatencyStats,
-} = await import('../src/storage/repository.js');
+} = await import('../src/base/storage/repository.js');
 
 // Unique per test-run tag so fixtures never collide across runs and can be
 // cleaned up precisely, whether this runs against a throwaway CI Postgres or

@@ -20,15 +20,15 @@ const skip = hasDb
   ? false
   : 'DATABASE_URL not set — skipping DB-integration tests (CLAUDE.md: exercise against a local Postgres 16 + pgvector)';
 
-const { pool, closeDb } = await import('../src/storage/db.js');
-const { saveKnowledge, listKnowledge } = await import('../src/storage/repository.js');
+const { pool, closeDb } = await import('../src/base/storage/db.js');
+const { saveKnowledge, listKnowledge } = await import('../src/base/storage/repository.js');
 const {
   shouldRunKnowledgeLinkCheck,
   classifySourceUrl,
   runKnowledgeLinkCheck,
   isDisallowedIp,
   buildPinnedDispatcher,
-} = await import('../src/context/linkCheck.js');
+} = await import('../src/module/context/linkCheck.js');
 
 const RUN = `t${Date.now()}${Math.floor(Math.random() * 1e6)}`;
 

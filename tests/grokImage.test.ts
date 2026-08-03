@@ -16,8 +16,8 @@ const {
   SANDBOX_PROFILE,
   sandboxProbePath,
   buildSandboxToml,
-} = await import('../src/media/grokImage.js');
-const { onDiskSecretPaths } = await import('../src/config.js');
+} = await import('../src/module/media/grokImage.js');
+const { onDiskSecretPaths } = await import('../src/base/config.js');
 
 test('sniffImageType detects JPEG / PNG / WebP from magic bytes', () => {
   assert.deepEqual(sniffImageType(Buffer.from([0xff, 0xd8, 0xff, 0xe0])), {

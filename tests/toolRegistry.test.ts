@@ -9,18 +9,19 @@ process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 
-const { closeDb } = await import('../src/storage/db.js');
-const { config } = await import('../src/config.js');
-const { TOOL_REGISTRY, flaggedToolPredicates } = await import('../src/agent/tools/index.js');
-const { buildToolServer } = await import('../src/agent/tools.js');
-const { MEMBER_TOOLS, ADMIN_TOOLS, SUPER_ADMIN_TOOLS, toolsForRole } = await import('../src/auth/rbac.js');
-const { filterFeatureFlaggedTools } = await import('../src/agent/core.js');
+const { closeDb } = await import('../src/base/storage/db.js');
+const { config } = await import('../src/base/config.js');
+const { TOOL_REGISTRY, flaggedToolPredicates } = await import('../src/module/agent/tools/index.js');
+const { buildToolServer } = await import('../src/module/agent/tools.js');
+const { MEMBER_TOOLS, ADMIN_TOOLS, SUPER_ADMIN_TOOLS, toolsForRole } =
+  await import('../src/base/auth/rbac.js');
+const { filterFeatureFlaggedTools } = await import('../src/base/agent/core.js');
 
 after(async () => {
   await closeDb();
 });
 
-// The registry (src/agent/tools/index.ts) is THE single source of truth for
+// The registry (src/module/agent/tools/index.ts) is THE single source of truth for
 // every tool's name, tier, platform restriction and feature flag — rbac.ts's
 // tier arrays, toolsForRole's platform filtering and core.ts's flag filter
 // are all DERIVED from it (docs/TOOL-REGISTRY-DESIGN.md §2's flip). The old
@@ -51,7 +52,7 @@ test('registry names are unique, exactly 117 defs, and every def is registered o
     performAdminAction: async () => {
       throw new Error('not implemented in stub');
     },
-  } as unknown as import('../src/platforms/types.js').PlatformAdapter;
+  } as unknown as import('../src/base/platforms/types.js').PlatformAdapter;
   const server = buildToolServer(
     {
       platform: 'discord',

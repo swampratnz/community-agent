@@ -13,9 +13,9 @@ process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 
-const { pool } = await import('../src/storage/db.js');
-const { logger } = await import('../src/logger.js');
-const { searchMemory, getClaudeSession } = await import('../src/storage/repository.js');
+const { pool } = await import('../src/base/storage/db.js');
+const { logger } = await import('../src/base/logger.js');
+const { searchMemory, getClaudeSession } = await import('../src/base/storage/repository.js');
 
 test('searchMemory returns [] and logs a warning when the DB query fails (issue #52)', async (t) => {
   const warn = t.mock.method(logger, 'warn');

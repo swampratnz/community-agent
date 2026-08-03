@@ -3,15 +3,15 @@ import assert from 'node:assert/strict';
 // The default bad-word list is community content registered at its own module
 // scope (src/index.ts imports it in production); the moderation wordlist fails
 // closed until then, and constructing a Discord adapter builds a Moderator.
-import '../src/moderation/badWords.js';
+import '../src/module/moderation/badWords.js';
 // The adapters take their community text pack as a required constructor
 // parameter now (agent-base plan item 6) — production hands it over in
-// src/platforms/factories.ts, so these constructions pass the same pack.
-import { DISCORD_TEXT_PACK, WHATSAPP_CLOUD_TEXT_PACK } from '../src/platforms/textPacks.js';
-import { ENABLED_SKILLS } from '../src/agent/enabledSkills.js';
+// src/module/platforms/factories.ts, so these constructions pass the same pack.
+import { DISCORD_TEXT_PACK, WHATSAPP_CLOUD_TEXT_PACK } from '../src/module/platforms/textPacks.js';
+import { ENABLED_SKILLS } from '../src/module/agent/enabledSkills.js';
 import { readFileSync, readdirSync } from 'node:fs';
-import type { AdapterLookup, Platform, PlatformAdapter, UpcomingEvent } from '../src/platforms/types.js';
-import { formatNzEventTime } from '../src/util/nzTime.js';
+import type { AdapterLookup, Platform, PlatformAdapter, UpcomingEvent } from '../src/base/platforms/types.js';
+import { formatNzEventTime } from '../src/base/util/nzTime.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -94,9 +94,9 @@ const {
   APPEAL_MODERATION_REASON_MAX_CHARS,
   HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER,
   PROJECT_NOTE_RETENTION_NOTICE,
-} = await import('../src/agent/tools.js');
-const { reserveVoiceTranscriptionSlot } = await import('../src/agent/rateReservers.js');
-const { filterOutbound } = await import('../src/agent/outbound.js');
+} = await import('../src/module/agent/tools.js');
+const { reserveVoiceTranscriptionSlot } = await import('../src/base/agent/rateReservers.js');
+const { filterOutbound } = await import('../src/base/agent/outbound.js');
 const {
   MODERATION_ACTION_KINDS,
   saveKnowledge,
@@ -152,22 +152,24 @@ const {
   setMemberInterests,
   purgeUserData,
   recordProjectConnectionIfUnderCap,
-} = await import('../src/storage/repository.js');
-const { pool, closeDb } = await import('../src/storage/db.js');
-const { embed } = await import('../src/storage/embeddings.js');
+} = await import('../src/base/storage/repository.js');
+const { pool, closeDb } = await import('../src/base/storage/db.js');
+const { embed } = await import('../src/base/storage/embeddings.js');
 const pgvector = (await import('pgvector/pg')).default;
 const { cancelPendingAction, hasPendingAction, takePendingAction } =
-  await import('../src/agent/pendingActions.js');
-const { config } = await import('../src/config.js');
+  await import('../src/base/agent/pendingActions.js');
+const { config } = await import('../src/base/config.js');
 const { getCommunityGuidelines, getCommunityGuidelinesMi, getWelcomeMessage, getWelcomeMessageMi } =
-  await import('../src/storage/policies.js');
-const { resetPolicyCacheForTests } = await import('../src/storage/policyStore.js');
-const { MEMBER_TOOLS, ADMIN_TOOLS, SUPER_ADMIN_TOOLS } = await import('../src/auth/rbac.js');
-const { superAdminIds } = await import('../src/auth/roles.js');
-const { WhatsAppCloudAdapter, WindowClosedError } = await import('../src/platforms/whatsapp/cloudAdapter.js');
-const { buildAdminDigestForAdmin } = await import('../src/adminDigest.js');
-const { buildMemberDigestContent } = await import('../src/memberDigest.js');
-const { getPendingAlertsForTests, resetPendingAlertsForTests } = await import('../src/pendingAlertQueue.js');
+  await import('../src/module/storage/policies.js');
+const { resetPolicyCacheForTests } = await import('../src/base/storage/policyStore.js');
+const { MEMBER_TOOLS, ADMIN_TOOLS, SUPER_ADMIN_TOOLS } = await import('../src/base/auth/rbac.js');
+const { superAdminIds } = await import('../src/base/auth/roles.js');
+const { WhatsAppCloudAdapter, WindowClosedError } =
+  await import('../src/base/platforms/whatsapp/cloudAdapter.js');
+const { buildAdminDigestForAdmin } = await import('../src/module/adminDigest.js');
+const { buildMemberDigestContent } = await import('../src/module/memberDigest.js');
+const { getPendingAlertsForTests, resetPendingAlertsForTests } =
+  await import('../src/base/pendingAlertQueue.js');
 
 // Unique per test-run scope so the knowledge_search handler test's fixture
 // row never collides across runs, mirroring the RUN-tag convention in
@@ -5195,7 +5197,7 @@ test(
     'primitive is WhatsApp-only, Discord already has full ban_user coverage (issue #572 acceptance ' +
     'criterion #6)',
   async () => {
-    const { DiscordAdapter } = await import('../src/platforms/discord/adapter.js');
+    const { DiscordAdapter } = await import('../src/base/platforms/discord/adapter.js');
     const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     assert.equal(adapter.adminCapabilities.has('block_user'), false);
     assert.equal(adapter.adminCapabilities.has('unblock_user'), false);
@@ -8988,9 +8990,9 @@ test('SECURITY: feature_flags handler refuses a forged direct call from a non-su
   // config read) is only reached afterwards — so a refusal can never fall
   // through to a config read, not merely "usually doesn't" in practice.
   // The tool moved to the tool-registry split's super-admin domain file
-  // (src/agent/tools/superAdmin.ts) — same assertion, scanned where it now
+  // (src/module/agent/tools/superAdmin.ts) — same assertion, scanned where it now
   // lives.
-  const source = readFileSync(new URL('../src/agent/tools/superAdmin.ts', import.meta.url), 'utf8');
+  const source = readFileSync(new URL('../src/module/agent/tools/superAdmin.ts', import.meta.url), 'utf8');
   const defStart = source.indexOf("name: 'feature_flags',");
   assert.notEqual(defStart, -1, 'feature_flags tool definition not found');
   const handlerMatch = source
@@ -9019,8 +9021,8 @@ test('SECURITY: feature_flags allowlist purity — a planted secret-shaped field
 
 test('SECURITY: feature_flags handler + formatter never call Object.entries/Object.values/spread on the object they read — only fixed allowlist paths are indexed (issue #559)', () => {
   // The formatter moved to the tool-registry split's helpers module
-  // (src/agent/tools/helpers.ts) — same assertion, scanned where it now lives.
-  const source = readFileSync(new URL('../src/agent/tools/helpers.ts', import.meta.url), 'utf8');
+  // (src/module/agent/tools/helpers.ts) — same assertion, scanned where it now lives.
+  const source = readFileSync(new URL('../src/module/agent/tools/helpers.ts', import.meta.url), 'utf8');
   const formatterStart = source.indexOf('export function formatFeatureFlags(');
   const getterStart = source.indexOf('function getConfigBoolean(');
   assert.ok(formatterStart !== -1 && getterStart !== -1, 'formatFeatureFlags/getConfigBoolean not found');
@@ -9067,12 +9069,12 @@ function assertFeatureFlagEnvVarsCovered(envVars: string[], map: readonly { envV
 }
 
 test('feature_flags: FEATURE_FLAG_MAP covers every *_ENABLED env var in config.ts (issue #559 anti-drift pin)', () => {
-  // The env schema moved into per-domain slices under src/config/ (the barrel
+  // The env schema moved into per-domain slices under src/base/config/ (the barrel
   // keeps the composed `config` literal) — same assertions, scanned across
   // the barrel plus every slice so a flag added in either place is counted.
-  const configDir = new URL('../src/config/', import.meta.url);
+  const configDir = new URL('../src/base/config/', import.meta.url);
   const configSource = [
-    readFileSync(new URL('../src/config.ts', import.meta.url), 'utf8'),
+    readFileSync(new URL('../src/base/config.ts', import.meta.url), 'utf8'),
     ...readdirSync(configDir)
       .filter((f) => f.endsWith('.ts'))
       .sort()
@@ -9102,9 +9104,9 @@ test('feature_flags anti-drift pin fails loudly for an uncovered *_ENABLED flag 
 
 test('SECURITY: feature_flags handler makes no repository or query() call — synchronous read of the in-memory config only (issue #559)', () => {
   // The tool moved to the tool-registry split's super-admin domain file
-  // (src/agent/tools/superAdmin.ts) — same assertion, scanned where it now
+  // (src/module/agent/tools/superAdmin.ts) — same assertion, scanned where it now
   // lives.
-  const source = readFileSync(new URL('../src/agent/tools/superAdmin.ts', import.meta.url), 'utf8');
+  const source = readFileSync(new URL('../src/module/agent/tools/superAdmin.ts', import.meta.url), 'utf8');
   const defStart = source.indexOf("name: 'feature_flags',");
   assert.notEqual(defStart, -1, 'feature_flags tool definition not found');
   const handlerMatch = source
@@ -9232,8 +9234,8 @@ test('feature_flags: every OTHER_CONFIGURED_KNOBS entry resolves against the rea
 
 test('SECURITY: feature_flags handler + "Other configured knobs" formatter never call Object.entries/Object.values/spread on the object they read (issue #616)', () => {
   // The formatter moved to the tool-registry split's helpers module
-  // (src/agent/tools/helpers.ts) — same assertion, scanned where it now lives.
-  const source = readFileSync(new URL('../src/agent/tools/helpers.ts', import.meta.url), 'utf8');
+  // (src/module/agent/tools/helpers.ts) — same assertion, scanned where it now lives.
+  const source = readFileSync(new URL('../src/module/agent/tools/helpers.ts', import.meta.url), 'utf8');
   const formatterStart = source.indexOf('export function formatOtherConfiguredKnobs(');
   assert.notEqual(formatterStart, -1, 'formatOtherConfiguredKnobs not found');
   const region = source.slice(formatterStart, source.indexOf('\n}\n', formatterStart) + 3);
@@ -10248,7 +10250,10 @@ test(
 test("SECURITY: the knowledge_search tool handler never calls notifyAdmins directly — a real-time alert (issue #650) may only fire from router.ts reading the turn-scoped flag post-turn, mirroring rate_answer's own invariant (issue #598)", () => {
   // The handler moved from the tools.ts closure into the knowledgeMember
   // ToolDef domain (docs/TOOL-REGISTRY-DESIGN.md §3); same body, new home.
-  const source = readFileSync(new URL('../src/agent/tools/knowledgeMember.ts', import.meta.url), 'utf8');
+  const source = readFileSync(
+    new URL('../src/module/agent/tools/knowledgeMember.ts', import.meta.url),
+    'utf8',
+  );
   const start = source.indexOf("'knowledge_search',");
   const end = source.indexOf("'list_knowledge_topics',");
   assert.notEqual(start, -1, 'knowledge_search tool definition not found');
@@ -13394,7 +13399,7 @@ test(
   'SECURITY: project_add_member refuses a target who is not already a community member (docs/SECURITY.md layer 3 — without it a membership row exists for an identity that never passed add_member, which open mode reaches at guest tier)',
   { skip },
   async () => {
-    const { createProject, upsertMember } = await import('../src/storage/repository.js');
+    const { createProject, upsertMember } = await import('../src/base/storage/repository.js');
     const slug = `${RUN}-addmember-guard`;
     await createProject({ slug, name: 'Guard Lab', createdBy: 'test' });
 
@@ -13424,7 +13429,7 @@ test(
     // project_archive is not CONFIRM-gated because project_unarchive undoes
     // it. That argument only holds if the undo is reachable from the tool
     // surface, so exercise both handlers, not just the repository functions.
-    const { createProject } = await import('../src/storage/repository.js');
+    const { createProject } = await import('../src/base/storage/repository.js');
     const slug = `${RUN}-archive-roundtrip`;
     await createProject({ slug, name: 'Round Trip Lab', createdBy: 'test' });
 
@@ -13461,7 +13466,7 @@ test(
   async () => {
     // These three were only exercised at the repository-function level, unlike
     // their siblings — so the audited() wiring and reply text went untested.
-    const { createProject, upsertMember } = await import('../src/storage/repository.js');
+    const { createProject, upsertMember } = await import('../src/base/storage/repository.js');
     const slug = `${RUN}-handler-paths`;
     await createProject({ slug, name: 'Handler Lab', createdBy: 'test' });
     const member = `${RUN.slice(1)}777`.slice(0, 19);
@@ -13511,7 +13516,7 @@ test(
     // getProjectBySlug deliberately does not exclude archived projects — an
     // admin must still be able to tidy a team up before an unarchive. But
     // nothing they change takes effect until then, so the reply has to say it.
-    const { createProject, upsertMember } = await import('../src/storage/repository.js');
+    const { createProject, upsertMember } = await import('../src/base/storage/repository.js');
     const slug = `${RUN}-archived-edits`;
     await createProject({ slug, name: 'Archived Lab', createdBy: 'test' });
     const member = `${RUN.slice(1)}888`.slice(0, 19);
@@ -14392,7 +14397,7 @@ test(
     // registry split), so scan that WHOLE FILE — same module-boundary
     // reasoning as the memberProjects.ts scan below, and strictly stronger
     // than the old tools.ts region slice between section banners.
-    const toolsSource = readFileSync(new URL('../src/agent/tools/social.ts', import.meta.url), 'utf8');
+    const toolsSource = readFileSync(new URL('../src/module/agent/tools/social.ts', import.meta.url), 'utf8');
     assert.ok(toolsSource.includes("name: 'share_project',"), 'share_project tool definition not found');
     assert.doesNotMatch(
       toolsSource,
@@ -14411,7 +14416,7 @@ test(
     // line-count assertions). A module boundary can't drift the way a comment
     // delimiter can.
     const repoProjectsSource = readFileSync(
-      new URL('../src/storage/repository/memberProjects.ts', import.meta.url),
+      new URL('../src/base/storage/repository/memberProjects.ts', import.meta.url),
       'utf8',
     );
     assert.doesNotMatch(repoProjectsSource, /\bfetch\(|axios|http\.get\(|https\.get\(/);
@@ -14739,7 +14744,7 @@ test(
     );
     const projectId = Number(dbRow.rows[0].id);
 
-    const { PROJECT_CONNECTION_REQUESTER_DAILY_LIMIT } = await import('../src/storage/repository.js');
+    const { PROJECT_CONNECTION_REQUESTER_DAILY_LIMIT } = await import('../src/base/storage/repository.js');
     for (let i = 0; i < PROJECT_CONNECTION_REQUESTER_DAILY_LIMIT; i++) {
       await pool.query(
         `INSERT INTO project_connection_requests
@@ -14786,7 +14791,7 @@ test(
     );
     const projectId = Number(dbRow.rows[0].id);
 
-    const { PROJECT_CONNECTION_OWNER_WEEKLY_LIMIT } = await import('../src/storage/repository.js');
+    const { PROJECT_CONNECTION_OWNER_WEEKLY_LIMIT } = await import('../src/base/storage/repository.js');
     for (let i = 0; i < PROJECT_CONNECTION_OWNER_WEEKLY_LIMIT; i++) {
       await pool.query(
         `INSERT INTO project_connection_requests

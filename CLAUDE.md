@@ -71,9 +71,9 @@ orientation and never authority. If it is wrong, fix it in your PR.
   check keeps failing until someone writes the one-line description. A fixer
   that auto-satisfied this gate would let modules enter the tree undescribed,
   which is the exact rot it exists to prevent. Runs in CI's `lint` job.
-- `npm run build` — tsc + copies the `src/storage/schema/` fragments into
-  `dist/`, then smoke-checks that `dist/storage/schema/` matches the manifest
-  (`scripts/check-dist-schema.mjs`).
+- `npm run build` — tsc + copies the `src/base/storage/schema/` fragments into
+  `dist/`, then smoke-checks that `dist/base/storage/schema/` matches the
+  manifest (`scripts/check-dist-schema.mjs`).
 - DB-touching changes: CI runs `tests/repository.test.ts` against a real
   `pgvector/pgvector:pg16` service container (see `.github/workflows/ci.yml`),
   so this is enforced, not just a manual reminder. Do it locally too for the
@@ -143,7 +143,7 @@ ownership rules:
   didn't have — without it the DB-backed `test:security` fails on a stale schema
   (`column/relation ... does not exist`) and the resolver falsely escalated
   `needs-human` on a non-issue. Since the config split, migrate's import chain
-  validates only the storage boot slice (`src/config/boot.ts`: db+log), so a
+  validates only the storage boot slice (`src/base/config/boot.ts`: db+log), so a
   bare `npm run migrate` works with just `DATABASE_URL` set — it no longer
   exits(1) demanding `CLAUDE_CODE_OAUTH_TOKEN` (config validation exits(1)
   rather than throwing). `migrate:ci` remains as a compatibility alias
@@ -289,7 +289,7 @@ ownership rules:
 ## Conventions
 
 - Match existing style; keep comments at the density of surrounding code.
-- Never commit secrets. `.env` is git-ignored; `whatsapp-auth/` and `src/auth/`
+- Never commit secrets. `.env` is git-ignored; `whatsapp-auth/` and `src/base/auth/`
   are distinct — the latter is source and must stay tracked.
 - Do not put model identifiers in commits, PR bodies, or code.
 - `CHANGELOG.md` `##` section dates are the **Pacific/Auckland (NZ)** calendar

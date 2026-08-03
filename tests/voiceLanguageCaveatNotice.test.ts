@@ -3,13 +3,13 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/strings/notices.js';
+import '../src/module/strings/notices.js';
 
 import {
   VOICE_LANGUAGE_CAVEAT_TEXT,
   VOICE_LANGUAGE_CAVEAT_TEXT_MI,
   shouldNotify,
-} from '../src/voiceLanguageCaveatNotice.js';
+} from '../src/base/voiceLanguageCaveatNotice.js';
 
 const WINDOW_MS = 60_000;
 

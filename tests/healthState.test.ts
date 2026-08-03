@@ -5,8 +5,8 @@ import {
   buildReadyzPayload,
   initialTracker,
   stepDisconnectTracker,
-} from '../src/healthState.js';
-import type { JobHealthSnapshot } from '../src/backgroundJobHealth.js';
+} from '../src/base/healthState.js';
+import type { JobHealthSnapshot } from '../src/base/backgroundJobHealth.js';
 
 const AFTER_MS = 5 * 60_000; // 5 minutes
 

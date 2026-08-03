@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/strings/notices.js';
+import '../src/module/strings/notices.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -21,11 +21,11 @@ process.env.GITHUB_ISSUE_TOKEN ??= 'ghp_testtoken';
 // The tool registry's module-scope registrations (tool tiers, tool-server
 // parts, feature-flag predicates) — the composition-root contract, matching
 // tests/rbac.test.ts.
-await import('../src/agent/tools/index.js');
+await import('../src/module/agent/tools/index.js');
 
-const { config } = await import('../src/config.js');
-const { buildQueryOptions } = await import('../src/agent/core.js');
-const { toolsForRole } = await import('../src/auth/rbac.js');
+const { config } = await import('../src/base/config.js');
+const { buildQueryOptions } = await import('../src/base/agent/core.js');
+const { toolsForRole } = await import('../src/base/auth/rbac.js');
 
 test('issue #535 acceptance criterion 2 — GITHUB_ISSUE_ENABLED=true (others default): suggest_issue is present and allowedTools is byte-identical to pre-#535 toolsForRole for the eligible tier/platform', () => {
   assert.equal(config.github.enabled, true, 'precondition: github-issue is on in this test process');

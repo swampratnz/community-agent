@@ -16,8 +16,8 @@ const skip = hasDb
   ? false
   : 'DATABASE_URL not set — skipping DB-integration tests (CLAUDE.md: exercise against a local Postgres 16 + pgvector)';
 
-const { pool, closeDb } = await import('../src/storage/db.js');
-const { config } = await import('../src/config.js');
+const { pool, closeDb } = await import('../src/base/storage/db.js');
+const { config } = await import('../src/base/config.js');
 
 // Unique per test-run tag so fixtures never collide across runs and can be
 // cleaned up precisely, mirroring the RUN-tag convention in
@@ -41,7 +41,7 @@ after(async () => {
  * and ~0 for any other, independent of the real embedding model's semantics.
  *
  * This is mocked once, at module scope, rather than per-test: `embed` is a
- * static import inside src/storage/repository.ts, so once that module has
+ * static import inside src/base/storage/repository.ts, so once that module has
  * been dynamically imported anywhere in this process it's cached — a second
  * `t.mock.module` call in a later test does not retarget the binding
  * `repository.js` already closed over. One shared map covering every fixture
@@ -69,10 +69,10 @@ const EMBED_FIXTURES: Record<string, number[]> = {
 // repository.js — so install it via the first test's context and reuse the
 // same imported bindings across the remaining tests (a module-scope variable
 // populated on first use), rather than re-mocking per test.
-let repoPromise: Promise<typeof import('../src/storage/repository.js')> | null = null;
+let repoPromise: Promise<typeof import('../src/base/storage/repository.js')> | null = null;
 function repo(t: { mock: { module: (specifier: string, opts: unknown) => void } }) {
   if (!repoPromise) {
-    t.mock.module('../src/storage/embeddings.js', {
+    t.mock.module('../src/base/storage/embeddings.js', {
       namedExports: {
         embed: async (text: string) => {
           const vec = EMBED_FIXTURES[text];
@@ -81,7 +81,7 @@ function repo(t: { mock: { module: (specifier: string, opts: unknown) => void } 
         },
       },
     });
-    repoPromise = import('../src/storage/repository.js');
+    repoPromise = import('../src/base/storage/repository.js');
   }
   return repoPromise;
 }

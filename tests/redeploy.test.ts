@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { redeployArgs, REDEPLOY_COMMAND, triggerRedeploy } from '../src/agent/redeploy.js';
+import { redeployArgs, REDEPLOY_COMMAND, triggerRedeploy } from '../src/base/agent/redeploy.js';
 
 // The unit name is supplied by the caller now (the community `redeploy_bot`
-// def in src/agent/tools/superAdmin.ts) — this is that exact literal, so the
+// def in src/module/agent/tools/superAdmin.ts) — this is that exact literal, so the
 // argv pinned below is still production's.
 const UNIT = 'community-agent-redeploy.service';
 

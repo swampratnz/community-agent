@@ -2,10 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { SCHEMA_FRAGMENTS, loadSchemaSql } from '../src/storage/schema/manifest.js';
+import { SCHEMA_FRAGMENTS, loadSchemaSql } from '../src/base/storage/schema/manifest.js';
 
 /**
- * `migrate()` replays the ENTIRE schema — the `src/storage/schema/` fragments
+ * `migrate()` replays the ENTIRE schema — the `src/base/storage/schema/` fragments
  * concatenated in manifest order — as a SINGLE multi-statement query on every
  * run (`pool.query(sql)` — there is no `schema_migrations` ledger, so nothing
  * is ever skipped). Two consequences make the concatenation's shape a
@@ -96,7 +96,7 @@ test('schema fragments: shortcut_hits_kind_check permits every ShortcutKind, in 
   // a 7th kind to the type without widening the constraint fails THIS test
   // instead of failing at runtime on the first real insert.
   const kindSource = readFileSync(
-    new URL('../src/storage/repository/shortcutHits.ts', import.meta.url),
+    new URL('../src/base/storage/repository/shortcutHits.ts', import.meta.url),
     'utf8',
   );
   const union = /export type ShortcutKind =([\s\S]*?);/.exec(kindSource);
@@ -109,14 +109,14 @@ test('schema fragments: shortcut_hits_kind_check permits every ShortcutKind, in 
   }
 });
 
-test('schema manifest: every .sql file in src/storage/schema/ is listed exactly once, and every listed fragment exists on disk', () => {
+test('schema manifest: every .sql file in src/base/storage/schema/ is listed exactly once, and every listed fragment exists on disk', () => {
   // The silent-drop hazard: `loadSchemaSql()` reads ONLY what the manifest
   // lists (an explicit array, not a glob, because concatenation order is
   // load-bearing). A fragment committed to the directory but never added to
   // the manifest would simply not be part of the migration — no error, no
   // missing-file crash, just tables that never get created. This makes that
   // state fail CI instead.
-  const schemaDir = fileURLToPath(new URL('../src/storage/schema/', import.meta.url));
+  const schemaDir = fileURLToPath(new URL('../src/base/storage/schema/', import.meta.url));
   const onDisk = readdirSync(schemaDir)
     .filter((f) => f.endsWith('.sql'))
     .sort();
@@ -130,7 +130,7 @@ test('schema manifest: every .sql file in src/storage/schema/ is listed exactly 
   assert.deepEqual(
     [...listed].sort(),
     onDisk,
-    'src/storage/schema/ and SCHEMA_FRAGMENTS in manifest.ts must list exactly the same .sql files — ' +
+    'src/base/storage/schema/ and SCHEMA_FRAGMENTS in manifest.ts must list exactly the same .sql files — ' +
       'a fragment on disk but missing from the manifest is silently excluded from every migration, ' +
       'and a manifest entry with no file crashes migrate() at startup.',
   );

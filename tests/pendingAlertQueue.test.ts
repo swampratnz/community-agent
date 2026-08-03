@@ -7,7 +7,7 @@ import {
   resetPendingAlertsForTests,
   drainPendingAlerts,
   PENDING_ALERT_QUEUE_CAP,
-} from '../src/pendingAlertQueue.js';
+} from '../src/base/pendingAlertQueue.js';
 
 // Pure leaf module (no config/env) — reset the shared singleton before each case.
 function fresh() {

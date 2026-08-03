@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { formatNzEventTime } from '../src/util/nzTime.js';
+import { formatNzEventTime } from '../src/base/util/nzTime.js';
 
 // formatNzEventTime (issue #577): minute-granularity Pacific/Auckland
 // rendering for event start/end times shown to members and admins — sibling

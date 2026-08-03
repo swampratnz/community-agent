@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/strings/notices.js';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+import '../src/module/strings/notices.js';
+import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -19,10 +19,10 @@ process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 
-const { pool, closeDb } = await import('../src/storage/db.js');
-const { Router } = await import('../src/router.js');
-const { makeRouterDeps } = await import('../src/routerWiring.js');
-const { embed } = await import('../src/storage/embeddings.js');
+const { pool, closeDb } = await import('../src/base/storage/db.js');
+const { Router } = await import('../src/base/router.js');
+const { makeRouterDeps } = await import('../src/module/routerWiring.js');
+const { embed } = await import('../src/base/storage/embeddings.js');
 
 await embed('warmup').catch(() => {});
 

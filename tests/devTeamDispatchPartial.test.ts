@@ -1,10 +1,10 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { PlatformAdapter } from '../src/platforms/types.js';
+import type { PlatformAdapter } from '../src/base/platforms/types.js';
 
 // config.ts validates env at import time — dev-team feature ENABLED, same
 // preamble as tests/devTeamTools.test.ts. This lives in its OWN file/process
-// because it must mock ../src/storage/repository.js (insertDevTeamWatch), and
+// because it must mock ../src/base/storage/repository.js (insertDevTeamWatch), and
 // module mocks bake into the shared import cache for a whole process —
 // devTeamTools.test.ts needs the real repository module for its other tests.
 process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
@@ -19,7 +19,7 @@ process.env.DEV_TEAM_AUTH_TOKEN ??= 'dev-team-secret-token';
 
 const hasDb = Boolean(process.env.DATABASE_URL) && !process.env.DATABASE_URL.includes('test:test');
 
-const { closeDb } = await import('../src/storage/db.js');
+const { closeDb } = await import('../src/base/storage/db.js');
 after(async () => {
   await closeDb();
 });
@@ -27,8 +27,8 @@ after(async () => {
 // Real modules, imported before the mocks are registered: the mocks spread
 // them so every export tools.ts needs stays present, with ONLY the two
 // functions under test replaced.
-const realClient = await import('../src/devTeam/client.js');
-const realRepo = await import('../src/storage/repository.js');
+const realClient = await import('../src/module/devTeam/client.js');
+const realRepo = await import('../src/base/storage/repository.js');
 
 function stubAdapter(): PlatformAdapter {
   return {
@@ -55,13 +55,13 @@ test(
     // the follow-up watch insert throws. Reporting that as a dispatch failure
     // would invite a retry that doubles a real job — the reply must carry the
     // job id and the explicit no-completion-DM caveat instead.
-    t.mock.module('../src/devTeam/client.js', {
+    t.mock.module('../src/module/devTeam/client.js', {
       namedExports: {
         ...realClient,
         dispatchJob: async () => ({ id: 'job-partial-1', state: 'queued', position: 0 }),
       },
     });
-    t.mock.module('../src/storage/repository.js', {
+    t.mock.module('../src/base/storage/repository.js', {
       namedExports: {
         ...realRepo,
         insertDevTeamWatch: async () => {
@@ -69,7 +69,7 @@ test(
         },
       },
     });
-    const { buildToolServer } = await import('../src/agent/tools.js');
+    const { buildToolServer } = await import('../src/module/agent/tools.js');
     const caller = {
       platform: 'discord' as const,
       userId: 'super-1',

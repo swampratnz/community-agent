@@ -2,24 +2,24 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 // The adapters take their community text pack as a required constructor
 // parameter now (agent-base plan item 6) — production hands it over in
-// src/platforms/factories.ts, so these constructions pass the same pack.
+// src/module/platforms/factories.ts, so these constructions pass the same pack.
 import {
   WHATSAPP_CLOUD_TEXT_PACK,
   WHATSAPP_CLOUD_WELCOME_MESSAGE,
   WHATSAPP_CLOUD_WELCOME_MESSAGE_OPEN,
-} from '../src/platforms/textPacks.js';
+} from '../src/module/platforms/textPacks.js';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/strings/notices.js';
+import '../src/module/strings/notices.js';
 import { EventEmitter } from 'node:events';
 import type { IncomingMessage as HttpRequest, ServerResponse } from 'node:http';
-import type { CloudInboundMessage } from '../src/platforms/whatsapp/cloudWire.js';
+import type { CloudInboundMessage } from '../src/base/platforms/whatsapp/cloudWire.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // (including WHATSAPP_PROVIDER=cloud config) before importing anything that
 // (transitively) loads it. DATABASE_URL points nowhere; policy reads fail
-// and fall back to defaults (see src/storage/policies.ts), so no real DB is
+// and fall back to defaults (see src/module/storage/policies.ts), so no real DB is
 // needed for this adapter-level test.
 process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
 process.env.DISCORD_BOT_TOKEN ??= 'test-token';
@@ -31,11 +31,12 @@ process.env.WHATSAPP_CLOUD_ACCESS_TOKEN ??= 'test-access-token';
 process.env.WHATSAPP_CLOUD_VERIFY_TOKEN ??= 'test-verify-token';
 process.env.WHATSAPP_CLOUD_APP_SECRET ??= 'test-app-secret';
 
-const { WhatsAppCloudAdapter, WindowClosedError } = await import('../src/platforms/whatsapp/cloudAdapter.js');
-const { config } = await import('../src/config.js');
-const { pool } = await import('../src/storage/db.js');
-const { resetPolicyCacheForTests } = await import('../src/storage/policyStore.js');
-const { buildToolServer } = await import('../src/agent/tools.js');
+const { WhatsAppCloudAdapter, WindowClosedError } =
+  await import('../src/base/platforms/whatsapp/cloudAdapter.js');
+const { config } = await import('../src/base/config.js');
+const { pool } = await import('../src/base/storage/db.js');
+const { resetPolicyCacheForTests } = await import('../src/base/storage/policyStore.js');
+const { buildToolServer } = await import('../src/module/agent/tools.js');
 
 /**
  * Records every Graph API call this adapter would have made. `responses[i].json`
@@ -1965,7 +1966,8 @@ test(
 );
 
 test('first-contact welcome: Discord and Baileys welcome constants are unaffected by this change', async () => {
-  const { WELCOME_MESSAGE, WHATSAPP_GROUP_WELCOME_MESSAGE } = await import('../src/platforms/textPacks.js');
+  const { WELCOME_MESSAGE, WHATSAPP_GROUP_WELCOME_MESSAGE } =
+    await import('../src/module/platforms/textPacks.js');
   assert.notEqual(WELCOME_MESSAGE, WHATSAPP_CLOUD_WELCOME_MESSAGE);
   assert.notEqual(WHATSAPP_GROUP_WELCOME_MESSAGE, WHATSAPP_CLOUD_WELCOME_MESSAGE);
 });

@@ -82,18 +82,25 @@ privileged action is RBAC-gated, CONFIRM-guarded where destructive, and audited.
 ## Repository layout
 ```
 src/
-  config.ts               env loading + validation
-  router.ts               inbound → agent → outbound orchestration
-  agent/                  auth, core turn loop, system prompt, personas, MCP tools, skills
-  context/                offline context builder, docs ingest, export, knowledge refresh
-  moderation/             bad-word/abuse scan, strikes, muted-role enforcement
-  auth/rbac.ts            admin/user roles + per-role tool gating
-  platforms/              PlatformAdapter interface + Discord/WhatsApp adapters
-  storage/                Postgres pool, schema, migrations, embeddings, repo
-  media/                  image generation (Grok Build CLI) + voice-note transcription
-  status/                 Anthropic status-page checker
-  github/                 GitHub issue filing (suggest_issue)
-  devTeam/                remote dev-team build-service client
+  index.ts                composition root — the only file that may import both halves
+  base/                   the community-agnostic framework (never imports src/module/)
+    config.ts             env loading + validation
+    router.ts             inbound → agent → outbound orchestration
+    agent/                auth, core turn loop, prompt spine, tool kernel, skills manifest
+    moderation/           bad-word/abuse scan, strikes, muted-role enforcement
+    auth/rbac.ts          admin/user roles + per-role tool gating
+    platforms/            PlatformAdapter interface + Discord/WhatsApp adapters
+    storage/              Postgres pool, schema, migrations, embeddings, repo
+    media/                on-host voice-note transcription
+    jobs/                 background-job registry mechanism
+  module/                 the NZ Claude Community module (free to import src/base/)
+    agent/                MCP tool registry, prompt sections, personas, skills bundle
+    context/              offline context builder, docs ingest, export, knowledge refresh
+    platforms/            adapter text packs, slash commands, adapter factories
+    media/                image generation (Grok Build CLI)
+    status/               Anthropic status-page checker
+    github/               GitHub issue filing (suggest_issue)
+    devTeam/              remote dev-team build-service client
 scripts/                  CI gate helpers (security-test floor, changelog coverage, labels)
 tests/                    Node test-runner suites (SECURITY: invariants, knowledge eval, …)
 deploy/                   Ubuntu provisioning script + systemd unit

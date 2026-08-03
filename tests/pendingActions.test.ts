@@ -9,7 +9,7 @@ import {
   registerPendingAction,
   sweepExpiredPendingActions,
   takePendingAction,
-} from '../src/agent/pendingActions.js';
+} from '../src/base/agent/pendingActions.js';
 
 test('confirm reply classification', () => {
   assert.equal(classifyConfirmReply('CONFIRM'), 'confirm');

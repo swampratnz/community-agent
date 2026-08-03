@@ -3,16 +3,16 @@ import assert from 'node:assert/strict';
 // The default bad-word list is community content registered at its own module
 // scope (src/index.ts imports it in production); the moderation wordlist fails
 // closed until then, and constructing a Discord adapter builds a Moderator.
-import '../src/moderation/badWords.js';
+import '../src/module/moderation/badWords.js';
 // The adapters take their community text pack as a required constructor
 // parameter now (agent-base plan item 6) — production hands it over in
-// src/platforms/factories.ts, so these constructions pass the same pack.
+// src/module/platforms/factories.ts, so these constructions pass the same pack.
 import {
   BAILEYS_TEXT_PACK,
   DISCORD_TEXT_PACK,
   WHATSAPP_CLOUD_TEXT_PACK,
-} from '../src/platforms/textPacks.js';
-import type { PlatformAdapter } from '../src/platforms/types.js';
+} from '../src/module/platforms/textPacks.js';
+import type { PlatformAdapter } from '../src/base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -28,18 +28,18 @@ process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 // must be deterministic here regardless of the surrounding environment.
 process.env.WHATSAPP_PROVIDER = 'baileys';
 
-const { closeDb } = await import('../src/storage/db.js');
-const { TOOL_REGISTRY } = await import('../src/agent/tools/index.js');
+const { closeDb } = await import('../src/base/storage/db.js');
+const { TOOL_REGISTRY } = await import('../src/module/agent/tools/index.js');
 const { KNOWN_PLATFORMS, PLATFORM_DESCRIPTORS, descriptorFor, assertToolAvailabilityConsistent } =
-  await import('../src/platforms/registry.js');
+  await import('../src/base/platforms/registry.js');
 const { ADAPTER_FACTORIES, createConfiguredAdapters, WHATSAPP_TOOL_CAPABILITIES } =
-  await import('../src/platforms/factories.js');
+  await import('../src/module/platforms/factories.js');
 const { DiscordAdapter, DISCORD_ADMIN_CAPABILITIES, DISCORD_TOOL_CAPABILITIES } =
-  await import('../src/platforms/discord/adapter.js');
+  await import('../src/base/platforms/discord/adapter.js');
 const { BaileysAdapter, BAILEYS_ADMIN_CAPABILITIES, BAILEYS_TOOL_CAPABILITIES } =
-  await import('../src/platforms/whatsapp/baileysAdapter.js');
+  await import('../src/base/platforms/whatsapp/baileysAdapter.js');
 const { WhatsAppCloudAdapter, WHATSAPP_CLOUD_ADMIN_CAPABILITIES, WHATSAPP_CLOUD_TOOL_CAPABILITIES } =
-  await import('../src/platforms/whatsapp/cloudAdapter.js');
+  await import('../src/base/platforms/whatsapp/cloudAdapter.js');
 
 after(async () => {
   await closeDb();

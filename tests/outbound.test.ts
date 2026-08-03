@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/strings/notices.js';
+import '../src/module/strings/notices.js';
 import {
   applyCodePolicy,
   convertMarkdownForWhatsApp,
@@ -11,7 +11,7 @@ import {
   redactSecrets,
   stripEmDashes,
   stripEmDashesOutsideCode,
-} from '../src/agent/outbound.js';
+} from '../src/base/agent/outbound.js';
 
 test('SECURITY: known secret values are always redacted', () => {
   const secret = 'super-secret-oauth-token-value-123';

@@ -1,11 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { CommunityPromptSections } from '../src/agent/promptSpine.js';
+import type { CommunityPromptSections } from '../src/base/agent/promptSpine.js';
 // Community content registrations (prompt sections + persona roster) — the
 // composition-root contract: src/index.ts registers these in production, so
 // tests that assemble prompts register them explicitly here.
-import '../src/agent/communityPromptSections.js';
-import '../src/agent/personas.js';
+import '../src/module/agent/communityPromptSections.js';
+import '../src/module/agent/personas.js';
 
 // The slot-assembler security contract (agent-base plan item 8): the system
 // prompt's security spine is base-owned, renders at its fixed positions
@@ -20,7 +20,7 @@ process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= 'ci-dummy-guild';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 
-const { buildSystemPrompt, PROMPT_SLOT_ORDER } = await import('../src/agent/systemPrompt.js');
+const { buildSystemPrompt, PROMPT_SLOT_ORDER } = await import('../src/base/agent/systemPrompt.js');
 const {
   buildGuidelinesBlock,
   promptSections,
@@ -33,10 +33,10 @@ const {
   AUTHORIZATION_NOTE,
   TONE_CALIBRATION_CLAUSE,
   IMAGE_INPUT_CLAUSE,
-} = await import('../src/agent/promptSpine.js');
-const { registerSkillsManifest, skillsManifest } = await import('../src/agent/skillsManifest.js');
-const { registerPersona } = await import('../src/agent/personaRegistry.js');
-const { ENABLED_SKILLS } = await import('../src/agent/enabledSkills.js');
+} = await import('../src/base/agent/promptSpine.js');
+const { registerSkillsManifest, skillsManifest } = await import('../src/base/agent/skillsManifest.js');
+const { registerPersona } = await import('../src/base/agent/personaRegistry.js');
+const { ENABLED_SKILLS } = await import('../src/module/agent/enabledSkills.js');
 
 const caller = {
   platform: 'discord' as const,

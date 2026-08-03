@@ -3,21 +3,21 @@ import assert from 'node:assert/strict';
 // The default bad-word list is community content registered at its own module
 // scope (src/index.ts imports it in production); the moderation wordlist fails
 // closed until then, and constructing a Discord adapter builds a Moderator.
-import '../src/moderation/badWords.js';
+import '../src/module/moderation/badWords.js';
 // The adapters take their community text pack as a required constructor
 // parameter now (agent-base plan item 6) — production hands it over in
-// src/platforms/factories.ts, so these constructions pass the same pack.
+// src/module/platforms/factories.ts, so these constructions pass the same pack.
 import {
   BAILEYS_TEXT_PACK,
   DISCORD_TEXT_PACK,
   WHATSAPP_CLOUD_TEXT_PACK,
-} from '../src/platforms/textPacks.js';
+} from '../src/module/platforms/textPacks.js';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/strings/notices.js';
+import '../src/module/strings/notices.js';
 import { Events } from 'discord.js';
-import type { IncomingMessage } from '../src/platforms/types.js';
+import type { IncomingMessage } from '../src/base/platforms/types.js';
 
 // Issue #575's auto-retraction feature, flag ON. Lives in its own
 // file/process (config.ts parses env once at import) so this file's
@@ -39,13 +39,13 @@ process.env.WHATSAPP_CLOUD_ACCESS_TOKEN ??= 'test-access-token';
 process.env.WHATSAPP_CLOUD_VERIFY_TOKEN ??= 'test-verify-token';
 process.env.WHATSAPP_CLOUD_APP_SECRET ??= 'test-app-secret';
 
-const { config } = await import('../src/config.js');
-const { Router } = await import('../src/router.js');
-const { makeRouterDeps } = await import('../src/routerWiring.js');
-const { DiscordAdapter } = await import('../src/platforms/discord/adapter.js');
-const { BaileysAdapter } = await import('../src/platforms/whatsapp/baileysAdapter.js');
-const { WhatsAppCloudAdapter } = await import('../src/platforms/whatsapp/cloudAdapter.js');
-const { pool, closeDb } = await import('../src/storage/db.js');
+const { config } = await import('../src/base/config.js');
+const { Router } = await import('../src/base/router.js');
+const { makeRouterDeps } = await import('../src/module/routerWiring.js');
+const { DiscordAdapter } = await import('../src/base/platforms/discord/adapter.js');
+const { BaileysAdapter } = await import('../src/base/platforms/whatsapp/baileysAdapter.js');
+const { WhatsAppCloudAdapter } = await import('../src/base/platforms/whatsapp/cloudAdapter.js');
+const { pool, closeDb } = await import('../src/base/storage/db.js');
 
 const RUN = `retract-on-${Date.now()}`;
 
@@ -509,7 +509,7 @@ test('SECURITY: WhatsApp — a revoke from a non-author, non-admin participant d
 
   // The TRUE original sender revokes their own (now-answered) message —
   // must still succeed, proving the forged attempt above did NOT evict/burn
-  // the mapping (the griefing vector src/replyRetraction.ts's
+  // the mapping (the griefing vector src/base/replyRetraction.ts's
   // peek/evict split closes).
   await fireWhatsappRevoke(adapter, GROUP_JID, SENDER_A, messageId);
   assert.equal(deleteCalls.length, 1, 'the mapped original sender can retract their own answered message');
