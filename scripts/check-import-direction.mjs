@@ -32,12 +32,15 @@
 //
 // `--root <dir>` relocates the scan so the tests can drive every rule against
 // fixture trees instead of only ever seeing this repo's (passing) state.
-// Nothing in CI passes it.
+// `--forbid-base` re-enables rule 1 under `--root`, so a fixture can prove the
+// no-src/base/ rule bites without this repo having to grow a real src/base/
+// mid-test-run. Nothing in CI passes either.
 // ---------------------------------------------------------------------------
 import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
+const forbidBase = process.argv.includes('--forbid-base');
 const rootFlag = process.argv.indexOf('--root');
 const repoRoot =
   rootFlag !== -1 && process.argv[rootFlag + 1]
@@ -156,9 +159,15 @@ for (const file of tsFiles(MODULE_DIR)) {
   }
 }
 
-// Rule 1: the framework must stay a package. Skipped under `--root`, where the
-// fixtures deliberately build a two-halves tree to exercise the rules above.
-if (rootFlag === -1 && existsSync(BASE_DIR)) {
+// Rule 1: the framework must stay a package. Skipped under `--root` by
+// default, because those fixtures deliberately build a two-halves tree to
+// exercise the rules above — but `--forbid-base` opts a fixture back into it,
+// so the rule can be tested WITHOUT creating a real src/base/ in this repo.
+// It used to be tested by doing exactly that, which raced every other test
+// file scanning the real tree: `npm test` runs files in parallel, and
+// contextPack's "the real module-map is in sync" case fails the moment an
+// undescribed src/base/ appears beside it.
+if ((rootFlag === -1 || forbidBase) && existsSync(BASE_DIR)) {
   console.error(
     'check-import-direction: src/base/ exists again.\n\n' +
       '  The framework lives in @swampratnz/agent-base now. A local src/base/ forks it silently: the ' +

@@ -182,15 +182,18 @@ test('this repository obeys the rules — including having no src/base/ at all',
 });
 
 test('a re-created src/base/ fails the gate outright, even with no bad import in it', () => {
-  // Driven against the REAL repo root plus a temporary src/base/, because the
-  // rule is deliberately skipped under --root (the fixtures need a two-halves
-  // tree to exercise the import rules).
-  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
-  const dir = path.join(repoRoot, 'src', 'base');
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(path.join(dir, 'kernel.ts'), 'export const kernel = 1;\n');
+  // Driven against a FIXTURE tree with --forbid-base, never against the real
+  // repo. An earlier version created src/base/ under the actual repo root and
+  // deleted it in a finally: `node:test` runs test FILES in parallel, so that
+  // window was visible to every other file scanning the real tree — including
+  // contextPack's "the real module-map is in sync" case, which fails the
+  // moment an undescribed src/base/ appears. A gate test must not be able to
+  // redden an unrelated one.
+  const dir = mkdtempSync(path.join(tmpdir(), 'import-direction-base-'));
   try {
-    const result = spawnSync('node', [SCRIPT], { cwd: repoRoot, encoding: 'utf8' });
+    mkdirSync(path.join(dir, 'src', 'base'), { recursive: true });
+    writeFileSync(path.join(dir, 'src', 'base', 'kernel.ts'), 'export const kernel = 1;\n');
+    const result = spawnSync('node', [SCRIPT, '--root', dir, '--forbid-base'], { encoding: 'utf8' });
     assert.equal(result.status, 1);
     assert.match(`${result.stdout}${result.stderr}`, /src\/base\/ exists again/);
   } finally {
