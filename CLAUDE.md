@@ -54,10 +54,11 @@ pure pass that rejects an incomplete or double-claimed composition with the
 process untouched) → each module's `init()` → singleton registrations →
 additive registrations → readiness probe → migrations → start.
 
-Two gaps to expect, both real today and both upstream fixes: `AgentModule` has
-no `configSchema` field, so a new env var is an agent-base change; and the
-package publishes no subpath exports of its own, which
-`scripts/patch-agent-base-exports.mjs` (a postinstall) shims.
+One gap to expect, real today and an upstream fix: `AgentModule` has no
+`configSchema` field, so a new env var is an agent-base change. (Subpath
+exports were the other one; `@swampratnz/agent-base@0.1.1` ships them, so
+`@swampratnz/agent-base/<module>.js` resolves straight from the package and the
+postinstall shim that used to add them is gone.)
 
 ## Build / test / verify
 
@@ -197,7 +198,7 @@ ownership rules:
   didn't have — without it the DB-backed `test:security` fails on a stale schema
   (`column/relation ... does not exist`) and the resolver falsely escalated
   `needs-human` on a non-issue. Since the config split, migrate's import chain
-  validates only the storage boot slice (`src/base/config/boot.ts`: db+log), so a
+  validates only the storage boot slice (agent-base's `config/boot.js`: db+log), so a
   bare `npm run migrate` works with just `DATABASE_URL` set — it no longer
   exits(1) demanding `CLAUDE_CODE_OAUTH_TOKEN` (config validation exits(1)
   rather than throwing). `migrate:ci` remains as a compatibility alias
@@ -343,8 +344,10 @@ ownership rules:
 ## Conventions
 
 - Match existing style; keep comments at the density of surrounding code.
-- Never commit secrets. `.env` is git-ignored; `whatsapp-auth/` and `src/base/auth/`
-  are distinct — the latter is source and must stay tracked.
+- Never commit secrets. `.env` is git-ignored, as are the runtime credential
+  directories `/auth/` and `/whatsapp-auth/` — note both patterns are ANCHORED
+  to the repo root in `.gitignore`, so an unanchored `auth/` must never be
+  re-added: it would swallow any source directory of that name.
 - Do not put model identifiers in commits, PR bodies, or code.
 - `CHANGELOG.md` `##` section dates are the **Pacific/Auckland (NZ)** calendar
   day, not UTC. The build worker runs in a UTC CI shell, so use

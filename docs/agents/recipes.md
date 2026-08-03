@@ -258,10 +258,11 @@ Importing the manifest TYPE (`AgentModuleManifest`) is fine.
 When a change genuinely belongs upstream — a new base config var, a new slot,
 a wrong signature — the honest sequence is: fix it in `swampratnz/agent-base`,
 publish, bump the dependency here. Do NOT re-create the file locally to work
-around it. Two known gaps to expect, both real today: `AgentModule` has no
-`configSchema` field (so a new env var is an upstream change), and the package
-publishes no subpath exports of its own (`scripts/patch-agent-base-exports.mjs`
-is the temporary shim that makes `@swampratnz/agent-base/<module>.js` resolve).
+around it. One known gap to expect, real today: `AgentModule` has no
+`configSchema` field, so a new env var is an upstream change. (Subpath exports
+were the other one — `@swampratnz/agent-base@0.1.1` publishes `./*`, so
+`@swampratnz/agent-base/<module>.js` resolves from the package itself and the
+postinstall shim that used to add that entry has been deleted.)
 
 ## Change the pipeline itself
 

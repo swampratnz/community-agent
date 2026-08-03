@@ -5,7 +5,7 @@ grepping the whole tree. Read [`README.md`](README.md) first for how to use
 this and [`recipes.md`](recipes.md) for the shape of a typical change.
 
 **This file is gated.** `npm run context:check` (part of CI's lint job) fails
-if a subsystem or top-level module of `src/`, `src/base/` or `src/module/` has
+if a subsystem or top-level module of `src/` or `src/module/` has
 no entry, if an entry names a path that no longer exists, or if entries are
 unsorted, duplicated, or left as stubs. `npm run context:fix` adds/drops/sorts
 entries mechanically — it cannot write the description, which is the part that
@@ -25,7 +25,7 @@ Two things this map deliberately does **not** try to be:
 - **A substitute for reading the code.** It tells you which file to open, not
   what the code says. Never assert behaviour from a one-liner here.
 - **Complete.** Nested files inside a subsystem are called out only where the
-  subsystem is big enough that "look in `src/base/agent/`" is not an answer.
+  subsystem is big enough that "look in `src/module/agent/`" is not an answer.
 
 The security spine — the paths where a mistake is a security bug, not a bug —
 is marked **🔒**. Changes there need a `SECURITY:` test (see
@@ -33,9 +33,9 @@ is marked **🔒**. Changes there need a `SECURITY:` test (see
 
 <!-- module-map:begin -->
 
-- `src/index.ts` — Process entry point, now a thin composition root: loads config, wires adapters and the router, starts the job registry (`src/base/jobs/` + `src/module/jobs/`), and owns the single shutdown sweep's ordering.
+- `src/index.ts` — Process entry point, now a thin composition root: loads config, wires adapters and the router, starts the job registry (agent-base's jobs mechanism + `src/module/jobs/`), and owns the single shutdown sweep's ordering.
 - `src/migrate.ts` — `npm run migrate`: applies agent-base's schema fragments then this module's (`src/module/storage/schema/`) as ONE atomic query. Deliberately imports nothing but the storage slice, so a bare migrate still needs only `DATABASE_URL`.
-- `src/module/` — The NZ-Claude-Community half of the tree: this deployment's tools, prose, jobs, personas, skills and the composition wiring that names them. Free to import base; nothing in base may import back.
+- `src/module/` — The NZ-Claude-Community half of the tree: this deployment's tools, prose, jobs, personas, skills and the composition wiring that names them. Imports the framework from the `@swampratnz/agent-base` package; may never import the composition root (`src/index.ts`) or call `createAgent` itself — it contributes `agentModule.ts`'s manifest and nothing composes but the root.
 - `src/module/adminDigest.ts` — Builds and sends the periodic admin digest: moderation, engagement, feedback and cost summaries for admins, scoped to their own conversations.
 - `src/module/adminLeverageAlert.ts` — Weekly super-admin push of `adminActivitySummary`'s actions-per-admin rate, the pull-to-push complement of the on-demand `admin_activity` tool.
 - `src/module/agent/` — The community half of the agent surface: the tool registry and its per-domain ToolDef files, the prompt sections, persona roster, turn-state keys, skills bundle and changelog reader.
@@ -77,7 +77,7 @@ is marked **🔒**. Changes there need a `SECURITY:` test (see
 - `src/module/agent/tools/social.ts` — The member-discovery ToolDef domain: interests (`set_my_interests`/`who_is_into`), peer help (`set_helper_availability`/`find_helper`), and the project showcase (`share_project`/`list_projects`/`request_project_connection`).
 - `src/module/agent/tools/superAdmin.ts` — The super-admin ToolDef domain (grant/revoke admin, purge, audit/usage/engagement views, pause/resume, set_policy, redeploy, suggest_issue) plus the per-super-admin daily issue reserver.
 - `src/module/agentModule.ts` — 🔒 THE module manifest: every extension point this deployment fills (notices, tool tiers/server parts/flag predicates, skills, prompt sections, commands, bad words, personas, turn-state finalizer, policy keys, migrations) as one inspectable object, handed to agent-base's `createAgent` by `src/index.ts`. Its `init()` asserts the NZ display settings rather than letting a missing env var silently re-render every time in UTC.
-- `src/module/backgroundJobs.ts` — The knowledge/context/status/dev-team job run functions and their `JobSpec` entries; the shared tracked-job wrapper they start through lives in `src/base/jobs/trackedJob.ts`.
+- `src/module/backgroundJobs.ts` — The knowledge/context/status/dev-team job run functions and their `JobSpec` entries; the shared tracked-job wrapper they start through lives in the package (`@swampratnz/agent-base/jobs/trackedJob.js`).
 - `src/module/commands.ts` — The community command list (plan §3 `commands` row): the ordered `{name, platforms, handler}` entries (kb, projects, whois, guidelines, digest), registered by the manifest into the package's command registry; WhatsApp handlers live here verbatim, Discord halves are bound by slashCommands.ts.
 - `src/module/context/` — The community-context learning loop: nightly digest builder, knowledge refresh, Anthropic docs ingest, link-rot check, and the PII-scrubbed export that is the DB-to-repo privacy boundary.
 - `src/module/departedAdminAlert.ts` — Watches the admin roster and alerts super admins when someone holding admin has left the server, so stale privilege is noticed.

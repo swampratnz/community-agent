@@ -280,13 +280,16 @@ single-`src/` assumption, `check-security-test-count.mjs` hardcoded
 > became `isRegisteredLanguage()`/`isRegisteredStyle()` probes over the
 > registered axes.
 >
+> **Publish and subpath exports are DONE too.** `@swampratnz/agent-base@0.1.1`
+> is on the public registry, `package-lock.json` carries its real `resolved`
+> URL and `integrity` hash, and the package's own `exports` map publishes
+> `./*` — so `@swampratnz/agent-base/<module>.js` resolves from the package
+> and the postinstall shim that used to add that entry is deleted. 0.1.1 also
+> made `AgentModule<Ctx>` generic, which retired this repo's one
+> `toolServerParts` cast.
+>
 > What Phase 3 still owes, in rough order:
 >
-> - **Publish.** Until the package is on the registry this repo cannot install
->   it from a lockfile; the flip was verified against a local `npm pack`
->   tarball.
-> - **Subpath exports.** The package publishes only `.`; a consumer needs its
->   ~50 modules. `scripts/patch-agent-base-exports.mjs` shims it locally.
 > - **The remaining §3 extension points.** `AgentModule` has no `configSchema`,
 >   `adapters`, `jobs`, `ingestSources`, `digestSignals` or `moderationPolicy`
 >   field, so those still bind through this repo's own wiring
