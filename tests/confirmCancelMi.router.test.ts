@@ -3,9 +3,13 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/module/strings/notices.js';
-import type { AgentReply } from '../src/base/agent/core.js';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
+import './support/registerNotices.js';
+import type { AgentReply } from '@swampratnz/agent-base/agent/core.js';
+import type {
+  IncomingMessage,
+  OutgoingMessage,
+  PlatformAdapter,
+} from '@swampratnz/agent-base/platforms/types.js';
 
 // Router-level counterpart to pauseNotice.router.test.ts/rateLimitNotice.router.test.ts,
 // covering the CONFIRM/CANCEL intercept's own three fixed strings (issue #405,
@@ -24,9 +28,17 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 process.env.ACCESS_MODE_DISCORD = 'open';
 
-const { pool, closeDb } = await import('../src/base/storage/db.js');
+const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
+const { Router } = await import('@swampratnz/agent-base/router.js');
+const { makeRouterDeps } = await import('../src/module/routerWiring.js');
+const { registerPendingAction, classifyConfirmReply, hasPendingAction } =
+  await import('@swampratnz/agent-base/agent/pendingActions.js');
+const { embed } = await import('@swampratnz/agent-base/storage/embeddings.js');
+
+// Notice constants agent-base deleted in the package flip (they named this
+// community's axis values in framework code, and rendered at import time). Same
+// catalogue entries, same values — see tests/support/legacyNotices.ts.
 const {
-  Router,
   CANCEL_TEXT,
   CANCEL_TEXT_MI,
   PERMISSIONS_CHANGED_TEXT,
@@ -37,11 +49,7 @@ const {
   PENDING_NOTICE_PLAIN,
   FAILED_PREFIX_MI,
   DONE_PREFIX_MI,
-} = await import('../src/base/router.js');
-const { makeRouterDeps } = await import('../src/module/routerWiring.js');
-const { registerPendingAction, classifyConfirmReply, hasPendingAction } =
-  await import('../src/base/agent/pendingActions.js');
-const { embed } = await import('../src/base/storage/embeddings.js');
+} = await import('./support/legacyNotices.js');
 
 await embed('warmup').catch(() => {});
 
@@ -905,7 +913,7 @@ test('SECURITY: PENDING_NOTICE_PLAIN interpolates ONLY the pending.description p
 });
 
 test('router (CANCEL): CANCEL_TEXT is deliberately left without a _PLAIN counterpart — no such export exists on the router module', async () => {
-  const routerModule = await import('../src/base/router.js');
+  const routerModule = await import('@swampratnz/agent-base/router.js');
   assert.equal(
     'CANCEL_TEXT_PLAIN' in routerModule,
     false,

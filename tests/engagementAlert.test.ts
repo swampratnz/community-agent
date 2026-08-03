@@ -1,6 +1,6 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
+import type { OutgoingMessage, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -27,12 +27,12 @@ process.env.SUPER_ADMIN_WHATSAPP_NUMBERS ??= 'admin-open,admin-closed';
 
 const { formatEngagementAlertMessage, makeDefaultEngagementAlertRun, startEngagementAlert } =
   await import('../src/module/engagementAlert.js');
-const { pool, closeDb } = await import('../src/base/storage/db.js');
+const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
 const { getLastEngagementAlertPercentage, recordEngagementAlertSent } =
-  await import('../src/base/storage/repository.js');
+  await import('@swampratnz/agent-base/storage/repository.js');
 const { getPendingAlertsForTests, resetPendingAlertsForTests } =
-  await import('../src/base/pendingAlertQueue.js');
-const { WindowClosedError } = await import('../src/base/platforms/whatsapp/cloudAdapter.js');
+  await import('@swampratnz/agent-base/pendingAlertQueue.js');
+const { WindowClosedError } = await import('@swampratnz/agent-base/platforms/whatsapp/cloudAdapter.js');
 
 after(async () => {
   await closeDb();

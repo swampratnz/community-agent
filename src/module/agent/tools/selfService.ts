@@ -1,4 +1,4 @@
-import { config } from '../../../base/config.js';
+import { config } from '@swampratnz/agent-base/config.js';
 import {
   countActiveWarnings,
   countRepliesToUser,
@@ -9,9 +9,9 @@ import {
   listOwnReports,
   listOwnSuggestions,
   purgeUserData,
-} from '../../../base/storage/repository.js';
+} from '@swampratnz/agent-base/storage/repository.js';
 import { formatRelativeAge, PROJECT_NOTE_RETENTION_NOTICE, text, truncateForEcho } from './helpers.js';
-import { defineTool } from '../../../base/agent/tools/types.js';
+import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 export const selfServiceTools = [
   defineTool({

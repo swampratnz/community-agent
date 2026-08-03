@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
+import type { OutgoingMessage, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
 // Dev-team-watch consecutive-failure alerting (issue #452). Its own
 // process/file because DEV_TEAM_ENABLED is pinned ON here (opposite of
@@ -23,7 +23,7 @@ process.env.DEV_TEAM_AUTH_TOKEN = 'test-dev-team-token';
 const { startDevTeamWatchPoller, statusCheckAlertThreshold } =
   await import('../src/module/backgroundJobs.js');
 const { getJobHealthSnapshot, resetJobHealthRegistryForTests } =
-  await import('../src/base/backgroundJobHealth.js');
+  await import('@swampratnz/agent-base/backgroundJobHealth.js');
 
 const POLL_MS = 1 * 60_000;
 const THRESHOLD = statusCheckAlertThreshold(1);

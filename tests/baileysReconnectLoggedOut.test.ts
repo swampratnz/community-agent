@@ -7,7 +7,7 @@ import { BAILEYS_TEXT_PACK } from '../src/module/platforms/textPacks.js';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/module/strings/notices.js';
+import './support/registerNotices.js';
 import { EventEmitter } from 'node:events';
 
 // A logged-out (401) close must NEVER schedule a reconnect. This is the case
@@ -75,7 +75,7 @@ async function loadAdapter(t: { mock: { module: (specifier: string, opts: unknow
       proto: {},
     },
   });
-  const { BaileysAdapter } = await import('../src/base/platforms/whatsapp/baileysAdapter.js');
+  const { BaileysAdapter } = await import('@swampratnz/agent-base/platforms/whatsapp/baileysAdapter.js');
   return {
     adapter: new BaileysAdapter(BAILEYS_TEXT_PACK) as unknown as {
       start: () => Promise<void>;

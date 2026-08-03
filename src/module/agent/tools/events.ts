@@ -1,8 +1,8 @@
 import { z } from 'zod';
-import { assertAtLeast } from '../../../base/auth/tiers.js';
-import { formatNzEventTime } from '../../../base/util/nzTime.js';
+import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
+import { formatEventTime } from '@swampratnz/agent-base/util/eventTime.js';
 import { isoInstantSchema, parseIsoInstant, text } from './helpers.js';
-import { defineTool } from '../../../base/agent/tools/types.js';
+import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 /**
  * create_event (issue #230) Discord Scheduled Event field bounds — Discord's
@@ -167,7 +167,7 @@ export const eventsTools = [
       // same discipline as create_event's own CONFIRM prompt — the human
       // confirms the actual artifact, not model-composed prose.
       return requireConfirm(
-        `cancel event "${event.name}" starting ${formatNzEventTime(event.scheduledStartAt)}` +
+        `cancel event "${event.name}" starting ${formatEventTime(event.scheduledStartAt)}` +
           `${args.reason ? ` (reason: ${args.reason})` : ''}`,
         'admin',
         async () => {

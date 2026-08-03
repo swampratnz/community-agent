@@ -1,7 +1,7 @@
 import { z } from 'zod';
-import type { Platform } from '../../../base/platforms/types.js';
-import { assertAtLeast } from '../../../base/auth/tiers.js';
-import { config } from '../../../base/config.js';
+import type { Platform } from '@swampratnz/agent-base/platforms/types.js';
+import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
+import { config } from '@swampratnz/agent-base/config.js';
 import {
   acceptKnowledgeCandidate,
   declineKnowledgeCandidate,
@@ -20,10 +20,10 @@ import {
   recentUnhelpfulFeedbackClusters,
   saveKnowledge,
   updateKnowledge,
-} from '../../../base/storage/repository.js';
+} from '@swampratnz/agent-base/storage/repository.js';
 import { resolveSanitizedLabel, text, untrusted } from './helpers.js';
 import { notifyKnowledgeTipResolved } from './notify.js';
-import { defineTool } from '../../../base/agent/tools/types.js';
+import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 export const knowledgeAdminTools = [
   defineTool({

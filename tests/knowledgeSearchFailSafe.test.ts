@@ -1,6 +1,6 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { PlatformAdapter } from '../src/base/platforms/types.js';
+import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
 // Fail-safe coverage for the two SUPPLEMENTARY lookups inside the
 // knowledge_search handler: the advisory conflict badge
@@ -29,9 +29,10 @@ const skip = hasDb
   ? false
   : 'DATABASE_URL not set — skipping DB-integration tests (CLAUDE.md: exercise against a local Postgres 16 + pgvector)';
 
+await import('./support/registerToolRegistry.js');
 const { buildToolServer, KNOWLEDGE_CONFLICT_CAVEAT_TEXT } = await import('../src/module/agent/tools.js');
-const { pool, closeDb } = await import('../src/base/storage/db.js');
-const { embed } = await import('../src/base/storage/embeddings.js');
+const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
+const { embed } = await import('@swampratnz/agent-base/storage/embeddings.js');
 const pgvector = (await import('pgvector/pg')).default;
 
 await embed('warmup').catch(() => {});

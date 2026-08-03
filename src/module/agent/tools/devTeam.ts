@@ -1,9 +1,9 @@
 import { z } from 'zod';
-import { assertAtLeast } from '../../../base/auth/tiers.js';
-import { config } from '../../../base/config.js';
-import { logger } from '../../../base/logger.js';
-import { makeCalendarDayReserver } from '../../../base/util/rateReservation.js';
-import { insertDevTeamWatch } from '../../../base/storage/repository.js';
+import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
+import { config } from '@swampratnz/agent-base/config.js';
+import { logger } from '@swampratnz/agent-base/logger.js';
+import { makeCalendarDayReserver } from '@swampratnz/agent-base/util/rateReservation.js';
+import { insertDevTeamWatch } from '@swampratnz/agent-base/storage/repository.js';
 import {
   devTeamField,
   dispatchJob,
@@ -21,7 +21,7 @@ import {
   formatDevTeamJobStatus,
   text,
 } from './helpers.js';
-import { defineTool } from '../../../base/agent/tools/types.js';
+import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 /**
  * dev_team_dispatch calls per super admin, for the rolling calendar-day cap

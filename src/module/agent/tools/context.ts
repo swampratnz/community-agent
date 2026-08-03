@@ -1,14 +1,18 @@
-import type { AdapterLookup, Platform, PlatformAdapter } from '../../../base/platforms/types.js';
-import { assertAtLeast } from '../../../base/auth/tiers.js';
-import type { CallerContext } from '../../../base/auth/rbac.js';
-import { normalizeMemberId, resolveWhatsappLid } from '../../../base/auth/memberId.js';
-import { logger, hashId } from '../../../base/logger.js';
-import { getLanguagePreference, phoneForLid, recordAdminAction } from '../../../base/storage/repository.js';
-import { registerPendingAction } from '../../../base/agent/pendingActions.js';
+import type { AdapterLookup, Platform, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
+import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
+import type { CallerContext } from '@swampratnz/agent-base/auth/rbac.js';
+import { normalizeMemberId, resolveWhatsappLid } from '@swampratnz/agent-base/auth/memberId.js';
+import { logger, hashId } from '@swampratnz/agent-base/logger.js';
+import {
+  getLanguagePreference,
+  phoneForLid,
+  recordAdminAction,
+} from '@swampratnz/agent-base/storage/repository.js';
+import { registerPendingAction } from '@swampratnz/agent-base/agent/pendingActions.js';
 import { text } from './helpers.js';
 import { notifySuperAdmins } from './notify.js';
-import type { ToolContext } from '../../../base/agent/tools/types.js';
-import type { ToolServerTurnState } from '../../../base/agent/turnState.js';
+import type { ToolContext } from '@swampratnz/agent-base/agent/tools/types.js';
+import type { ToolServerTurnState } from '@swampratnz/agent-base/agent/turnState.js';
 
 /**
  * Build the per-turn `ToolContext` kernel (docs/TOOL-REGISTRY-DESIGN.md §2):

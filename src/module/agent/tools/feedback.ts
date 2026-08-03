@@ -1,7 +1,7 @@
 import { z } from 'zod';
-import { assertAtLeast, atLeast } from '../../../base/auth/tiers.js';
-import { config } from '../../../base/config.js';
-import { logger } from '../../../base/logger.js';
+import { assertAtLeast, atLeast } from '@swampratnz/agent-base/auth/tiers.js';
+import { config } from '@swampratnz/agent-base/config.js';
+import { logger } from '@swampratnz/agent-base/logger.js';
 import {
   answerFeedbackGrounding,
   candidateTopicAlreadyReviewed,
@@ -14,10 +14,10 @@ import {
   RATE_ANSWER_DAILY_LIMIT,
   SUGGESTION_MAX_CHARS,
   SUGGESTION_RATE_LIMIT_PER_DAY,
-} from '../../../base/storage/repository.js';
-import { makeSlidingWindowReserver } from '../../../base/util/rateReservation.js';
+} from '@swampratnz/agent-base/storage/repository.js';
+import { makeSlidingWindowReserver } from '@swampratnz/agent-base/util/rateReservation.js';
 import { text } from './helpers.js';
-import { defineTool } from '../../../base/agent/tools/types.js';
+import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 /**
  * request_human_help timestamps per caller (`platform:userId`), for its own

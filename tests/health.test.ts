@@ -7,8 +7,8 @@ import { WHATSAPP_CLOUD_TEXT_PACK } from '../src/module/platforms/textPacks.js';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/module/strings/notices.js';
-import type { PlatformAdapter } from '../src/base/platforms/types.js';
+import './support/registerNotices.js';
+import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // (including WHATSAPP_PROVIDER=cloud config) before importing anything that
@@ -33,21 +33,22 @@ const {
   flushPendingAlerts,
   getPendingAlertsForTests,
   resetPendingAlertsForTests,
-} = await import('../src/base/health.js');
+} = await import('@swampratnz/agent-base/health.js');
 const { getPendingAlertEntriesForTests, queuePendingAlert: queueRawPendingAlert } =
-  await import('../src/base/pendingAlertQueue.js');
-const { WhatsAppCloudAdapter } = await import('../src/base/platforms/whatsapp/cloudAdapter.js');
-const { logger } = await import('../src/base/logger.js');
+  await import('@swampratnz/agent-base/pendingAlertQueue.js');
+const { WhatsAppCloudAdapter } = await import('@swampratnz/agent-base/platforms/whatsapp/cloudAdapter.js');
+const { logger } = await import('@swampratnz/agent-base/logger.js');
 // Cross-producer cap test below (issue #545) drives the OTHER two shared-
 // queue producers directly, without their own test files' env/setup.
-const { startTrackedJob } = await import('../src/base/jobs/trackedJob.js');
+const { startTrackedJob } = await import('@swampratnz/agent-base/jobs/trackedJob.js');
+await import('./support/registerToolRegistry.js');
 const { notifyReportFiled } = await import('../src/module/agent/tools.js');
 // One of #593's four new pending-alert-queue producers, imported directly to
 // prove the flush path (unmodified since #545) also drains a message queued
 // from a NEW producer, not just the original three.
 const { alertSuperAdmins: departedAdminAlertSuperAdmins } =
   await import('../src/module/departedAdminAlert.js');
-const { WindowClosedError } = await import('../src/base/platforms/whatsapp/cloudAdapter.js');
+const { WindowClosedError } = await import('@swampratnz/agent-base/platforms/whatsapp/cloudAdapter.js');
 
 /**
  * A fake Cloud-like adapter (mirrors `tests/notifyAdminsWindowReopenQueue.test.ts`'s

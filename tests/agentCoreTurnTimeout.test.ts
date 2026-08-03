@@ -3,18 +3,18 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/module/strings/notices.js';
+import './support/registerNotices.js';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { CallerContext } from '../src/base/auth/rbac.js';
-import type { OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
-import type { StoredSession } from '../src/base/storage/repository.js';
+import type { CallerContext } from '@swampratnz/agent-base/auth/rbac.js';
+import type { OutgoingMessage, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
+import type { StoredSession } from '@swampratnz/agent-base/storage/repository.js';
 // Community content registrations (prompt sections + persona roster) — the
 // composition-root contract: src/index.ts registers these in production, so
 // tests that assemble prompts register them explicitly here.
-import '../src/module/agent/communityPromptSections.js';
-import '../src/module/agent/personas.js';
+import './support/registerPromptSections.js';
+import './support/registerPersonas.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -38,7 +38,13 @@ process.env.IMAGE_GEN_TIMEOUT_MS = '10';
 // The tool registry's module-scope registrations (tool tiers, tool-server
 // parts, feature-flag predicates) — the composition-root contract, matching
 // tests/rbac.test.ts.
-await import('../src/module/agent/tools/index.js');
+await import('./support/registerToolRegistry.js');
+
+// Notice constants agent-base deleted in the package flip (they named this
+// community's axis values in framework code, and rendered at import time). Same
+// catalogue entries, same values — see tests/support/legacyNotices.ts.
+const { USAGE_LIMIT_REPLY, USAGE_LIMIT_REPLY_ADMIN_NOTIFIED, INTERNAL_ERROR_REPLY } =
+  await import('./support/legacyNotices.js');
 
 type QueryBehavior =
   | { mode: 'hang' }
@@ -84,13 +90,13 @@ function mockQuery(params: { prompt: string; options: { resume?: string } }) {
 // retarget them (see tests/agentCoreSessionTail.test.ts for the same trap).
 // Install the mocks once and reuse the cached import; `behavior`/`storedSession`
 // are mutated per-test instead.
-let corePromise: Promise<typeof import('../src/base/agent/core.js')> | null = null;
+let corePromise: Promise<typeof import('@swampratnz/agent-base/agent/core.js')> | null = null;
 async function core(t: { mock: { module: (specifier: string, opts: unknown) => void } }) {
   if (!corePromise) {
     const realSdk = await import('@anthropic-ai/claude-agent-sdk');
     t.mock.module('@anthropic-ai/claude-agent-sdk', { namedExports: { ...realSdk, query: mockQuery } });
-    const realRepo = await import('../src/base/storage/repository.js');
-    t.mock.module('../src/base/storage/repository.js', {
+    const realRepo = await import('@swampratnz/agent-base/storage/repository.js');
+    t.mock.module('@swampratnz/agent-base/storage/repository.js', {
       namedExports: {
         ...realRepo,
         getClaudeSession: async () => storedSession,
@@ -98,7 +104,7 @@ async function core(t: { mock: { module: (specifier: string, opts: unknown) => v
         searchMemory: async () => [],
       },
     });
-    corePromise = import('../src/base/agent/core.js');
+    corePromise = import('@swampratnz/agent-base/agent/core.js');
   }
   return corePromise;
 }
@@ -144,7 +150,7 @@ function reset() {
 }
 
 test('runAgentTurn: a query() call that never yields and never settles resolves within the configured timeout, not hangs (issue #826)', async (t) => {
-  const { runAgentTurn, INTERNAL_ERROR_REPLY } = await core(t);
+  const { runAgentTurn } = await core(t);
   reset();
   const { adapter } = makeAdapter();
 
@@ -163,7 +169,7 @@ test('runAgentTurn: a wedged turn that CLEARS after the timeout cannot change th
   // resume. This pins the part that matters to a member: the reply they got
   // is final, and the late result is discarded rather than racing a second
   // reply into the conversation.
-  const { runAgentTurn, INTERNAL_ERROR_REPLY } = await core(t);
+  const { runAgentTurn } = await core(t);
   reset();
   const { adapter } = makeAdapter();
 
@@ -218,7 +224,7 @@ test(
   'SECURITY: the internal turn-timeout marker never appears anywhere in reply.text on a hang (issue #826) — ' +
     'only the existing, unmodified INTERNAL_ERROR_REPLY constant is ever returned',
   async (t) => {
-    const { runAgentTurn, INTERNAL_ERROR_REPLY } = await core(t);
+    const { runAgentTurn } = await core(t);
     reset();
     const { adapter } = makeAdapter();
 
@@ -235,8 +241,6 @@ test(
     'no usage-limit reply text and no admin-notification DM',
   async (t) => {
     const { runAgentTurn } = await core(t);
-    const { USAGE_LIMIT_REPLY, USAGE_LIMIT_REPLY_ADMIN_NOTIFIED } =
-      await import('../src/base/agent/upstreamFailure.js');
     reset();
     const { adapter, dms } = makeAdapter();
 

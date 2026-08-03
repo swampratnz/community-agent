@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/module/strings/notices.js';
-import type { PlatformAdapter } from '../src/base/platforms/types.js';
+import './support/registerNotices.js';
+import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
 // Issue #602: WhatsApp Cloud admin/super-admin real-time alerts (escalations,
 // report_content/appeal_moderation notices) silently vanished for a recipient
@@ -28,13 +28,13 @@ process.env.SUPER_ADMIN_WHATSAPP_NUMBERS ??= 'super-1,super-2';
 let modulesPromise: Promise<{
   notifyAdmins: typeof import('../src/module/agent/tools.js').notifyAdmins;
   notifyReportFiled: typeof import('../src/module/agent/tools.js').notifyReportFiled;
-  WindowClosedError: typeof import('../src/base/platforms/whatsapp/cloudAdapter.js').WindowClosedError;
+  WindowClosedError: typeof import('@swampratnz/agent-base/platforms/whatsapp/cloudAdapter.js').WindowClosedError;
 }> | null = null;
 async function modules(t: { mock: { module: (specifier: string, opts: unknown) => void } }) {
   if (!modulesPromise) {
     modulesPromise = (async () => {
-      const realRepo = await import('../src/base/storage/repository.js');
-      t.mock.module('../src/base/storage/repository.js', {
+      const realRepo = await import('@swampratnz/agent-base/storage/repository.js');
+      t.mock.module('@swampratnz/agent-base/storage/repository.js', {
         namedExports: {
           ...realRepo,
           listAdmins: async () => [
@@ -44,9 +44,14 @@ async function modules(t: { mock: { module: (specifier: string, opts: unknown) =
           ],
         },
       });
+      // The tool-registry registrations (the manifest's tool-surface fields in
+      // production) load the whole registry, so they come AFTER the mock above
+      // — importing the registry is what caches the real repository module
+      // this test replaces.
+      await import('./support/registerToolRegistry.js');
       const [{ notifyAdmins, notifyReportFiled }, { WindowClosedError }] = await Promise.all([
         import('../src/module/agent/tools.js'),
-        import('../src/base/platforms/whatsapp/cloudAdapter.js'),
+        import('@swampratnz/agent-base/platforms/whatsapp/cloudAdapter.js'),
       ]);
       return { notifyAdmins, notifyReportFiled, WindowClosedError };
     })();

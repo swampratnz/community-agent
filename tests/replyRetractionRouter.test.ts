@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 // The default bad-word list is community content registered at its own module
 // scope (src/index.ts imports it in production); the moderation wordlist fails
 // closed until then, and constructing a Discord adapter builds a Moderator.
-import '../src/module/moderation/badWords.js';
+import './support/registerBadWords.js';
 // The adapters take their community text pack as a required constructor
 // parameter now (agent-base plan item 6) — production hands it over in
 // src/module/platforms/factories.ts, so these constructions pass the same pack.
@@ -15,9 +15,9 @@ import {
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/module/strings/notices.js';
+import './support/registerNotices.js';
 import { Events } from 'discord.js';
-import type { IncomingMessage } from '../src/base/platforms/types.js';
+import type { IncomingMessage } from '@swampratnz/agent-base/platforms/types.js';
 
 // Issue #575's auto-retraction feature, flag ON. Lives in its own
 // file/process (config.ts parses env once at import) so this file's
@@ -39,13 +39,13 @@ process.env.WHATSAPP_CLOUD_ACCESS_TOKEN ??= 'test-access-token';
 process.env.WHATSAPP_CLOUD_VERIFY_TOKEN ??= 'test-verify-token';
 process.env.WHATSAPP_CLOUD_APP_SECRET ??= 'test-app-secret';
 
-const { config } = await import('../src/base/config.js');
-const { Router } = await import('../src/base/router.js');
+const { config } = await import('@swampratnz/agent-base/config.js');
+const { Router } = await import('@swampratnz/agent-base/router.js');
 const { makeRouterDeps } = await import('../src/module/routerWiring.js');
-const { DiscordAdapter } = await import('../src/base/platforms/discord/adapter.js');
-const { BaileysAdapter } = await import('../src/base/platforms/whatsapp/baileysAdapter.js');
-const { WhatsAppCloudAdapter } = await import('../src/base/platforms/whatsapp/cloudAdapter.js');
-const { pool, closeDb } = await import('../src/base/storage/db.js');
+const { DiscordAdapter } = await import('@swampratnz/agent-base/platforms/discord/adapter.js');
+const { BaileysAdapter } = await import('@swampratnz/agent-base/platforms/whatsapp/baileysAdapter.js');
+const { WhatsAppCloudAdapter } = await import('@swampratnz/agent-base/platforms/whatsapp/cloudAdapter.js');
+const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
 
 const RUN = `retract-on-${Date.now()}`;
 

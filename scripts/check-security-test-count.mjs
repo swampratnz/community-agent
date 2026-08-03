@@ -35,7 +35,7 @@
 // proof of total security coverage.
 // ---------------------------------------------------------------------------
 import { spawnSync } from 'node:child_process';
-import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { readdirSync, readFileSync, writeFileSync, writeSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -284,8 +284,16 @@ const result = spawnSync(
   { cwd: repoRoot, encoding: 'utf8' },
 );
 
-process.stdout.write(result.stdout ?? '');
-process.stderr.write(result.stderr ?? '');
+// writeSync, not process.stdout.write: when stdout is a pipe — which it is
+// under a CI runner — the async write is still buffered when `process.exit()`
+// below fires, and the unflushed remainder is discarded. That silently ate
+// ~964 of these 1099 TAP lines on one run, including every `not ok`, the
+// summary counts, and the "exited with status" message itself. The log ended
+// mid-token after a PASSING test, so CI showed a bare "exit code 1" with the
+// failure nowhere in it, and the cause had to be reproduced locally to be
+// seen. A gate that hides which test failed is barely a gate.
+writeSync(1, result.stdout ?? '');
+writeSync(2, result.stderr ?? '');
 
 if (result.status !== 0) {
   console.error(`\ncheck-security-test-count: tsx --test exited with status ${result.status}`);

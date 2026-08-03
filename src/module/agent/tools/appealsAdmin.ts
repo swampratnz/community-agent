@@ -1,14 +1,14 @@
 import { z } from 'zod';
-import { assertAtLeast } from '../../../base/auth/tiers.js';
-import { sanitizeName } from '../../../base/util/sanitizeName.js';
+import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
+import { sanitizeName } from '@swampratnz/agent-base/util/sanitizeName.js';
 import {
   listAppeals,
   type ModerationAppeal,
   resolveModerationAppeal,
-} from '../../../base/storage/repository.js';
+} from '@swampratnz/agent-base/storage/repository.js';
 import { text, untrusted } from './helpers.js';
 import { notifyAppealResolved } from './notify.js';
-import { defineTool } from '../../../base/agent/tools/types.js';
+import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 export const appealsAdminTools = [
   // Durable queue for appeal_moderation (issue #554): a member appealing

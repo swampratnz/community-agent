@@ -1,9 +1,9 @@
 import { z } from 'zod';
-import { assertAtLeast } from '../../../base/auth/tiers.js';
+import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
 import { recentChanges } from '../changelog.js';
-import { resolveLinkedIdentities, userMessages } from '../../../base/storage/repository.js';
+import { resolveLinkedIdentities, userMessages } from '@swampratnz/agent-base/storage/repository.js';
 import { text, untrusted } from './helpers.js';
-import { defineTool } from '../../../base/agent/tools/types.js';
+import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 // --- Admin tools (scoped to the admin's own conversations) ------------------
 

@@ -3,12 +3,12 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/module/strings/notices.js';
+import './support/registerNotices.js';
 // Community content registrations (prompt sections + persona roster) — the
 // composition-root contract: src/index.ts registers these in production, so
 // tests that assemble prompts register them explicitly here.
-import '../src/module/agent/communityPromptSections.js';
-import '../src/module/agent/personas.js';
+import './support/registerPromptSections.js';
+import './support/registerPersonas.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it.
@@ -20,11 +20,11 @@ process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 // The tool registry's module-scope registrations (tool tiers, tool-server
 // parts, feature-flag predicates) — the composition-root contract, matching
 // tests/rbac.test.ts.
-await import('../src/module/agent/tools/index.js');
+await import('./support/registerToolRegistry.js');
 
-const { buildQueryOptions } = await import('../src/base/agent/core.js');
-const { ADMIN_TOOLS, SUPER_ADMIN_TOOLS, toolsForRole } = await import('../src/base/auth/rbac.js');
-const { config } = await import('../src/base/config.js');
+const { buildQueryOptions } = await import('@swampratnz/agent-base/agent/core.js');
+const { ADMIN_TOOLS, SUPER_ADMIN_TOOLS, toolsForRole } = await import('@swampratnz/agent-base/auth/rbac.js');
+const { config } = await import('@swampratnz/agent-base/config.js');
 
 test('SECURITY: members/guests get NO built-in tools; admin+ get exactly WebSearch', () => {
   for (const role of ['guest', 'member'] as const) {
@@ -70,7 +70,7 @@ test('SECURITY: settingSources is empty for every tier (host ~/.claude config is
 
 test('SECURITY: AC1 — AGENT_SKILLS_ENABLED unset (default): buildQueryOptions carries no plugins/skills key, tools is byte-identical to pre-#741, and the assembled system prompt still contains the prompt-review checklist, for every role', async () => {
   assert.equal(config.agentSkills.enabled, false, 'precondition: agent skills are off in this test process');
-  const { buildSystemPrompt } = await import('../src/base/agent/systemPrompt.js');
+  const { buildSystemPrompt } = await import('@swampratnz/agent-base/agent/systemPrompt.js');
   for (const role of ['guest', 'member', 'admin', 'super_admin'] as const) {
     const opts = buildQueryOptions(role, 'prompt', {}, null, 'conv-1');
     assert.ok(!('plugins' in opts), `${role}: no plugins key when the flag is off`);
@@ -241,7 +241,7 @@ test('resume only set when a session id exists', () => {
 });
 
 test('config: member/guest turns get the tiered AGENT_MAX_TURNS_MEMBER ceiling (issue #347)', async () => {
-  const { config } = await import('../src/base/config.js');
+  const { config } = await import('@swampratnz/agent-base/config.js');
   for (const role of ['guest', 'member'] as const) {
     assert.equal(
       buildQueryOptions(role, 'prompt', {}, null, 'conv-1').maxTurns,
@@ -252,7 +252,7 @@ test('config: member/guest turns get the tiered AGENT_MAX_TURNS_MEMBER ceiling (
 });
 
 test('config: admin/super_admin maxTurns is byte-identical to pre-tiering behaviour (issue #347)', async () => {
-  const { config } = await import('../src/base/config.js');
+  const { config } = await import('@swampratnz/agent-base/config.js');
   for (const role of ['admin', 'super_admin'] as const) {
     assert.equal(
       buildQueryOptions(role, 'prompt', {}, null, 'conv-1').maxTurns,
@@ -263,7 +263,7 @@ test('config: admin/super_admin maxTurns is byte-identical to pre-tiering behavi
 });
 
 test('config: AGENT_MODEL_MEMBER unset ⇒ buildQueryOptions.model is byte-identical to config.llm.model for every role (issue #382)', async () => {
-  const { config } = await import('../src/base/config.js');
+  const { config } = await import('@swampratnz/agent-base/config.js');
   for (const role of ['guest', 'member', 'admin', 'super_admin'] as const) {
     assert.equal(
       buildQueryOptions(role, 'prompt', {}, null, 'conv-1').model,

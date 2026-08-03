@@ -11,17 +11,17 @@ import {
   accessRequestRetentionPurgeJob,
   interactionRetentionPurgeJob,
   rosterRetentionPurgeJob,
-} from '../../base/retention.js';
-import { disconnectAlertsJob } from '../../base/health.js';
-import { usageAlertJob } from '../../base/usageAlert.js';
+} from '@swampratnz/agent-base/retention.js';
+import { disconnectAlertsJob } from '@swampratnz/agent-base/health.js';
+import { usageAlertJob } from '@swampratnz/agent-base/usageAlert.js';
 import { usageCostDigestJob } from '../usageCostDigest.js';
-import { backgroundJobCostAlertJob } from '../../base/backgroundJobCostAlert.js';
+import { backgroundJobCostAlertJob } from '@swampratnz/agent-base/backgroundJobCostAlert.js';
 import { adminDigestJob } from '../adminDigest.js';
 import { departedAdminAlertJob } from '../departedAdminAlert.js';
 import { engagementAlertJob } from '../engagementAlert.js';
 import { adminLeverageAlertJob } from '../adminLeverageAlert.js';
 import { memberDigestJob } from '../memberDigest.js';
-import type { JobSpec } from '../../base/jobs/types.js';
+import type { JobSpec } from '@swampratnz/agent-base/jobs/types.js';
 
 /**
  * Every background job in the process, replacing `index.ts`'s hand-wired

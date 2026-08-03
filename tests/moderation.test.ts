@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/module/strings/notices.js';
-import type { Classifier } from '../src/base/moderation/moderator.js';
+import './support/registerNotices.js';
+import type { Classifier } from '@swampratnz/agent-base/moderation/moderator.js';
 
 // config.ts validates env at import time — provide a dummy environment before
 // importing anything that (transitively) loads it. These unit tests never
@@ -19,24 +19,20 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 // The default bad-word list is community content registered at its own
 // module scope (src/index.ts imports it in production), and wordlist.ts fails
 // closed until then — import it before building a detector.
-await import('../src/module/moderation/badWords.js');
-const { makeWordlistDetector } = await import('../src/base/moderation/wordlist.js');
-const {
-  Moderator,
-  makeClassifier,
-  boundForClassifier,
-  warnDmText,
-  blockedDmText,
-  warnDmTextMi,
-  blockedDmTextMi,
-  warnDmTextPlain,
-  blockedDmTextPlain,
-  moderationAlertSummaryText,
-} = await import('../src/base/moderation/moderator.js');
+await import('./support/registerBadWords.js');
+const { makeWordlistDetector } = await import('@swampratnz/agent-base/moderation/wordlist.js');
+const { Moderator, makeClassifier, boundForClassifier, moderationAlertSummaryText } =
+  await import('@swampratnz/agent-base/moderation/moderator.js');
 // The tier lists are registered by the tool registry at ITS module scope
 // (rbac.ts fails closed until then), so import the registry first.
-await import('../src/module/agent/tools/index.js');
-const { toolsForRole } = await import('../src/base/auth/rbac.js');
+await import('./support/registerToolRegistry.js');
+const { toolsForRole } = await import('@swampratnz/agent-base/auth/rbac.js');
+
+// Notice constants agent-base deleted in the package flip (they named this
+// community's axis values in framework code, and rendered at import time). Same
+// catalogue entries, same values — see tests/support/legacyNotices.ts.
+const { warnDmText, blockedDmText, warnDmTextMi, blockedDmTextMi, warnDmTextPlain, blockedDmTextPlain } =
+  await import('./support/legacyNotices.js');
 
 test('SECURITY: boundForClassifier keeps the tail so abuse hidden after filler is still classified', () => {
   // A message can run to ~2000 chars; a flat slice(0, 500) never sees a slur

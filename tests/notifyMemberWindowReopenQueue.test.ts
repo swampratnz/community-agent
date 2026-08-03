@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 // parameter now (agent-base plan item 6) — production hands it over in
 // src/module/platforms/factories.ts, so these constructions pass the same pack.
 import { WHATSAPP_CLOUD_TEXT_PACK } from '../src/module/platforms/textPacks.js';
-import type { PlatformAdapter } from '../src/base/platforms/types.js';
+import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
 // Issue #644: #602 gave notifySuperAdmins/notifyAdmins a recovery path for
 // the WhatsApp Cloud API's connected-but-this-recipient's-24h-window-is-
@@ -28,6 +28,8 @@ process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 
+await import('./support/registerNotices.js');
+await import('./support/registerToolRegistry.js');
 const {
   notifyMemberApproved,
   notifySuggestionResolved,
@@ -36,7 +38,7 @@ const {
   notifyKnowledgeTipResolved,
 } = await import('../src/module/agent/tools.js');
 const { WhatsAppCloudAdapter, WindowClosedError } =
-  await import('../src/base/platforms/whatsapp/cloudAdapter.js');
+  await import('@swampratnz/agent-base/platforms/whatsapp/cloudAdapter.js');
 
 /**
  * Reflection helper into the REAL WhatsAppCloudAdapter's private

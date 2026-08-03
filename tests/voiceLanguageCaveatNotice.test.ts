@@ -3,13 +3,14 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/module/strings/notices.js';
+import './support/registerNotices.js';
 
-import {
-  VOICE_LANGUAGE_CAVEAT_TEXT,
-  VOICE_LANGUAGE_CAVEAT_TEXT_MI,
-  shouldNotify,
-} from '../src/base/voiceLanguageCaveatNotice.js';
+import { shouldNotify } from '@swampratnz/agent-base/voiceLanguageCaveatNotice.js';
+
+// Notice constants agent-base deleted in the package flip (they named this
+// community's axis values in framework code, and rendered at import time). Same
+// catalogue entries, same values — see tests/support/legacyNotices.ts.
+import { VOICE_LANGUAGE_CAVEAT_TEXT, VOICE_LANGUAGE_CAVEAT_TEXT_MI } from './support/legacyNotices.js';
 
 const WINDOW_MS = 60_000;
 

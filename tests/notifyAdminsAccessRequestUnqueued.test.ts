@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/module/strings/notices.js';
-import type { OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
+import './support/registerNotices.js';
+import type { OutgoingMessage, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
 // Regression coverage for issue #593's binding acceptance criterion 6:
 // tools.ts's notifyAdmins and router.ts's notifyAccessRequest source
@@ -50,19 +50,19 @@ let adminRoster: Array<{ platform: 'discord' | 'whatsapp'; platformUserId: strin
 
 let modulesPromise: Promise<{
   notifyAdmins: typeof import('../src/module/agent/tools.js').notifyAdmins;
-  notifyAccessRequest: typeof import('../src/base/router.js').notifyAccessRequest;
-  flushPendingAlerts: typeof import('../src/base/health.js').flushPendingAlerts;
-  getPendingAlertsForTests: typeof import('../src/base/pendingAlertQueue.js').getPendingAlertsForTests;
-  getPendingAlertEntriesForTests: typeof import('../src/base/pendingAlertQueue.js').getPendingAlertEntriesForTests;
-  resetPendingAlertsForTests: typeof import('../src/base/pendingAlertQueue.js').resetPendingAlertsForTests;
-  queuePendingAlert: typeof import('../src/base/pendingAlertQueue.js').queuePendingAlert;
+  notifyAccessRequest: typeof import('@swampratnz/agent-base/router.js').notifyAccessRequest;
+  flushPendingAlerts: typeof import('@swampratnz/agent-base/health.js').flushPendingAlerts;
+  getPendingAlertsForTests: typeof import('@swampratnz/agent-base/pendingAlertQueue.js').getPendingAlertsForTests;
+  getPendingAlertEntriesForTests: typeof import('@swampratnz/agent-base/pendingAlertQueue.js').getPendingAlertEntriesForTests;
+  resetPendingAlertsForTests: typeof import('@swampratnz/agent-base/pendingAlertQueue.js').resetPendingAlertsForTests;
+  queuePendingAlert: typeof import('@swampratnz/agent-base/pendingAlertQueue.js').queuePendingAlert;
   PENDING_ALERT_QUEUE_CAP: number;
 }> | null = null;
 async function modules(t: { mock: { module: (specifier: string, opts: unknown) => void } }) {
   if (!modulesPromise) {
     modulesPromise = (async () => {
-      const realRepo = await import('../src/base/storage/repository.js');
-      t.mock.module('../src/base/storage/repository.js', {
+      const realRepo = await import('@swampratnz/agent-base/storage/repository.js');
+      t.mock.module('@swampratnz/agent-base/storage/repository.js', {
         namedExports: {
           ...realRepo,
           listAdmins: async () => {
@@ -71,12 +71,17 @@ async function modules(t: { mock: { module: (specifier: string, opts: unknown) =
           },
         },
       });
+      // The tool-registry registrations (the manifest's tool-surface fields in
+      // production) load the whole registry, so they come AFTER the mock above
+      // — importing the registry is what caches the real repository module
+      // this test replaces.
+      await import('./support/registerToolRegistry.js');
       const [{ notifyAdmins }, { notifyAccessRequest }, { flushPendingAlerts }, pendingAlertQueue] =
         await Promise.all([
           import('../src/module/agent/tools.js'),
-          import('../src/base/router.js'),
-          import('../src/base/health.js'),
-          import('../src/base/pendingAlertQueue.js'),
+          import('@swampratnz/agent-base/router.js'),
+          import('@swampratnz/agent-base/health.js'),
+          import('@swampratnz/agent-base/pendingAlertQueue.js'),
         ]);
       return {
         notifyAdmins,

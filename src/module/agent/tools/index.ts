@@ -1,10 +1,10 @@
 import type { ZodRawShape } from 'zod';
-import type { Config } from '../../../base/config.js';
-import { registerToolTiers } from '../../../base/auth/rbac.js';
-import { registerToolServerParts } from '../../../base/agent/toolServer.js';
-import { registerFlaggedToolPredicates } from '../../../base/agent/featureFlags.js';
+import type { Config } from '@swampratnz/agent-base/config.js';
+import type { ToolTierRegistration } from '@swampratnz/agent-base/auth/rbac.js';
+import type { ToolServerParts } from '@swampratnz/agent-base/agent/toolServer.js';
+import type { FlaggedToolPredicate } from '@swampratnz/agent-base/agent/featureFlags.js';
 import { makeToolContext } from './context.js';
-import type { ToolContext, ToolDef } from '../../../base/agent/tools/types.js';
+import type { ToolContext, ToolDef } from '@swampratnz/agent-base/agent/tools/types.js';
 import { infoTools } from './info.js';
 import { knowledgeMemberTools } from './knowledgeMember.js';
 import { memoryTools } from './memory.js';
@@ -111,33 +111,36 @@ const FLAGGED_TOOL_PREDICATES: ReadonlyArray<{ name: string; enabled: (cfg: Conf
     def.featureFlag ? [{ name: prefixedToolName(def), enabled: def.featureFlag }] : [],
   );
 
-// Register the tier lists into rbac.ts at module scope (the inversion of the
-// old rbac -> registry import): importing this registry anywhere is what
-// makes `toolsForRole` derivable, and rbac fails closed until it happens.
-// src/index.ts imports the registry before serving; tests that read the tier
-// lists import it in their preamble.
-registerToolTiers({
+// The three derived registrations this registry owns. All are handed to
+// `createAgent` by this module's manifest (src/module/agentModule.ts) rather
+// than performed at module scope, so composition order is enforced in one
+// place instead of resting on an import list — but every consumer still reads
+// them back from the BASE registry (rbac.ts's `toolsForRole`, the kernel's
+// `buildToolServer`, core.ts's per-turn flag filter), each of which fails
+// closed until registration has happened.
+
+/** Tier lists rbac.ts derives `toolsForRole` from. */
+export const COMMUNITY_TOOL_TIERS: ToolTierRegistration = {
   member: MEMBER_TOOL_NAMES,
   admin: ADMIN_TOOL_NAMES,
   superAdmin: SUPER_ADMIN_TOOL_NAMES,
   discordOnly: DISCORD_ONLY_TOOL_NAMES,
-});
+};
 
-// Register the tool-server parts into the base kernel (agent/toolServer.ts)
-// at module scope, same inversion as the tier lists above: the MCP server
-// name (the root of every `mcp__community__*` id), the declarative registry,
-// and the per-turn context factory are all community content, so the base
-// `buildToolServer` fails closed until this registry has been imported.
-registerToolServerParts<ToolContext>({
+/**
+ * The base tool kernel's parts: the MCP server name (the root of every
+ * `mcp__community__*` id), the declarative registry, and the per-turn context
+ * factory — all community content, so `buildToolServer` fails closed until
+ * they are registered.
+ */
+export const COMMUNITY_TOOL_SERVER_PARTS: ToolServerParts<ToolContext> = {
   name: 'community',
   makeContext: makeToolContext,
   registry: TOOL_REGISTRY,
-});
+};
 
-// And the feature-flag predicates (agent/featureFlags.ts): core.ts's
-// per-turn subtractive filter reads them from the base registry rather than
-// importing this module — same fail-closed-until-imported contract.
-registerFlaggedToolPredicates(FLAGGED_TOOL_PREDICATES);
+/** Feature-flag predicates for core.ts's per-turn subtractive filter. */
+export const COMMUNITY_FLAGGED_TOOL_PREDICATES: readonly FlaggedToolPredicate[] = FLAGGED_TOOL_PREDICATES;
 
 /** Prefixed names of every member-tier registry def, in registry order. */
 export function memberToolNames(): readonly string[] {

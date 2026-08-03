@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
+import type { OutgoingMessage, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -26,7 +26,7 @@ let lastProbe: string | null = null;
 let bgJobsPromise: Promise<typeof import('../src/module/backgroundJobs.js')> | null = null;
 function bgJobs(t: { mock: { module: (specifier: string, opts: unknown) => void } }) {
   if (!bgJobsPromise) {
-    t.mock.module('../src/base/storage/embeddings.js', {
+    t.mock.module('@swampratnz/agent-base/storage/embeddings.js', {
       namedExports: {
         embed: async (text: string) => {
           lastProbe = text;

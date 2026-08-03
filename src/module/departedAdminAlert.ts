@@ -1,11 +1,11 @@
-import { config } from '../base/config.js';
-import { logger } from '../base/logger.js';
-import { listAdminRoster, type AdminRosterEntry } from '../base/storage/repository.js';
-import { startTrackedJob } from '../base/jobs/trackedJob.js';
-import { initialUsageAlertTracker, stepUsageAlertTracker } from '../base/usageAlert.js';
-import { alertSuperAdmins as sendSuperAdminAlert } from '../base/notifications.js';
-import type { JobSpec } from '../base/jobs/types.js';
-import type { PlatformAdapter } from '../base/platforms/types.js';
+import { config } from '@swampratnz/agent-base/config.js';
+import { logger } from '@swampratnz/agent-base/logger.js';
+import { listAdminRoster, type AdminRosterEntry } from '@swampratnz/agent-base/storage/repository.js';
+import { startTrackedJob } from '@swampratnz/agent-base/jobs/trackedJob.js';
+import { initialUsageAlertTracker, stepUsageAlertTracker } from '@swampratnz/agent-base/usageAlert.js';
+import { alertSuperAdmins as sendSuperAdminAlert } from '@swampratnz/agent-base/notifications.js';
+import type { JobSpec } from '@swampratnz/agent-base/jobs/types.js';
+import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
 /**
  * Bare-count DM template (issue #472) — deliberately excludes which admin(s)

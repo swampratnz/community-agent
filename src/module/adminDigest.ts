@@ -1,6 +1,6 @@
-import { config } from '../base/config.js';
-import { logger } from '../base/logger.js';
-import { startTrackedJob } from '../base/jobs/trackedJob.js';
+import { config } from '@swampratnz/agent-base/config.js';
+import { logger } from '@swampratnz/agent-base/logger.js';
+import { startTrackedJob } from '@swampratnz/agent-base/jobs/trackedJob.js';
 import {
   answerFeedbackOriginSummary,
   answerFeedbackWeeklySummary,
@@ -41,9 +41,9 @@ import {
   rosterCounts,
   wasAdminDigestSentRecently,
   type QuestionCluster,
-} from '../base/storage/repository.js';
-import type { JobSpec } from '../base/jobs/types.js';
-import type { Platform, PlatformAdapter } from '../base/platforms/types.js';
+} from '@swampratnz/agent-base/storage/repository.js';
+import type { JobSpec } from '@swampratnz/agent-base/jobs/types.js';
+import type { Platform, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
 /**
  * Freshness window and cluster window/limit — mirrors `question_digest`'s own

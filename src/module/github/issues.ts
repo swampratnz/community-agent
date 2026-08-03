@@ -5,7 +5,7 @@
 // `config.github.repo` ONLY (never the CLAUDE_CODE_OAUTH_TOKEN) — so a bot
 // compromise is bounded to filing issues on one repo. See docs/SECURITY.md §
 // "GitHub issue filing" and docs/DEPLOYMENT.md for how to mint it.
-import { config } from '../../base/config.js';
+import { config } from '@swampratnz/agent-base/config.js';
 
 export interface CreatedIssue {
   number: number;

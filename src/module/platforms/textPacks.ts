@@ -1,4 +1,4 @@
-import type { AdapterPolicyText, AdapterTextPack } from '../../base/platforms/types.js';
+import type { AdapterPolicyText, AdapterTextPack } from '@swampratnz/agent-base/platforms/types.js';
 
 /**
  * The community-owned adapter text packs (agent-base plan item 6, the

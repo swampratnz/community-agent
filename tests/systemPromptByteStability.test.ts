@@ -7,8 +7,7 @@ import { fileURLToPath } from 'node:url';
 // Community content registrations (prompt sections + persona roster) — the
 // composition-root contract: src/index.ts registers these in production, so
 // tests that assemble prompts register them explicitly here.
-import '../src/module/agent/communityPromptSections.js';
-import '../src/module/agent/personas.js';
+import './support/registerPromptSections.js';
 
 // The byte-stability pin for buildSystemPrompt (agent-base plan item 8).
 //
@@ -34,9 +33,10 @@ process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= 'ci-dummy-guild';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 
-const { buildSystemPrompt } = await import('../src/base/agent/systemPrompt.js');
+const { buildSystemPrompt } = await import('@swampratnz/agent-base/agent/systemPrompt.js');
+await import('./support/registerPersonas.js');
 const { getPersona } = await import('../src/module/agent/personas.js');
-const { config } = await import('../src/base/config.js');
+const { config } = await import('@swampratnz/agent-base/config.js');
 
 const FIXTURE_PATH = join(
   dirname(fileURLToPath(import.meta.url)),

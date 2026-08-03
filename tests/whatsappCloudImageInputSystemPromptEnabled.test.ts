@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 // Community content registrations (prompt sections + persona roster) — the
 // composition-root contract: src/index.ts registers these in production, so
 // tests that assemble prompts register them explicitly here.
-import '../src/module/agent/communityPromptSections.js';
-import '../src/module/agent/personas.js';
+import './support/registerPromptSections.js';
+import './support/registerPersonas.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it. This file's whole
@@ -20,8 +20,8 @@ process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_CLOUD_IMAGE_INPUT_ENABLED = 'true';
 
-const { buildSystemPrompt } = await import('../src/base/agent/systemPrompt.js');
-const { config } = await import('../src/base/config.js');
+const { buildSystemPrompt } = await import('@swampratnz/agent-base/agent/systemPrompt.js');
+const { config } = await import('@swampratnz/agent-base/config.js');
 
 test('precondition: WHATSAPP_CLOUD_IMAGE_INPUT_ENABLED is on and the other two image-input flags are off in this test process', () => {
   assert.equal(config.whatsapp.cloud.image.enabled, true);

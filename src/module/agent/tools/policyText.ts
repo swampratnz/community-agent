@@ -1,12 +1,12 @@
 import { z } from 'zod';
-import { assertAtLeast } from '../../../base/auth/tiers.js';
-import { updatePolicy } from '../../../base/storage/policyStore.js';
+import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
+import { updatePolicy } from '@swampratnz/agent-base/storage/policyStore.js';
 // The community policy keys this file writes are registered by policies.ts
 // at its import time — load it so a direct import of this module can't hit
 // policyStore's unknown-key throw.
 import '../../storage/policies.js';
 import { text } from './helpers.js';
-import { defineTool } from '../../../base/agent/tools/types.js';
+import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 /**
  * Cap on stored community guidelines text (issue #212). Bounded by Discord's

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/module/strings/notices.js';
+import './support/registerNotices.js';
 
 // config.ts validates env at import time — gatedNotice.ts imports
 // storage/repository.js (for the real listAdminDisplayNames default), so it
@@ -15,14 +15,17 @@ process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 
 const {
-  GATED_NOTICE,
   GATED_NOTICE_MAX_ADMIN_NAMES,
   appendWaitClause,
-  appendWaitClauseMi,
   makeGatedNoticeBuilder,
   renderGatedNotice,
   waitDaysSince,
-} = await import('../src/base/gatedNotice.js');
+} = await import('@swampratnz/agent-base/gatedNotice.js');
+
+// Notice constants agent-base deleted in the package flip (they named this
+// community's axis values in framework code, and rendered at import time). Same
+// catalogue entries, same values — see tests/support/legacyNotices.ts.
+const { GATED_NOTICE } = await import('./support/legacyNotices.js');
 
 // Pure-renderer tests (acceptance criteria 2/3/4 for issue #360) — no DB, no
 // Router, mirroring rateLimitNotice.test.ts's pure-function unit tests.
@@ -139,33 +142,36 @@ test('SECURITY: appendWaitClause never claims an admin was actively notified —
   );
 });
 
-// appendWaitClauseMi: te reo sibling of appendWaitClause (issue #716) — same
+// The te reo wait clause (issue #716). Base used to export a separate
+// `appendWaitClauseMi`; agent-base folded it into `appendWaitClause`'s optional
+// `selection` argument, because a framework cannot name a locale. Same clause,
+// same pack entry, same
 // pure-function unit tests as above, mirroring appendWaitClause's coverage.
 
-test('appendWaitClauseMi: undefined waitDays renders byte-identical to the input notice (a first-ever, 0-day guest)', () => {
-  assert.equal(appendWaitClauseMi(GATED_NOTICE, undefined), GATED_NOTICE);
+test("appendWaitClause({ language: 'mi' }): undefined waitDays renders byte-identical to the input notice (a first-ever, 0-day guest)", () => {
+  assert.equal(appendWaitClause(GATED_NOTICE, undefined, { language: 'mi' }), GATED_NOTICE);
 });
 
-test('appendWaitClauseMi: waitDays === 0 renders byte-identical to the input notice', () => {
-  assert.equal(appendWaitClauseMi(GATED_NOTICE, 0), GATED_NOTICE);
+test("appendWaitClause({ language: 'mi' }): waitDays === 0 renders byte-identical to the input notice", () => {
+  assert.equal(appendWaitClause(GATED_NOTICE, 0, { language: 'mi' }), GATED_NOTICE);
 });
 
-test('appendWaitClauseMi: waitDays === 1 appends the singular te reo form', () => {
+test("appendWaitClause({ language: 'mi' }): waitDays === 1 appends the singular te reo form", () => {
   assert.equal(
-    appendWaitClauseMi(GATED_NOTICE, 1),
+    appendWaitClause(GATED_NOTICE, 1, { language: 'mi' }),
     `${GATED_NOTICE} (Nāu i pātai tuatahi mai i te rā kotahi kua pahure — kei te mau tonu tō tono.)`,
   );
 });
 
-test('appendWaitClauseMi: waitDays === 6 appends the plural te reo form naming 6', () => {
+test("appendWaitClause({ language: 'mi' }): waitDays === 6 appends the plural te reo form naming 6", () => {
   assert.equal(
-    appendWaitClauseMi(GATED_NOTICE, 6),
+    appendWaitClause(GATED_NOTICE, 6, { language: 'mi' }),
     `${GATED_NOTICE} (Nāu i pātai tuatahi mai i ngā rā e 6 kua pahure — kei te mau tonu tō tono.)`,
   );
 });
 
-test('SECURITY: appendWaitClauseMi interpolates only a plain integer day count — the clause matches a fixed, no-free-text pattern', () => {
-  const notice = appendWaitClauseMi(GATED_NOTICE, 6);
+test("SECURITY: appendWaitClause({ language: 'mi' }) interpolates only a plain integer day count — the clause matches a fixed, no-free-text pattern", () => {
+  const notice = appendWaitClause(GATED_NOTICE, 6, { language: 'mi' });
   const suffix = notice.slice(GATED_NOTICE.length);
   assert.match(
     suffix,

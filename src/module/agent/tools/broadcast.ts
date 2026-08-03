@@ -1,10 +1,10 @@
 import { z } from 'zod';
-import { assertAtLeast } from '../../../base/auth/tiers.js';
-import { config } from '../../../base/config.js';
-import { makeSlidingWindowReserver } from '../../../base/util/rateReservation.js';
-import { isKnownConversation, isKnownMessage } from '../../../base/storage/repository.js';
+import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
+import { config } from '@swampratnz/agent-base/config.js';
+import { makeSlidingWindowReserver } from '@swampratnz/agent-base/util/rateReservation.js';
+import { isKnownConversation, isKnownMessage } from '@swampratnz/agent-base/storage/repository.js';
 import { text, unreachableConversationRefusal } from './helpers.js';
-import { defineTool } from '../../../base/agent/tools/types.js';
+import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 /**
  * create_poll (issue #228) bounds — the Discord Poll API's own hard limits

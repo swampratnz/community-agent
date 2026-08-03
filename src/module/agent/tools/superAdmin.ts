@@ -1,11 +1,11 @@
 import { z } from 'zod';
-import type { Platform } from '../../../base/platforms/types.js';
-import { assertAtLeast } from '../../../base/auth/tiers.js';
-import { normalizeMemberId } from '../../../base/auth/memberId.js';
-import { isSuperAdmin } from '../../../base/auth/roles.js';
-import { config } from '../../../base/config.js';
-import { logger, hashId } from '../../../base/logger.js';
-import { makeCalendarDayReserver } from '../../../base/util/rateReservation.js';
+import type { Platform } from '@swampratnz/agent-base/platforms/types.js';
+import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
+import { normalizeMemberId } from '@swampratnz/agent-base/auth/memberId.js';
+import { isSuperAdmin } from '@swampratnz/agent-base/auth/roles.js';
+import { config } from '@swampratnz/agent-base/config.js';
+import { logger, hashId } from '@swampratnz/agent-base/logger.js';
+import { makeCalendarDayReserver } from '@swampratnz/agent-base/util/rateReservation.js';
 import {
   adminActivitySummary,
   clearUserSessions,
@@ -18,11 +18,11 @@ import {
   upsertMember,
   usageStats,
   engagementStats,
-} from '../../../base/storage/repository.js';
-import { updatePolicy } from '../../../base/storage/policyStore.js';
-import { redactSecrets } from '../../../base/agent/outbound.js';
+} from '@swampratnz/agent-base/storage/repository.js';
+import { updatePolicy } from '@swampratnz/agent-base/storage/policyStore.js';
+import { redactSecrets } from '@swampratnz/agent-base/agent/outbound.js';
 import { createIssue } from '../../github/issues.js';
-import { triggerRedeploy } from '../../../base/agent/redeploy.js';
+import { triggerRedeploy } from '@swampratnz/agent-base/agent/redeploy.js';
 import {
   formatAdminActivity,
   formatEngagementStats,
@@ -35,7 +35,7 @@ import {
   text,
 } from './helpers.js';
 import { notifyAdminApproved } from './notify.js';
-import { defineTool } from '../../../base/agent/tools/types.js';
+import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 /**
  * Fixed, static note appended to `grant_admin`'s reply when

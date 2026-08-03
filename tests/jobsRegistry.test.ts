@@ -13,7 +13,7 @@ process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 
 const { JOB_REGISTRY } = await import('../src/module/jobs/registry.js');
-const { loadConfig } = await import('../src/base/config.js');
+const { loadConfig } = await import('@swampratnz/agent-base/config.js');
 
 // The minimal valid environment: exactly the four required vars (same set as
 // tests/configSlices.test.ts), so every job's enable flag sits at its default.
@@ -45,9 +45,18 @@ const JOBS: ReadonlyArray<{ name: string; on: NodeJS.ProcessEnv | null }> = [
   { name: 'background-job-cost-alert', on: { BACKGROUND_JOB_COST_ALERT_ENABLED: 'true' } },
   { name: 'context-builder', on: { CONTEXT_BUILDER_ENABLED: 'true' } },
   { name: 'knowledge-refresh', on: { KNOWLEDGE_REFRESH_ENABLED: 'true' } },
-  { name: 'docs-ingest', on: { DOCS_INGEST_ENABLED: 'true' } },
+  // The URL rides along because agent-base requires it whenever the ingest is
+  // enabled (it ships no default) — the flag alone is now an invalid env.
+  {
+    name: 'docs-ingest',
+    on: { DOCS_INGEST_ENABLED: 'true', DOCS_INGEST_INDEX_URL: 'https://example.test/llms.txt' },
+  },
   { name: 'knowledge-link-check', on: { KNOWLEDGE_LINK_CHECK_ENABLED: 'true' } },
-  { name: 'anthropic-status-check', on: { STATUS_CHECK_ENABLED: 'true' } },
+  // Same as docs-ingest: STATUS_CHECK_API_URL has no framework default.
+  {
+    name: 'anthropic-status-check',
+    on: { STATUS_CHECK_ENABLED: 'true', STATUS_CHECK_API_URL: 'https://example.test/summary.json' },
+  },
   { name: 'admin-digest', on: { ADMIN_DIGEST_ENABLED: 'true' } },
   { name: 'departed-admin-alert', on: { DEPARTED_ADMIN_ALERT_ENABLED: 'true' } },
   { name: 'engagement-alert', on: { ENGAGEMENT_ALERT_ENABLED: 'true' } },

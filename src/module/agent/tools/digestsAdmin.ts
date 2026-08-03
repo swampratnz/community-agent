@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { assertAtLeast } from '../../../base/auth/tiers.js';
+import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
 import { buildAdminDigestForAdmin } from '../../adminDigest.js';
 import {
   countAccessRequests,
@@ -15,9 +15,9 @@ import {
   recentQuestionClusters,
   resolveLinkedIdentities,
   responseLatencyStats,
-} from '../../../base/storage/repository.js';
+} from '@swampratnz/agent-base/storage/repository.js';
 import { text, untrusted } from './helpers.js';
-import { defineTool } from '../../../base/agent/tools/types.js';
+import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 export const digestsAdminTools = [
   defineTool({

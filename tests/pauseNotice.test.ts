@@ -3,9 +3,14 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/module/strings/notices.js';
+import './support/registerNotices.js';
 
-import { PAUSE_NOTICE_TEXT, shouldNotifyPaused } from '../src/base/pauseNotice.js';
+import { shouldNotifyPaused } from '@swampratnz/agent-base/pauseNotice.js';
+
+// Notice constants agent-base deleted in the package flip (they named this
+// community's axis values in framework code, and rendered at import time). Same
+// catalogue entries, same values — see tests/support/legacyNotices.ts.
+import { PAUSE_NOTICE_TEXT } from './support/legacyNotices.js';
 
 const WINDOW_MS = 3_600_000;
 

@@ -1,11 +1,11 @@
 import { z } from 'zod';
-import type { Platform } from '../../../base/platforms/types.js';
-import { config } from '../../../base/config.js';
+import type { Platform } from '@swampratnz/agent-base/platforms/types.js';
+import { config } from '@swampratnz/agent-base/config.js';
 import { notice } from '../../strings/notices.js';
-import { sanitizeName } from '../../../base/util/sanitizeName.js';
-import { untrustedEntryContent } from '../../../base/agent/systemPrompt.js';
+import { sanitizeName } from '@swampratnz/agent-base/util/sanitizeName.js';
+import { untrustedEntryContent } from '@swampratnz/agent-base/agent/systemPrompt.js';
 import { ENABLED_SKILLS } from '../enabledSkills.js';
-import { redactSecrets } from '../../../base/agent/outbound.js';
+import { redactSecrets } from '@swampratnz/agent-base/agent/outbound.js';
 import { devTeamField, type JobListEntry, type JobResult, type JobStatus } from '../../devTeam/client.js';
 import {
   engagementStats,
@@ -20,7 +20,7 @@ import {
   type MemberProjectSearchHit,
   resolveDisplayName,
   usageStats,
-} from '../../../base/storage/repository.js';
+} from '@swampratnz/agent-base/storage/repository.js';
 
 /** Helper: wrap a string into the MCP tool result shape. */
 export function text(t: string, isError = false) {
@@ -101,38 +101,15 @@ export interface KnowledgeCitationInfo {
   sourceCheckedAt?: Date | null;
 }
 
-/**
- * Fixed, deterministic clause appended to the citation/freshness note when a
- * served knowledge entry has been flagged unhelpful by enough distinct
- * members (issue #337). A static string with no interpolated count, rating,
- * comment, or identity — SECURITY: exact string-equality is asserted in
- * tests specifically so this can never regress into leaking an aggregate
- * number.
- */
-export const KNOWLEDGE_LOW_RATED_CAVEAT_TEXT = notice('knowledgeLowRatedCaveat');
-
-/**
- * Fixed, human-authored te reo Māori variant of `KNOWLEDGE_LOW_RATED_CAVEAT_TEXT`
- * (issue #789) — the one string #435's `router.ts`-scoped `_MI` sweep couldn't
- * reach, since this constant and its rendering function live in this file.
- * Same trust level as its English sibling: no interpolation, no model call.
- * SECURITY: exact string-equality is asserted in tests, same convention as
- * `KNOWLEDGE_LOW_RATED_CAVEAT_TEXT` itself.
- */
-export const KNOWLEDGE_LOW_RATED_CAVEAT_TEXT_MI = notice('knowledgeLowRatedCaveat', {
-  language: 'mi',
-});
-
-/**
- * Fixed, human-authored te reo Māori variant of the `'may be outdated'`
- * staleness tag `formatKnowledgeCitationNote` appends below (issue #848) —
- * the one fragment of that function's three note fragments #789 didn't reach,
- * since #789's own scope was limited to the low-rated caveat directly below
- * this constant. Same trust level as its siblings: no interpolation, no
- * model call. SECURITY: exact string-equality is asserted in tests, same
- * convention as `KNOWLEDGE_LOW_RATED_CAVEAT_TEXT`.
- */
-export const KNOWLEDGE_STALE_NOTE_MI = notice('knowledgeStaleNote', { language: 'mi' });
+// The three notice-derived constants that used to sit here
+// (KNOWLEDGE_LOW_RATED_CAVEAT_TEXT, its `_MI` sibling and KNOWLEDGE_STALE_NOTE_MI)
+// are gone with the package flip. They rendered a notice at MODULE SCOPE, and
+// under `createAgent` the pack is registered after every module is imported —
+// so merely importing this file threw. `formatKnowledgeCitationNote` below
+// already selected both notices at its call site with the caller's raw
+// language, which is the only path that ever used them; the tests that pinned
+// their exact text now call `notice()` directly, keeping the same
+// SECURITY: exact-string assertions.
 
 /**
  * Fixed, deterministic trailing line appended to a `knowledge_search` reply

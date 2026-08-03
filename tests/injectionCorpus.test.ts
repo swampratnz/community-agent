@@ -2,13 +2,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import type { MemoryHit } from '../src/base/storage/repository.js';
-import type { CallerContext } from '../src/base/auth/rbac.js';
+import type { MemoryHit } from '@swampratnz/agent-base/storage/repository.js';
+import type { CallerContext } from '@swampratnz/agent-base/auth/rbac.js';
 // Community content registrations (prompt sections + persona roster) — the
 // composition-root contract: src/index.ts registers these in production, so
 // tests that assemble prompts register them explicitly here.
-import '../src/module/agent/communityPromptSections.js';
-import '../src/module/agent/personas.js';
+import './support/registerPromptSections.js';
+import './support/registerPersonas.js';
 
 // Deterministic, model-free adversarial-corpus gate (issue #227). Drives a
 // curated corpus of hostile inputs through the REAL construction/filter
@@ -25,8 +25,8 @@ process.env.DISCORD_GUILD_ID ??= 'ci-dummy-guild';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 
 const { buildSystemPrompt, renderMemoryContext, renderRequesterTag } =
-  await import('../src/base/agent/systemPrompt.js');
-const { filterOutbound } = await import('../src/base/agent/outbound.js');
+  await import('@swampratnz/agent-base/agent/systemPrompt.js');
+const { filterOutbound } = await import('@swampratnz/agent-base/agent/outbound.js');
 
 interface InjectionCorpus {
   maliciousDisplayNames: string[];

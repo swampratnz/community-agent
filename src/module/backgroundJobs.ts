@@ -1,7 +1,7 @@
-import { config } from '../base/config.js';
-import { logger } from '../base/logger.js';
-import { embed } from '../base/storage/embeddings.js';
-import { latestContextDigestAt } from '../base/storage/repository.js';
+import { config } from '@swampratnz/agent-base/config.js';
+import { logger } from '@swampratnz/agent-base/logger.js';
+import { embed } from '@swampratnz/agent-base/storage/embeddings.js';
+import { latestContextDigestAt } from '@swampratnz/agent-base/storage/repository.js';
 import { runContextBuilder, shouldRunContextBuilder, type ClusterSummarizer } from './context/builder.js';
 import {
   latestRefreshAt,
@@ -28,7 +28,7 @@ import {
   listUnnotifiedDevTeamWatches,
   markDevTeamWatchNotified,
   type DevTeamWatch,
-} from '../base/storage/repository.js';
+} from '@swampratnz/agent-base/storage/repository.js';
 import { devTeamField, jobResult, jobStatus, type JobResult, type JobStatus } from './devTeam/client.js';
 import { devTeamScrub } from './agent/tools.js';
 import {
@@ -37,10 +37,10 @@ import {
   recordJobRun,
   stepJobFailureTracker,
   type JobFailureTracker,
-} from '../base/backgroundJobHealth.js';
-import { alertSuperAdmins, startTrackedJob } from '../base/jobs/trackedJob.js';
-import type { JobSpec } from '../base/jobs/types.js';
-import type { PlatformAdapter } from '../base/platforms/types.js';
+} from '@swampratnz/agent-base/backgroundJobHealth.js';
+import { alertSuperAdmins, startTrackedJob } from '@swampratnz/agent-base/jobs/trackedJob.js';
+import type { JobSpec } from '@swampratnz/agent-base/jobs/types.js';
+import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
 /**
  * `summarize` is injectable (tests only) so the consecutive-failure alerting

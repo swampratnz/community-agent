@@ -1,12 +1,14 @@
-import { registerPromptSections } from '../../base/agent/promptSpine.js';
+import type { ModulePromptSections } from '@swampratnz/agent-base/agent/promptSpine.js';
 
 /**
  * The ONE community-owned prompt-sections file (agent-base plan §3
  * `promptSections` row): the NZ Claude Community's charter, the community
  * half of the behaviour guidelines, the web-search authority domains, and
- * the NZ date grounding — registered into the base assembler's closed slot
- * set (`promptSpine.ts`). Editing the community's voice/policy prose happens
- * HERE; the security clauses live in promptSpine.ts and are not registrable.
+ * the NZ date grounding — supplied to the base assembler's closed slot set
+ * (`promptSpine.ts`) through this module's `AgentModule.promptSections`
+ * (`src/module/agentModule.ts`). Editing the community's voice/policy prose
+ * happens HERE; the security clauses live in promptSpine.ts and are not
+ * registrable.
  *
  * ⚠️ Byte-stability is load-bearing for prompt caching: every string here
  * moved verbatim from systemPrompt.ts, and
@@ -231,11 +233,20 @@ const NZ_DATE_FORMAT = new Intl.DateTimeFormat('en-NZ', {
   year: 'numeric',
 });
 
-registerPromptSections({
+/**
+ * The registered section set, handed to `createAgent` by this module's
+ * manifest. Was a module-scope `registerPromptSections(...)` call before the
+ * package flip; the values are unchanged, and three slot names moved with the
+ * base contract: `communityConduct` → `conductGuidance`, and the fixed
+ * `plainLanguageStyle`/`enLanguagePreference`/`miLanguagePreference` fields →
+ * the two by-preference-value maps below (base no longer names a style or a
+ * locale, it just looks the caller's raw stored value up in the map).
+ */
+export const COMMUNITY_PROMPT_SECTIONS: ModulePromptSections = {
   charter: COMMUNITY_CHARTER,
   behaviourGuidelines: BEHAVIOUR_GUIDELINES,
   recallEtiquette: RECALL_ETIQUETTE,
-  communityConduct: COMMUNITY_CONDUCT,
+  conductGuidance: COMMUNITY_CONDUCT,
   promptReviewClause: PROMPT_REVIEW_CLAUSE,
   webSearchAuthority: WEB_SEARCH_AUTHORITY,
   /**
@@ -245,7 +256,6 @@ registerPromptSections({
    * prefix on every turn; day precision keeps it stable for a whole NZ day.
    */
   dateLine: (now: Date) => `- Current date (NZ): ${NZ_DATE_FORMAT.format(now)}`,
-  plainLanguageStyle: PLAIN_LANGUAGE_STYLE,
-  enLanguagePreference: EN_LANGUAGE_PREFERENCE,
-  miLanguagePreference: MI_LANGUAGE_PREFERENCE,
-});
+  responseStyleSections: { plain: PLAIN_LANGUAGE_STYLE },
+  languagePreferenceSections: { en: EN_LANGUAGE_PREFERENCE, mi: MI_LANGUAGE_PREFERENCE },
+};

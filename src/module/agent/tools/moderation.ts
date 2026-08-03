@@ -1,9 +1,9 @@
 import { z } from 'zod';
-import { assertAtLeast, atLeast } from '../../../base/auth/tiers.js';
-import { resolveRole } from '../../../base/auth/roles.js';
-import { config } from '../../../base/config.js';
-import { logger, hashId } from '../../../base/logger.js';
-import { makeSlidingWindowReserver } from '../../../base/util/rateReservation.js';
+import { assertAtLeast, atLeast } from '@swampratnz/agent-base/auth/tiers.js';
+import { resolveRole } from '@swampratnz/agent-base/auth/roles.js';
+import { config } from '@swampratnz/agent-base/config.js';
+import { logger, hashId } from '@swampratnz/agent-base/logger.js';
+import { makeSlidingWindowReserver } from '@swampratnz/agent-base/util/rateReservation.js';
 import {
   clearWarnings,
   getInteractionContentByMessageId,
@@ -16,10 +16,10 @@ import {
   listMutedMembers,
   MODERATION_ACTION_KINDS,
   recentModerationEntries,
-} from '../../../base/storage/repository.js';
+} from '@swampratnz/agent-base/storage/repository.js';
 import { text, unreachableConversationRefusal, untrusted } from './helpers.js';
 import { applyManualWarnStrike, notifyWarningsCleared } from './notify.js';
-import { defineTool } from '../../../base/agent/tools/types.js';
+import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 /**
  * Per-conversation cap on `warn_user` within a rolling hour (issue #315).

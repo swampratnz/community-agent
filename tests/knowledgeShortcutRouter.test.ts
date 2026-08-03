@@ -3,9 +3,16 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/module/strings/notices.js';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
-import type { hasKnowledgeConflictForId, searchKnowledge } from '../src/base/storage/repository.js';
+import './support/registerNotices.js';
+import type {
+  IncomingMessage,
+  OutgoingMessage,
+  PlatformAdapter,
+} from '@swampratnz/agent-base/platforms/types.js';
+import type {
+  hasKnowledgeConflictForId,
+  searchKnowledge,
+} from '@swampratnz/agent-base/storage/repository.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -21,11 +28,12 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 process.env.KNOWLEDGE_SHORTCUT_ENABLED = 'true';
 
-const { config } = await import('../src/base/config.js');
-const { Router } = await import('../src/base/router.js');
+const { config } = await import('@swampratnz/agent-base/config.js');
+const { Router } = await import('@swampratnz/agent-base/router.js');
 const { makeRouterDeps } = await import('../src/module/routerWiring.js');
+await import('./support/registerToolRegistry.js');
 const { KNOWLEDGE_CONFLICT_CAVEAT_TEXT } = await import('../src/module/agent/tools.js');
-const { embed } = await import('../src/base/storage/embeddings.js');
+const { embed } = await import('@swampratnz/agent-base/storage/embeddings.js');
 
 await embed('warmup').catch(() => {});
 

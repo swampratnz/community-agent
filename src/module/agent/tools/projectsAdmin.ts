@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { assertAtLeast } from '../../../base/auth/tiers.js';
+import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
 import {
   addProjectMember,
   archiveProject,
@@ -15,9 +15,9 @@ import {
   TEAM_PROJECT_NAME_MAX_CHARS,
   unarchiveProject,
   unbindProjectSurface,
-} from '../../../base/storage/repository.js';
+} from '@swampratnz/agent-base/storage/repository.js';
 import { platformArg, text } from './helpers.js';
-import { defineTool } from '../../../base/agent/tools/types.js';
+import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 /**
  * Admin project tools resolve by slug via getProjectBySlug, which does NOT

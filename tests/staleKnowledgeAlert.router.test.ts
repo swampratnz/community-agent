@@ -3,9 +3,13 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/module/strings/notices.js';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
-import type { searchKnowledge } from '../src/base/storage/repository.js';
+import './support/registerNotices.js';
+import type {
+  IncomingMessage,
+  OutgoingMessage,
+  PlatformAdapter,
+} from '@swampratnz/agent-base/platforms/types.js';
+import type { searchKnowledge } from '@swampratnz/agent-base/storage/repository.js';
 
 // config.ts validates env at import time — provide a dummy environment before
 // importing anything that (transitively) loads it, matching
@@ -28,8 +32,8 @@ process.env.KNOWLEDGE_SHORTCUT_ENABLED = 'true';
 process.env.GUEST_KNOWLEDGE_SHORTCUT_ENABLED = 'true';
 process.env.KNOWLEDGE_STALE_DAYS = '30';
 
-const { config } = await import('../src/base/config.js');
-const { Router } = await import('../src/base/router.js');
+const { config } = await import('@swampratnz/agent-base/config.js');
+const { Router } = await import('@swampratnz/agent-base/router.js');
 const { makeRouterDeps } = await import('../src/module/routerWiring.js');
 
 type SearchKnowledgeFn = typeof searchKnowledge;

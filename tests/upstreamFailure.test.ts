@@ -3,12 +3,12 @@ import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/module/strings/notices.js';
+import './support/registerNotices.js';
 import {
   initialUsageLimitTracker,
   isUsageLimitFailure,
   stepUsageLimitTracker,
-} from '../src/base/agent/upstreamFailure.js';
+} from '@swampratnz/agent-base/agent/upstreamFailure.js';
 
 test('isUsageLimitFailure matches the documented usage-limit/overload patterns, case-insensitively', () => {
   const positives = [

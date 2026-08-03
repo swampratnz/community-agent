@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 // The default bad-word list is community content registered at its own module
 // scope (src/index.ts imports it in production); the moderation wordlist fails
 // closed until then, and constructing a Discord adapter builds a Moderator.
-import '../src/module/moderation/badWords.js';
+import './support/registerBadWords.js';
 // The adapters take their community text pack as a required constructor
 // parameter now (agent-base plan item 6) — production hands it over in
 // src/module/platforms/factories.ts, so these constructions pass the same pack.
@@ -11,7 +11,7 @@ import { DISCORD_TEXT_PACK } from '../src/module/platforms/textPacks.js';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/module/strings/notices.js';
+import './support/registerNotices.js';
 import { Events, MessageFlags } from 'discord.js';
 
 // config.ts validates env at import time (see tests/discordAdapter.test.ts for
@@ -22,26 +22,39 @@ process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= 'guild-1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 
-const { DiscordAdapter } = await import('../src/base/platforms/discord/adapter.js');
-const { config } = await import('../src/base/config.js');
-const { pool } = await import('../src/base/storage/db.js');
-const { resetPolicyCacheForTests } = await import('../src/base/storage/policyStore.js');
-// The registration/dispatch mechanism is base (slashDispatch.ts); importing
-// the community command module binds its Discord halves onto the registry.
+const { DiscordAdapter } = await import('@swampratnz/agent-base/platforms/discord/adapter.js');
+const { config } = await import('@swampratnz/agent-base/config.js');
+const { pool } = await import('@swampratnz/agent-base/storage/db.js');
+const { resetPolicyCacheForTests } = await import('@swampratnz/agent-base/storage/policyStore.js');
+// The registration/dispatch mechanism is base (slashDispatch.ts): the command
+// list must be registered (the manifest's `commands` field in production)
+// before slashCommands.ts binds its Discord halves onto the registry at its
+// own module scope.
+await import('./support/registerCommands.js');
 await import('../src/module/platforms/discord/slashCommands.js');
 const { handleInteraction, buildSlashCommands, registerSlashCommands } =
-  await import('../src/base/platforms/discord/slashDispatch.js');
+  await import('@swampratnz/agent-base/platforms/discord/slashDispatch.js');
 const { buildMemberDigestContent } = await import('../src/module/memberDigest.js');
-const { logger } = await import('../src/base/logger.js');
-const { KNOWLEDGE_CONFLICT_CAVEAT_TEXT, KNOWLEDGE_LOW_RATED_CAVEAT_TEXT } =
-  await import('../src/module/agent/tools.js');
+const { logger } = await import('@swampratnz/agent-base/logger.js');
+await import('./support/registerToolRegistry.js');
+// The community policy keys (guidelines/welcome message) — the manifest's
+// `policyKeys` registration in production (src/module/agentModule.ts).
+await import('./support/registerPolicyKeys.js');
+// The two low-rated/stale caveat texts came from exported constants in
+// src/module/agent/tools/helpers.ts until the agent-base package flip removed
+// every module-scope `notice()` render (the pack is registered by
+// `createAgent`, after imports). Same catalogue entries, same selection — the
+// assertions below pin exactly what they did before.
+const { KNOWLEDGE_CONFLICT_CAVEAT_TEXT } = await import('../src/module/agent/tools.js');
+const { notice } = await import('../src/module/strings/notices.js');
+const KNOWLEDGE_LOW_RATED_CAVEAT_TEXT = notice('knowledgeLowRatedCaveat');
 // Both caveat constants contain an em dash, and every /kb reply passes through
 // deps.filtered() (the same outbound pipeline as every other send path, per
 // this file's own criterion 6/13 test) — which rewrites em dashes into a
 // comma (stripEmDashes in outbound.ts) before the text ever reaches Discord.
 // So the caveat as actually delivered is this rewritten form, not the raw
 // exported constant.
-const { stripEmDashes } = await import('../src/base/agent/outbound.js');
+const { stripEmDashes } = await import('@swampratnz/agent-base/agent/outbound.js');
 
 type Adapter = InstanceType<typeof DiscordAdapter>;
 

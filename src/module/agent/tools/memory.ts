@@ -1,12 +1,12 @@
 import { z } from 'zod';
-import { assertAtLeast } from '../../../base/auth/tiers.js';
-import { config } from '../../../base/config.js';
-import { logger, hashId } from '../../../base/logger.js';
-import { recentConversationHistory, searchMemory } from '../../../base/storage/repository.js';
-import { sanitizeName } from '../../../base/util/sanitizeName.js';
-import { memoryHitJumpLink } from '../../../base/agent/discordLink.js';
+import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
+import { config } from '@swampratnz/agent-base/config.js';
+import { logger, hashId } from '@swampratnz/agent-base/logger.js';
+import { recentConversationHistory, searchMemory } from '@swampratnz/agent-base/storage/repository.js';
+import { sanitizeName } from '@swampratnz/agent-base/util/sanitizeName.js';
+import { memoryHitJumpLink } from '@swampratnz/agent-base/agent/discordLink.js';
 import { text, untrusted } from './helpers.js';
-import { defineTool } from '../../../base/agent/tools/types.js';
+import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 /** Per-message truncation shared by remember_search and catch_up (issue #167) so both quote the same amount of any one message. */
 const RECALL_TRUNCATION_CHARS = 400;

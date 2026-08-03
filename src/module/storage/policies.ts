@@ -1,19 +1,20 @@
-import { readPolicy, registerPolicyKeys } from '../../base/storage/policyStore.js';
+import { readPolicy } from '@swampratnz/agent-base/storage/policyStore.js';
 
 /**
  * The community-owned policy keys — the content half of the policy store,
  * paired with the base mechanism in `policyStore.ts` (cache, writer, base
- * keys). Registration happens at THIS module's import time, and the four
- * typed accessors below are the only readers of these keys, so loading any
- * of them loads the registration first — no separate ordering to get wrong.
+ * keys). The keys are registered by this module's manifest
+ * (src/module/agentModule.ts), which `createAgent` applies before anything
+ * can read or write one — an unregistered key THROWS, so a forgotten entry
+ * here is loud rather than silent.
  */
 
-registerPolicyKeys({
+export const COMMUNITY_POLICY_KEYS = {
   community_guidelines: null,
   community_guidelines_mi: null,
   welcome_message: null,
   welcome_message_mi: null,
-});
+} as const;
 
 /**
  * The current community guidelines text, or null if never set (or cleared

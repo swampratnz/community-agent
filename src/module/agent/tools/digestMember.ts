@@ -1,7 +1,7 @@
-import { assertAtLeast } from '../../../base/auth/tiers.js';
+import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
 import { buildMemberDigestContent } from '../../memberDigest.js';
 import { text, untrusted } from './helpers.js';
-import { defineTool } from '../../../base/agent/tools/types.js';
+import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 export const digestMemberTools = [
   // On-demand pull of the community-wide weekly member-digest snapshot

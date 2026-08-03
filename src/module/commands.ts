@@ -1,10 +1,6 @@
-import { atLeast } from '../base/auth/rbac.js';
+import { atLeast } from '@swampratnz/agent-base/auth/rbac.js';
 import { formatInterestResults, formatProjectResults, LIST_PROJECTS_DEFAULT_LIMIT } from './agent/tools.js';
-import {
-  registerCommands,
-  TEXT_COMMAND_UNMATCHED,
-  type RegisteredCommand,
-} from '../base/commands/registry.js';
+import { TEXT_COMMAND_UNMATCHED, type RegisteredCommand } from '@swampratnz/agent-base/commands/registry.js';
 
 /**
  * The community command registry (agent-base plan §3 `commands` row): ONE
@@ -105,8 +101,8 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
       const languagePreference = await deps.getLangPref(msg.platform, msg.userId);
       const guidelines =
         languagePreference === 'mi'
-          ? ((await deps.getCommunityGuidelinesMiFn()) ?? (await deps.getCommunityGuidelinesFn()))
-          : await deps.getCommunityGuidelinesFn();
+          ? ((await deps.getLocalisedConductGuidelinesFn()) ?? (await deps.getConductGuidelinesFn()))
+          : await deps.getConductGuidelinesFn();
       return guidelines ?? 'No community guidelines have been set yet — ask an admin.';
     },
   },
@@ -116,14 +112,13 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
     whatsapp: async (text, _msg, role, deps) => {
       if (!/^!digest$/i.test(text)) return TEXT_COMMAND_UNMATCHED;
       if (!atLeast(role, 'member')) return null;
-      const message = await deps.buildMemberDigestContentFn();
+      const message = await deps.buildDigestContentFn();
       return message ?? 'Nothing to report right now.';
     },
   },
 ];
 
-// Self-registration at module scope (the Stage 1–2 pattern): the composition
-// root (src/index.ts) — and any test exercising a command surface — imports
-// this module for its side effect, and the base mechanism fails loud if that
-// import was forgotten.
-registerCommands(COMMUNITY_COMMANDS);
+// Registration is the manifest's job now (src/module/agentModule.ts):
+// `createAgent` hands this list to `commands/registry.ts` before a turn can
+// run, and both command surfaces read it back from there. The base mechanism
+// still fails loud if nothing ever registered.

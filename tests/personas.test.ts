@@ -3,8 +3,7 @@ import assert from 'node:assert/strict';
 // Community content registrations (prompt sections + persona roster) — the
 // composition-root contract: src/index.ts registers these in production, so
 // tests that assemble prompts register them explicitly here.
-import '../src/module/agent/communityPromptSections.js';
-import '../src/module/agent/personas.js';
+import './support/registerPromptSections.js';
 
 // systemPrompt.js loads config.ts, which validates env at import time — set a
 // dummy env before dynamically importing anything that pulls it in.
@@ -13,9 +12,10 @@ process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= 'ci-dummy-guild';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 
+await import('./support/registerPersonas.js');
 const { DEFAULT_PERSONA_ID, PERSONAS, getPersona, selectPersona } =
   await import('../src/module/agent/personas.js');
-const { buildSystemPrompt } = await import('../src/base/agent/systemPrompt.js');
+const { buildSystemPrompt } = await import('@swampratnz/agent-base/agent/systemPrompt.js');
 
 const caller = {
   platform: 'discord' as const,

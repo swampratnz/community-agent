@@ -1,24 +1,29 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /**
- * scripts/check-import-direction.mjs — the one-way rule between the two halves
- * of src/ (agent-base plan §Phase-2).
+ * scripts/check-import-direction.mjs — the composition-direction rules.
  *
- * base may never import module; module may never import the composition root.
- * The property matters because Phase 3 lifts src/base/ into its own package,
- * and one edge the wrong way makes it un-liftable. eslint enforces the same
- * rule from the specifier TEXT; this script resolves each specifier against the
- * file system, which is what makes it proof against any depth of `../`.
+ * Since the agent-base package flip the gate enforces three things: `src/base/`
+ * must not exist (the framework is a package; a local copy forks it silently),
+ * `src/module/` may never import the composition root, and only the
+ * composition root may call `createAgent`. The base→module rule is kept in the
+ * script — the fixtures below still pin it — because it is what a two-halves
+ * tree needs and what makes a lift possible in the first place.
+ *
+ * eslint enforces the same rules from the specifier TEXT; this script resolves
+ * each relative specifier against the file system, which is what makes it proof
+ * against any depth of `../`.
  *
  * These tests drive the gate against fixture trees (via its `--root` flag) so
- * both directions are pinned, rather than only ever observing this repo's
- * passing state.
+ * every rule is pinned, rather than only ever observing this repo's passing
+ * state. `--root` also suppresses the "no src/base/" rule, since the fixtures
+ * deliberately build a two-halves tree.
  */
 
 const SCRIPT = fileURLToPath(new URL('../scripts/check-import-direction.mjs', import.meta.url));
@@ -59,7 +64,7 @@ test('a tree where only module imports base passes', () => {
   // Three scanned files: the two under base/ and the one under module/. The
   // composition root is deliberately not scanned — it is the one file allowed
   // both edges.
-  assert.match(out, /3 files obey the one-way rule/);
+  assert.match(out, /3 files obey the composition-direction rules/);
   f.cleanup();
 });
 
@@ -143,8 +148,55 @@ test('a specifier that resolves nowhere is ignored rather than crashing the gate
   f.cleanup();
 });
 
-test('this repository obeys the rule', () => {
+test('a module file that imports createAgent fails — only the composition root composes', () => {
+  const f = fixture({
+    ...LEGAL,
+    'module/content.ts':
+      "import { createAgent } from '@swampratnz/agent-base';\nexport const content = createAgent;\n",
+  });
+  const { status, out } = check(f.root);
+  assert.equal(status, 1, out);
+  assert.match(out, /src\/module\/content\.ts:1/);
+  assert.match(out, /only the composition root may compose the agent/);
+  f.cleanup();
+});
+
+test('a module file may still import ordinary package symbols and the manifest TYPE', () => {
+  const f = fixture({
+    ...LEGAL,
+    'module/content.ts':
+      "import type { AgentModuleManifest } from '@swampratnz/agent-base';\n" +
+      "import { notice } from '@swampratnz/agent-base/strings/catalogue.js';\n" +
+      'export const content: AgentModuleManifest = { name: notice as unknown as string };\n',
+  });
+  const { status, out } = check(f.root);
+  assert.equal(status, 0, out);
+  f.cleanup();
+});
+
+test('this repository obeys the rules — including having no src/base/ at all', () => {
   const repoRoot = fileURLToPath(new URL('..', import.meta.url));
   const result = spawnSync('node', [SCRIPT], { cwd: repoRoot, encoding: 'utf8' });
   assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+  assert.equal(existsSync(path.join(repoRoot, 'src', 'base')), false, 'src/base/ must stay gone');
+});
+
+test('a re-created src/base/ fails the gate outright, even with no bad import in it', () => {
+  // Driven against a FIXTURE tree with --forbid-base, never against the real
+  // repo. An earlier version created src/base/ under the actual repo root and
+  // deleted it in a finally: `node:test` runs test FILES in parallel, so that
+  // window was visible to every other file scanning the real tree — including
+  // contextPack's "the real module-map is in sync" case, which fails the
+  // moment an undescribed src/base/ appears. A gate test must not be able to
+  // redden an unrelated one.
+  const dir = mkdtempSync(path.join(tmpdir(), 'import-direction-base-'));
+  try {
+    mkdirSync(path.join(dir, 'src', 'base'), { recursive: true });
+    writeFileSync(path.join(dir, 'src', 'base', 'kernel.ts'), 'export const kernel = 1;\n');
+    const result = spawnSync('node', [SCRIPT, '--root', dir, '--forbid-base'], { encoding: 'utf8' });
+    assert.equal(result.status, 1);
+    assert.match(`${result.stdout}${result.stderr}`, /src\/base\/ exists again/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

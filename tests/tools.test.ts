@@ -3,15 +3,34 @@ import assert from 'node:assert/strict';
 // The default bad-word list is community content registered at its own module
 // scope (src/index.ts imports it in production); the moderation wordlist fails
 // closed until then, and constructing a Discord adapter builds a Moderator.
-import '../src/module/moderation/badWords.js';
+import './support/registerBadWords.js';
+// The notice pack, for the three catalogue lookups below (the manifest does
+// this in production — src/module/agentModule.ts).
+import './support/registerNotices.js';
+import { notice } from '../src/module/strings/notices.js';
+import { agentBasePath } from './support/agentBasePath.js';
+
+// These three were exported constants in src/module/agent/tools/helpers.ts
+// until the agent-base package flip removed every module-scope `notice()`
+// render (the pack is registered by `createAgent`, after imports). The text
+// is unchanged — it is the same catalogue entry, selected the same way — so
+// the SECURITY: exact-string assertions below still pin exactly what they did.
+const KNOWLEDGE_LOW_RATED_CAVEAT_TEXT = notice('knowledgeLowRatedCaveat');
+const KNOWLEDGE_LOW_RATED_CAVEAT_TEXT_MI = notice('knowledgeLowRatedCaveat', { language: 'mi' });
+const KNOWLEDGE_STALE_NOTE_MI = notice('knowledgeStaleNote', { language: 'mi' });
 // The adapters take their community text pack as a required constructor
 // parameter now (agent-base plan item 6) — production hands it over in
 // src/module/platforms/factories.ts, so these constructions pass the same pack.
 import { DISCORD_TEXT_PACK, WHATSAPP_CLOUD_TEXT_PACK } from '../src/module/platforms/textPacks.js';
 import { ENABLED_SKILLS } from '../src/module/agent/enabledSkills.js';
 import { readFileSync, readdirSync } from 'node:fs';
-import type { AdapterLookup, Platform, PlatformAdapter, UpcomingEvent } from '../src/base/platforms/types.js';
-import { formatNzEventTime } from '../src/base/util/nzTime.js';
+import { dirname, join } from 'node:path';
+import type {
+  AdapterLookup,
+  Platform,
+  PlatformAdapter,
+  UpcomingEvent,
+} from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -40,6 +59,7 @@ const skip = hasDb
 // exported and tested directly here rather than through the full MCP
 // tool-call transport, which the rest of add_member (upsertMember/audited/
 // clearAccessRequest, all DB-backed) already exercises via repository.test.ts.
+await import('./support/registerToolRegistry.js');
 const {
   notifyMemberApproved,
   notifyAdminApproved,
@@ -64,9 +84,6 @@ const {
   resolveSanitizedLabel,
   formatKnowledgeCitationNote,
   formatRelativeAge,
-  KNOWLEDGE_LOW_RATED_CAVEAT_TEXT,
-  KNOWLEDGE_LOW_RATED_CAVEAT_TEXT_MI,
-  KNOWLEDGE_STALE_NOTE_MI,
   KNOWLEDGE_CONFLICT_CAVEAT_TEXT,
   KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD,
   KNOWLEDGE_TIE_MARGIN,
@@ -95,8 +112,8 @@ const {
   HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER,
   PROJECT_NOTE_RETENTION_NOTICE,
 } = await import('../src/module/agent/tools.js');
-const { reserveVoiceTranscriptionSlot } = await import('../src/base/agent/rateReservers.js');
-const { filterOutbound } = await import('../src/base/agent/outbound.js');
+const { reserveVoiceTranscriptionSlot } = await import('@swampratnz/agent-base/agent/rateReservers.js');
+const { filterOutbound } = await import('@swampratnz/agent-base/agent/outbound.js');
 const {
   MODERATION_ACTION_KINDS,
   saveKnowledge,
@@ -152,24 +169,30 @@ const {
   setMemberInterests,
   purgeUserData,
   recordProjectConnectionIfUnderCap,
-} = await import('../src/base/storage/repository.js');
-const { pool, closeDb } = await import('../src/base/storage/db.js');
-const { embed } = await import('../src/base/storage/embeddings.js');
+} = await import('@swampratnz/agent-base/storage/repository.js');
+const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
+const { embed } = await import('@swampratnz/agent-base/storage/embeddings.js');
 const pgvector = (await import('pgvector/pg')).default;
 const { cancelPendingAction, hasPendingAction, takePendingAction } =
-  await import('../src/base/agent/pendingActions.js');
-const { config } = await import('../src/base/config.js');
+  await import('@swampratnz/agent-base/agent/pendingActions.js');
+const { config } = await import('@swampratnz/agent-base/config.js');
+// `formatEventTime` is imported DYNAMICALLY, after the dummy env above:
+// agent-base's util/eventTime.ts reads DISPLAY_TIMEZONE/DISPLAY_LOCALE off the
+// config singleton (community-agent's util/nzTime.ts hardcoded them and
+// imported nothing), so a static import would validate the env too early.
+const { formatEventTime } = await import('@swampratnz/agent-base/util/eventTime.js');
+await import('./support/registerPolicyKeys.js');
 const { getCommunityGuidelines, getCommunityGuidelinesMi, getWelcomeMessage, getWelcomeMessageMi } =
   await import('../src/module/storage/policies.js');
-const { resetPolicyCacheForTests } = await import('../src/base/storage/policyStore.js');
-const { MEMBER_TOOLS, ADMIN_TOOLS, SUPER_ADMIN_TOOLS } = await import('../src/base/auth/rbac.js');
-const { superAdminIds } = await import('../src/base/auth/roles.js');
+const { resetPolicyCacheForTests } = await import('@swampratnz/agent-base/storage/policyStore.js');
+const { MEMBER_TOOLS, ADMIN_TOOLS, SUPER_ADMIN_TOOLS } = await import('@swampratnz/agent-base/auth/rbac.js');
+const { superAdminIds } = await import('@swampratnz/agent-base/auth/roles.js');
 const { WhatsAppCloudAdapter, WindowClosedError } =
-  await import('../src/base/platforms/whatsapp/cloudAdapter.js');
+  await import('@swampratnz/agent-base/platforms/whatsapp/cloudAdapter.js');
 const { buildAdminDigestForAdmin } = await import('../src/module/adminDigest.js');
 const { buildMemberDigestContent } = await import('../src/module/memberDigest.js');
 const { getPendingAlertsForTests, resetPendingAlertsForTests } =
-  await import('../src/base/pendingAlertQueue.js');
+  await import('@swampratnz/agent-base/pendingAlertQueue.js');
 
 // Unique per test-run scope so the knowledge_search handler test's fixture
 // row never collides across runs, mirroring the RUN-tag convention in
@@ -5197,7 +5220,7 @@ test(
     'primitive is WhatsApp-only, Discord already has full ban_user coverage (issue #572 acceptance ' +
     'criterion #6)',
   async () => {
-    const { DiscordAdapter } = await import('../src/base/platforms/discord/adapter.js');
+    const { DiscordAdapter } = await import('@swampratnz/agent-base/platforms/discord/adapter.js');
     const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     assert.equal(adapter.adminCapabilities.has('block_user'), false);
     assert.equal(adapter.adminCapabilities.has('unblock_user'), false);
@@ -7341,7 +7364,7 @@ test('SECURITY: cancel_event registers a CONFIRM-gated pending action whose desc
   );
   assert.match(
     result.content[0].text,
-    new RegExp(formatNzEventTime(EVENT_FUTURE_START).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+    new RegExp(formatEventTime(EVENT_FUTURE_START).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
     'the CONFIRM text must quote the resolved start time in NZ-local time, not raw ISO (issue #577)',
   );
   assert.doesNotMatch(
@@ -9069,16 +9092,19 @@ function assertFeatureFlagEnvVarsCovered(envVars: string[], map: readonly { envV
 }
 
 test('feature_flags: FEATURE_FLAG_MAP covers every *_ENABLED env var in config.ts (issue #559 anti-drift pin)', () => {
-  // The env schema moved into per-domain slices under src/base/config/ (the barrel
-  // keeps the composed `config` literal) — same assertions, scanned across
-  // the barrel plus every slice so a flag added in either place is counted.
-  const configDir = new URL('../src/base/config/', import.meta.url);
+  // The env schema lives in the agent-base package now: the composed barrel
+  // (config.js) plus the per-domain slices under config/. Scanned from the
+  // INSTALLED package rather than from src/, so this still counts a flag added
+  // in either place — and resolving through the package (not a hand-built
+  // relative path) keeps it honest about what this deployment actually runs.
+  const configEntry = agentBasePath('@swampratnz/agent-base/config.js');
+  const configDir = join(dirname(configEntry), 'config');
   const configSource = [
-    readFileSync(new URL('../src/base/config.ts', import.meta.url), 'utf8'),
+    readFileSync(configEntry, 'utf8'),
     ...readdirSync(configDir)
-      .filter((f) => f.endsWith('.ts'))
+      .filter((f) => f.endsWith('.js'))
       .sort()
-      .map((f) => readFileSync(new URL(f, configDir), 'utf8')),
+      .map((f) => readFileSync(join(configDir, f), 'utf8')),
   ].join('\n');
   const envVars = extractEnabledEnvVars(configSource);
   assert.equal(
@@ -13399,7 +13425,7 @@ test(
   'SECURITY: project_add_member refuses a target who is not already a community member (docs/SECURITY.md layer 3 — without it a membership row exists for an identity that never passed add_member, which open mode reaches at guest tier)',
   { skip },
   async () => {
-    const { createProject, upsertMember } = await import('../src/base/storage/repository.js');
+    const { createProject, upsertMember } = await import('@swampratnz/agent-base/storage/repository.js');
     const slug = `${RUN}-addmember-guard`;
     await createProject({ slug, name: 'Guard Lab', createdBy: 'test' });
 
@@ -13429,7 +13455,7 @@ test(
     // project_archive is not CONFIRM-gated because project_unarchive undoes
     // it. That argument only holds if the undo is reachable from the tool
     // surface, so exercise both handlers, not just the repository functions.
-    const { createProject } = await import('../src/base/storage/repository.js');
+    const { createProject } = await import('@swampratnz/agent-base/storage/repository.js');
     const slug = `${RUN}-archive-roundtrip`;
     await createProject({ slug, name: 'Round Trip Lab', createdBy: 'test' });
 
@@ -13466,7 +13492,7 @@ test(
   async () => {
     // These three were only exercised at the repository-function level, unlike
     // their siblings — so the audited() wiring and reply text went untested.
-    const { createProject, upsertMember } = await import('../src/base/storage/repository.js');
+    const { createProject, upsertMember } = await import('@swampratnz/agent-base/storage/repository.js');
     const slug = `${RUN}-handler-paths`;
     await createProject({ slug, name: 'Handler Lab', createdBy: 'test' });
     const member = `${RUN.slice(1)}777`.slice(0, 19);
@@ -13516,7 +13542,7 @@ test(
     // getProjectBySlug deliberately does not exclude archived projects — an
     // admin must still be able to tidy a team up before an unarchive. But
     // nothing they change takes effect until then, so the reply has to say it.
-    const { createProject, upsertMember } = await import('../src/base/storage/repository.js');
+    const { createProject, upsertMember } = await import('@swampratnz/agent-base/storage/repository.js');
     const slug = `${RUN}-archived-edits`;
     await createProject({ slug, name: 'Archived Lab', createdBy: 'test' });
     const member = `${RUN.slice(1)}888`.slice(0, 19);
@@ -14415,8 +14441,10 @@ test(
     // cleanup it orphaned a project row and cascaded into the next three
     // line-count assertions). A module boundary can't drift the way a comment
     // delimiter can.
+    // The repository module is agent-base's now, so scan the INSTALLED
+    // package's compiled copy — what this deployment actually runs.
     const repoProjectsSource = readFileSync(
-      new URL('../src/base/storage/repository/memberProjects.ts', import.meta.url),
+      agentBasePath('@swampratnz/agent-base/storage/repository/memberProjects.js'),
       'utf8',
     );
     assert.doesNotMatch(repoProjectsSource, /\bfetch\(|axios|http\.get\(|https\.get\(/);
@@ -14744,7 +14772,8 @@ test(
     );
     const projectId = Number(dbRow.rows[0].id);
 
-    const { PROJECT_CONNECTION_REQUESTER_DAILY_LIMIT } = await import('../src/base/storage/repository.js');
+    const { PROJECT_CONNECTION_REQUESTER_DAILY_LIMIT } =
+      await import('@swampratnz/agent-base/storage/repository.js');
     for (let i = 0; i < PROJECT_CONNECTION_REQUESTER_DAILY_LIMIT; i++) {
       await pool.query(
         `INSERT INTO project_connection_requests
@@ -14791,7 +14820,8 @@ test(
     );
     const projectId = Number(dbRow.rows[0].id);
 
-    const { PROJECT_CONNECTION_OWNER_WEEKLY_LIMIT } = await import('../src/base/storage/repository.js');
+    const { PROJECT_CONNECTION_OWNER_WEEKLY_LIMIT } =
+      await import('@swampratnz/agent-base/storage/repository.js');
     for (let i = 0; i < PROJECT_CONNECTION_OWNER_WEEKLY_LIMIT; i++) {
       await pool.query(
         `INSERT INTO project_connection_requests
@@ -15384,12 +15414,12 @@ test('list_events formats each event with id, name, start/end time, location, an
   );
   assert.match(
     replyText,
-    new RegExp(formatNzEventTime('2099-06-01T19:00:00.000Z').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+    new RegExp(formatEventTime('2099-06-01T19:00:00.000Z').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
     "must render the event's start in NZ-local time (issue #577)",
   );
   assert.match(
     replyText,
-    new RegExp(formatNzEventTime('2099-06-01T21:00:00.000Z').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+    new RegExp(formatEventTime('2099-06-01T21:00:00.000Z').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
     "must render the event's end in NZ-local time (issue #577)",
   );
   assert.match(replyText, /Wellington Central Library/);

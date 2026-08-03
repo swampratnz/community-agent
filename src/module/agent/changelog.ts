@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { logger } from '../../base/logger.js';
+import { logger } from '@swampratnz/agent-base/logger.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 

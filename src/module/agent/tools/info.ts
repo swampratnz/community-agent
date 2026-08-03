@@ -1,11 +1,11 @@
-import { atLeast } from '../../../base/auth/tiers.js';
-import { config } from '../../../base/config.js';
+import { atLeast } from '@swampratnz/agent-base/auth/tiers.js';
+import { config } from '@swampratnz/agent-base/config.js';
 import { getCommunityGuidelines, getCommunityGuidelinesMi } from '../../storage/policies.js';
-import { getLanguagePreference } from '../../../base/storage/repository.js';
+import { getLanguagePreference } from '@swampratnz/agent-base/storage/repository.js';
 import { formatStatusMessage, getStatusCache } from '../../status/anthropicStatus.js';
-import { formatNzEventTime } from '../../../base/util/nzTime.js';
+import { formatEventTime } from '@swampratnz/agent-base/util/eventTime.js';
 import { text } from './helpers.js';
-import { defineTool } from '../../../base/agent/tools/types.js';
+import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 /**
  * Plain-language rundown of what a member can ask the bot to do, named by
@@ -214,8 +214,8 @@ export const infoTools = [
         events
           .map((e) => {
             const when = e.scheduledEndAt
-              ? `${formatNzEventTime(e.scheduledStartAt)} – ${formatNzEventTime(e.scheduledEndAt)}`
-              : formatNzEventTime(e.scheduledStartAt);
+              ? `${formatEventTime(e.scheduledStartAt)} – ${formatEventTime(e.scheduledEndAt)}`
+              : formatEventTime(e.scheduledStartAt);
             const desc = e.description ? `: ${e.description}` : '';
             return `- ${e.name} (${when}) @ ${e.location}${desc} [id: ${e.id}]`;
           })

@@ -1,6 +1,6 @@
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { registerSkillsManifest } from '../../base/agent/skillsManifest.js';
+import type { SkillsManifest } from '@swampratnz/agent-base/agent/skillsManifest.js';
 
 /**
  * The explicit, hand-written Agent Skills allowlist (issue #741) — never
@@ -42,7 +42,8 @@ export const ENABLED_SKILLS = [
  * nothing beyond those static markdown skill bodies is ever loadable from it
  * (pinned by a dedicated test).
  *
- * Registered here as the community skills manifest (agent-base plan item 8):
+ * Exported here as the community skills manifest (agent-base plan item 8),
+ * registered by this module's manifest (src/module/agentModule.ts):
  * `skillsManifest.ts` owns the never-`'all'` invariant and core.ts reads the
  * manifest instead of importing this list directly. The prompt-review
  * SKILL.md in this directory and PROMPT_REVIEW_CLAUSE
@@ -51,7 +52,7 @@ export const ENABLED_SKILLS = [
  */
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-registerSkillsManifest({
+export const COMMUNITY_SKILLS: SkillsManifest = {
   skillsDir: join(__dirname, 'skills'),
   enabledSkills: ENABLED_SKILLS,
-});
+};

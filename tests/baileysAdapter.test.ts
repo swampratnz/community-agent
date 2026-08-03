@@ -11,8 +11,8 @@ import {
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/module/strings/notices.js';
-import type { IncomingMessage } from '../src/base/platforms/types.js';
+import './support/registerNotices.js';
+import type { IncomingMessage } from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it. Locally
@@ -27,14 +27,22 @@ process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 
 const { BaileysAdapter, initialWelcomeCooldownState, stepWelcomeCooldown } =
-  await import('../src/base/platforms/whatsapp/baileysAdapter.js');
-const { config } = await import('../src/base/config.js');
-const { pool } = await import('../src/base/storage/db.js');
-const { logger } = await import('../src/base/logger.js');
-const { resetPolicyCacheForTests } = await import('../src/base/storage/policyStore.js');
+  await import('@swampratnz/agent-base/platforms/whatsapp/baileysAdapter.js');
+const { config } = await import('@swampratnz/agent-base/config.js');
+const { pool } = await import('@swampratnz/agent-base/storage/db.js');
+const { logger } = await import('@swampratnz/agent-base/logger.js');
+const { resetPolicyCacheForTests } = await import('@swampratnz/agent-base/storage/policyStore.js');
+await import('./support/registerToolRegistry.js');
+// The community policy keys (guidelines/welcome message) — the manifest's
+// `policyKeys` registration in production (src/module/agentModule.ts).
+await import('./support/registerPolicyKeys.js');
 const { buildToolServer } = await import('../src/module/agent/tools.js');
-const { toolsForRole, ADMIN_TOOLS, SUPER_ADMIN_TOOLS } = await import('../src/base/auth/rbac.js');
-const { VOICE_LANGUAGE_CAVEAT_TEXT_MI } = await import('../src/base/voiceLanguageCaveatNotice.js');
+const { toolsForRole, ADMIN_TOOLS, SUPER_ADMIN_TOOLS } = await import('@swampratnz/agent-base/auth/rbac.js');
+
+// Notice constants agent-base deleted in the package flip (they named this
+// community's axis values in framework code, and rendered at import time). Same
+// catalogue entries, same values — see tests/support/legacyNotices.ts.
+const { VOICE_LANGUAGE_CAVEAT_TEXT_MI } = await import('./support/legacyNotices.js');
 
 /**
  * Issue #407: `onGroupParticipantsUpdate` now unconditionally writes to

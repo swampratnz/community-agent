@@ -7,8 +7,8 @@ import { BAILEYS_TEXT_PACK } from '../src/module/platforms/textPacks.js';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
-import '../src/module/strings/notices.js';
-import type { IncomingMessage } from '../src/base/platforms/types.js';
+import './support/registerNotices.js';
+import type { IncomingMessage } from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -21,9 +21,9 @@ process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 
-const { BaileysAdapter } = await import('../src/base/platforms/whatsapp/baileysAdapter.js');
-const { config } = await import('../src/base/config.js');
-const { pool } = await import('../src/base/storage/db.js');
+const { BaileysAdapter } = await import('@swampratnz/agent-base/platforms/whatsapp/baileysAdapter.js');
+const { config } = await import('@swampratnz/agent-base/config.js');
+const { pool } = await import('@swampratnz/agent-base/storage/db.js');
 
 type Adapter = InstanceType<typeof BaileysAdapter>;
 
