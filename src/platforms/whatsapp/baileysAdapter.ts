@@ -17,7 +17,6 @@ import { filterOutbound } from '../../agent/outbound.js';
 import { runtimeSecrets } from '../../agent/secrets.js';
 import { reserveVoiceTranscriptionSlot, reserveImageInputDaily } from '../../agent/rateReservers.js';
 import { getCodeAnswersPolicy } from '../../storage/policyStore.js';
-import { getCommunityGuidelines, getWelcomeMessage } from '../../storage/policies.js';
 import {
   blockUser,
   deleteInteractionByMessageId,
@@ -980,8 +979,8 @@ export class BaileysAdapter implements PlatformAdapter {
       config.rbac.accessMode.whatsapp === 'open'
         ? this.textPack.welcomeMessageOpen
         : this.textPack.welcomeMessage;
-    const welcomeMessage = (await getWelcomeMessage()) ?? defaultWelcomeMessage;
-    const guidelines = await getCommunityGuidelines();
+    const welcomeMessage = (await this.textPack.policyText.welcomeMessage()) ?? defaultWelcomeMessage;
+    const guidelines = await this.textPack.policyText.guidelines();
     const welcomeText = guidelines
       ? `${welcomeMessage}\n\nCommunity guidelines:\n${guidelines}`
       : welcomeMessage;

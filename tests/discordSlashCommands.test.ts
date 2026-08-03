@@ -26,8 +26,11 @@ const { DiscordAdapter } = await import('../src/platforms/discord/adapter.js');
 const { config } = await import('../src/config.js');
 const { pool } = await import('../src/storage/db.js');
 const { resetPolicyCacheForTests } = await import('../src/storage/policyStore.js');
+// The registration/dispatch mechanism is base (slashDispatch.ts); importing
+// the community command module binds its Discord halves onto the registry.
+await import('../src/platforms/discord/slashCommands.js');
 const { handleInteraction, buildSlashCommands, registerSlashCommands } =
-  await import('../src/platforms/discord/slashCommands.js');
+  await import('../src/platforms/discord/slashDispatch.js');
 const { buildMemberDigestContent } = await import('../src/memberDigest.js');
 const { logger } = await import('../src/logger.js');
 const { KNOWLEDGE_CONFLICT_CAVEAT_TEXT, KNOWLEDGE_LOW_RATED_CAVEAT_TEXT } =

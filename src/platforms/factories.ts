@@ -7,6 +7,12 @@ import { DiscordAdapter, DISCORD_TOOL_CAPABILITIES } from './discord/adapter.js'
 import { BaileysAdapter, BAILEYS_TOOL_CAPABILITIES } from './whatsapp/baileysAdapter.js';
 import { WhatsAppCloudAdapter, WHATSAPP_CLOUD_TOOL_CAPABILITIES } from './whatsapp/cloudAdapter.js';
 import { BAILEYS_TEXT_PACK, DISCORD_TEXT_PACK, WHATSAPP_CLOUD_TEXT_PACK } from './textPacks.js';
+// Binds the community slash commands' Discord halves onto their registry
+// entries at module scope. The Discord adapter drives registration/dispatch
+// through the base mechanism (`discord/slashDispatch.ts`) and so no longer
+// imports the commands themselves — this composition file is where they are
+// pulled into the graph, before any adapter it builds can be started.
+import './discord/slashCommands.js';
 
 /**
  * The adapter factory registrations (agent-base plan item 9, §3 `adapters`

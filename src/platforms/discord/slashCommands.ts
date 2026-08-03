@@ -1,10 +1,4 @@
-import {
-  MessageFlags,
-  SlashCommandBuilder,
-  type ChatInputCommandInteraction,
-  type Client,
-  type Interaction,
-} from 'discord.js';
+import { MessageFlags, SlashCommandBuilder, type ChatInputCommandInteraction } from 'discord.js';
 import { config } from '../../config.js';
 import { logger } from '../../logger.js';
 import { resolveRole } from '../../auth/roles.js';
@@ -32,10 +26,10 @@ import {
   LIST_PROJECTS_DEFAULT_LIMIT,
 } from '../../agent/tools.js';
 import { chunkText } from '../textChunk.js';
-import { bindDiscordCommand } from '../../commands/registry.js';
-// Importing the community command list ALSO runs its self-registration
+import { bindDiscordCommand, type SlashCommandDeps } from '../../commands/registry.js';
+// Importing the community command list runs its self-registration
 // (registerCommands) before the module-scope bindDiscordCommand calls below.
-import { COMMUNITY_COMMANDS } from '../../commands.js';
+import '../../commands.js';
 
 /**
  * Discord caps a message (and an interaction reply/follow-up) at 2000 chars —
@@ -46,51 +40,6 @@ import { COMMUNITY_COMMANDS } from '../../commands.js';
 const DISCORD_REPLY_MAX_LEN = 2000;
 
 const NOT_AUTHORIZED_TEXT = "You don't have access to this command.";
-
-/**
- * Narrow slice of `DiscordAdapter` this module depends on — just the
- * outbound filter (secret redaction + code policy), so every slash-command
- * reply gets exactly the same DLP treatment as every other outbound path
- * (adapter.ts's `filtered()`, "every outbound path is filtered HERE") without
- * this module needing the whole adapter class (issue #744 review point 1).
- */
-export interface SlashCommandDeps {
-  filtered: (text: string) => Promise<string>;
-}
-
-/**
- * The five read-only guild commands (issue #744, CAPABILITY-IDEAS.md §C1;
- * /digest added by issue #841), now DERIVED from the shared command registry
- * (`src/commands.ts`, agent-base plan §3 `commands` row): each entry's
- * Discord half is bound below (`bindDiscordCommand`) and this function maps
- * the registry's Discord-capable entries — in registry order, which is the
- * exact order this function always returned — to their registration JSON.
- * Option name `query` is shared across /kb, /projects, /whois to match the
- * superseded acceptance criteria's `/whois <query>` wording.
- */
-export function buildSlashCommands() {
-  return COMMUNITY_COMMANDS.flatMap((command) => (command.discord ? [command.discord.build()] : []));
-}
-
-/**
- * Guild-scoped registration on `ClientReady` (never global — this deployment
- * is single-guild, and global registration propagates over up to an hour and
- * widens exposure to any guild the bot token might ever join). Fire-and-
- * forget, same shape as `backfillRoster`/`reconcileMutedRole`: a registration
- * failure must never block message handling.
- */
-export async function registerSlashCommands(client: Client): Promise<void> {
-  try {
-    if (!client.application) {
-      logger.warn('Slash command registration skipped: client.application unavailable');
-      return;
-    }
-    await client.application.commands.set(buildSlashCommands(), config.discord.guildId);
-    logger.info('Discord slash commands registered');
-  } catch (err) {
-    logger.warn({ err }, 'Slash command registration failed');
-  }
-}
 
 /**
  * Discord requires an interaction to be acknowledged within 3 seconds of
@@ -314,18 +263,6 @@ async function handleDigest(interaction: ChatInputCommandInteraction, deps: Slas
   const message = await buildMemberDigestContent();
   recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
   await replyEphemeral(interaction, message ?? 'Nothing to report right now.', deps);
-}
-
-/**
- * Routes a chat-input interaction to its registry-bound handler; an unknown
- * command name (or any other interaction type) is ignored, exactly like the
- * old switch's default.
- */
-export async function handleInteraction(interaction: Interaction, deps: SlashCommandDeps): Promise<void> {
-  if (!interaction.isChatInputCommand()) return;
-  const command = COMMUNITY_COMMANDS.find((c) => c.name === interaction.commandName);
-  if (!command?.discord) return;
-  await command.discord.handle(interaction, deps);
 }
 
 // Bind each registry entry's Discord half (registration JSON + handler) at

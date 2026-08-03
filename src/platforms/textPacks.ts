@@ -1,4 +1,4 @@
-import type { AdapterTextPack } from './types.js';
+import type { AdapterPolicyText, AdapterTextPack } from './types.js';
 
 /**
  * The community-owned adapter text packs (agent-base plan item 6, the
@@ -17,6 +17,28 @@ import type { AdapterTextPack } from './types.js';
  * `warnUserDmPrefixByLanguage` map: the `'mi'` axis is community-registered,
  * so the base `AdapterTextPack` contract names no locale of its own.
  */
+
+/**
+ * The stored-policy half of every pack (agent-base plan §Phase-2 Stage 4):
+ * which `policies` keys the join welcome reads. Shared by all three packs —
+ * the keys are community-owned, the composition is not, so the adapters take
+ * these as injected reads instead of importing `storage/policies.ts`. The
+ * `'mi'` mapping is the one place the locale axis is named; base only ever
+ * passes the target's standing preference through.
+ *
+ * Resolved by dynamic import inside each reader, deliberately: a static
+ * import would drag the policy store — and through it the repository barrel
+ * and the config singleton — into this file's module graph, and this file is
+ * a leaf that every adapter test imports at its own module scope, before it
+ * has set up its dummy environment. The module is loaded once and cached by
+ * the ESM loader, so this costs one already-resolved promise per welcome.
+ */
+const COMMUNITY_POLICY_TEXT: AdapterPolicyText = {
+  welcomeMessage: async () => (await import('../storage/policies.js')).getWelcomeMessage(),
+  welcomeMessageForLanguage: async (language) =>
+    language === 'mi' ? (await import('../storage/policies.js')).getWelcomeMessageMi() : null,
+  guidelines: async () => (await import('../storage/policies.js')).getCommunityGuidelines(),
+};
 
 // Fixed wrapper prefix for a manual warn_user DM (the admin's `reason` is
 // appended verbatim, untranslated — same scope boundary as router.ts's
@@ -51,6 +73,7 @@ export const DISCORD_TEXT_PACK: AdapterTextPack = {
   welcomeMessageOpen: WELCOME_MESSAGE_OPEN,
   warnUserDmPrefix: DISCORD_WARN_USER_DM_PREFIX,
   warnUserDmPrefixByLanguage: { mi: DISCORD_WARN_USER_DM_PREFIX_MI },
+  policyText: COMMUNITY_POLICY_TEXT,
 };
 
 // Fixed wrapper prefix for a manual warn_user DM (the admin's `reason` is
@@ -84,6 +107,7 @@ export const BAILEYS_TEXT_PACK: AdapterTextPack = {
   welcomeMessageOpen: WHATSAPP_GROUP_WELCOME_MESSAGE_OPEN,
   warnUserDmPrefix: BAILEYS_WARN_USER_DM_PREFIX,
   warnUserDmPrefixByLanguage: { mi: BAILEYS_WARN_USER_DM_PREFIX_MI },
+  policyText: COMMUNITY_POLICY_TEXT,
 };
 
 // Fixed wrapper prefix for a manual warn_user DM (the admin's `reason` is
@@ -120,4 +144,5 @@ export const WHATSAPP_CLOUD_TEXT_PACK: AdapterTextPack = {
   welcomeMessageOpen: WHATSAPP_CLOUD_WELCOME_MESSAGE_OPEN,
   warnUserDmPrefix: WHATSAPP_CLOUD_WARN_USER_DM_PREFIX,
   warnUserDmPrefixByLanguage: { mi: WHATSAPP_CLOUD_WARN_USER_DM_PREFIX_MI },
+  policyText: COMMUNITY_POLICY_TEXT,
 };

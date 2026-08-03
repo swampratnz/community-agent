@@ -4,8 +4,15 @@ import type {
 } from 'discord.js';
 import type { IncomingMessage, Platform } from '../platforms/types.js';
 import type { Tier } from '../auth/rbac.js';
-import type { WhatsAppTextCommandDeps } from '../commands.js';
-import type { SlashCommandDeps } from '../platforms/discord/slashCommands.js';
+import type {
+  getLanguagePreference,
+  listOwnProjects,
+  listRecentInterests,
+  listRecentProjects,
+  searchMemberInterests,
+  searchMemberInterestsForSelf,
+  searchProjects,
+} from '../storage/repository.js';
 
 // The base command-registry MECHANISM (agent-base plan §Phase-2 Stage 3a):
 // the sentinel, the handler/binding/command types, the fail-loud
@@ -15,7 +22,45 @@ import type { SlashCommandDeps } from '../platforms/discord/slashCommands.js';
 // and Discord slash registration both read whatever list was registered, so
 // neither mechanism file imports the community commands module.
 
-export type { WhatsAppTextCommandDeps } from '../commands.js';
+/**
+ * The injected repository/policy reads a WhatsApp text-command handler
+ * receives — the same field names as `RouterDeps`, so the router's
+ * dispatcher passes its own injected functions straight through and every
+ * existing test fake keeps working unchanged.
+ *
+ * Declared HERE, with the mechanism, rather than beside the community
+ * handlers that consume it (agent-base plan §Phase-2 Stage 4): the router
+ * builds this bag and this file types the handler that takes it, so both
+ * ends of the contract are base. The three community-implemented reads are
+ * spelled as structural signatures rather than `typeof <community export>`
+ * — a `typeof` is still a dependency on that module, only at the type level.
+ */
+export interface WhatsAppTextCommandDeps {
+  searchMemberInterestsFn: typeof searchMemberInterests;
+  searchMemberInterestsForSelfFn: typeof searchMemberInterestsForSelf;
+  listRecentInterestsFn: typeof listRecentInterests;
+  listOwnProjectsFn: typeof listOwnProjects;
+  searchProjectsFn: typeof searchProjects;
+  listRecentProjectsFn: typeof listRecentProjects;
+  getLangPref: typeof getLanguagePreference;
+  /** `storage/policies.ts`'s community-guidelines read. */
+  getCommunityGuidelinesFn: () => Promise<string | null>;
+  /** `storage/policies.ts`'s te reo Māori community-guidelines read. */
+  getCommunityGuidelinesMiFn: () => Promise<string | null>;
+  /** `memberDigest.ts`'s digest-body builder. */
+  buildMemberDigestContentFn: () => Promise<string | null>;
+}
+
+/**
+ * The narrow slice of the Discord adapter a slash-command handler depends
+ * on — just the outbound filter (secret redaction + code policy), so every
+ * slash-command reply gets exactly the same DLP treatment as every other
+ * outbound path (adapter.ts's `filtered()`) without a handler needing the
+ * whole adapter class (issue #744 review point 1).
+ */
+export interface SlashCommandDeps {
+  filtered: (text: string) => Promise<string>;
+}
 
 /**
  * Sentinel a WhatsApp handler returns when the text simply isn't its command

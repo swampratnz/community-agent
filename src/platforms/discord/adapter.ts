@@ -40,7 +40,6 @@ import {
   shouldNotify as shouldNotifyVoiceLanguageCaveat,
 } from '../../voiceLanguageCaveatNotice.js';
 import { getCodeAnswersPolicy } from '../../storage/policyStore.js';
-import { getCommunityGuidelines, getWelcomeMessage, getWelcomeMessageMi } from '../../storage/policies.js';
 import { createModerator, type ModerationEnforcer, type Moderator } from '../../moderation/index.js';
 import { atLeast } from '../../auth/rbac.js';
 import { isSuperAdmin, resolveRole, superAdminIds } from '../../auth/roles.js';
@@ -56,7 +55,7 @@ import {
 import { shouldNotifyMutedRoleOverwriteFailed } from '../../mutedRoleAlertNotice.js';
 import { takeReplyMapping } from '../../replyRetraction.js';
 import { chunkText } from '../textChunk.js';
-import { handleInteraction, registerSlashCommands } from './slashCommands.js';
+import { handleInteraction, registerSlashCommands } from './slashDispatch.js';
 import {
   paramString,
   type AdapterTextPack,
@@ -822,13 +821,15 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     if (!config.discord.welcome.enabled) return;
 
     const languagePreference = await getLanguagePreference('discord', member.id);
-    const welcomeMessageMi = languagePreference === 'mi' ? await getWelcomeMessageMi() : null;
+    const welcomeMessageForLanguage =
+      await this.textPack.policyText.welcomeMessageForLanguage(languagePreference);
     const defaultWelcomeMessage =
       config.rbac.accessMode.discord === 'open'
         ? this.textPack.welcomeMessageOpen
         : this.textPack.welcomeMessage;
-    const welcomeMessage = welcomeMessageMi ?? (await getWelcomeMessage()) ?? defaultWelcomeMessage;
-    const guidelines = await getCommunityGuidelines();
+    const welcomeMessage =
+      welcomeMessageForLanguage ?? (await this.textPack.policyText.welcomeMessage()) ?? defaultWelcomeMessage;
+    const guidelines = await this.textPack.policyText.guidelines();
     const welcomeText = guidelines
       ? `${welcomeMessage}\n\nCommunity guidelines:\n${guidelines}`
       : welcomeMessage;

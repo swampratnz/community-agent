@@ -154,6 +154,26 @@ export type MessageHandler = (message: IncomingMessage) => Promise<void> | void;
  * adapter's own outbound filter (`filtered()`), so an injected pack gains no
  * new egress path.
  */
+export interface AdapterPolicyText {
+  /**
+   * The admin-configured welcome override, or null to fall back to the
+   * pack's own literal. Base names no policy key of its own — the module
+   * owns which stored key this reads (`storage/policies.ts`).
+   */
+  welcomeMessage: () => Promise<string | null>;
+  /**
+   * The welcome override for a target's standing language preference, or
+   * null when that language has no variant (which includes every language
+   * the module registered nothing for). Takes precedence over
+   * `welcomeMessage`, exactly as the `_mi` variant always has — the locale
+   * axis itself stays module-owned, so base passes the preference through
+   * without knowing which languages exist.
+   */
+  welcomeMessageForLanguage: (language: string) => Promise<string | null>;
+  /** The guidelines block appended under the welcome, or null when unset. */
+  guidelines: () => Promise<string | null>;
+}
+
 export interface AdapterTextPack {
   /** Join welcome fallback when no admin-configured welcome_message policy is set. */
   welcomeMessage: string;
@@ -171,6 +191,13 @@ export interface AdapterTextPack {
    * non-registered language had.
    */
   warnUserDmPrefixByLanguage?: Readonly<Record<string, string>>;
+  /**
+   * The runtime-configurable half of the join welcome (agent-base plan
+   * §Phase-2 Stage 4): the stored-policy reads an adapter composes over the
+   * fixed literals above. Required, like the pack itself — an adapter owns
+   * no policy key of its own, so there is no default to fall back to.
+   */
+  policyText: AdapterPolicyText;
 }
 
 /**

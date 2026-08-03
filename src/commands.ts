@@ -1,16 +1,5 @@
 import { atLeast } from './auth/rbac.js';
 import { formatInterestResults, formatProjectResults, LIST_PROJECTS_DEFAULT_LIMIT } from './agent/tools.js';
-import type {
-  getLanguagePreference,
-  listOwnProjects,
-  listRecentInterests,
-  listRecentProjects,
-  searchMemberInterests,
-  searchMemberInterestsForSelf,
-  searchProjects,
-} from './storage/repository.js';
-import type { getCommunityGuidelines, getCommunityGuidelinesMi } from './storage/policies.js';
-import type { buildMemberDigestContent } from './memberDigest.js';
 import { registerCommands, TEXT_COMMAND_UNMATCHED, type RegisteredCommand } from './commands/registry.js';
 
 /**
@@ -35,25 +24,6 @@ import { registerCommands, TEXT_COMMAND_UNMATCHED, type RegisteredCommand } from
  * `COMMUNITY_COMMANDS` there at its own module scope (`registerCommands`
  * below), the same self-registration shape as `strings/notices.ts`.
  */
-
-/**
- * The injected repository/policy reads the WhatsApp handlers use — the same
- * field names as `RouterDeps`, so the router's dispatcher passes its own
- * injected functions straight through and every existing test fake keeps
- * working unchanged.
- */
-export interface WhatsAppTextCommandDeps {
-  searchMemberInterestsFn: typeof searchMemberInterests;
-  searchMemberInterestsForSelfFn: typeof searchMemberInterestsForSelf;
-  listRecentInterestsFn: typeof listRecentInterests;
-  listOwnProjectsFn: typeof listOwnProjects;
-  searchProjectsFn: typeof searchProjects;
-  listRecentProjectsFn: typeof listRecentProjects;
-  getLangPref: typeof getLanguagePreference;
-  getCommunityGuidelinesFn: typeof getCommunityGuidelines;
-  getCommunityGuidelinesMiFn: typeof getCommunityGuidelinesMi;
-  buildMemberDigestContentFn: typeof buildMemberDigestContent;
-}
 
 export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
   { name: 'kb', platforms: ['discord'] },
