@@ -16,12 +16,13 @@ import {
   WHATSAPP_CLOUD_TOOL_CAPABILITIES,
 } from '@swampratnz/agent-base/platforms/whatsapp/cloudAdapter.js';
 import { BAILEYS_TEXT_PACK, DISCORD_TEXT_PACK, WHATSAPP_CLOUD_TEXT_PACK } from './textPacks.js';
-// Binds the community slash commands' Discord halves onto their registry
-// entries at module scope. The Discord adapter drives registration/dispatch
-// through the base mechanism (`discord/slashDispatch.ts`) and so no longer
-// imports the commands themselves — this composition file is where they are
-// pulled into the graph, before any adapter it builds can be started.
-import './discord/slashCommands.js';
+// The Discord adapter drives registration/dispatch through the base mechanism
+// (`discord/slashDispatch.ts`) and so no longer imports the commands itself.
+// Binding is CALLED below, from createConfiguredAdapters — never done at
+// module scope, because binding reads the command list and `createAgent`
+// registers that list from the manifest well after this module has been
+// evaluated as part of index.ts's static import graph.
+import { bindCommunitySlashCommands } from './discord/slashCommands.js';
 
 /**
  * The adapter factory registrations (agent-base plan item 9, §3 `adapters`
@@ -85,6 +86,12 @@ export const ADAPTER_FACTORIES: readonly AdapterFactory[] = [
  * the wrong key would otherwise corrupt the router's per-platform lookup.
  */
 export function createConfiguredAdapters(): PlatformAdapter[] {
+  // Bind the slash commands' Discord halves before any adapter exists to
+  // dispatch them. This is the earliest point that is guaranteed to be AFTER
+  // createAgent registered the command list — index.ts calls createAgent, then
+  // this. Doing it at module scope instead threw at startup, because static
+  // imports are evaluated before index.ts's body runs at all.
+  bindCommunitySlashCommands();
   const adapters: PlatformAdapter[] = [];
   for (const factory of ADAPTER_FACTORIES) {
     if (!descriptorFor(factory.platform)) {
