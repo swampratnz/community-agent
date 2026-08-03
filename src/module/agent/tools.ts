@@ -1,4 +1,4 @@
-import { KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD } from '../../base/storage/repository.js';
+import { KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD } from '@swampratnz/agent-base/storage/repository.js';
 // The registry import is load-bearing beyond the re-exports below: importing
 // this barrel is what runs tools/index.ts's module-scope registrations (tool
 // tiers, tool-server parts, feature-flag predicates), so `buildToolServer`
@@ -16,9 +16,6 @@ export {
   resolveSanitizedLabel,
   formatRelativeAge,
   type KnowledgeCitationInfo,
-  KNOWLEDGE_LOW_RATED_CAVEAT_TEXT,
-  KNOWLEDGE_LOW_RATED_CAVEAT_TEXT_MI,
-  KNOWLEDGE_STALE_NOTE_MI,
   KNOWLEDGE_CONFLICT_CAVEAT_TEXT,
   formatKnowledgeCitationNote,
   KNOWLEDGE_TIE_MARGIN,
@@ -106,7 +103,7 @@ export {
   withWebSearchDedupLock,
   isDuplicateWebSearchQuery,
   recordWebSearchQuery,
-} from '../../base/agent/webSearchGuard.js';
+} from '@swampratnz/agent-base/agent/webSearchGuard.js';
 
 /**
  * Turn-scoped, mutable correlation state threaded in from `execTurn` (issue
@@ -120,7 +117,7 @@ export {
  * Still optional on the tool context, so every existing
  * `buildToolServer(caller, adapter)` call keeps compiling unchanged.
  */
-export type { ToolServerTurnState } from '../../base/agent/turnState.js';
+export type { ToolServerTurnState } from '@swampratnz/agent-base/agent/turnState.js';
 
 /**
  * The per-turn server assembly moved to the base kernel (agent-base plan §2
@@ -128,4 +125,4 @@ export type { ToolServerTurnState } from '../../base/agent/turnState.js';
  * community registry registered (tools/index.ts). Re-exported so existing
  * import sites keep working unchanged.
  */
-export { buildToolServer } from '../../base/agent/toolServer.js';
+export { buildToolServer } from '@swampratnz/agent-base/agent/toolServer.js';

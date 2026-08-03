@@ -1,8 +1,8 @@
 import { z } from 'zod';
-import { assertAtLeast } from '../../../base/auth/tiers.js';
-import { config } from '../../../base/config.js';
-import { logger, hashId } from '../../../base/logger.js';
-import { WindowClosedError } from '../../../base/platforms/types.js';
+import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
+import { config } from '@swampratnz/agent-base/config.js';
+import { logger, hashId } from '@swampratnz/agent-base/logger.js';
+import { WindowClosedError } from '@swampratnz/agent-base/platforms/types.js';
 import {
   FIND_HELPER_REQUESTER_DAILY_LIMIT,
   FIND_HELPER_TOPIC_MAX_CHARS,
@@ -31,7 +31,7 @@ import {
   setMemberInterests,
   shareProject,
   WHO_IS_INTO_LIMIT,
-} from '../../../base/storage/repository.js';
+} from '@swampratnz/agent-base/storage/repository.js';
 import {
   formatInterestResults,
   formatProjectResults,
@@ -39,7 +39,7 @@ import {
   text,
   untrusted,
 } from './helpers.js';
-import { defineTool } from '../../../base/agent/tools/types.js';
+import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 /** list_projects' row cap for both the no-query (recent) and query (similarity) paths. */
 export const LIST_PROJECTS_DEFAULT_LIMIT = 8;

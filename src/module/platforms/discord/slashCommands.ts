@@ -1,8 +1,8 @@
 import { MessageFlags, SlashCommandBuilder, type ChatInputCommandInteraction } from 'discord.js';
-import { config } from '../../../base/config.js';
-import { logger } from '../../../base/logger.js';
-import { resolveRole } from '../../../base/auth/roles.js';
-import { atLeast, toolsForRole } from '../../../base/auth/rbac.js';
+import { config } from '@swampratnz/agent-base/config.js';
+import { logger } from '@swampratnz/agent-base/logger.js';
+import { resolveRole } from '@swampratnz/agent-base/auth/roles.js';
+import { atLeast, toolsForRole } from '@swampratnz/agent-base/auth/rbac.js';
 import { getCommunityGuidelines, getCommunityGuidelinesMi } from '../../storage/policies.js';
 import { buildMemberDigestContent } from '../../memberDigest.js';
 import {
@@ -17,7 +17,7 @@ import {
   searchMemberInterests,
   searchMemberInterestsForSelf,
   searchProjects,
-} from '../../../base/storage/repository.js';
+} from '@swampratnz/agent-base/storage/repository.js';
 import {
   formatInterestResults,
   formatKnowledgeSearchResults,
@@ -25,8 +25,8 @@ import {
   KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD,
   LIST_PROJECTS_DEFAULT_LIMIT,
 } from '../../agent/tools.js';
-import { chunkText } from '../../../base/platforms/textChunk.js';
-import { bindDiscordCommand, type SlashCommandDeps } from '../../../base/commands/registry.js';
+import { chunkText } from '@swampratnz/agent-base/platforms/textChunk.js';
+import { bindDiscordCommand, type SlashCommandDeps } from '@swampratnz/agent-base/commands/registry.js';
 // Importing the community command list runs its self-registration
 // (registerCommands) before the module-scope bindDiscordCommand calls below.
 import '../../commands.js';

@@ -1,7 +1,7 @@
 import { z } from 'zod';
-import { setLanguagePreference, setResponseStyle } from '../../../base/storage/repository.js';
+import { setLanguagePreference, setResponseStyle } from '@swampratnz/agent-base/storage/repository.js';
 import { text } from './helpers.js';
-import { defineTool } from '../../../base/agent/tools/types.js';
+import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 export const prefsTools = [
   // Self-service, non-destructive, instantly reversible — no CONFIRM gate.

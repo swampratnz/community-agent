@@ -1,4 +1,4 @@
-import { runAgentTurn } from '../base/agent/core.js';
+import { runAgentTurn } from '@swampratnz/agent-base/agent/core.js';
 import {
   formatKnowledgeCitationNote,
   formatRelativeAge,
@@ -7,7 +7,7 @@ import {
   truncateForEcho,
 } from './agent/tools.js';
 import { buildMemberDigestContent } from './memberDigest.js';
-import { isPaused } from '../base/storage/policyStore.js';
+import { isPaused } from '@swampratnz/agent-base/storage/policyStore.js';
 import { getCommunityGuidelines, getCommunityGuidelinesMi } from './storage/policies.js';
 import {
   countRepliesToUser,
@@ -29,10 +29,10 @@ import {
   searchMemberInterests,
   searchMemberInterestsForSelf,
   searchProjects,
-} from '../base/storage/repository.js';
+} from '@swampratnz/agent-base/storage/repository.js';
 import { FRESHNESS_DAYS, CLUSTER_LIMIT } from './adminDigest.js';
-import { buildGatedNotice } from '../base/gatedNotice.js';
-import { notifyAccessRequest, type RouterDeps } from '../base/router.js';
+import { buildGatedNotice } from '@swampratnz/agent-base/gatedNotice.js';
+import { notifyAccessRequest, type RouterDeps } from '@swampratnz/agent-base/router.js';
 
 // The router's production wiring (agent-base plan §Phase-2 Stage 3a): the ONE
 // place the real implementations behind every `RouterDeps` field are named.
@@ -75,12 +75,12 @@ export function makeRouterDeps(overrides: Partial<RouterDeps> = {}): RouterDeps 
     recordEscalatedGapFn: recordEscalatedKnowledgeGap,
     markKnowledgeGapsAlertedFn: markKnowledgeGapsAlerted,
     markStaleKnowledgeAlertedFn: markStaleKnowledgeAlerted,
-    getCommunityGuidelinesFn: getCommunityGuidelines,
-    getCommunityGuidelinesMiFn: getCommunityGuidelinesMi,
+    getConductGuidelinesFn: getCommunityGuidelines,
+    getLocalisedConductGuidelinesFn: getCommunityGuidelinesMi,
     searchMemberInterestsFn: searchMemberInterests,
     searchProjectsFn: searchProjects,
     listRecentProjectsFn: listRecentProjects,
-    buildMemberDigestContentFn: buildMemberDigestContent,
+    buildDigestContentFn: buildMemberDigestContent,
     recentQuestionClustersFn: recentQuestionClusters,
     searchMemberInterestsForSelfFn: searchMemberInterestsForSelf,
     checkKnowledgeConflict: hasKnowledgeConflictForId,

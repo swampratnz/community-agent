@@ -7,9 +7,9 @@
  * WhatsApp > Settings > Linked Devices > Link a device > scan it.
  * Credentials are saved to WHATSAPP_AUTH_DIR and reused by the service.
  */
-import { BaileysAdapter } from '../../../base/platforms/whatsapp/baileysAdapter.js';
+import { BaileysAdapter } from '@swampratnz/agent-base/platforms/whatsapp/baileysAdapter.js';
 import { BAILEYS_TEXT_PACK } from '../textPacks.js';
-import { logger } from '../../../base/logger.js';
+import { logger } from '@swampratnz/agent-base/logger.js';
 
 const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
 adapter.onMessage(() => {

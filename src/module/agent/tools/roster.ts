@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import { assertAtLeast } from '../../../base/auth/tiers.js';
-import { sanitizeName } from '../../../base/util/sanitizeName.js';
+import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
+import { sanitizeName } from '@swampratnz/agent-base/util/sanitizeName.js';
 import {
   addMemberNote,
   deleteMemberNote,
@@ -11,9 +11,9 @@ import {
   listRoster,
   MEMBER_NOTE_MAX_CHARS,
   rosterCounts,
-} from '../../../base/storage/repository.js';
+} from '@swampratnz/agent-base/storage/repository.js';
 import { platformArg, text, untrusted } from './helpers.js';
-import { defineTool } from '../../../base/agent/tools/types.js';
+import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 export const rosterTools = [
   defineTool({

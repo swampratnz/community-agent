@@ -1,8 +1,6 @@
-import { registerDefaultBadWords } from '../../base/moderation/wordlist.js';
-
 /**
  * The community-owned default bad-word list, registered into the base
- * wordlist mechanism (`wordlist.ts`) at this module's import time — the same
+ * wordlist mechanism (`wordlist.ts`) by this module's manifest — the same
  * seam the file already documented for operators, who extend these defaults
  * via MODERATION_BAD_WORDS (config.moderation.badWords). What counts as
  * unacceptable language is a community standard, so the terms live here and
@@ -23,5 +21,3 @@ export const DEFAULT_BAD_WORDS: readonly string[] = [
   'dickhead',
   'motherfucker',
 ];
-
-registerDefaultBadWords(DEFAULT_BAD_WORDS);

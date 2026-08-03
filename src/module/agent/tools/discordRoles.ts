@@ -1,10 +1,10 @@
 import { z } from 'zod';
-import type { PlatformAdapter } from '../../../base/platforms/types.js';
-import { assertAtLeast } from '../../../base/auth/tiers.js';
-import { config } from '../../../base/config.js';
-import { getMemberRole } from '../../../base/storage/repository.js';
+import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
+import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
+import { config } from '@swampratnz/agent-base/config.js';
+import { getMemberRole } from '@swampratnz/agent-base/storage/repository.js';
 import { resolveSanitizedLabel, text } from './helpers.js';
-import { defineTool } from '../../../base/agent/tools/types.js';
+import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 // --- Cosmetic community roles (issue #232) ----------------------------------
 //

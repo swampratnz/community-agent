@@ -1,19 +1,19 @@
-import { config } from '../../base/config.js';
-import { logger } from '../../base/logger.js';
+import { config } from '@swampratnz/agent-base/config.js';
+import { logger } from '@swampratnz/agent-base/logger.js';
 import {
   clearDocsIngestUrlFailures,
   listDocsIngestUrlFailures,
   markDocsIngestUrlsReported,
   recordDocsIngestUrlFailures,
   type DocsIngestUrlFailure,
-} from '../../base/storage/repository/docsIngestFailures.js';
+} from '@swampratnz/agent-base/storage/repository/docsIngestFailures.js';
 import {
   deleteProvenancedKnowledgeByTitles,
   latestKnowledgeUpdateAtByProvenance,
   listGlobalKnowledgeTitlesByProvenance,
   syncGlobalKnowledgeByProvenance,
-} from '../../base/storage/repository/knowledge.js';
-import { pageKeyOf } from '../../base/context/docTitles.js';
+} from '@swampratnz/agent-base/storage/repository/knowledge.js';
+import { pageKeyOf } from '@swampratnz/agent-base/context/docTitles.js';
 
 /**
  * Docs ingest: backfill Anthropic's official developer docs into the knowledge
@@ -327,17 +327,29 @@ export async function runDocsIngest(
     indexFetchFailed: false,
   };
 
-  let indexText: string;
-  try {
-    indexText = await fetchText(config.docsIngest.indexUrl);
-  } catch (err) {
-    logger.error({ err, url: config.docsIngest.indexUrl }, 'Docs ingest: index fetch failed; skipping run');
+  // The index URL has NO framework default any more (it named one vendor's
+  // docs site): base's config refinement requires it whenever
+  // DOCS_INGEST_ENABLED is true, so reaching here without one means the job
+  // gate and the refinement disagree. Degrade exactly as an index fetch
+  // failure rather than throwing out of a background job.
+  const indexUrl = config.docsIngest.indexUrl;
+  if (!indexUrl) {
+    logger.error('Docs ingest: DOCS_INGEST_INDEX_URL is unset; skipping run');
     result.indexFetchFailed = true;
     return result;
   }
 
-  // Same-origin as the (fixed, official) index URL only — see parseDocIndex.
-  const allowedOrigin = new URL(config.docsIngest.indexUrl).origin;
+  let indexText: string;
+  try {
+    indexText = await fetchText(indexUrl);
+  } catch (err) {
+    logger.error({ err, url: indexUrl }, 'Docs ingest: index fetch failed; skipping run');
+    result.indexFetchFailed = true;
+    return result;
+  }
+
+  // Same-origin as the (fixed, configured) index URL only — see parseDocIndex.
+  const allowedOrigin = new URL(indexUrl).origin;
   // The FULL index drives prune membership; the maxPages slice bounds only what
   // we fetch this run. Keeping these separate means a page we simply didn't
   // fetch (because it's past the cap) is never mistaken for a removed page and

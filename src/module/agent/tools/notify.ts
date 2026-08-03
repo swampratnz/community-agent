@@ -1,12 +1,12 @@
-import type { Platform, PlatformAdapter } from '../../../base/platforms/types.js';
-import { WindowClosedError } from '../../../base/platforms/types.js';
-import { KNOWN_PLATFORMS } from '../../../base/platforms/registry.js';
-import { atLeast } from '../../../base/auth/tiers.js';
-import { resolveRole, superAdminIds } from '../../../base/auth/roles.js';
-import { config } from '../../../base/config.js';
-import { logger, hashId } from '../../../base/logger.js';
-import { queuePendingAlert, type AlertPriority } from '../../../base/pendingAlertQueue.js';
-import { manualWarnBlockedAlertText } from '../../../base/moderation/moderator.js';
+import type { Platform, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
+import { WindowClosedError } from '@swampratnz/agent-base/platforms/types.js';
+import { KNOWN_PLATFORMS } from '@swampratnz/agent-base/platforms/registry.js';
+import { atLeast } from '@swampratnz/agent-base/auth/tiers.js';
+import { resolveRole, superAdminIds } from '@swampratnz/agent-base/auth/roles.js';
+import { config } from '@swampratnz/agent-base/config.js';
+import { logger, hashId } from '@swampratnz/agent-base/logger.js';
+import { queuePendingAlert, type AlertPriority } from '@swampratnz/agent-base/pendingAlertQueue.js';
+import { manualWarnBlockedAlertText } from '@swampratnz/agent-base/moderation/moderator.js';
 import { notice } from '../../strings/notices.js';
 import {
   addWarning,
@@ -16,7 +16,7 @@ import {
   isKnownMessage,
   listAdmins,
   type ResponseStyle,
-} from '../../../base/storage/repository.js';
+} from '@swampratnz/agent-base/storage/repository.js';
 import { truncateForEcho } from './helpers.js';
 
 // Every registered platform, derived from the platform registry (agent-base

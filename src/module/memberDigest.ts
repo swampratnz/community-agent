@@ -1,6 +1,6 @@
-import { config } from '../base/config.js';
-import { logger } from '../base/logger.js';
-import { startTrackedJob } from '../base/jobs/trackedJob.js';
+import { config } from '@swampratnz/agent-base/config.js';
+import { logger } from '@swampratnz/agent-base/logger.js';
+import { startTrackedJob } from '@swampratnz/agent-base/jobs/trackedJob.js';
 import { scrubPII } from './context/export.js';
 import {
   countAcceptedMemberKnowledgeTipsSince,
@@ -12,9 +12,9 @@ import {
   recordMemberDigestSent,
   wasMemberDigestSentRecently,
   type ContextDigest,
-} from '../base/storage/repository.js';
-import type { JobSpec } from '../base/jobs/types.js';
-import type { PlatformAdapter } from '../base/platforms/types.js';
+} from '@swampratnz/agent-base/storage/repository.js';
+import type { JobSpec } from '@swampratnz/agent-base/jobs/types.js';
+import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
 /** Same weekly window as `adminDigest.ts`'s `FRESHNESS_DAYS` — this signal targets the same ~7-day cadence. */
 const FRESHNESS_DAYS = 7;

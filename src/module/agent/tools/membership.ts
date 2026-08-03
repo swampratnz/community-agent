@@ -1,8 +1,8 @@
 import { z } from 'zod';
-import { assertAtLeast } from '../../../base/auth/tiers.js';
-import { normalizeMemberId } from '../../../base/auth/memberId.js';
-import { isSuperAdmin } from '../../../base/auth/roles.js';
-import { logger } from '../../../base/logger.js';
+import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
+import { normalizeMemberId } from '@swampratnz/agent-base/auth/memberId.js';
+import { isSuperAdmin } from '@swampratnz/agent-base/auth/roles.js';
+import { logger } from '@swampratnz/agent-base/logger.js';
 import {
   clearAccessRequest,
   getMemberRole,
@@ -11,10 +11,10 @@ import {
   resolveLinkedIdentities,
   unlinkMember,
   upsertMember,
-} from '../../../base/storage/repository.js';
+} from '@swampratnz/agent-base/storage/repository.js';
 import { platformArg, resolveSanitizedLabel, text } from './helpers.js';
 import { notifyMemberApproved } from './notify.js';
-import { defineTool } from '../../../base/agent/tools/types.js';
+import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 /**
  * Fixed, static note appended to `add_member`'s reply when

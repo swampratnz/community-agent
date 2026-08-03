@@ -1,16 +1,16 @@
-import { config } from '../base/config.js';
-import { logger } from '../base/logger.js';
+import { config } from '@swampratnz/agent-base/config.js';
+import { logger } from '@swampratnz/agent-base/logger.js';
 import { formatEngagementStats } from './agent/tools.js';
 import {
   engagementStats,
   getLastEngagementAlertPercentage,
   recordEngagementAlertSent,
   wasEngagementAlertSentRecently,
-} from '../base/storage/repository.js';
-import { startTrackedJob } from '../base/jobs/trackedJob.js';
+} from '@swampratnz/agent-base/storage/repository.js';
+import { startTrackedJob } from '@swampratnz/agent-base/jobs/trackedJob.js';
 import { alertSuperAdmins } from './departedAdminAlert.js';
-import type { JobSpec } from '../base/jobs/types.js';
-import type { PlatformAdapter } from '../base/platforms/types.js';
+import type { JobSpec } from '@swampratnz/agent-base/jobs/types.js';
+import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
 /**
  * How stale the persisted `engagement_alert_sends` guard must be before a

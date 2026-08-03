@@ -1,5 +1,5 @@
-import { config } from '../../base/config.js';
-import { logger } from '../../base/logger.js';
+import { config } from '@swampratnz/agent-base/config.js';
+import { logger } from '@swampratnz/agent-base/logger.js';
 
 /**
  * Anthropic status check (issue #206): "is this me, or is Anthropic having
@@ -124,7 +124,15 @@ export function resetStatusCacheForTests(): void {
 export async function pollAnthropicStatus(
   fetchText: (url: string) => Promise<string> = defaultFetchText,
 ): Promise<boolean> {
+  // No framework default any more (it named one vendor's status page): base's
+  // config refinement requires it whenever STATUS_CHECK_ENABLED is true, so an
+  // unset URL here means the poll job ran with the feature off. Degrade to the
+  // last-known-good value, same as any other fetch failure.
   const url = config.statusCheck.apiUrl;
+  if (!url) {
+    logger.warn('Anthropic status check: STATUS_CHECK_API_URL is unset; keeping last-known-good');
+    return false;
+  }
   let body: string;
   try {
     body = await fetchText(url);

@@ -1,15 +1,15 @@
 import { z } from 'zod';
-import type { Platform } from '../../../base/platforms/types.js';
-import { assertAtLeast } from '../../../base/auth/tiers.js';
-import { sanitizeName } from '../../../base/util/sanitizeName.js';
+import type { Platform } from '@swampratnz/agent-base/platforms/types.js';
+import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
+import { sanitizeName } from '@swampratnz/agent-base/util/sanitizeName.js';
 import {
   listReports,
   resolveContentReport,
   resolveLinkedIdentities,
-} from '../../../base/storage/repository.js';
+} from '@swampratnz/agent-base/storage/repository.js';
 import { text, untrusted } from './helpers.js';
 import { notifyReportResolved } from './notify.js';
-import { defineTool } from '../../../base/agent/tools/types.js';
+import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 export const reportsAdminTools = [
   defineTool({

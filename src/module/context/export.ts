@@ -1,10 +1,13 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { config } from '../../base/config.js';
-import { logger } from '../../base/logger.js';
-import { closeDb } from '../../base/storage/db.js';
-import { listContextDigests, type ContextDigest } from '../../base/storage/repository/contextDigests.js';
+import { config } from '@swampratnz/agent-base/config.js';
+import { logger } from '@swampratnz/agent-base/logger.js';
+import { closeDb } from '@swampratnz/agent-base/storage/db.js';
+import {
+  listContextDigests,
+  type ContextDigest,
+} from '@swampratnz/agent-base/storage/repository/contextDigests.js';
 
 /**
  * Anonymised community-context export (issue #53): renders `context_digests`

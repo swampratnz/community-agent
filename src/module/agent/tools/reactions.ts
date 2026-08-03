@@ -1,9 +1,9 @@
 import { z } from 'zod';
-import { logger } from '../../../base/logger.js';
-import { isKnownMessage } from '../../../base/storage/repository.js';
-import { makeCalendarDayReserver } from '../../../base/util/rateReservation.js';
+import { logger } from '@swampratnz/agent-base/logger.js';
+import { isKnownMessage } from '@swampratnz/agent-base/storage/repository.js';
+import { makeCalendarDayReserver } from '@swampratnz/agent-base/util/rateReservation.js';
 import { text } from './helpers.js';
-import { defineTool } from '../../../base/agent/tools/types.js';
+import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 /**
  * Closed emoji allowlist for `react_to_message` (issue #231) — positive/

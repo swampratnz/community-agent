@@ -1,14 +1,20 @@
-import { config } from '../../base/config.js';
-import { logger } from '../../base/logger.js';
-import type { PlatformAdapter } from '../../base/platforms/types.js';
-import type { AdapterFactory } from '../../base/platforms/registry.js';
-import { descriptorFor } from '../../base/platforms/registry.js';
-import { DiscordAdapter, DISCORD_TOOL_CAPABILITIES } from '../../base/platforms/discord/adapter.js';
-import { BaileysAdapter, BAILEYS_TOOL_CAPABILITIES } from '../../base/platforms/whatsapp/baileysAdapter.js';
+import { config } from '@swampratnz/agent-base/config.js';
+import { logger } from '@swampratnz/agent-base/logger.js';
+import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
+import type { AdapterFactory } from '@swampratnz/agent-base/platforms/registry.js';
+import { descriptorFor } from '@swampratnz/agent-base/platforms/registry.js';
+import {
+  DiscordAdapter,
+  DISCORD_TOOL_CAPABILITIES,
+} from '@swampratnz/agent-base/platforms/discord/adapter.js';
+import {
+  BaileysAdapter,
+  BAILEYS_TOOL_CAPABILITIES,
+} from '@swampratnz/agent-base/platforms/whatsapp/baileysAdapter.js';
 import {
   WhatsAppCloudAdapter,
   WHATSAPP_CLOUD_TOOL_CAPABILITIES,
-} from '../../base/platforms/whatsapp/cloudAdapter.js';
+} from '@swampratnz/agent-base/platforms/whatsapp/cloudAdapter.js';
 import { BAILEYS_TEXT_PACK, DISCORD_TEXT_PACK, WHATSAPP_CLOUD_TEXT_PACK } from './textPacks.js';
 // Binds the community slash commands' Discord halves onto their registry
 // entries at module scope. The Discord adapter drives registration/dispatch

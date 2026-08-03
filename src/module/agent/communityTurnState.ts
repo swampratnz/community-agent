@@ -1,5 +1,5 @@
-import type { CrossedKnowledgeGapCluster } from '../../base/storage/repository.js';
-import { registerTurnStateFinalizer } from '../../base/agent/turnState.js';
+import type { CrossedKnowledgeGapCluster } from '@swampratnz/agent-base/storage/repository.js';
+import type { TurnStateFinalizer } from '@swampratnz/agent-base/agent/turnState.js';
 
 /**
  * The NZ-community module's turn-state keys — the ONE community-owned file
@@ -9,7 +9,7 @@ import { registerTurnStateFinalizer } from '../../base/agent/turnState.js';
  * registration below) from `agent/tools.ts`, so anywhere a tool server can
  * be built, the augmentation is live too.
  */
-declare module '../../base/agent/turnState.js' {
+declare module '@swampratnz/agent-base/agent/turnState.js' {
   /** Written by the community tool handlers during the turn (tools/knowledgeMember.ts, tools/feedback.ts). */
   interface ToolServerTurnState {
     /**
@@ -79,7 +79,7 @@ declare module '../../base/agent/turnState.js' {
 // used to sit at the bottom of `execTurn`'s genuine-success return —
 // absent-not-zero discipline preserved exactly (a `false`, `null` or empty
 // array writes NO key at all).
-registerTurnStateFinalizer((turnState) => ({
+export const COMMUNITY_TURN_STATE_FINALIZER: TurnStateFinalizer = (turnState) => ({
   ...(turnState.lastKnowledgeHitId != null ? { knowledgeEntryId: turnState.lastKnowledgeHitId } : {}),
   ...(turnState.unhelpfulAnswerRated ? { unhelpfulAnswerRated: true } : {}),
   ...(turnState.humanHelpRequested ? { humanHelpRequested: true } : {}),
@@ -87,4 +87,4 @@ registerTurnStateFinalizer((turnState) => ({
   ...(turnState.staleKnowledgeAlertIds && turnState.staleKnowledgeAlertIds.length > 0
     ? { staleKnowledgeAlertIds: turnState.staleKnowledgeAlertIds }
     : {}),
-}));
+});

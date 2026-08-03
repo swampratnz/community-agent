@@ -1,11 +1,11 @@
 import { z } from 'zod';
-import { assertAtLeast } from '../../../base/auth/tiers.js';
-import { config, onDiskSecretPaths } from '../../../base/config.js';
-import { logger, hashId } from '../../../base/logger.js';
+import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
+import { config, onDiskSecretPaths } from '@swampratnz/agent-base/config.js';
+import { logger, hashId } from '@swampratnz/agent-base/logger.js';
 import { generateImage } from '../../media/grokImage.js';
-import { makeCalendarDayReserver } from '../../../base/util/rateReservation.js';
+import { makeCalendarDayReserver } from '@swampratnz/agent-base/util/rateReservation.js';
 import { text } from './helpers.js';
-import { defineTool } from '../../../base/agent/tools/types.js';
+import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 /** Users with an image generation currently in flight — blocks overlapping spawns per user. */
 const imageGenInFlight = new Set<string>();

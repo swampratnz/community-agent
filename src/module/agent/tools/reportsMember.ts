@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { config } from '../../../base/config.js';
+import { config } from '@swampratnz/agent-base/config.js';
 import {
   countActiveWarnings,
   countRecentDmReportsByReporterAndTarget,
@@ -8,11 +8,11 @@ import {
   isKnownUser,
   REPORT_RATE_LIMIT_PER_DAY,
   withdrawOwnReports,
-} from '../../../base/storage/repository.js';
-import { makeCooldownReserver } from '../../../base/util/rateReservation.js';
+} from '@swampratnz/agent-base/storage/repository.js';
+import { makeCooldownReserver } from '@swampratnz/agent-base/util/rateReservation.js';
 import { text } from './helpers.js';
 import { ackReportedMessage, notifyAppealFiled, notifyReportFiled, notifyReportWithdrawn } from './notify.js';
-import { defineTool } from '../../../base/agent/tools/types.js';
+import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 /**
  * appeal_moderation's optional free-text `reason` (issue #496) — same

@@ -1,11 +1,15 @@
 import { z } from 'zod';
-import type { Platform } from '../../../base/platforms/types.js';
-import { assertAtLeast } from '../../../base/auth/tiers.js';
-import { sanitizeName } from '../../../base/util/sanitizeName.js';
-import { listAccessRequests, listSuggestions, resolveSuggestion } from '../../../base/storage/repository.js';
+import type { Platform } from '@swampratnz/agent-base/platforms/types.js';
+import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
+import { sanitizeName } from '@swampratnz/agent-base/util/sanitizeName.js';
+import {
+  listAccessRequests,
+  listSuggestions,
+  resolveSuggestion,
+} from '@swampratnz/agent-base/storage/repository.js';
 import { text, untrusted } from './helpers.js';
 import { notifySuggestionResolved } from './notify.js';
-import { defineTool } from '../../../base/agent/tools/types.js';
+import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 export const accessAndSuggestionsTools = [
   defineTool({

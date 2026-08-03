@@ -1,11 +1,11 @@
 import dns from 'node:dns/promises';
 import { Agent, buildConnector, type Dispatcher } from 'undici';
-import { logger } from '../../base/logger.js';
+import { logger } from '@swampratnz/agent-base/logger.js';
 import {
   latestKnowledgeSourceCheckAt,
   listKnowledgeSourceUrls,
   recordKnowledgeSourceCheck,
-} from '../../base/storage/repository/knowledge.js';
+} from '@swampratnz/agent-base/storage/repository/knowledge.js';
 
 /**
  * Knowledge link-rot check (issue #448): a weekly opt-in background job that

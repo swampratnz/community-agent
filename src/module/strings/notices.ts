@@ -1,4 +1,4 @@
-import { registerNoticePack, type NoticeAxes } from '../../base/strings/catalogue.js';
+import type { NoticeAxes } from '@swampratnz/agent-base/strings/catalogue.js';
 
 /**
  * The NZ Claude Community notice PACK — the community-owned half of the
@@ -110,6 +110,38 @@ const NOTICE_ENTRIES = {
         'Kia ora! Only members can use this assistant. Please ask a community admin to add you as a ' +
         'member — then I can help.',
     },
+  },
+  /**
+   * The dynamic, admin-naming gated notice (issue #360). agent-base owns the
+   * mechanism — resolve the admin display names, `sanitizeName` each, drop the
+   * empties, cap at GATED_NOTICE_MAX_ADMIN_NAMES, join them — and interpolates
+   * the finished list into this template; the SENTENCE is deployment prose, so
+   * it lives here. Byte-identical to the string `renderGatedNotice` built
+   * inline before the package flip.
+   *
+   * Deliberately no `language`/`style` variants, exactly as before: the
+   * dynamic builder was English-only, and a caller with a standing registered
+   * language gets the fixed `gatedNotice` translation instead (which names no
+   * admins) — see the router's gated branch.
+   */
+  gatedNoticeWithAdmins: {
+    base: (admins: string) =>
+      `Kia ora! This assistant is member-only. Ask a community admin — ${admins} — to add you as a member and I can help.`,
+  },
+  /**
+   * The heading that joins the admin-authored conduct guidelines onto a
+   * welcome or gated notice. Was the bare literal `Community guidelines:`,
+   * duplicated across the router and all three adapters; base asks the pack
+   * for it now, since a framework cannot assume the deployment has a
+   * "community".
+   *
+   * No `mi` variant, deliberately: the literal was English on every one of
+   * those four paths, including the te reo gated-notice branch, so adding one
+   * here would be a behaviour change rather than the flip's byte-for-byte
+   * move. It is an obvious follow-up, not this PR's business.
+   */
+  guidelinesHeading: {
+    base: 'Community guidelines:',
   },
   gatedWaitClause: {
     base: (notice: string, waitDays?: number) => {
@@ -364,18 +396,17 @@ const NOTICE_ENTRIES = {
   },
 } as const;
 
-// Registration happens at THIS module's import time (the composition root,
-// src/index.ts, imports it above anything that could evaluate a notice
-// consumer), so the base `notice()` in catalogue.ts never imports this pack —
-// same inversion as registerToolTiers (auth/rbac.ts).
-registerNoticePack(NOTICE_AXES, NOTICE_ENTRIES);
+// The pack is handed to `createAgent` by this module's manifest
+// (src/module/agentModule.ts), which registers it before anything can serve a
+// turn — so the base `notice()` in catalogue.ts never imports this pack, and
+// no base module renders text at import time waiting for it.
 
 /** Per-id base types for the pack — the type-side half of the registration. */
 type CommunityNoticeBases = {
   [K in keyof typeof NOTICE_ENTRIES]: (typeof NOTICE_ENTRIES)[K]['base'];
 };
 
-declare module '../../base/strings/catalogue.js' {
+declare module '@swampratnz/agent-base/strings/catalogue.js' {
   // Augments the base map so `notice()` keeps each id's concrete return type
   // (template entries stay functions, fixed entries stay strings) everywhere
   // in the program, without catalogue.ts importing this entry map.
@@ -390,7 +421,7 @@ declare module '../../base/strings/catalogue.js' {
  * "default" because they are not registered axis values); never pre-resolve
  * the precedence at a call site.
  */
-export { notice } from '../../base/strings/catalogue.js';
+export { notice } from '@swampratnz/agent-base/strings/catalogue.js';
 
 /** The full entry map, exported for the table-driven equivalence test. */
 export { NOTICE_ENTRIES };

@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import { assertAtLeast } from '../../../base/auth/tiers.js';
-import { logger } from '../../../base/logger.js';
+import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
+import { logger } from '@swampratnz/agent-base/logger.js';
 import {
   listVisibleProjects,
   PROJECT_NOTE_CONTENT_MAX_CHARS,
@@ -10,9 +10,9 @@ import {
   recordProjectNoteRetrieval,
   saveProjectNote,
   searchProjectNotes,
-} from '../../../base/storage/repository.js';
+} from '@swampratnz/agent-base/storage/repository.js';
 import { text, untrusted } from './helpers.js';
-import { defineTool } from '../../../base/agent/tools/types.js';
+import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 // --- Project tools (issue #927) --------------------------------------------
 //

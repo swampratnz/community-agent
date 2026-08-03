@@ -1,14 +1,14 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { config } from '../../base/config.js';
-import { logger } from '../../base/logger.js';
-import { recordBackgroundJobCost, usageStats } from '../../base/storage/repository/adminStats.js';
-import { insertContextDigest } from '../../base/storage/repository/contextDigests.js';
+import { config } from '@swampratnz/agent-base/config.js';
+import { logger } from '@swampratnz/agent-base/logger.js';
+import { recordBackgroundJobCost, usageStats } from '@swampratnz/agent-base/storage/repository/adminStats.js';
+import { insertContextDigest } from '@swampratnz/agent-base/storage/repository/contextDigests.js';
 import {
   candidateTopicAlreadyReviewed,
   insertKnowledgeCandidate,
   knowledgeCoversTopic,
   recentInboundForClustering,
-} from '../../base/storage/repository/knowledgeCandidates.js';
+} from '@swampratnz/agent-base/storage/repository/knowledgeCandidates.js';
 
 /**
  * Offline context builder (issue #51): periodically reads across the stored
