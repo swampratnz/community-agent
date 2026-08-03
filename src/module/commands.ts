@@ -13,10 +13,15 @@ import { TEXT_COMMAND_UNMATCHED, type RegisteredCommand } from '@swampratnz/agen
  * projects, whois, guidelines, digest), which is also safe for the WhatsApp
  * side because every `!` matcher is anchored and mutually exclusive.
  *
- * The Discord halves are BOUND at the Discord adapter's module-load time
- * (`bindDiscordCommand`, called from slashCommands.ts) rather than defined
- * inline, so this file — loaded by the composition root on every platform —
- * never pulls discord.js into the runtime graph; only its types.
+ * The Discord halves are BOUND by `bindCommunitySlashCommands()`
+ * (slashCommands.ts), which `createConfiguredAdapters()` calls — never at
+ * module load, because binding reads the command list and `createAgent`
+ * registers that list from the manifest only when index.ts's BODY runs, long
+ * after the static import graph has been evaluated. Binding at load threw
+ * `registeredCommands: no command list registered` and killed startup.
+ * Defining them there rather than inline also keeps this file — loaded by the
+ * composition root on every platform — from pulling discord.js into the
+ * runtime graph; only its types.
  *
  * Since the mechanism/content split (plan §Phase-2 Stage 3a) the sentinel,
  * the handler/binding/command types and the registration slot live in

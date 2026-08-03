@@ -27,9 +27,6 @@ import {
 } from '../../agent/tools.js';
 import { chunkText } from '@swampratnz/agent-base/platforms/textChunk.js';
 import { bindDiscordCommand, type SlashCommandDeps } from '@swampratnz/agent-base/commands/registry.js';
-// Importing the community command list runs its self-registration
-// (registerCommands) before the module-scope bindDiscordCommand calls below.
-import '../../commands.js';
 
 /**
  * Discord caps a message (and an interaction reply/follow-up) at 2000 chars —
@@ -265,70 +262,86 @@ async function handleDigest(interaction: ChatInputCommandInteraction, deps: Slas
   await replyEphemeral(interaction, message ?? 'Nothing to report right now.', deps);
 }
 
-// Bind each registry entry's Discord half (registration JSON + handler) at
-// module load — handlers above are hoisted function declarations, so every
-// binding is complete before buildSlashCommands()/handleInteraction() can be
-// called. Builders are byte-identical to the array buildSlashCommands()
-// previously constructed inline.
-bindDiscordCommand('kb', {
-  build: () =>
-    new SlashCommandBuilder()
-      .setName('kb')
-      .setDescription('Search curated community knowledge (FAQs, rules, resources).')
-      .addStringOption((o) => o.setName('query').setDescription('Topic to look up').setRequired(true))
-      .toJSON(),
-  handle: handleKb,
-});
-bindDiscordCommand('projects', {
-  build: () =>
-    new SlashCommandBuilder()
-      .setName('projects')
-      .setDescription('Browse the member-declared project showcase.')
-      .addStringOption((o) =>
-        o.setName('query').setDescription('Optional topic/keyword to search by meaning').setRequired(false),
-      )
-      .addBooleanOption((o) =>
-        o
-          .setName('seeking_collaborators')
-          .setDescription('Only show projects whose owner is looking for collaborators')
-          .setRequired(false),
-      )
-      .addBooleanOption((o) =>
-        o
-          .setName('mine')
-          .setDescription('Only show your own shared projects — ignores query/seeking_collaborators')
-          .setRequired(false),
-      )
-      .toJSON(),
-  handle: handleProjects,
-});
-bindDiscordCommand('whois', {
-  build: () =>
-    new SlashCommandBuilder()
-      .setName('whois')
-      .setDescription('Find members whose published interests match a topic.')
-      .addStringOption((o) =>
-        o
-          .setName('query')
-          .setDescription('Optional topic/keyword; omit to find members like you')
-          .setRequired(false),
-      )
-      .toJSON(),
-  handle: handleWhois,
-});
-bindDiscordCommand('guidelines', {
-  build: () =>
-    new SlashCommandBuilder()
-      .setName('guidelines')
-      .setDescription("Show this community's guidelines/rules.")
-      .toJSON(),
-  handle: handleGuidelines,
-});
-bindDiscordCommand('digest', {
-  build: () =>
-    new SlashCommandBuilder()
-      .setName('digest')
-      .setDescription("Pull this week's community digest on demand — topics, new knowledge, projects.")
-      .toJSON(),
-  handle: handleDigest,
-});
+/**
+ * Bind each registry entry's Discord half (registration JSON + handler).
+ *
+ * Called from `createConfiguredAdapters()`, NOT at module scope. Binding
+ * reads the command list, and under `createAgent` that list is registered
+ * during the singleton-registration phase — which runs when `index.ts`'s BODY
+ * calls `createAgent`, long after this module has been evaluated as part of
+ * its static import graph. Binding at module load therefore always ran before
+ * registration and threw `registeredCommands: no command list registered`,
+ * killing the process at startup. (Under the old side-effect composition
+ * `index.ts` imported the commands module early and the order happened to
+ * work; the flip to `createAgent` inverted it.)
+ *
+ * Idempotent: `bindDiscordCommand` rejects a duplicate name, and tests build
+ * adapters more than once per process.
+ */
+let bound = false;
+export function bindCommunitySlashCommands(): void {
+  if (bound) return;
+  bound = true;
+  bindDiscordCommand('kb', {
+    build: () =>
+      new SlashCommandBuilder()
+        .setName('kb')
+        .setDescription('Search curated community knowledge (FAQs, rules, resources).')
+        .addStringOption((o) => o.setName('query').setDescription('Topic to look up').setRequired(true))
+        .toJSON(),
+    handle: handleKb,
+  });
+  bindDiscordCommand('projects', {
+    build: () =>
+      new SlashCommandBuilder()
+        .setName('projects')
+        .setDescription('Browse the member-declared project showcase.')
+        .addStringOption((o) =>
+          o.setName('query').setDescription('Optional topic/keyword to search by meaning').setRequired(false),
+        )
+        .addBooleanOption((o) =>
+          o
+            .setName('seeking_collaborators')
+            .setDescription('Only show projects whose owner is looking for collaborators')
+            .setRequired(false),
+        )
+        .addBooleanOption((o) =>
+          o
+            .setName('mine')
+            .setDescription('Only show your own shared projects — ignores query/seeking_collaborators')
+            .setRequired(false),
+        )
+        .toJSON(),
+    handle: handleProjects,
+  });
+  bindDiscordCommand('whois', {
+    build: () =>
+      new SlashCommandBuilder()
+        .setName('whois')
+        .setDescription('Find members whose published interests match a topic.')
+        .addStringOption((o) =>
+          o
+            .setName('query')
+            .setDescription('Optional topic/keyword; omit to find members like you')
+            .setRequired(false),
+        )
+        .toJSON(),
+    handle: handleWhois,
+  });
+  bindDiscordCommand('guidelines', {
+    build: () =>
+      new SlashCommandBuilder()
+        .setName('guidelines')
+        .setDescription("Show this community's guidelines/rules.")
+        .toJSON(),
+    handle: handleGuidelines,
+  });
+  bindDiscordCommand('digest', {
+    build: () =>
+      new SlashCommandBuilder()
+        .setName('digest')
+        .setDescription("Pull this week's community digest on demand — topics, new knowledge, projects.")
+        .toJSON(),
+    handle: handleDigest,
+  });
+}

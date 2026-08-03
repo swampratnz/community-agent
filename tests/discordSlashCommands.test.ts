@@ -28,10 +28,13 @@ const { pool } = await import('@swampratnz/agent-base/storage/db.js');
 const { resetPolicyCacheForTests } = await import('@swampratnz/agent-base/storage/policyStore.js');
 // The registration/dispatch mechanism is base (slashDispatch.ts): the command
 // list must be registered (the manifest's `commands` field in production)
-// before slashCommands.ts binds its Discord halves onto the registry at its
-// own module scope.
+// before the Discord halves are bound onto the registry entries. Binding is
+// an explicit call, not a module-scope side effect — in production
+// createConfiguredAdapters() makes it, after createAgent has registered the
+// list; here this file makes it, in the same order.
 await import('./support/registerCommands.js');
-await import('../src/module/platforms/discord/slashCommands.js');
+const { bindCommunitySlashCommands } = await import('../src/module/platforms/discord/slashCommands.js');
+bindCommunitySlashCommands();
 const { handleInteraction, buildSlashCommands, registerSlashCommands } =
   await import('@swampratnz/agent-base/platforms/discord/slashDispatch.js');
 const { buildMemberDigestContent } = await import('../src/module/memberDigest.js');
