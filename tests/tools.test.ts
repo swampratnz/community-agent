@@ -8,6 +8,7 @@ import './support/registerBadWords.js';
 // this in production — src/module/agentModule.ts).
 import './support/registerNotices.js';
 import { notice } from '../src/module/strings/notices.js';
+import { agentBasePath } from './support/agentBasePath.js';
 
 // These three were exported constants in src/module/agent/tools/helpers.ts
 // until the agent-base package flip removed every module-scope `notice()`
@@ -23,7 +24,6 @@ const KNOWLEDGE_STALE_NOTE_MI = notice('knowledgeStaleNote', { language: 'mi' })
 import { DISCORD_TEXT_PACK, WHATSAPP_CLOUD_TEXT_PACK } from '../src/module/platforms/textPacks.js';
 import { ENABLED_SKILLS } from '../src/module/agent/enabledSkills.js';
 import { readFileSync, readdirSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import type {
   AdapterLookup,
@@ -9097,7 +9097,7 @@ test('feature_flags: FEATURE_FLAG_MAP covers every *_ENABLED env var in config.t
   // INSTALLED package rather than from src/, so this still counts a flag added
   // in either place — and resolving through the package (not a hand-built
   // relative path) keeps it honest about what this deployment actually runs.
-  const configEntry = createRequire(import.meta.url).resolve('@swampratnz/agent-base/config.js');
+  const configEntry = agentBasePath('@swampratnz/agent-base/config.js');
   const configDir = join(dirname(configEntry), 'config');
   const configSource = [
     readFileSync(configEntry, 'utf8'),
@@ -14444,7 +14444,7 @@ test(
     // The repository module is agent-base's now, so scan the INSTALLED
     // package's compiled copy — what this deployment actually runs.
     const repoProjectsSource = readFileSync(
-      createRequire(import.meta.url).resolve('@swampratnz/agent-base/storage/repository/memberProjects.js'),
+      agentBasePath('@swampratnz/agent-base/storage/repository/memberProjects.js'),
       'utf8',
     );
     assert.doesNotMatch(repoProjectsSource, /\bfetch\(|axios|http\.get\(|https\.get\(/);

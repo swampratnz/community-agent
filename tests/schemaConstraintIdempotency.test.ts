@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { SCHEMA_FRAGMENTS, loadSchemaSql } from '@swampratnz/agent-base/storage/schema/manifest.js';
 import { COMMUNITY_MIGRATIONS, COMMUNITY_SCHEMA_FRAGMENTS } from '../src/module/storage/schema/manifest.js';
+import { agentBasePath } from './support/agentBasePath.js';
 
 /**
  * `migrate()` replays the ENTIRE schema — agent-base's fragments plus this
@@ -99,8 +99,7 @@ test('schema fragments: shortcut_hits_kind_check permits every ShortcutKind, in 
   // instead of failing at runtime on the first real insert. Read from the
   // INSTALLED package's declarations — the union is a type, so the shipped
   // `.d.ts` is where it survives compilation.
-  const require = createRequire(import.meta.url);
-  const shortcutHits = require.resolve('@swampratnz/agent-base/storage/repository/shortcutHits.js');
+  const shortcutHits = agentBasePath('@swampratnz/agent-base/storage/repository/shortcutHits.js');
   const kindSource = readFileSync(shortcutHits.replace(/\.js$/, '.d.ts'), 'utf8');
   const union = /(?:export )?(?:declare )?type ShortcutKind =([\s\S]*?);/.exec(kindSource);
   assert.ok(union, 'could not locate the ShortcutKind union — update this test if it moved');
@@ -118,8 +117,7 @@ test('schema manifests: every .sql file on disk is listed exactly once, for BOTH
   // committed to a schema directory but never added to its manifest would
   // simply not be part of the migration — no error, no missing-file crash, just
   // tables (or constraints) that never get created.
-  const require = createRequire(import.meta.url);
-  const baseSchemaDir = dirname(require.resolve('@swampratnz/agent-base/storage/schema/manifest.js'));
+  const baseSchemaDir = dirname(agentBasePath('@swampratnz/agent-base/storage/schema/manifest.js'));
   const moduleSchemaDir = join(process.cwd(), 'src', 'module', 'storage', 'schema');
 
   for (const [label, dir, listed] of [

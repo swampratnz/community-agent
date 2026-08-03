@@ -12,12 +12,12 @@ import {
   WELCOME_MESSAGE,
   WELCOME_MESSAGE_OPEN,
 } from '../src/module/platforms/textPacks.js';
+import { agentBasePath } from './support/agentBasePath.js';
 // Community notice-pack registration â€” the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
 import './support/registerNotices.js';
 import { readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ChannelType, Events, GuildScheduledEventEntityType, GuildScheduledEventStatus } from 'discord.js';
@@ -1952,7 +1952,7 @@ test('SECURITY: the auto-enroll write path adds no new Agent-SDK/query() call â€
   // this deployment ships is the compiled copy in node_modules, so scanning
   // that is the honest subject (and the only one that exists here).
   const adapterSrc = readFileSync(
-    createRequire(import.meta.url).resolve('@swampratnz/agent-base/platforms/discord/adapter.js'),
+    agentBasePath('@swampratnz/agent-base/platforms/discord/adapter.js'),
     'utf8',
   );
   assert.ok(
