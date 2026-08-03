@@ -1,6 +1,10 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import '../src/module/strings/notices.js';
+import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -32,12 +36,13 @@ process.env.SUPER_ADMIN_DISCORD_IDS ??= `super-1,super-2,${BUDGET_USER_ID}`;
 process.env.SUPER_ADMIN_WHATSAPP_NUMBERS ??= 'super-1';
 process.env.REPEAT_MAX_TURNS_SHORTCUT_ENABLED = 'true';
 
-const { pool, closeDb } = await import('../src/storage/db.js');
-const { config } = await import('../src/config.js');
-const { Router, makeRouterDeps } = await import('../src/router.js');
-const { embed } = await import('../src/storage/embeddings.js');
-const { countRepliesToUser } = await import('../src/storage/repository.js');
-const { MAX_TURNS_REPLY, MAX_TURNS_REPLY_MI } = await import('../src/agent/core.js');
+const { pool, closeDb } = await import('../src/base/storage/db.js');
+const { config } = await import('../src/base/config.js');
+const { Router } = await import('../src/base/router.js');
+const { makeRouterDeps } = await import('../src/module/routerWiring.js');
+const { embed } = await import('../src/base/storage/embeddings.js');
+const { countRepliesToUser } = await import('../src/base/storage/repository.js');
+const { MAX_TURNS_REPLY, MAX_TURNS_REPLY_MI } = await import('../src/base/agent/core.js');
 
 await embed('warmup').catch(() => {});
 

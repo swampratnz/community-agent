@@ -14,8 +14,8 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.INTERACTION_RETENTION_DAYS = '0';
 process.env.ROSTER_DEPARTED_RETENTION_DAYS = '30';
 
-const { config } = await import('../src/config.js');
-const { startRosterRetentionPurge } = await import('../src/retention.js');
+const { config } = await import('../src/base/config.js');
+const { startRosterRetentionPurge } = await import('../src/base/retention.js');
 
 test(
   'startRosterRetentionPurge: creates a timer when ROSTER_DEPARTED_RETENTION_DAYS is set, even though ' +

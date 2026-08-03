@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 // Pure (no DB) pins for the storage lifecycle registries introduced by the
-// AGENT-BASE-PLAN item-4 storage split (src/storage/lifecycle.ts). The purge
+// AGENT-BASE-PLAN item-4 storage split (src/base/storage/lifecycle.ts). The purge
 // count arithmetic cannot be exercised here (DB tests cover behaviour in CI);
 // what CAN be proven without a database is the registry SHAPE the arithmetic
 // depends on: which contributors exist, in what order they run, which of them
@@ -62,8 +62,8 @@ const EXPECTED_SUMMARIZED = [
 async function loadRegistry() {
   // The barrel's `export *` lines execute every domain module — the exact
   // registration path production takes.
-  await import('../src/storage/repository.js');
-  return import('../src/storage/lifecycle.js');
+  await import('../src/base/storage/repository.js');
+  return import('../src/base/storage/lifecycle.js');
 }
 
 test('purge contributors: exactly the pinned tables, registered in the old inline statement order', async () => {
@@ -118,9 +118,9 @@ test('my_data summarize() exists on exactly the historical summary tables — th
 });
 
 test('interactions-invalidated hooks: the base digest-coherence sweep is registered first', async () => {
-  await import('../src/storage/repository.js');
-  const { onInteractionsInvalidatedHooks } = await import('../src/storage/lifecycle.js');
-  const { invalidateDigestsForInteractions } = await import('../src/storage/repository/shared.js');
+  await import('../src/base/storage/repository.js');
+  const { onInteractionsInvalidatedHooks } = await import('../src/base/storage/lifecycle.js');
+  const { invalidateDigestsForInteractions } = await import('../src/base/storage/repository/shared.js');
   const hooks = onInteractionsInvalidatedHooks();
   assert.ok(hooks.length >= 1, 'at least the base sweep must be registered');
   assert.equal(
@@ -131,14 +131,14 @@ test('interactions-invalidated hooks: the base digest-coherence sweep is registe
 });
 
 test('member-removed hooks: exactly the project_members cleanup is registered (issue #927)', async () => {
-  await import('../src/storage/repository.js');
-  const { onMemberRemovedHooks } = await import('../src/storage/lifecycle.js');
+  await import('../src/base/storage/repository.js');
+  const { onMemberRemovedHooks } = await import('../src/base/storage/lifecycle.js');
   assert.equal(onMemberRemovedHooks().length, 1);
 });
 
 test('roster-leave hooks: pinned names and order — the failure log lines interpolate the names', async () => {
-  await import('../src/storage/repository.js');
-  const { onRosterLeaveHooks } = await import('../src/storage/lifecycle.js');
+  await import('../src/base/storage/repository.js');
+  const { onRosterLeaveHooks } = await import('../src/base/storage/lifecycle.js');
   assert.deepEqual(
     onRosterLeaveHooks().map((h) => h.name),
     ['member_projects', 'member_interests', 'helper_notifications', 'project_connection_requests'],
@@ -149,7 +149,7 @@ test('roster-leave hooks: pinned names and order — the failure log lines inter
 test('purge count arithmetic: counted-vs-uncounted classification is unchanged (source pin)', () => {
   // The total is messages + candidates + Σ contributor returns — no other term.
   const budgetsSource = readFileSync(
-    new URL('../src/storage/repository/budgetsPrivacy.ts', import.meta.url),
+    new URL('../src/base/storage/repository/budgetsPrivacy.ts', import.meta.url),
     'utf8',
   );
   assert.ok(
@@ -171,7 +171,7 @@ test('purge count arithmetic: counted-vs-uncounted classification is unchanged (
   // The fourth authorship-NULLing UPDATE (project_notes) lives inside the
   // projects contributor and must stay uncounted there too.
   const projectsSource = readFileSync(
-    new URL('../src/storage/repository/projects.ts', import.meta.url),
+    new URL('../src/base/storage/repository/projects.ts', import.meta.url),
     'utf8',
   );
   assert.match(

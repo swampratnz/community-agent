@@ -24,8 +24,8 @@ const skip = hasDb
   ? false
   : 'DATABASE_URL not set — skipping DB-integration tests (CLAUDE.md: exercise against a local Postgres 16 + pgvector)';
 
-const { pool, closeDb } = await import('../src/storage/db.js');
-const { config } = await import('../src/config.js');
+const { pool, closeDb } = await import('../src/base/storage/db.js');
+const { config } = await import('../src/base/config.js');
 
 after(async () => {
   await closeDb();
@@ -55,8 +55,8 @@ test(
   '/healthz and /readyz respond 503 with db:false within a bounded time when healthcheck() hangs on a slow query, instead of hanging themselves (issue #502)',
   { skip },
   async (t) => {
-    const realDb = await import('../src/storage/db.js');
-    t.mock.module('../src/storage/db.js', {
+    const realDb = await import('../src/base/storage/db.js');
+    t.mock.module('../src/base/storage/db.js', {
       namedExports: {
         ...realDb,
         // Same slow-query scenario as the pool-level test above, routed
@@ -67,7 +67,7 @@ test(
         },
       },
     });
-    const { handleHealthz, handleReadyz } = await import('../src/health.js');
+    const { handleHealthz, handleReadyz } = await import('../src/base/health.js');
 
     function fakeResponse() {
       let statusCode: number | undefined;

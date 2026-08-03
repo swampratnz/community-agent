@@ -1,7 +1,11 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
-import type { searchKnowledge } from '../src/storage/repository.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import '../src/module/strings/notices.js';
+import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
+import type { searchKnowledge } from '../src/base/storage/repository.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -32,10 +36,11 @@ process.env.KNOWLEDGE_SHORTCUT_ENABLED = 'true';
 process.env.REPEAT_QUESTION_SHORTCUT_ENABLED = 'true';
 process.env.REPEAT_MAX_TURNS_SHORTCUT_ENABLED = 'true';
 
-const { pool, closeDb } = await import('../src/storage/db.js');
-const { Router, makeRouterDeps } = await import('../src/router.js');
-const { embed } = await import('../src/storage/embeddings.js');
-const { MAX_TURNS_REPLY } = await import('../src/agent/core.js');
+const { pool, closeDb } = await import('../src/base/storage/db.js');
+const { Router } = await import('../src/base/router.js');
+const { makeRouterDeps } = await import('../src/module/routerWiring.js');
+const { embed } = await import('../src/base/storage/embeddings.js');
+const { MAX_TURNS_REPLY } = await import('../src/base/agent/core.js');
 
 await embed('warmup').catch(() => {});
 

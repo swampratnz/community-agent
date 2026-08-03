@@ -27,9 +27,9 @@ git rm --cached -r . && git reset --hard
 
 - `npm run typecheck`, `npm test`, and `npm run build` must all be green
   before a PR is opened or updated (see root `CLAUDE.md`).
-- If your change touches a gated area — tool gating (`src/auth/`), the
-  CONFIRM flow (`src/agent/pendingActions.ts`), outbound filtering
-  (`src/agent/outbound.ts`), or anything else on the security spine — extend
+- If your change touches a gated area — tool gating (`src/base/auth/`), the
+  CONFIRM flow (`src/base/agent/pendingActions.ts`), outbound filtering
+  (`src/base/agent/outbound.ts`), or anything else on the security spine — extend
   the matching test file under `tests/` (e.g. `rbac.test.ts`,
   `pendingActions.test.ts`, `outbound.test.ts`) rather than relying on
   incidental coverage. Don't weaken or delete an existing security assertion
@@ -84,11 +84,48 @@ same diff — `npm run context:check` (CI's lint job) fails otherwise, and
 authority: read the code before trusting a one-liner, and fix the line if it is
 wrong.
 
+## Base and module, and the one-way import rule
+
+`src/` has two halves and a composition root:
+
+- **`src/base/`** — the community-agnostic framework: agent kernel and prompt
+  spine, adapters, storage, router spine, jobs mechanism, RBAC, config, the
+  notice-catalogue mechanism, alert/health infra, leaf utils. A new base file
+  must carry **no community content** — no Claude/Anthropic/NZ prose, no te reo
+  or plain-language strings, no product decision this deployment made. If it
+  does, it belongs in `src/module/`.
+- **`src/module/`** — this deployment's content and wiring: the tool registry
+  and its `ToolDef` domain files, prose, personas, skills, the notice pack,
+  community jobs, the integrations, and the composition wiring.
+- **`src/index.ts`** — the composition root, the only file that may import
+  both halves and where the community side-effect imports live.
+
+**Base may never import module**, not even a type; **module may never import
+the composition root**. When a base file needs something a module owns, don't
+weaken the rule — invert it: declare a registry slot in base, register into it
+from the module at its own import time, and add the side-effect import to
+`index.ts`. `src/base/agent/turnState.ts`, `src/base/strings/catalogue.ts` and
+`src/base/commands/registry.ts` are the worked examples. For a `typeof
+<community export>` in a base deps interface, write the type structurally in
+base instead (`src/base/agent/toolServer.ts`'s `ToolServerToolDef` shows the
+shape).
+
+Keep new slots **fail-closed** like the existing ones: a slot holding required
+content throws when read before registration rather than returning an empty
+value, and an additive slot rejects a duplicate or unknown name rather than
+shadowing what is already registered. An empty-on-unregistered tier list or
+bad-word list is a silent downgrade nobody sees.
+
+Enforced by eslint and, authoritatively, by `npm run imports:check` (CI's lint
+job); see `docs/ARCHITECTURE.md` → "Two halves and a composition root" for the
+full picture and `docs/SECURITY.md` → "Where the controls live" for why the
+boundary matters.
+
 ## Commits and PRs
 
 - No model identifiers in commit messages, PR titles/bodies, or code.
 - Never commit secrets: `.env` is git-ignored; `whatsapp-auth/` and
-  `src/auth/` are distinct — the latter is source and stays tracked.
+  `src/base/auth/` are distinct — the latter is source and stays tracked.
 - Every PR uses the template (`.github/pull_request_template.md`): Summary,
   Security / privacy impact, How verified. Keep those sections scoped to the
   diff — no secrets, tokens, env values, or hostnames in a PR body.

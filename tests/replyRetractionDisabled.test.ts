@@ -1,7 +1,19 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
+// The default bad-word list is community content registered at its own module
+// scope (src/index.ts imports it in production); the moderation wordlist fails
+// closed until then, and constructing a Discord adapter builds a Moderator.
+import '../src/module/moderation/badWords.js';
+// The adapters take their community text pack as a required constructor
+// parameter now (agent-base plan item 6) — production hands it over in
+// src/module/platforms/factories.ts, so these constructions pass the same pack.
+import { BAILEYS_TEXT_PACK, DISCORD_TEXT_PACK } from '../src/module/platforms/textPacks.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import '../src/module/strings/notices.js';
 import { Events } from 'discord.js';
-import type { IncomingMessage } from '../src/platforms/types.js';
+import type { IncomingMessage } from '../src/base/platforms/types.js';
 
 // Issue #575's auto-retraction feature, flag OFF (AUTO_RETRACT_REPLY_ENABLED
 // deliberately left unset — config.ts's default `false`). Lives in its own
@@ -25,11 +37,12 @@ process.env.WHATSAPP_PROVIDER ??= 'baileys';
 process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-575-off-discord';
 process.env.SUPER_ADMIN_WHATSAPP_NUMBERS ??= '64277000001';
 
-const { config } = await import('../src/config.js');
-const { Router, makeRouterDeps } = await import('../src/router.js');
-const { DiscordAdapter } = await import('../src/platforms/discord/adapter.js');
-const { BaileysAdapter } = await import('../src/platforms/whatsapp/baileysAdapter.js');
-const { pool, closeDb } = await import('../src/storage/db.js');
+const { config } = await import('../src/base/config.js');
+const { Router } = await import('../src/base/router.js');
+const { makeRouterDeps } = await import('../src/module/routerWiring.js');
+const { DiscordAdapter } = await import('../src/base/platforms/discord/adapter.js');
+const { BaileysAdapter } = await import('../src/base/platforms/whatsapp/baileysAdapter.js');
+const { pool, closeDb } = await import('../src/base/storage/db.js');
 
 const RUN = `retract-off-${Date.now()}`;
 
@@ -144,7 +157,7 @@ test('SECURITY: with AUTO_RETRACT_REPLY_ENABLED unset, deleting/revoking a messa
       typingRefireMs: 1_000_000,
     }),
   );
-  const discordAdapter = new DiscordAdapter();
+  const discordAdapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { sentMessages } = stubDiscordChannel(discordAdapter);
   discordRouter.register(discordAdapter);
   const discordHandler = getHandler(discordAdapter);
@@ -187,7 +200,7 @@ test('SECURITY: with AUTO_RETRACT_REPLY_ENABLED unset, deleting/revoking a messa
       typingRefireMs: 1_000_000,
     }),
   );
-  const waAdapter = new BaileysAdapter();
+  const waAdapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
   const { deleteCalls } = stubBaileysSocket(waAdapter);
   waRouter.register(waAdapter);
   const waHandler = getHandler(waAdapter);
@@ -231,7 +244,7 @@ test(
         typingRefireMs: 1_000_000,
       }),
     );
-    const adapter = new DiscordAdapter();
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const { sentMessages } = stubDiscordChannel(adapter);
     router.register(adapter);
     const handler = getHandler(adapter);

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+import type { OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
 
 // Companion to tests/devTeamWatchAlert.test.ts, pinning the OTHER end of
 // statusCheckAlertThreshold's floor (issue #452 acceptance criterion #2):
@@ -19,7 +19,8 @@ process.env.DEV_TEAM_ENDPOINT_URL = 'https://dev-team.example.internal';
 process.env.DEV_TEAM_AUTH_TOKEN = 'test-dev-team-token';
 process.env.DEV_TEAM_WATCH_POLL_MINUTES = '60';
 
-const { startDevTeamWatchPoller, statusCheckAlertThreshold } = await import('../src/backgroundJobs.js');
+const { startDevTeamWatchPoller, statusCheckAlertThreshold } =
+  await import('../src/module/backgroundJobs.js');
 
 const POLL_MS = 60 * 60_000;
 const THRESHOLD = statusCheckAlertThreshold(60);

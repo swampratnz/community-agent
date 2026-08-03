@@ -1,8 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { CallerContext } from '../src/auth/rbac.js';
-import type { OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
-import type { ConversationTailRow, StoredSession } from '../src/storage/repository.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import '../src/module/strings/notices.js';
+import type { CallerContext } from '../src/base/auth/rbac.js';
+import type { OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
+import type { ConversationTailRow, StoredSession } from '../src/base/storage/repository.js';
+// Community content registrations (prompt sections + persona roster) — the
+// composition-root contract: src/index.ts registers these in production, so
+// tests that assemble prompts register them explicitly here.
+import '../src/module/agent/communityPromptSections.js';
+import '../src/module/agent/personas.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -12,6 +21,11 @@ process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
+
+// The tool registry's module-scope registrations (tool tiers, tool-server
+// parts, feature-flag predicates) — the composition-root contract, matching
+// tests/rbac.test.ts.
+await import('../src/module/agent/tools/index.js');
 
 // Per-test knobs for the mocked repository/SDK (see the language-preference
 // test file for the same pattern): what getClaudeSession returns, what the
@@ -42,18 +56,18 @@ function mockQuery(params: { prompt: string; options: { systemPrompt: string; re
 }
 
 // query() and the repository functions are static imports inside
-// src/agent/core.ts, so once core.js has been dynamically imported anywhere
+// src/base/agent/core.ts, so once core.js has been dynamically imported anywhere
 // in this process the bindings are fixed — a later t.mock.module call can't
 // retarget them (see tests/agentCoreMaxTurns.test.ts for the same trap).
 // Install the mocks once and reuse the cached import; the knobs above are
 // mutated per-test.
-let corePromise: Promise<typeof import('../src/agent/core.js')> | null = null;
+let corePromise: Promise<typeof import('../src/base/agent/core.js')> | null = null;
 async function core(t: { mock: { module: (specifier: string, opts: unknown) => void } }) {
   if (!corePromise) {
     const realSdk = await import('@anthropic-ai/claude-agent-sdk');
     t.mock.module('@anthropic-ai/claude-agent-sdk', { namedExports: { ...realSdk, query: mockQuery } });
-    const realRepo = await import('../src/storage/repository.js');
-    t.mock.module('../src/storage/repository.js', {
+    const realRepo = await import('../src/base/storage/repository.js');
+    t.mock.module('../src/base/storage/repository.js', {
       namedExports: {
         ...realRepo,
         getClaudeSession: async () => storedSession,
@@ -64,7 +78,7 @@ async function core(t: { mock: { module: (specifier: string, opts: unknown) => v
         searchMemory: async () => [],
       },
     });
-    corePromise = import('../src/agent/core.js');
+    corePromise = import('../src/base/agent/core.js');
   }
   return corePromise;
 }

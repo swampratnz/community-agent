@@ -16,8 +16,8 @@ const skip = hasDb
   ? false
   : 'DATABASE_URL not set — skipping DB-integration tests (CLAUDE.md: exercise against a local Postgres 16 + pgvector)';
 
-const { pool, closeDb } = await import('../src/storage/db.js');
-const { config } = await import('../src/config.js');
+const { pool, closeDb } = await import('../src/base/storage/db.js');
+const { config } = await import('../src/base/config.js');
 const {
   parseDocIndex,
   titleForUrl,
@@ -27,7 +27,7 @@ const {
   runDocsIngest,
   partitionDeadUrls,
   DOCS_PROVENANCE,
-} = await import('../src/context/docsIngest.js');
+} = await import('../src/module/context/docsIngest.js');
 
 // Pin the dead-URL feature OFF for this file by default (issue #611). Every
 // test written before it existed calls runDocsIngest WITHOUT stub deps, so with
@@ -178,7 +178,7 @@ test(
   'runDocsIngest: F failed page fetches emit exactly ONE warn-level summary line (not F), with count/sample/rollup, plus one debug line per failure',
   { skip },
   async (t) => {
-    const { logger } = await import('../src/logger.js');
+    const { logger } = await import('../src/base/logger.js');
     const warn = t.mock.method(logger, 'warn');
     const debug = t.mock.method(logger, 'debug');
 
@@ -231,7 +231,7 @@ test(
 );
 
 test('runDocsIngest: the fetch-failure summary sample is capped at 5 URLs even with many more failures', async (t) => {
-  const { logger } = await import('../src/logger.js');
+  const { logger } = await import('../src/base/logger.js');
   const warn = t.mock.method(logger, 'warn');
 
   const dead = Array.from(
@@ -260,7 +260,7 @@ test(
   'runDocsIngest: zero failed fetches emit no fetch-failure warning (unchanged from today)',
   { skip },
   async (t) => {
-    const { logger } = await import('../src/logger.js');
+    const { logger } = await import('../src/base/logger.js');
     const warn = t.mock.method(logger, 'warn');
 
     const u1 = 'https://platform.claude.com/docs/en/api/messages.md';
@@ -283,8 +283,8 @@ test(
   'runDocsIngest: chunk-upsert failures are untouched by the fetch-failure summary — still one warn per upsert failure, at the pre-existing message',
   { skip },
   async (t) => {
-    const { pool } = await import('../src/storage/db.js');
-    const { logger } = await import('../src/logger.js');
+    const { pool } = await import('../src/base/storage/db.js');
+    const { logger } = await import('../src/base/logger.js');
     const warn = t.mock.method(logger, 'warn');
     await pool.query(`DELETE FROM knowledge WHERE created_by_role = $1`, [DOCS_PROVENANCE]);
 
@@ -646,7 +646,7 @@ test('runDocsIngest: a persistently-dead URL is not fetched at all and is counte
 
 test('runDocsIngest: a URL crossing the dead threshold is reported ONCE and stamped reported', async (t) => {
   await withDeadUrlConfig(3, 30, async () => {
-    const { logger } = await import('../src/logger.js');
+    const { logger } = await import('../src/base/logger.js');
     const warn = t.mock.method(logger, 'warn');
     // Two prior consecutive failures — this run's failure is the 3rd, crossing.
     const { calls, deps } = stubDeadUrlStore([failure(DEAD_URL, 2)]);
@@ -672,7 +672,7 @@ test('runDocsIngest: a URL crossing the dead threshold is reported ONCE and stam
 
 test('runDocsIngest: an ALREADY-reported dead URL that gets re-probed and fails again is not re-reported', async (t) => {
   await withDeadUrlConfig(3, 30, async () => {
-    const { logger } = await import('../src/logger.js');
+    const { logger } = await import('../src/base/logger.js');
     const warn = t.mock.method(logger, 'warn');
     // Well past the threshold, already reported, and due for its re-probe.
     const { calls, deps } = stubDeadUrlStore([failure(DEAD_URL, 9, 31, new Date())]);
@@ -698,7 +698,7 @@ test('runDocsIngest: an ALREADY-reported dead URL that gets re-probed and fails 
 
 test('runDocsIngest: with deadUrlRuns=0 a long-dead URL is still fetched and never reported', async (t) => {
   await withDeadUrlConfig(0, 30, async () => {
-    const { logger } = await import('../src/logger.js');
+    const { logger } = await import('../src/base/logger.js');
     const warn = t.mock.method(logger, 'warn');
     const { calls, deps } = stubDeadUrlStore([failure(DEAD_URL, 99)]);
     const attempted: string[] = [];
@@ -779,7 +779,7 @@ test('runDocsIngest: lowering the threshold onto an existing streak still report
   // failedFetchUrls. It must still get its one-time report rather than
   // silently disappearing from the fetch set.
   await withDeadUrlConfig(2, 30, async () => {
-    const { logger } = await import('../src/logger.js');
+    const { logger } = await import('../src/base/logger.js');
     const warn = t.mock.method(logger, 'warn');
     const { calls, deps } = stubDeadUrlStore([failure(DEAD_URL, 2)]);
     const attempted: string[] = [];
@@ -805,7 +805,7 @@ test('runDocsIngest: lowering the threshold onto an existing streak still report
 
 test('runDocsIngest: an already-reported URL that stays skipped is never re-reported (the report is once, not per run)', async (t) => {
   await withDeadUrlConfig(3, 30, async () => {
-    const { logger } = await import('../src/logger.js');
+    const { logger } = await import('../src/base/logger.js');
     const warn = t.mock.method(logger, 'warn');
     const { calls, deps } = stubDeadUrlStore([failure(DEAD_URL, 5, 0, new Date())]);
     const fetchText = async (url: string): Promise<string> => {

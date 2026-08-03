@@ -10,7 +10,7 @@ import {
   lidFallbackId,
   senderPhoneNumber,
   unwrapMessage,
-} from '../src/platforms/whatsapp/wire.js';
+} from '../src/base/platforms/whatsapp/wire.js';
 import type { WAMessage } from '@whiskeysockets/baileys';
 
 test('jidLocalPart strips device suffix and domain', () => {

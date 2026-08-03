@@ -1,11 +1,23 @@
 import { test, beforeEach, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import type { IncomingMessage } from '../src/platforms/types.js';
+// The adapters take their community text pack as a required constructor
+// parameter now (agent-base plan item 6) — production hands it over in
+// src/module/platforms/factories.ts, so these constructions pass the same pack.
+import {
+  BAILEYS_TEXT_PACK,
+  WHATSAPP_GROUP_WELCOME_MESSAGE,
+  WHATSAPP_GROUP_WELCOME_MESSAGE_OPEN,
+} from '../src/module/platforms/textPacks.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import '../src/module/strings/notices.js';
+import type { IncomingMessage } from '../src/base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it. Locally
 // DATABASE_URL points nowhere and policy reads fail over to defaults (see
-// src/storage/policies.ts); in CI (ci.yml) DATABASE_URL is a REAL pgvector
+// src/module/storage/policies.ts); in CI (ci.yml) DATABASE_URL is a REAL pgvector
 // Postgres shared by the whole test job, not just tests/repository.test.ts.
 // Either way this file must stay DB-independent — see the blanket
 // `beforeEach` pool.query stub below.
@@ -14,20 +26,15 @@ process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 
-const {
-  BaileysAdapter,
-  initialWelcomeCooldownState,
-  stepWelcomeCooldown,
-  WHATSAPP_GROUP_WELCOME_MESSAGE,
-  WHATSAPP_GROUP_WELCOME_MESSAGE_OPEN,
-} = await import('../src/platforms/whatsapp/baileysAdapter.js');
-const { config } = await import('../src/config.js');
-const { pool } = await import('../src/storage/db.js');
-const { logger } = await import('../src/logger.js');
-const { resetPolicyCacheForTests } = await import('../src/storage/policies.js');
-const { buildToolServer } = await import('../src/agent/tools.js');
-const { toolsForRole, ADMIN_TOOLS, SUPER_ADMIN_TOOLS } = await import('../src/auth/rbac.js');
-const { VOICE_LANGUAGE_CAVEAT_TEXT_MI } = await import('../src/voiceLanguageCaveatNotice.js');
+const { BaileysAdapter, initialWelcomeCooldownState, stepWelcomeCooldown } =
+  await import('../src/base/platforms/whatsapp/baileysAdapter.js');
+const { config } = await import('../src/base/config.js');
+const { pool } = await import('../src/base/storage/db.js');
+const { logger } = await import('../src/base/logger.js');
+const { resetPolicyCacheForTests } = await import('../src/base/storage/policyStore.js');
+const { buildToolServer } = await import('../src/module/agent/tools.js');
+const { toolsForRole, ADMIN_TOOLS, SUPER_ADMIN_TOOLS } = await import('../src/base/auth/rbac.js');
+const { VOICE_LANGUAGE_CAVEAT_TEXT_MI } = await import('../src/base/voiceLanguageCaveatNotice.js');
 
 /**
  * Issue #407: `onGroupParticipantsUpdate` now unconditionally writes to
@@ -71,7 +78,7 @@ function stubSocket(adapter: InstanceType<typeof BaileysAdapter>) {
 }
 
 test('SECURITY: sendMessage routes through filterOutbound — a secret cannot reach a WhatsApp chat unredacted', async () => {
-  const adapter = new BaileysAdapter();
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
   const sent = stubSocket(adapter);
   await adapter.sendMessage({
     conversationId: '64211234567@s.whatsapp.net',
@@ -83,7 +90,7 @@ test('SECURITY: sendMessage routes through filterOutbound — a secret cannot re
 });
 
 test('SECURITY: sendDirectMessage routes through filterOutbound — a secret cannot reach a WhatsApp DM unredacted', async () => {
-  const adapter = new BaileysAdapter();
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
   const sent = stubSocket(adapter);
   await adapter.sendDirectMessage('64211234567', 'secret is sk-ant-' + 'y'.repeat(30) + ' end');
   assert.equal(sent.length, 1);
@@ -122,7 +129,7 @@ function stubSocketForSend(
 }
 
 test('sendMessage: a transient send failure is retried and the reply is still delivered (issue #852)', async () => {
-  const adapter = new BaileysAdapter(0); // no send retry delay — asserting retry behaviour, not timing
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK, 0); // no send retry delay — asserting retry behaviour, not timing
   let calls = 0;
   stubSocketForSend(adapter, async (_jid, msg) => {
     calls += 1;
@@ -138,7 +145,7 @@ test('sendMessage: a transient send failure is retried and the reply is still de
 });
 
 test('sendDirectMessage: a transient send failure is retried and the DM is still delivered (issue #852)', async () => {
-  const adapter = new BaileysAdapter(0);
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK, 0);
   let calls = 0;
   stubSocketForSend(adapter, async (_jid, msg) => {
     calls += 1;
@@ -153,7 +160,7 @@ test(
   'sendMessage: a send that fails on every attempt re-throws after BAILEYS_SEND_MAX_ATTEMPTS, unchanged ' +
     'persistent-failure behaviour (issue #852)',
   async () => {
-    const adapter = new BaileysAdapter(0);
+    const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK, 0);
     let calls = 0;
     stubSocketForSend(adapter, async () => {
       calls += 1;
@@ -172,7 +179,7 @@ test(
 );
 
 test('sendDirectMessage: a send that fails on every attempt re-throws after BAILEYS_SEND_MAX_ATTEMPTS (issue #852)', async () => {
-  const adapter = new BaileysAdapter(0);
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK, 0);
   let calls = 0;
   stubSocketForSend(adapter, async () => {
     calls += 1;
@@ -189,7 +196,7 @@ test(
   'sendMessage: presence-clear and the retry cache fire exactly once even when the send needed a retry, ' +
     'never once per attempt (issue #852)',
   async () => {
-    const adapter = new BaileysAdapter(0);
+    const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK, 0);
     let sendCalls = 0;
     const presenceCalls: Array<{ type: string; jid?: string }> = [];
     stubSocketForSend(
@@ -221,7 +228,7 @@ test(
   'SECURITY: a retried WhatsApp send still runs outbound filtering exactly once — the retried payload is ' +
     'byte-identical to the first attempt, not re-filtered per attempt (issue #852)',
   async () => {
-    const adapter = new BaileysAdapter(0);
+    const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK, 0);
     let filteredCalls = 0;
     const adapterInternals = adapter as unknown as { filtered: (...args: unknown[]) => Promise<string> };
     const originalFiltered = adapterInternals.filtered.bind(adapter);
@@ -260,7 +267,7 @@ test(
   'performAdminAction("warn_user") sends the te reo Māori wrapper when params.language is "mi", with the ' +
     "admin's reason appended verbatim and untranslated (issue #618)",
   async () => {
-    const adapter = new BaileysAdapter();
+    const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
     const sent = stubSocket(adapter);
     const result = await adapter.performAdminAction({
       kind: 'warn_user',
@@ -284,7 +291,7 @@ test(
       { reason: 'spam', language: undefined },
       { reason: 'spam' },
     ]) {
-      const adapter = new BaileysAdapter();
+      const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
       const sent = stubSocket(adapter);
       await adapter.performAdminAction({ kind: 'warn_user', targetUserId: '64211234567', params });
       assert.equal(sent.length, 1);
@@ -333,7 +340,7 @@ function sentCache(
 }
 
 test('sendMessage caches the sent message so a retry receipt can be resent (getMessage backing)', async () => {
-  const adapter = new BaileysAdapter();
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
   const { ids } = stubSocketReturningWAMessage(adapter);
   await adapter.sendMessage({ conversationId: '64211234567@s.whatsapp.net', text: 'proactive alert' });
   assert.equal(ids.length, 1);
@@ -347,7 +354,7 @@ test('sendMessage caches the sent message so a retry receipt can be resent (getM
 });
 
 test('sendDirectMessage caches the sent message too — the proactive-DM path that saw "Waiting for this message…"', async () => {
-  const adapter = new BaileysAdapter();
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
   const { ids } = stubSocketReturningWAMessage(adapter);
   await adapter.sendDirectMessage('64211234567', 'super-admin alert');
   assert.equal(ids.length, 1);
@@ -355,7 +362,7 @@ test('sendDirectMessage caches the sent message too — the proactive-DM path th
 });
 
 test('adminCapabilities includes block_user/unblock_user (issue #572)', () => {
-  const adapter = new BaileysAdapter();
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
   assert.ok(adapter.adminCapabilities.has('block_user'));
   assert.ok(adapter.adminCapabilities.has('unblock_user'));
 });
@@ -365,7 +372,7 @@ test(
     'this.sock, unlike every other Baileys admin action, so a block/unblock never depends on a live ' +
     'WhatsApp connection (issue #572)',
   async (t) => {
-    const adapter = new BaileysAdapter();
+    const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
     // Deliberately no stubSocket() call — `this.sock` stays unset. Any action
     // that reached the sock-connected guard would throw here.
     const calls: Array<{ sql: string; params: unknown[] }> = [];
@@ -394,7 +401,7 @@ test(
 );
 
 test('the sent-message retry cache is bounded — oldest entries evict past the max, newest kept', () => {
-  const adapter = new BaileysAdapter();
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
   const remember = (adapter as unknown as { remember: (m: unknown) => void }).remember.bind(adapter);
   const total = 1005; // a handful over SENT_MESSAGE_CACHE_MAX (1000)
   for (let i = 0; i < total; i++) {
@@ -410,7 +417,7 @@ test('the sent-message retry cache is bounded — oldest entries evict past the 
 // `recallSentMessage`; exercise it directly (no live socket) so the retry-receipt
 // lookup itself is covered, not just the cache it reads.
 test('recallSentMessage returns cached content for a known key and undefined otherwise (getMessage backing)', async () => {
-  const adapter = new BaileysAdapter();
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
   const { ids } = stubSocketReturningWAMessage(adapter);
   await adapter.sendMessage({ conversationId: '64211234567@s.whatsapp.net', text: 'proactive alert' });
   const recall = (
@@ -443,7 +450,7 @@ function stubSocketForImage(adapter: InstanceType<typeof BaileysAdapter>) {
 }
 
 test('sendImage forwards the caption as the native WhatsApp image caption (issue #174)', async () => {
-  const adapter = new BaileysAdapter();
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
   const sent = stubSocketForImage(adapter);
   await adapter.sendImage(
     '64211234567@s.whatsapp.net',
@@ -459,7 +466,7 @@ test('sendImage forwards the caption as the native WhatsApp image caption (issue
 });
 
 test('SECURITY: sendImage routes the caption through filterOutbound — a secret cannot reach WhatsApp unredacted (issue #174)', async () => {
-  const adapter = new BaileysAdapter();
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
   const sent = stubSocketForImage(adapter);
   await adapter.sendImage(
     '64211234567@s.whatsapp.net',
@@ -514,14 +521,14 @@ function fakeMessage(conversationId: string): IncomingMessage {
 }
 
 test('sendTypingIndicator: sends a "composing" presence update to the conversation', async () => {
-  const adapter = new BaileysAdapter();
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
   const { presenceCalls } = stubSocketWithPresence(adapter);
   await adapter.sendTypingIndicator(fakeMessage('64211234567@s.whatsapp.net'));
   assert.deepEqual(presenceCalls, [{ type: 'composing', jid: '64211234567@s.whatsapp.net' }]);
 });
 
 test('sendMessage: clears the indicator to "paused" once the reply has actually sent', async () => {
-  const adapter = new BaileysAdapter();
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
   const { sent, presenceCalls } = stubSocketWithPresence(adapter);
   await adapter.sendMessage({ conversationId: '64211234567@s.whatsapp.net', text: 'reply' });
   assert.equal(sent.length, 1);
@@ -531,7 +538,7 @@ test('sendMessage: clears the indicator to "paused" once the reply has actually 
 });
 
 test('best-effort: a failing presence-clear after sendMessage never throws or blocks the send', async () => {
-  const adapter = new BaileysAdapter();
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
   const { sent } = stubSocketWithPresence(adapter, { rejectPresence: true });
   await assert.doesNotReject(() =>
     adapter.sendMessage({ conversationId: '64211234567@s.whatsapp.net', text: 'ok' }),
@@ -586,7 +593,7 @@ async function withWelcomeConfig<T>(
 
 test('WhatsApp group welcome: disabled by default (WHATSAPP_WELCOME_ENABLED unset) is a pinned no-op', async () => {
   assert.equal(config.whatsapp.welcome.enabled, false, 'precondition: default env has the flag off');
-  const adapter = new BaileysAdapter();
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
   const sent = stubSocketForGroupWelcome(adapter);
   await fireGroupJoin(adapter, {
     id: 'group-1@g.us',
@@ -597,7 +604,7 @@ test('WhatsApp group welcome: disabled by default (WHATSAPP_WELCOME_ENABLED unse
 });
 
 test('WhatsApp group welcome: enabled + action "add" sends exactly one static message to the group, never naming the joiner', async () => {
-  const adapter = new BaileysAdapter();
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
   const sent = stubSocketForGroupWelcome(adapter);
   let handlerCalls = 0;
   adapter.onMessage(async () => {
@@ -619,7 +626,7 @@ test('WhatsApp group welcome: enabled + action "add" sends exactly one static me
 });
 
 test('WhatsApp group welcome: a bulk add (multiple participants in one event) sends exactly one message', async () => {
-  const adapter = new BaileysAdapter();
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
   const sent = stubSocketForGroupWelcome(adapter);
 
   await withWelcomeConfig({ enabled: true }, () =>
@@ -638,7 +645,7 @@ test('WhatsApp group welcome: a bulk add (multiple participants in one event) se
 });
 
 test('WhatsApp group welcome: a second join to the same group inside the cooldown window sends no second message', async () => {
-  const adapter = new BaileysAdapter();
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
   const sent = stubSocketForGroupWelcome(adapter);
 
   await withWelcomeConfig({ enabled: true }, async () => {
@@ -658,7 +665,7 @@ test('WhatsApp group welcome: a second join to the same group inside the cooldow
 });
 
 test('WhatsApp group welcome: respects WHATSAPP_ALLOWED_JIDS — a group outside the allowlist gets no message', async () => {
-  const adapter = new BaileysAdapter();
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
   const sent = stubSocketForGroupWelcome(adapter);
   const allowedJids = config.whatsapp as unknown as { allowedJids: string[] };
   const prevJids = allowedJids.allowedJids;
@@ -708,7 +715,7 @@ function stubPoliciesQuery(
 test('WhatsApp group welcome: stays byte-identical to today when no guidelines are set (issue #212)', async (t) => {
   resetPolicyCacheForTests();
   t.mock.method(pool, 'query', stubPoliciesQuery());
-  const adapter = new BaileysAdapter();
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
   const sent = stubSocketForGroupWelcome(adapter);
 
   await withWelcomeConfig({ enabled: true }, () =>
@@ -728,7 +735,7 @@ test('WhatsApp group welcome: appends community guidelines verbatim when set (is
   resetPolicyCacheForTests();
   const guidelines = 'Be respectful. No spam. Keep discussion on-topic.';
   t.mock.method(pool, 'query', stubPoliciesQuery(guidelines));
-  const adapter = new BaileysAdapter();
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
   const sent = stubSocketForGroupWelcome(adapter);
 
   await withWelcomeConfig({ enabled: true }, () =>
@@ -749,7 +756,7 @@ test('WhatsApp group welcome: uses the configured welcome message in place of th
   const welcomeMessage = 'Welcome to our community!';
   const guidelines = 'Be respectful. No spam.';
   t.mock.method(pool, 'query', stubPoliciesQuery(guidelines, { welcomeMessage }));
-  const adapter = new BaileysAdapter();
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
   const sent = stubSocketForGroupWelcome(adapter);
 
   await withWelcomeConfig({ enabled: true }, () =>
@@ -772,7 +779,7 @@ test('WhatsApp group welcome: uses the configured welcome message in place of th
 test('SECURITY: WhatsApp group welcome falls back to the hardcoded default when the welcome_message policy read fails (issue #253)', async (t) => {
   resetPolicyCacheForTests();
   t.mock.method(pool, 'query', stubPoliciesQuery(undefined, { throwFor: 'welcome_message' }));
-  const adapter = new BaileysAdapter();
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
   const sent = stubSocketForGroupWelcome(adapter);
 
   await withWelcomeConfig({ enabled: true }, () =>
@@ -811,7 +818,7 @@ test(
   async (t) => {
     resetPolicyCacheForTests();
     t.mock.method(pool, 'query', stubPoliciesQuery());
-    const adapter = new BaileysAdapter();
+    const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
     const sent = stubSocketForGroupWelcome(adapter);
 
     await withAccessMode('open', () =>
@@ -844,7 +851,7 @@ test(
   async (t) => {
     resetPolicyCacheForTests();
     t.mock.method(pool, 'query', stubPoliciesQuery());
-    const adapter = new BaileysAdapter();
+    const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
     const sent = stubSocketForGroupWelcome(adapter);
 
     await withAccessMode('gated', () =>
@@ -871,7 +878,7 @@ test('WhatsApp group welcome: an admin-configured welcome message overrides the 
   resetPolicyCacheForTests();
   const welcomeMessage = 'Custom welcome for our open-mode group!';
   t.mock.method(pool, 'query', stubPoliciesQuery(undefined, { welcomeMessage }));
-  const adapter = new BaileysAdapter();
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
   const sent = stubSocketForGroupWelcome(adapter);
 
   await withAccessMode('open', () =>
@@ -897,7 +904,7 @@ test('WhatsApp group welcome: community guidelines are appended identically to t
   resetPolicyCacheForTests();
   const guidelines = 'Be respectful. No spam. Keep discussion on-topic.';
   t.mock.method(pool, 'query', stubPoliciesQuery(guidelines));
-  const adapter = new BaileysAdapter();
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
   const sent = stubSocketForGroupWelcome(adapter);
 
   await withAccessMode('open', () =>
@@ -921,7 +928,7 @@ test('WhatsApp group welcome: community guidelines are appended identically to t
 test('SECURITY: WHATSAPP_GROUP_WELCOME_MESSAGE_OPEN carries no participant-supplied data (issue #351)', async (t) => {
   resetPolicyCacheForTests();
   t.mock.method(pool, 'query', stubPoliciesQuery());
-  const adapter = new BaileysAdapter();
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
   const sent = stubSocketForGroupWelcome(adapter);
 
   await withAccessMode('open', () =>
@@ -945,7 +952,7 @@ test('SECURITY: WHATSAPP_GROUP_WELCOME_MESSAGE_OPEN carries no participant-suppl
 
 for (const action of ['remove', 'promote', 'demote']) {
   test(`WhatsApp group welcome: non-"add" action "${action}" produces no message`, async () => {
-    const adapter = new BaileysAdapter();
+    const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
     const sent = stubSocketForGroupWelcome(adapter);
 
     await withWelcomeConfig({ enabled: true }, () =>
@@ -974,7 +981,7 @@ function rosterQueryRecorder(calls: Array<{ sql: string; params?: unknown[] }>) 
 test('group-participants.update "add" upserts a server_roster row for each participant (issue #407)', async (t) => {
   const calls: Array<{ sql: string; params?: unknown[] }> = [];
   t.mock.method(pool, 'query', rosterQueryRecorder(calls));
-  const adapter = new BaileysAdapter();
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
 
   await fireGroupJoin(adapter, {
     id: 'group-407-add@g.us',
@@ -997,7 +1004,7 @@ test('group-participants.update "add" upserts a server_roster row for each parti
 test("SECURITY: group-participants.update never roster-tracks the bot's own number or LID, on add or remove (issue #407)", async (t) => {
   const calls: Array<{ sql: string; params?: unknown[] }> = [];
   t.mock.method(pool, 'query', rosterQueryRecorder(calls));
-  const adapter = new BaileysAdapter();
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
   (adapter as unknown as { botNumber: string; botLid: string }).botNumber = '64299999999';
   (adapter as unknown as { botNumber: string; botLid: string }).botLid = '11111';
 
@@ -1022,7 +1029,7 @@ test("SECURITY: group-participants.update never roster-tracks the bot's own numb
 test('group-participants.update "remove" marks the participant left in server_roster AND still invalidates the membership cache (issue #407)', async (t) => {
   const calls: Array<{ sql: string; params?: unknown[] }> = [];
   t.mock.method(pool, 'query', rosterQueryRecorder(calls));
-  const adapter = new BaileysAdapter();
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
   const fetchCalls = stubConversationsSocket(adapter, ['64211111111']);
   await adapter.conversationsForUser('64211111111');
   assert.equal(fetchCalls.groupFetch, 1, 'precondition: first lookup is a cache miss');
@@ -1051,7 +1058,7 @@ test('roster recording fires with WHATSAPP_WELCOME_ENABLED off (issue #407)', as
   assert.equal(config.whatsapp.welcome.enabled, false, 'precondition: default env has the flag off');
   const calls: Array<{ sql: string; params?: unknown[] }> = [];
   t.mock.method(pool, 'query', rosterQueryRecorder(calls));
-  const adapter = new BaileysAdapter();
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
 
   await fireGroupJoin(adapter, {
     id: 'group-407-flag-off@g.us',
@@ -1065,7 +1072,7 @@ test('roster recording fires with WHATSAPP_WELCOME_ENABLED off (issue #407)', as
 test('roster recording still fires identically with WHATSAPP_WELCOME_ENABLED on (issue #407)', async (t) => {
   const calls: Array<{ sql: string; params?: unknown[] }> = [];
   t.mock.method(pool, 'query', rosterQueryRecorder(calls));
-  const adapter = new BaileysAdapter();
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
   stubSocketForGroupWelcome(adapter);
 
   await withWelcomeConfig({ enabled: true }, () =>
@@ -1091,7 +1098,7 @@ test('SECURITY: with WHATSAPP_ALLOWED_JIDS set, an add or remove event for a gro
   allowedJids.allowedJids = ['some-other-group@g.us'];
 
   try {
-    const adapter = new BaileysAdapter();
+    const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
     await fireGroupJoin(adapter, {
       id: 'not-allowed-407@g.us',
       participants: ['64211111111@s.whatsapp.net'],
@@ -1117,7 +1124,7 @@ test('SECURITY: with WHATSAPP_ALLOWED_JIDS set, an add or remove event for a gro
 test('SECURITY: neither the add nor the remove roster path ever writes to interactions (issue #407)', async (t) => {
   const calls: Array<{ sql: string; params?: unknown[] }> = [];
   t.mock.method(pool, 'query', rosterQueryRecorder(calls));
-  const adapter = new BaileysAdapter();
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
 
   await fireGroupJoin(adapter, {
     id: 'group-407-add-interactions@g.us',
@@ -1175,7 +1182,7 @@ test(
     allowedJids.allowedJids = ['group-a-501@g.us', 'group-b-501@g.us'];
 
     try {
-      const adapter = new BaileysAdapter();
+      const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
       stubMultiGroupSocket(adapter, {
         'group-a-501@g.us': { participants: [{ id: '64211111111@s.whatsapp.net' }] },
         // Same person, listed under a DIFFERENT id form (bare @lid) with
@@ -1216,7 +1223,7 @@ test(
     allowedJids.allowedJids = ['group-a-501-cache@g.us', 'group-b-501-cache@g.us'];
 
     try {
-      const adapter = new BaileysAdapter();
+      const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
       const fetchCalls = stubMultiGroupSocket(adapter, {
         'group-a-501-cache@g.us': { participants: [{ id: '64211111111@s.whatsapp.net' }] },
         'group-b-501-cache@g.us': { participants: [{ id: '64211111111@s.whatsapp.net' }] },
@@ -1258,7 +1265,7 @@ test(
     allowedJids.allowedJids = ['group-a-501-last@g.us', 'group-b-501-last@g.us'];
 
     try {
-      const adapter = new BaileysAdapter();
+      const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
       stubMultiGroupSocket(adapter, {
         'group-a-501-last@g.us': { participants: [{ id: '64211111111@s.whatsapp.net' }] },
         'group-b-501-last@g.us': { participants: [{ id: '64222222222@s.whatsapp.net' }] },
@@ -1295,7 +1302,7 @@ test(
     allowedJids.allowedJids = ['group-a-501-throw@g.us', 'group-b-501-throw@g.us'];
 
     try {
-      const adapter = new BaileysAdapter();
+      const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
       (adapter as unknown as { sock: { groupFetchAllParticipating: () => Promise<never> } }).sock = {
         groupFetchAllParticipating: async () => {
           throw new Error('simulated fetch failure');
@@ -1334,7 +1341,7 @@ test(
     allowedJids.allowedJids = ['group-a-501-scope@g.us'];
 
     try {
-      const adapter = new BaileysAdapter();
+      const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
       stubMultiGroupSocket(adapter, {
         'group-a-501-scope@g.us': { participants: [{ id: '64211111111@s.whatsapp.net' }] },
         // Out-of-scope group the participant remains in — must NOT count as
@@ -1373,7 +1380,7 @@ test(
     allowedJids.allowedJids = ['group-a-501-nodata@g.us', 'group-b-501-nodata@g.us'];
 
     try {
-      const adapter = new BaileysAdapter();
+      const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
       stubMultiGroupSocket(adapter, {
         'group-a-501-nodata@g.us': { participants: [{ id: '64211111111@s.whatsapp.net' }] },
         'group-b-501-nodata@g.us': { participants: [{ id: '64211111111@s.whatsapp.net' }] },
@@ -1427,7 +1434,7 @@ function stubGroupsSocket(
 test('WhatsApp roster startup backfill idempotently upserts every participant of every currently-participating group, excluding the bot (issue #407)', async (t) => {
   const calls: Array<{ sql: string; params?: unknown[] }> = [];
   t.mock.method(pool, 'query', rosterQueryRecorder(calls));
-  const adapter = new BaileysAdapter();
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
   (adapter as unknown as { botNumber: string }).botNumber = '64299999999';
   stubGroupsSocket(adapter, {
     'group-a@g.us': {
@@ -1459,7 +1466,7 @@ test('WhatsApp roster startup backfill respects WHATSAPP_ALLOWED_JIDS, skipping 
   allowedJids.allowedJids = ['group-a@g.us'];
 
   try {
-    const adapter = new BaileysAdapter();
+    const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
     stubGroupsSocket(adapter, {
       'group-a@g.us': { participants: [{ id: '64211111111@s.whatsapp.net' }] },
       'group-b@g.us': { participants: [{ id: '64222222222@s.whatsapp.net' }] },
@@ -1475,7 +1482,7 @@ test('WhatsApp roster startup backfill respects WHATSAPP_ALLOWED_JIDS, skipping 
 });
 
 test('WhatsApp roster startup backfill degrades to a warning log on failure, never crashing (issue #407)', async () => {
-  const adapter = new BaileysAdapter();
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
   (adapter as unknown as { sock: { groupFetchAllParticipating: () => Promise<never> } }).sock = {
     groupFetchAllParticipating: async () => {
       throw new Error('simulated fetch failure');
@@ -1570,7 +1577,7 @@ async function withVoice(
 }
 
 test('SECURITY: a voice note from a non-super-admin is dropped — never downloaded, transcribed, or actioned', async () => {
-  const adapter = new BaileysAdapter() as VoiceAdapter;
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK) as VoiceAdapter;
   let handlerCalls = 0;
   adapter.onMessage(async () => {
     handlerCalls += 1;
@@ -1587,7 +1594,7 @@ test('SECURITY: a voice note from a non-super-admin is dropped — never downloa
 
 test('SECURITY: voice transcription is off by default — a super-admin voice note is dropped when WHATSAPP_VOICE_ENABLED is unset', async () => {
   assert.equal(config.whatsapp.voice.enabled, false, 'precondition: default env has voice off');
-  const adapter = new BaileysAdapter() as VoiceAdapter;
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK) as VoiceAdapter;
   let handlerCalls = 0;
   adapter.onMessage(async () => {
     handlerCalls += 1;
@@ -1601,7 +1608,7 @@ test('SECURITY: voice transcription is off by default — a super-admin voice no
 });
 
 test('SECURITY: a voice note longer than WHATSAPP_VOICE_MAX_SECONDS is ignored without downloading or transcribing', async () => {
-  const adapter = new BaileysAdapter() as VoiceAdapter;
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK) as VoiceAdapter;
   let handlerCalls = 0;
   adapter.onMessage(async () => {
     handlerCalls += 1;
@@ -1619,7 +1626,7 @@ test('SECURITY: a voice note longer than WHATSAPP_VOICE_MAX_SECONDS is ignored w
 });
 
 test('WhatsApp voice: an enabled super-admin voice note is transcribed and actioned as if typed', async () => {
-  const adapter = new BaileysAdapter() as VoiceAdapter;
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK) as VoiceAdapter;
   let seen: IncomingMessage | null = null;
   adapter.onMessage(async (m) => {
     seen = m;
@@ -1655,7 +1662,7 @@ test(
       queryCalls += 1;
       return { rows: [], rowCount: 0 };
     });
-    const adapter = new BaileysAdapter() as VoiceAdapter;
+    const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK) as VoiceAdapter;
     let handlerCalls = 0;
     adapter.onMessage(async () => {
       handlerCalls += 1;
@@ -1685,7 +1692,7 @@ test(
       queryCalls += 1;
       return { rows: [], rowCount: 0 };
     });
-    const adapter = new BaileysAdapter() as VoiceAdapter;
+    const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK) as VoiceAdapter;
     let seen: IncomingMessage | null = null;
     adapter.onMessage(async (m) => {
       seen = m;
@@ -1709,7 +1716,7 @@ test(
     'voice note transcribe and act through the identical pipeline a typed message would (issue #507)',
   async (t) => {
     mockMemberRole(t, '64211234567', 'member');
-    const adapter = new BaileysAdapter() as VoiceAdapter;
+    const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK) as VoiceAdapter;
     let seen: IncomingMessage | null = null;
     adapter.onMessage(async (m) => {
       seen = m;
@@ -1730,7 +1737,7 @@ test(
     'transcription — the role gate runs before any media fetch (issue #507)',
   async (t) => {
     mockMemberRole(t, '64299999999', null); // no community_users row => guest
-    const adapter = new BaileysAdapter() as VoiceAdapter;
+    const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK) as VoiceAdapter;
     let handlerCalls = 0;
     adapter.onMessage(async () => {
       handlerCalls += 1;
@@ -1750,7 +1757,7 @@ test(
     'or super-admin tool, whether the text arrived typed or transcribed (issue #507)',
   async (t) => {
     mockMemberRole(t, '64211234567', 'member');
-    const adapter = new BaileysAdapter() as VoiceAdapter;
+    const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK) as VoiceAdapter;
     let seen: IncomingMessage | null = null;
     adapter.onMessage(async (m) => {
       seen = m;
@@ -1778,7 +1785,7 @@ test(
     'rolling hour is refused without a download attempt (issue #507)',
   async (t) => {
     mockMemberRole(t, '64277777777', 'member');
-    const adapter = new BaileysAdapter() as VoiceAdapter;
+    const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK) as VoiceAdapter;
     let handlerCalls = 0;
     adapter.onMessage(async () => {
       handlerCalls += 1;
@@ -1809,7 +1816,7 @@ test(
     '(issue #507)',
   async (t) => {
     mockMemberRole(t, '64288888888', null);
-    const adapter = new BaileysAdapter() as VoiceAdapter;
+    const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK) as VoiceAdapter;
     let handlerCalls = 0;
     adapter.onMessage(async () => {
       handlerCalls += 1;
@@ -1844,7 +1851,7 @@ test(
     'window (issue #655)',
   async (t) => {
     mockLanguagePref(t, '64211234567', 'mi');
-    const adapter = new BaileysAdapter() as VoiceAdapter;
+    const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK) as VoiceAdapter;
     adapter.onMessage(async () => {});
     const sent = stubSocket(adapter);
     adapter.transcribeAudioMessage = async () => 'kei te pehea koe';
@@ -1872,7 +1879,7 @@ test(
       ['64211234562', undefined], // unset => 'auto'
     ] as const) {
       mockLanguagePref(t, userId, language);
-      const adapter = new BaileysAdapter() as VoiceAdapter;
+      const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK) as VoiceAdapter;
       adapter.onMessage(async () => {});
       const sent = stubSocket(adapter);
       adapter.transcribeAudioMessage = async () => 'hello there';
@@ -1891,7 +1898,7 @@ test(
   async (t) => {
     const build = async (userId: string, language: 'en' | 'mi') => {
       mockLanguagePref(t, userId, language);
-      const adapter = new BaileysAdapter() as VoiceAdapter;
+      const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK) as VoiceAdapter;
       let seen: IncomingMessage | null = null;
       adapter.onMessage(async (m) => {
         seen = m;
@@ -1921,7 +1928,7 @@ test(
     'transcript (issue #655)',
   async (t) => {
     mockLanguagePref(t, '64211234567', 'mi');
-    const adapter = new BaileysAdapter() as VoiceAdapter;
+    const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK) as VoiceAdapter;
     adapter.onMessage(async () => {});
     const sent = stubSocket(adapter);
     const adversarialTranscript =
@@ -1955,7 +1962,7 @@ test(
       if (params[1] === '64211234567') return { rows: [{ language: 'en' }], rowCount: 1 };
       return { rows: [], rowCount: 0 };
     });
-    const adapter = new BaileysAdapter() as VoiceAdapter;
+    const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK) as VoiceAdapter;
     adapter.onMessage(async () => {});
     const sent = stubSocket(adapter);
     adapter.transcribeAudioMessage = async () => 'hello there';
@@ -1976,7 +1983,7 @@ test(
       queryCalls += 1;
       return { rows: [{ language: 'mi' }], rowCount: 1 };
     });
-    const adapter = new BaileysAdapter() as VoiceAdapter;
+    const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK) as VoiceAdapter;
     adapter.onMessage(async () => {});
     const sent = stubSocket(adapter);
     adapter.transcribeAudioMessage = async () => 'hello there';
@@ -1998,7 +2005,7 @@ test(
   'SECURITY: BaileysAdapter does not implement canPostTo — WhatsApp keeps isKnownConversation as its ' +
     'sole reachability gate, since any phone number is dialable (issue #270)',
   () => {
-    const adapter = new BaileysAdapter();
+    const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
     assert.equal(adapter.canPostTo, undefined);
   },
 );
@@ -2031,7 +2038,7 @@ test(
   "group-participants.update 'remove' invalidates the removed participant's membershipCache entry — " +
     'the next conversationsForUser call re-fetches instead of returning the stale cached list',
   async () => {
-    const adapter = new BaileysAdapter();
+    const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
     const calls = stubConversationsSocket(adapter, ['64211111111']);
 
     const first = await adapter.conversationsForUser('64211111111');
@@ -2062,7 +2069,7 @@ test(
   "SECURITY: group-participants.update 'remove' cache invalidation is targeted — a different, still-cached " +
     "participant's membershipCache entry survives untouched (issue #286)",
   async () => {
-    const adapter = new BaileysAdapter();
+    const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
     const calls = stubConversationsSocket(adapter, ['64211111111', '64222222222']);
 
     await adapter.conversationsForUser('64211111111');
@@ -2089,7 +2096,7 @@ test(
   'SECURITY: the WhatsApp JID normalization never false-positive-deletes a similarly-shaped-but-different ' +
     'cached id (issue #286)',
   async () => {
-    const adapter = new BaileysAdapter();
+    const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
     // '6421111111' (cached) vs '64211111111' (removed) differ only by one
     // digit — an exact-match normalization must not conflate them.
     const calls = stubConversationsSocket(adapter, ['6421111111']);
@@ -2117,7 +2124,7 @@ test(
   "group-participants.update 'remove' does not send a welcome message, and 'add' welcome behavior is " +
     'unchanged by the new invalidation logic (regression, issue #286)',
   async () => {
-    const adapter = new BaileysAdapter();
+    const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
     const sent = stubSocketForGroupWelcome(adapter);
 
     await withWelcomeConfig({ enabled: true }, async () => {
@@ -2143,7 +2150,7 @@ test(
   "group-participants.update 'remove' carrying an @lid JID invalidates the lid-keyed membershipCache entry " +
     'for the same person (issue #286)',
   async () => {
-    const adapter = new BaileysAdapter();
+    const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
     const calls = stubConversationsSocket(adapter, ['64211111111']);
 
     await adapter.conversationsForUser('lid:9999');
@@ -2171,7 +2178,7 @@ test(
     'LID->phone mapping — the removal event itself carries no phone number, so that entry survives ' +
     'the full TTL (narrowed residual-window gap, SECURITY.md "Membership-scope staleness", issues #286 + #374)',
   async () => {
-    const adapter = new BaileysAdapter();
+    const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
     const calls = stubConversationsSocket(adapter, ['64211111111']);
 
     // Two entries for the SAME real person: one resolved (elsewhere) to
@@ -2239,7 +2246,7 @@ test(
     'phone-number-keyed membershipCache entry for the same person, once a prior group message has taught ' +
     'the LID->phone mapping (issue #374, closes the residual gap pinned above)',
   async () => {
-    const adapter = new BaileysAdapter();
+    const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
     const calls = stubConversationsSocket(adapter, ['64211111111']);
     adapter.onMessage(async () => {});
 
@@ -2284,7 +2291,7 @@ test(
     "'remove' naming only participant B's @lid — B's own phone-keyed entry survives, and A's mapping is " +
     'not corrupted or wrongly consumed by the unrelated event (issue #374)',
   async () => {
-    const adapter = new BaileysAdapter();
+    const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
     const calls = stubConversationsSocket(adapter, ['64211111111', '64222222222']);
     adapter.onMessage(async () => {});
 
@@ -2336,7 +2343,7 @@ test(
   "lidToPhone entries are consumed once: a second identical 'remove' event for the same " +
     'already-departed participant is a no-op, not a lingering mapping that mis-fires later (issue #374)',
   async () => {
-    const adapter = new BaileysAdapter();
+    const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
     const calls = stubConversationsSocket(adapter, ['64211111111']);
     adapter.onMessage(async () => {});
 
@@ -2387,7 +2394,7 @@ test(
     'touches a membershipCache entry — the mapping is consulted ONLY at invalidation time, never to grant ' +
     'or widen scope (issue #374)',
   async () => {
-    const adapter = new BaileysAdapter();
+    const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
     const calls = stubConversationsSocket(adapter, ['64211111111']);
     adapter.onMessage(async () => {});
 
@@ -2416,7 +2423,7 @@ test(
     'implements no scheduled-events primitive — mirrors the sendImage unsupported-platform pattern ' +
     '(issue #388)',
   async () => {
-    const adapter = new BaileysAdapter();
+    const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
     assert.equal(
       adapter.listUpcomingEvents,
       undefined,
@@ -2478,7 +2485,7 @@ function stubSocketForReact(adapter: InstanceType<typeof BaileysAdapter>) {
 }
 
 test('reactToMessage sends a native WhatsApp reaction for a 1:1 DM, with no participant in the key (issue #494)', async () => {
-  const adapter = new BaileysAdapter();
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
   const sent = stubSocketForReact(adapter);
 
   await adapter.reactToMessage('64211234567@s.whatsapp.net', 'dm-msg-1', '👍');
@@ -2509,7 +2516,7 @@ test(
       }
       return { rows: [], rowCount: 0 };
     });
-    const adapter = new BaileysAdapter();
+    const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
     const sent = stubSocketForReact(adapter);
 
     await adapter.reactToMessage('group-1@g.us', 'group-msg-1', '🎉');
@@ -2532,7 +2539,7 @@ test(
     'resolved — no react is sent at all (issue #494)',
   async (t) => {
     t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 0 }));
-    const adapter = new BaileysAdapter();
+    const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
     const sent = stubSocketForReact(adapter);
 
     await adapter.reactToMessage('group-1@g.us', 'unknown-msg', '✅');
@@ -2555,7 +2562,7 @@ test(
       }
       return { rows: [], rowCount: 0 };
     });
-    const adapter = new BaileysAdapter();
+    const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
     const sent = stubSocketForReact(adapter);
 
     await adapter.reactToMessage('group-1@g.us', 'lid-authored-msg', '👀');

@@ -14,6 +14,94 @@ a living document — review it whenever you add a tool or a platform.
 5. **Moderation authority** — the ability to timeout/kick/ban/announce, and
    (when auto-moderation is enabled) to mute/block members via a Discord role.
 
+## Where the controls live: base, module, and what a module cannot do
+
+`src/` has two halves and a composition root (docs/ARCHITECTURE.md → "Two
+halves and a composition root"): `src/base/` is the community-agnostic
+framework, `src/module/` is this deployment's NZ-community content and wiring,
+and `src/index.ts` is the only file allowed to import both. **Every control in
+this document is implemented in `src/base/`.** The tool-gating derivation, the
+CONFIRM flow, outbound filtering, the prompt's security clauses, the router's
+pre-turn spine, SQL conversation scoping, the purge path, provenance→trust and
+the secret-redaction list are all base files; `src/module/` supplies content
+for base-declared slots and can never take a control's place.
+
+That is a security statement, not just an architectural one, because it
+bounds what a change on the module side can do. A module registers content —
+tool definitions, prompt sections, notice text, policy keys, personas, a
+skills manifest, a command list — and base decides where each lands and in
+what order. Concretely, module content **cannot**:
+
+- **Reorder or bypass the router's pre-turn spine.** `PRE_TURN_SPINE`
+  (`src/base/routerIntercepts.ts`) is a frozen array the Router builds itself;
+  `registerPreTurnIntercept` appends to a region that starts *after* the last
+  spine step and rejects any name that collides with one. See §1.
+- **Insert, rename or precede a prompt security clause.**
+  `registerPromptSections` (`src/base/agent/promptSpine.ts`) accepts exactly
+  the closed, base-declared slot set and throws on an unknown key — the
+  unknown-key check runs *before* the already-registered check, so a hostile
+  attempt to name a new slot is rejected as such rather than masked as a
+  duplicate. See §1.
+- **Widen skill activation.** `registerSkillsManifest`
+  (`src/base/agent/skillsManifest.ts`) rejects a non-array or any entry equal
+  to `'all'`, then copies and freezes the list, and a second registration
+  throws. A module can only ever narrow what its own bundled directory
+  offers. See §19.
+- **Reach the wire without outbound filtering.** Filtering and chunking live
+  at the adapters' send paths in `src/base/platforms/`, downstream of anything
+  a module produces — including every notice-catalogue string, which is a
+  fixed human-authored literal that still leaves through `filtered()`.
+- **Grant itself a tier.** Tier resolution is `src/base/auth/` over env plus
+  `community_users`; a `ToolDef` declares the tier it *requires*, never who
+  holds one.
+
+**The security-relevant registration points**, all called from
+`src/module/agent/tools/index.ts` at module scope and all fail-closed:
+
+- **`registerToolTiers`** (`src/base/auth/rbac.ts`) — the four tier lists
+  (member/admin/superAdmin/discordOnly), derived from each `ToolDef.minTier`
+  and `ToolDef.platforms` rather than hand-maintained beside them. `minTier`
+  is therefore the single source of truth, and the old failure mode where a
+  tool was hosted on the server but missing from (or wrongly present in) a
+  tier array is structurally gone. `toolsForRole` **throws** if the registry
+  was never imported: an empty list would look like a working deployment with
+  no tools, and a wrong-but-plausible list is exactly what this replaced.
+  Registration happens once — a second call throws rather than swapping the
+  lists after boot — and each list is frozen on the way in.
+- **`registerToolServerParts`** (`src/base/agent/toolServer.ts`) — the MCP
+  server name, the tool inventory attached to a turn, and the per-turn context
+  factory (the kernel that owns `audited`/`requireConfirm`). `buildToolServer`
+  throws before registration, so there is no path that yields a tool server
+  with an empty or partial inventory. Same once-only, no-swap-after-boot rule.
+- **`registerFlaggedToolPredicates`** (`src/base/agent/featureFlags.ts`) — the
+  subtractive per-turn feature-flag filter's input, derived from each
+  `ToolDef.featureFlag`. Predicates are evaluated against the *current* config
+  at call time, never frozen as a boolean at import (the trap the old
+  hand-maintained flag groups had), and the read fails closed.
+
+The same fail-closed discipline covers the non-tool slots:
+`registerNoticePack`, `registerPolicyKeys`, `registerCommands` and
+`registerDefaultBadWords` all throw on an unregistered read rather than
+degrading — a bad-word list that silently returned `[]` is a moderation
+downgrade nobody would see, and a policy key that silently defaulted is a
+phantom policy that always reads null.
+
+The rule that keeps this true is mechanical: `src/base/` may never import
+`src/module/` (not even a type), enforced by an eslint
+`no-restricted-imports` block on `src/base/**` and, authoritatively, by
+`scripts/check-import-direction.mjs` (`npm run imports:check`, CI's lint job),
+which resolves every specifier against the file system and has no config of
+its own to weaken. `src/module/` may not import the composition root either.
+Pinned by `tests/importDirection.test.ts`.
+
+**What this split does not claim.** It is a structural boundary inside one
+process, not a sandbox: module code runs with the same privileges as base
+code, and a hostile *commit* to `src/module/` is a supply-chain problem that
+CODEOWNERS review and branch protection address, not this rule. What the rule
+buys is that the spine cannot be displaced by *registration* — the ordinary
+way community behaviour is added — and that a reviewer can tell the two apart
+by path.
+
 ## Threat model & controls
 
 ### 1. Privilege escalation via chat ("prompt injection")
@@ -36,6 +124,15 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   *sender's* resolved tier (super_admin > admin > member > guest), not from
   anything in the message. A lower tier's turn never has higher-tier tools
   attached, so the model cannot call them even if convinced to.
+- **The tier lists are derived and fail closed**: `toolsForRole`
+  (`src/base/auth/rbac.ts`) reads lists the tool registry REGISTERS at import
+  time (`registerToolTiers`), each derived from a `ToolDef`'s own `minTier`
+  and `platforms`. There is no second, hand-kept copy that can drift out of
+  step with the tool it gates, registration is once-only and frozen, and a
+  read before registration throws rather than returning an empty (or stale)
+  list. Same for the tool inventory itself (`registerToolServerParts`) and the
+  feature-flag filter (`registerFlaggedToolPredicates`). See "Where the
+  controls live" above.
 - **Admin scoping is data-layer**: admins' cross-conversation tools filter in
   SQL against the admin's *platform-verified* conversation membership
   (Discord channel visibility / WhatsApp group participation, cached ~60s).
@@ -55,7 +152,7 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   one. The actor's tier is **re-resolved at confirm time**: a role revoked
   inside the TTL invalidates the queued action.
   Since the router split (agent-base Phase 1 item 7), this whole pre-turn
-  sequence is an explicit, named intercept chain (`src/routerIntercepts.ts`):
+  sequence is an explicit, named intercept chain (`src/base/routerIntercepts.ts`):
   the **security spine** — block-list → role resolution → gated-guest gate →
   inbound record → CONFIRM/CANCEL intercept → escalation-confirm → addressed
   gate → pause → rate limit → daily budget → auto-answer reserve/barrier/
@@ -69,7 +166,7 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   the trusted `⚠️ Pending:` notice a human reads before confirming, so
   `requireConfirm` strips newline/angle-bracket forgery characters
   (`[<>\r\n…]`) from that description at a **single choke point**
-  (`src/agent/tools.ts`) — generalising the issue #227 display-name fix to
+  (`src/module/agent/tools.ts`) — generalising the issue #227 display-name fix to
   every model-composed free-text field it now covers (a `moderate` reason, a
   `create_event` name/location, a `cancel_event` reason, a `suggest_issue`
   title, `forget_me`'s caller name; audit 2026-07-28 N2/N6). The real action
@@ -133,8 +230,8 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   never instructions. This mitigates stored prompt injection; it does not
   eliminate it — see "Residual risks".
 - **The system prompt's security spine is base-owned** (agent-base Phase 1
-  item 8): `buildSystemPrompt` is a slot assembler (`src/agent/promptSpine.ts`
-  + `src/agent/systemPrompt.ts`) whose top-level slot order is a frozen base
+  item 8): `buildSystemPrompt` is a slot assembler (`src/base/agent/promptSpine.ts`
+  + `src/base/agent/systemPrompt.ts`) whose top-level slot order is a frozen base
   constant. The injection-defence/RBAC clauses are base constants rendered at
   hard-coded positions; a module registers CONTENT for a closed slot set
   (charter, the behaviour-guideline chunks, web-search authority domains,
@@ -150,10 +247,10 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   `tests/systemPromptByteStability.test.ts`, protecting the prompt cache from
   silent reassembly drift.
 - **The platform axis is type-open but registry-closed** (agent-base Phase 1
-  item 9): `Platform` is an open string now (`src/platforms/types.ts`)
+  item 9): `Platform` is an open string now (`src/base/platforms/types.ts`)
   instead of a closed `'discord' | 'whatsapp'` union, but no runtime trust
   moved. The set of platforms that EXISTS is the registry
-  (`src/platforms/registry.ts` descriptors + `src/platforms/factories.ts`
+  (`src/base/platforms/registry.ts` descriptors + `src/module/platforms/factories.ts`
   adapter factories), and every `Platform` value still originates from an
   adapter envelope, a DB row written from one, or a model-facing zod enum
   that stays CLOSED by design (`platformArg`, the `link_member`/super-admin
@@ -218,7 +315,7 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   instead of the admin/super_admin ceiling (`AGENT_MAX_TURNS`, default 12),
   bounding the worst-case cost of a stuck or injected member/guest turn to
   roughly half of today's uniform value. admin/super_admin behaviour is
-  unchanged. Wired in `buildQueryOptions` (`src/agent/core.ts`), which
+  unchanged. Wired in `buildQueryOptions` (`src/base/agent/core.ts`), which
   already branches on role for WebSearch gating.
 - Per-conversation serialisation bounds concurrent `query()` calls.
 - `cost_usd` is recorded per outbound turn for monitoring.
@@ -232,13 +329,13 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   and does reset on restart by design).
 - Optional proactive alert (`USAGE_ALERT_DAILY_REPLIES`, off by default):
   when the rolling-24h outbound reply count reaches the configured
-  threshold, super admins get one debounced DM (`src/usageAlert.ts`) instead
+  threshold, super admins get one debounced DM (`src/base/usageAlert.ts`) instead
   of having to remember to run `usage_stats`. Reply count, not `cost_usd`, is
   the trigger — it's a coarse proxy for shared Max-pool draw that can't
   silently under-report the way `cost_usd` can (see below). No auto-pause;
   a super admin decides.
 - Optional weekly cost-trend DM (`USAGE_COST_DIGEST_ENABLED`, off by
-  default, issue #578): `src/usageCostDigest.ts` compares this week's
+  default, issue #578): `src/module/usageCostDigest.ts` compares this week's
   `usageStats(7)` total against last week's persisted total and DMs the
   signed delta on a weekly cadence — complementary to the reactive
   threshold alert above (a trend signal, not a volume spike). No new
@@ -252,7 +349,7 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   a pure, unit-tested formatter — never a user id, conversation id, or
   message excerpt.
 - Optional per-job cost-spike DM (`BACKGROUND_JOB_COST_ALERT_ENABLED`, off by
-  default, issue #610): `src/backgroundJobCostAlert.ts` DMs super admins when
+  default, issue #610): `src/base/backgroundJobCostAlert.ts` DMs super admins when
   one of the three background jobs' (`moderation_llm`/`context_builder`/
   `knowledge_refresh`) trailing-24h cost exceeds both a configurable
   multiplier of its own trailing 7-day daily average and an absolute dollar
@@ -270,14 +367,14 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   grants (admin+ only) — carries its own per-conversation rolling-hour cap
   (`AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR`, default 20, issue #412), enforced
   via a `hooks.PreToolUse` matcher in `buildQueryOptions`
-  (`src/agent/core.ts`) rather than `canUseTool`, since a tool listed bare in
+  (`src/base/agent/core.ts`) rather than `canUseTool`, since a tool listed bare in
   `allowedTools` (which `WebSearch` is) auto-approves and never reaches
   `canUseTool`. Same sliding-window shape as the four `reserve*Slot` caps
   below; fails closed on a hook error (denies rather than letting the call
   through). Never constructed for member/guest turns — those tiers have no
   WebSearch access to begin with. The same hook also denies an
   exact-normalized repeat of a recent query in the same conversation
-  (`isDuplicateWebSearchQuery`/`recordWebSearchQuery`, `src/agent/tools.ts`,
+  (`isDuplicateWebSearchQuery`/`recordWebSearchQuery`, `src/module/agent/tools.ts`,
   issue #589): the volume cap bounds call count but never inspected the
   query, so a reformulate-and-retry agentic loop could burn a second metered
   call plus its redundant result tokens for no new information. The dedup
@@ -309,13 +406,13 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   with no yield point, so run-to-completion semantics made two "parallel"
   WebSearch calls in the same turn impossible to interleave. To preserve
   that atomicity, the whole sequence is now wrapped in
-  `withWebSearchDedupLock` (`src/agent/tools.ts`), a per-conversation promise
+  `withWebSearchDedupLock` (`src/module/agent/tools.ts`), a per-conversation promise
   queue: a second call for the same conversation cannot begin its own check
   until the first has fully finished, so two near-simultaneous calls can no
   longer both pass the dedup guard by racing past each other's `embed()`
   await (adversarial review on issue #706).
 - A thrown `query()` error whose message matches a small, anchored
-  usage-limit/overload pattern (`src/agent/upstreamFailure.ts`) gets an
+  usage-limit/overload pattern (`src/base/agent/upstreamFailure.ts`) gets an
   honest member-facing reply instead of the generic internal-error one, and
   optionally (`UPSTREAM_LIMIT_ALERT_ENABLED`, off by default) a debounced
   super-admin DM — same `sendDirectMessage` path, same "no auto-pause, a
@@ -331,7 +428,7 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   no new privileged data access — and only ever discloses a caller's own
   remaining count to that same caller (never cross-user), gated by the same
   `role !== 'super_admin'` condition the budget check itself uses. The
-  warning text is fixed (with `_MI`/`_PLAIN` variants, `src/dailyReplyBudgetWarning.ts`),
+  warning text is fixed (with `_MI`/`_PLAIN` variants, `src/base/dailyReplyBudgetWarning.ts`),
   never model-generated, never derived from message content — same trust
   tier as the existing budget-exhausted notice. Debounced to once per rolling
   24h per caller (`budgetWarned`, mirroring `budgetNotified`'s shape), and
@@ -475,7 +572,7 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
     `interactions` row existing (it works even with ambient archiving off):
     the sender is captured directly in the in-memory reply mapping when the
     router sends the reply. A **failed** authorship check must never consume
-    the mapping either — `src/replyRetraction.ts` exposes a non-destructive
+    the mapping either — `src/base/replyRetraction.ts` exposes a non-destructive
     `peekReplyMapping` for this check, only evicting the entry once a
     retraction is actually authorised, so a single forged/non-author revoke
     can't permanently deny a later legitimate retraction of the same reply (a
@@ -622,7 +719,7 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   `content_reports`/`answer_feedback`. No paid model call: the embedding is
   the same free, local `embed()` every other memory/knowledge feature uses.
 - **Daily knowledge refresh** (`KNOWLEDGE_REFRESH_ENABLED`, off by default —
-  src/context/knowledgeRefresh.ts): the one path that writes to `knowledge`
+  src/module/context/knowledgeRefresh.ts): the one path that writes to `knowledge`
   **without** the human-curation gate above — a deliberate, operator-enabled
   exception for keeping a couple of fast-moving Claude/Anthropic topics
   current. Its blast radius is bounded by construction: the topic list is
@@ -654,7 +751,7 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   labelled, fixed-topic surface publishes without review, and even it is
   quarantined on the way out.
 - **Docs ingest** (`DOCS_INGEST_ENABLED`, off by default —
-  src/context/docsIngest.ts): backfills Anthropic's official developer docs into
+  src/module/context/docsIngest.ts): backfills Anthropic's official developer docs into
   `knowledge` as RAG chunks (provenance `'docs'`), refreshed ~weekly with a
   content diff. Unlike the `'auto'` web-research refresh, `'docs'` entries are
   treated as **trusted** (served verbatim by `knowledge_search`, shortcut-
@@ -693,7 +790,7 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   quarantining it in `formatKnowledgeSearchResults` — the flag already flows
   through `searchKnowledge`.
 - **Anthropic status check** (`STATUS_CHECK_ENABLED`, off by default —
-  src/status/anthropicStatus.ts, issue #206): answers "is this me, or is
+  src/module/status/anthropicStatus.ts, issue #206): answers "is this me, or is
   Anthropic having an incident?" from **one fixed, official, first-party
   HTTPS source** — Anthropic's own public Statuspage summary endpoint
   (`STATUS_CHECK_API_URL`, `https://`-enforced at config validation, override-
@@ -711,7 +808,7 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   `SECURITY:` tests. No new DB table, no migration — the data is already
   public, ephemeral, and re-fetchable.
 - **Knowledge link-rot check** (`KNOWLEDGE_LINK_CHECK_ENABLED`, off by default —
-  src/context/linkCheck.ts, issue #448): a ~weekly job that HEAD-checks every
+  src/module/context/linkCheck.ts, issue #448): a ~weekly job that HEAD-checks every
   `knowledge` entry's `sourceUrl` and stamps whether it's still reachable, so
   a dead citation doesn't keep rendering to members as authoritative forever
   with zero admin signal. Unlike every other background poller above (which
@@ -740,7 +837,7 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   SAME guard-checked IP literal — pinned via a custom undici connector (Node's
   global `fetch` is undici, which ignores a Node `http(s).Agent`) that
   connects by IP while presenting the original hostname as the TLS SNI and
-  `Host` header (`buildPinnedDispatcher`, `src/context/linkCheck.ts`). This
+  `Host` header (`buildPinnedDispatcher`, `src/module/context/linkCheck.ts`). This
   pin is applied independently at every redirect hop, not just the initial
   URL. Previously, `fetch()` performed its own independent DNS resolution for
   the actual request after the guard's check, so a host with a very
@@ -760,7 +857,7 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
 - **Community-context export** (`docs/COMMUNITY-CONTEXT.md`, issue #53):
   the one place DB-derived content deliberately leaves the database — an
   aggregate rendering of `context_digests` for the research loop. The
-  boundary is enforced in `src/context/export.ts` and pinned by `SECURITY:`
+  boundary is enforced in `src/module/context/export.ts` and pinned by `SECURITY:`
   tests: aggregate fields only (topic, counts, summaries, period stamps; no
   raw content, user ids, display names, conversation ids, or interaction
   refs), a configurable k-anonymity floor
@@ -781,7 +878,7 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   in-process exporter can never write to the tracked `docs/` path itself
   (which would otherwise dirty the deploy checkout and deadlock the
   nightly redeploy's clean-tree check — see docs/DEPLOYMENT.md).
-- **Member-facing weekly digest** (`src/memberDigest.ts`, issue #645, off
+- **Member-facing weekly digest** (`src/module/memberDigest.ts`, issue #645, off
   unless `MEMBER_DIGEST_ENABLED`): the *other* place `context_digests`
   content deliberately leaves the admin-only boundary — this time to a
   public, all-members Discord channel rather than a private repo export, so
@@ -1192,7 +1289,7 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   currently-muted-member count from `countMutedMembers`, which reuses
   `countActiveWarnings`'s exact strike-limit/window definition so the
   digest's "muted" can never disagree with the actual mute trigger in
-  `src/moderation/moderator.ts` — the DM text carries only the integer, never
+  `src/base/moderation/moderator.ts` — the DM text carries only the integer, never
   a `member_warnings.reason`, `excerpt`, user id, or member name. Issue #403
   added a second, complementary sub-count alongside it: `countStaleMutedMembers`
   surfaces members whose unwindowed strike count is still at/over the limit
@@ -1267,7 +1364,7 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   elevated access." Auto-revoke on departure is deliberately out of scope —
   visibility first, matching how `grant_admin`/`revoke_admin` keep privilege
   changes human-decided rather than automatic.
-- **Departed-admin proactive alert** (`src/departedAdminAlert.ts`, off unless
+- **Departed-admin proactive alert** (`src/module/departedAdminAlert.ts`, off unless
   `DEPARTED_ADMIN_ALERT_ENABLED`, issue #472): closes the growth path #428
   itself named and deferred — `listAdminRoster()`/`list_admins` above was
   pull-only, so a departed-but-still-admin account was invisible unless a
@@ -1288,7 +1385,7 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   the already-proven `startTrackedJob`/`alertSuperAdmins` machinery. Like
   `list_admins`, auto-revoke on departure remains deliberately out of
   scope — this is visibility, not action.
-- **Engagement alert** (`src/engagementAlert.ts`, off unless
+- **Engagement alert** (`src/module/engagementAlert.ts`, off unless
   `ENGAGEMENT_ALERT_ENABLED`, issue #568): closes the same pull-only gap
   #472/#480 closed for other super-admin-only signals — `engagement_stats`
   (issue #419) already computes what fraction of currently-present roster
@@ -1313,7 +1410,7 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   back by this PR. Purge-coherent by construction: the new table stores only
   a timestamp and an aggregate percentage, never a user id, so
   `forget_me`/`purge_user_data` have nothing user-scoped to reach here.
-- **Admin leverage alert** (`src/adminLeverageAlert.ts`, off unless
+- **Admin leverage alert** (`src/module/adminLeverageAlert.ts`, off unless
   `ADMIN_LEVERAGE_ALERT_ENABLED`, issue #785): closes the same pull-only gap
   #472/#568 closed for other super-admin-only signals, this time for
   VISION's own named "Admin leverage" north star — `adminActivitySummary()`
@@ -1514,7 +1611,7 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   calls and zero DMs attributable to this feature — byte-identical to
   today, pinned by a `SECURITY:` test.
 - **Returning-guest wait clause** (`appendWaitClause`/`waitDaysSince`,
-  `src/gatedNotice.ts`, issue #591): surfaces the same `first_requested_at`
+  `src/base/gatedNotice.ts`, issue #591): surfaces the same `first_requested_at`
   age the admin-facing digest/`list_access_requests` (issue #515, above)
   already show, to the *guest* themselves, appended to the gated notice once
   they've been waiting at least one whole day. Self-scoped only: the day
@@ -1901,7 +1998,7 @@ user, so it gets its own controls:
     if the kernel deny ever stops enforcing — so a silent grok regression can't
     quietly reopen arbitrary-file-read.
 - **No secret inheritance.** The `grok` subprocess is spawned with a **minimal,
-  explicit `env`** (`grokEnv()` in `src/media/grokImage.ts`): `PATH`, `HOME`,
+  explicit `env`** (`grokEnv()` in `src/module/media/grokImage.ts`): `PATH`, `HOME`,
   `TERM`, `LANG`/`LC_ALL`, `USER`, and any `GROK_*`/`XDG_*` knobs — **never** the
   bot's `process.env`. It therefore never sees `CLAUDE_CODE_OAUTH_TOKEN`,
   `DISCORD_BOT_TOKEN`, `DATABASE_URL`, or the WhatsApp/session secrets. grok
@@ -1944,7 +2041,7 @@ put one of a fixed set of emoji onto a message using the bot's own identity,
 never send text or take a moderation action:
 
 - **Closed positive/neutral allowlist.** Exactly `✅ 👍 👀 🎉`
-  (`ALLOWED_REACTION_EMOJI` in `src/agent/tools.ts`) enforced by the zod
+  (`ALLOWED_REACTION_EMOJI` in `src/module/agent/tools.ts`) enforced by the zod
   schema — no other value, including a custom/Nitro emoji string, ever reaches
   the Discord API. Deliberately excludes anything that could read as the bot
   editorialising against a member (no 👎). Pinned by a `SECURITY:` test.
@@ -1972,7 +2069,7 @@ Assignable, purely cosmetic Discord roles ("verified builder", regional tags,
 interest groups) — deliberately **orthogonal** to the bot's own RBAC tiers
 (super_admin/admin/member/guest), which come from env + `community_users`
 only and never consult Discord roles at all (`resolveRole`,
-`src/auth/roles.ts`). Off by default: `DISCORD_ASSIGNABLE_ROLES` unset means
+`src/base/auth/roles.ts`). Off by default: `DISCORD_ASSIGNABLE_ROLES` unset means
 both tools refuse every `roleId`.
 
 **The real threat here is Discord's own permission model, not the bot's
@@ -2243,7 +2340,7 @@ reporting `duration_secs`, distinct from a regular file upload), reusing
 `voiceTranscribe.ts`/`voiceLanguageCaveatNotice.ts` verbatim:
 
 - **Same gate order, independently configured.** `maybeTranscribeVoiceMessage`
-  (`src/platforms/discord/adapter.ts`) mirrors `maybeTranscribeVoiceNote`'s
+  (`src/base/platforms/discord/adapter.ts`) mirrors `maybeTranscribeVoiceNote`'s
   order exactly: flag → `DISCORD_VOICE_MIN_ROLE` (default `'super_admin'`,
   the pure `isSuperAdmin('discord', senderId)` env check with no DB call at
   that default, else `resolveRole`/`atLeast`) → `DISCORD_VOICE_MAX_SECONDS`
@@ -2260,7 +2357,7 @@ reporting `duration_secs`, distinct from a regular file upload), reusing
   over-length message, and a rate-capped sender are each refused with zero
   fetch/model calls.
 - **Platform-qualified rate-limit key.** `reserveVoiceTranscriptionSlot`
-  (`src/agent/tools.ts`) now takes an already-qualified key
+  (`src/module/agent/tools.ts`) now takes an already-qualified key
   (`` `discord:${senderId}` `` / `` `whatsapp:${senderId}` ``) rather than a
   bare sender id — closing a latent bug where a WhatsApp phone number and a
   Discord snowflake that happened to collide would have shared one hourly
@@ -2294,7 +2391,7 @@ WhatsApp path — voice was the one input type that worked on Baileys and
 Discord but produced total silence on the Cloud API adapter:
 
 - **Same gate order as Cloud image input, adapted to voice.**
-  `maybeTranscribeVoiceNote` (`src/platforms/whatsapp/cloudAdapter.ts`)
+  `maybeTranscribeVoiceNote` (`src/base/platforms/whatsapp/cloudAdapter.ts`)
   mirrors `maybeFetchImageAttachment`'s order: flag →
   `WHATSAPP_CLOUD_VOICE_MIN_ROLE` (default `'super_admin'`, the pure
   `isSuperAdmin('whatsapp', senderId)` env check with no DB call at that
@@ -2516,7 +2613,7 @@ the "Secret exposure" controls (§2) above rather than assumed covered by them:
   in principle echo a value that flowed through untrusted input or a broad
   read. `feature_flags` structurally cannot reach a secret field: it is
   driven by a fixed, hand-maintained `FEATURE_FLAG_MAP` allowlist
-  (`src/agent/tools.ts`) of `{ envVar, configPath, label, category }`
+  (`src/module/agent/tools.ts`) of `{ envVar, configPath, label, category }`
   entries, and the handler's formatter only ever indexes those fixed dotted
   paths off the in-memory `config` singleton — it never calls
   `Object.entries`/`Object.values`/spreads `config` itself. There is no code
@@ -2555,7 +2652,7 @@ existing output, covering exactly 5 hand-picked non-boolean knobs —
   existing `assertAtLeast(caller.role, 'super_admin', ...)` check — no new
   tier, no new tool registration.
 - **Second hand-maintained allowlist, not a `config` reflection.**
-  `OTHER_CONFIGURED_KNOBS` (`src/agent/tools.ts`) is a fixed
+  `OTHER_CONFIGURED_KNOBS` (`src/module/agent/tools.ts`) is a fixed
   `{ envVar, configPath, label, kind }` list, same discipline as
   `FEATURE_FLAG_MAP`: a missing entry only under-reports a knob, never
   over-exposes a field (e.g. `DISCORD_BOT_TOKEN`, `WHATSAPP_CLOUD_ACCESS_TOKEN`)
@@ -2758,7 +2855,7 @@ than a single pasted prompt), the #759 `project-showcase` skill, and the
 allowlist mechanism. Off by default; when on:
 
 - **Grants the built-in `Skill` tool to every tier, uniformly** —
-  `buildQueryOptions` (`src/agent/core.ts`) adds it to the base `tools` array
+  `buildQueryOptions` (`src/base/agent/core.ts`) adds it to the base `tools` array
   regardless of role, the same ungated treatment the inline checklist it
   replaces already had for every tier (no new RBAC surface: `Skill` was never
   tier-gated because the capability itself never was). This is a genuine
@@ -2784,7 +2881,7 @@ allowlist mechanism. Off by default; when on:
   the tool is granted but never actually fires.
 - **The bundled skills plugin is repo-owned and narrowly scoped.**
   `plugins: [{ type: 'local', path: SKILLS_DIR }]` points at
-  `src/agent/skills/` — a directory this repo ships and code-reviews, never a
+  `src/module/agent/skills/` — a directory this repo ships and code-reviews, never a
   path derived from a request or member-supplied value. It contains only a
   `.claude-plugin/plugin.json` manifest and one `SKILL.md` per bundled skill
   (`prompt-review/SKILL.md`, `agent-architecture-review/SKILL.md`,
@@ -2872,7 +2969,7 @@ migration.
 
 Lets an eligible caller attach a single image (screenshot, stack trace,
 billing page) alongside their message; `runAgentTurn`/`execTurn`
-(`src/agent/core.ts`) pass it to `query()` as an image content block
+(`src/base/agent/core.ts`) pass it to `query()` as an image content block
 alongside the turn's text, so the model can ground its answer in what was
 actually shown — identically regardless of which adapter populated
 `IncomingMessage.image`. Shipped first for Discord (#783), then mirrored
@@ -2898,9 +2995,9 @@ a symmetry extension of an existing one:
   symmetry argument with voice might suggest.
 - **Same gate order as the voice features, independently configured per
   adapter — with one Cloud-API-specific wrinkle.**
-  `maybeFetchImageAttachment` — `src/platforms/discord/adapter.ts` for
-  Discord, `src/platforms/whatsapp/baileysAdapter.ts` for WhatsApp/Baileys,
-  `src/platforms/whatsapp/cloudAdapter.ts` for WhatsApp Cloud API — checks,
+  `maybeFetchImageAttachment` — `src/base/platforms/discord/adapter.ts` for
+  Discord, `src/base/platforms/whatsapp/baileysAdapter.ts` for WhatsApp/Baileys,
+  `src/base/platforms/whatsapp/cloudAdapter.ts` for WhatsApp Cloud API — checks,
   in order, all before any network fetch: `IMAGE_INPUT_ENABLED` /
   `WHATSAPP_IMAGE_INPUT_ENABLED` / `WHATSAPP_CLOUD_IMAGE_INPUT_ENABLED` →
   caller tier vs. `IMAGE_INPUT_MIN_ROLE` / `WHATSAPP_IMAGE_INPUT_MIN_ROLE` /
@@ -2951,7 +3048,7 @@ a symmetry extension of an existing one:
   this one. Cloud-API parity itself was the named #879 gap that #891 closes.
 - **No storage.** The base64 bytes are held in memory for the one `query()`
   call and discarded; `IncomingMessage.image` is never passed to
-  `recordInteraction` anywhere in `src/router.ts` — the `interactions` row for
+  `recordInteraction` anywhere in `src/base/router.ts` — the `interactions` row for
   an image-bearing turn contains `text` only, byte-identical in shape to a
   turn without one, regardless of which adapter the turn came from. Pinned
   by a platform-agnostic `SECURITY:` test in `tests/router.test.ts` spying on
@@ -3127,7 +3224,7 @@ This is a new authorization axis, so it is worth being precise about what it
 does and does not grant.
 
 **Two checks, both in SQL, never re-derived by callers.** `visibleProjectIds`
-(`src/storage/repository/projects.ts`) is the single source of truth:
+(`src/base/storage/repository/projects.ts`) is the single source of truth:
 
 - **Membership** — the caller's own platform identity is in `project_members`,
   *or* an identity sharing their `person_id` is (so one human reaches the
@@ -3242,7 +3339,7 @@ that project membership is deleted immediately on every platform, that project
 notes the person authored are kept with the authorship link removed, and that
 removing the link does not scrub personal information the note's own text may
 contain — the same `PROJECT_NOTE_RETENTION_NOTICE` constant
-(`src/agent/tools.ts`) in all four places, pinned by a `SECURITY:` test so the
+(`src/module/agent/tools.ts`) in all four places, pinned by a `SECURITY:` test so the
 copy and behaviour cannot drift apart again. The prompt stays generic — it
 never enumerates the affected project names, since reciting them into a
 possibly-public conversation at the exact moment someone is asserting a
@@ -3518,7 +3615,7 @@ weekly token pool** (rate-limited differently from interactive use), and the
 consumer terms language against using consumer OAuth tokens in
 third-party/automated services has tightened. Using your own subscription for
 your own community bot remains a personal decision and a grey area. The auth
-layer is isolated in `src/agent/auth.ts`; switch to an API key by setting
+layer is isolated in `src/base/agent/auth.ts`; switch to an API key by setting
 `ANTHROPIC_API_KEY` and removing the deletion in that file if you ever need
 the supported path.
 
@@ -3541,7 +3638,7 @@ classification degrades to "clean" — the same failure mode as the opt-in
 Stage-2 check being off — so this is an accuracy/cost tradeoff the operator
 who sets the knob explicitly owns, not a bypass of any tier-derived tool,
 CONFIRM gate, redaction, or scoped-access boundary. `researchTopic`
-(`src/context/knowledgeRefresh.ts`) is deliberately untouched — it's
+(`src/module/context/knowledgeRefresh.ts`) is deliberately untouched — it's
 multi-turn, uses `WebSearch`, and writes free-text content to the knowledge
 base, unlike the other two's fixed-format extraction.
 
@@ -3557,7 +3654,7 @@ does not alter the role-derived tool surface (`tools`/`allowedTools`/
 `disallowedTools`/`permissionMode`/`maxTurns`) — it only changes which model
 answers. Unset (default): `buildQueryOptions` carries no `fallbackModel` key,
 byte-identical to before. It narrows how often a turn falls through to
-`src/agent/core.ts`'s existing usage-limit/overload catch path (the
+`src/base/agent/core.ts`'s existing usage-limit/overload catch path (the
 `isUsageLimitFailure`-classified canned apology) without changing that path
 itself — same failure text, same admin-notify debounce, just reached less
 often.

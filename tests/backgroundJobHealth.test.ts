@@ -9,7 +9,7 @@ import {
   recordJobRun,
   resetJobHealthRegistryForTests,
   stepJobFailureTracker,
-} from '../src/backgroundJobHealth.js';
+} from '../src/base/backgroundJobHealth.js';
 
 const THRESHOLD = 3;
 

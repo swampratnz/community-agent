@@ -1,6 +1,6 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { PlatformAdapter } from '../src/platforms/types.js';
+import type { PlatformAdapter } from '../src/base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment before
 // anything that (transitively) loads it. This file's process has the
@@ -21,10 +21,10 @@ const skip = hasDb
   ? false
   : 'DATABASE_URL not set — skipping DB-integration tests (CLAUDE.md: exercise against a local Postgres 16 + pgvector)';
 
-const { config } = await import('../src/config.js');
-const { buildToolServer } = await import('../src/agent/tools.js');
-const { setMemberInterests, setHelperAvailability } = await import('../src/storage/repository.js');
-const { pool, closeDb } = await import('../src/storage/db.js');
+const { config } = await import('../src/base/config.js');
+const { buildToolServer } = await import('../src/module/agent/tools.js');
+const { setMemberInterests, setHelperAvailability } = await import('../src/base/storage/repository.js');
+const { pool, closeDb } = await import('../src/base/storage/db.js');
 
 const RUN = `t${Date.now()}${Math.floor(Math.random() * 1e6)}`;
 
@@ -260,7 +260,7 @@ test(
     // Seed the capped helper's weekly quota directly via SQL, as if a prior
     // process instance already notified them 3 times — DB-backed, not an
     // in-memory counter this test could bypass.
-    const { FIND_HELPER_WEEKLY_LIMIT_PER_HELPER } = await import('../src/storage/repository.js');
+    const { FIND_HELPER_WEEKLY_LIMIT_PER_HELPER } = await import('../src/base/storage/repository.js');
     for (let i = 0; i < FIND_HELPER_WEEKLY_LIMIT_PER_HELPER; i++) {
       await pool.query(
         `INSERT INTO helper_notifications
@@ -299,7 +299,7 @@ test(
     await setMemberInterests('discord', helper, 'writing pgvector HNSW index tuning guides');
     await setHelperAvailability('discord', helper, true);
 
-    const { FIND_HELPER_WEEKLY_LIMIT_PER_HELPER } = await import('../src/storage/repository.js');
+    const { FIND_HELPER_WEEKLY_LIMIT_PER_HELPER } = await import('../src/base/storage/repository.js');
     for (let i = 0; i < FIND_HELPER_WEEKLY_LIMIT_PER_HELPER; i++) {
       await pool.query(
         `INSERT INTO helper_notifications
@@ -332,7 +332,7 @@ test(
     await setMemberInterests('discord', helper, 'answering questions about Claude tool use');
     await setHelperAvailability('discord', helper, true);
 
-    const { FIND_HELPER_REQUESTER_DAILY_LIMIT } = await import('../src/storage/repository.js');
+    const { FIND_HELPER_REQUESTER_DAILY_LIMIT } = await import('../src/base/storage/repository.js');
     for (let i = 0; i < FIND_HELPER_REQUESTER_DAILY_LIMIT; i++) {
       await pool.query(
         `INSERT INTO helper_notifications
@@ -424,7 +424,7 @@ test(
     await setMemberInterests('discord', helper, 'a very unique window-closed-test topic phrase');
     await setHelperAvailability('discord', helper, true);
 
-    const { WindowClosedError } = await import('../src/platforms/whatsapp/cloudAdapter.js');
+    const { WindowClosedError } = await import('../src/base/platforms/whatsapp/cloudAdapter.js');
     const queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }> = [];
     const adapter: PlatformAdapter = {
       platform: 'discord',

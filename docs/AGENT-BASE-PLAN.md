@@ -6,7 +6,12 @@ the NZ-Claude-Community behaviour becoming a **module** on top of it, so that
 further agents (e.g. a personal finance agent) can be built on the same base.
 
 Produced from a full classification sweep of `src/`, `tests/`, `scripts/`,
-`.github/workflows/` and `docs/` (2026-08). Status: **plan, not started**.
+`.github/workflows/` and `docs/` (2026-08).
+
+**Status (2026-08-03): Phase 0 done, Phase 1 DONE, Phase 2 DONE. Phase 3 is
+next and has not started.** The plan text below is left as written — it is the
+record of what was decided, not a status board. Per-phase status notes are
+inserted at each heading, and the residue Phase 3 inherits is listed in §6.
 
 ## 1. The headline findings
 
@@ -146,6 +151,25 @@ would forfeit the entire safety net and re-derive every seam blind.
 
 ### Phase 1 — reify the seams (sequenced refactor PRs in this repo)
 
+> **DONE.** All nine items landed as sequenced PRs, none changing behaviour.
+> What they left behind, in the order below: the leaf cleanups
+> (`shouldNotifyAfterWindow`, `notifications.ts`, `util/rateReservation.ts`,
+> `util/sanitizeName.ts`, one parameterised `retention.ts`); the declarative
+> tool registry (`ToolDef`/`defineTool` + per-domain files under
+> `agent/tools/`, with `toolsForRole`, the feature-flag filter and the
+> capability rundown all derived from it); the config split (per-domain zod
+> slices behind a composition barrel, plus `config/boot.ts` so `npm run
+> migrate` needs only `DATABASE_URL`); the storage split (the `repository/`
+> domain carve-out completed to a pure barrel, ordered schema fragments +
+> concatenating migrator, the `lifecycle.ts` purge/hook registries,
+> provenance→trust as a registration); the job registry and single shutdown
+> sweep; the notice catalogue over open language/style axes with
+> adapter-injected text packs; the router split (deps object, the frozen
+> `PRE_TURN_SPINE` intercept chain, post-turn handler registry, generic
+> turn-state bag); the slot-based prompt assembler with a base-owned security
+> spine, persona registry and skills manifest, byte-stability pinned; and the
+> platform registry with capability-derived tool availability.
+
 Ordered by dependency; each is one PR-sized unit with its own tests, and none
 changes behaviour:
 
@@ -195,6 +219,41 @@ changes behaviour:
    tool availability, `memberId.ts` heuristics become per-adapter.
 
 ### Phase 2 — two packages, one repo
+
+> **DONE.** Two directories in one package, not npm workspaces — the workspace
+> split buys nothing until Phase 3 actually publishes. What landed:
+>
+> - Every remaining base→community runtime edge was inverted FIRST, via
+>   fail-loud registries (`registerToolTiers`, `registerToolServerParts`,
+>   `registerFlaggedToolPredicates`, `registerNoticePack`,
+>   `registerPolicyKeys`, `registerCommands`, `registerDefaultBadWords`, the
+>   prompt-section slots, the persona/skills registries), plus the
+>   `routerWiring.ts` composition extraction, the `commands/registry.ts` +
+>   `platforms/discord/slashDispatch.ts` mechanism split, the
+>   `storage/policyStore.ts`/`storage/policies.ts` split, the
+>   `jobs/runner.ts`/`jobs/trackedJob.ts` mechanism split, adapter text packs
+>   (including a language-keyed warn prefix, so no locale is named in a base
+>   type) and a module-owned MCP server name.
+> - The physical move: 121 files to `src/base/`, 64 to `src/module/`,
+>   `src/index.ts` staying put as the composition root. All by `git mv`, so
+>   history follows; the only content change was ~800 rewritten relative
+>   specifiers.
+> - The one-way rule enforced twice: an eslint `no-restricted-imports` block
+>   on `src/base/**` (no `allowTypeImports`) and
+>   `scripts/check-import-direction.mjs` (`npm run imports:check`, CI's lint
+>   job), which resolves specifiers against the file system and also forbids
+>   `src/module/` importing the composition root. Pinned by
+>   `tests/importDirection.test.ts`.
+> - Gate scripts grew the per-package roots they lacked
+>   (`check-context-pack.mjs`'s repeatable `--src`,
+>   `check-dist-schema.mjs`'s dist root), and the schema fragments moved whole
+>   into `src/base/storage/schema/` keeping one ordered manifest —
+>   per-module migration contribution is still Phase 3 work.
+> - The anticipated `tests/security-floor.json` lowering never happened: the
+>   test files themselves did not move, only the paths they import, so the
+>   manifest is byte-identical across the whole phase and no
+>   `allow-security-floor-lower` label was needed. `tsconfig.tests.json`
+>   gained exactly one entry, for the new import-direction test.
 
 Move files into `src/base/` and `src/module/` (or npm workspaces), add an
 import-direction lint rule (module → base only), update `docs/agents/`
@@ -250,3 +309,54 @@ agent needs as the seam-quality metric.
   (same question for image-gen, dev-team, github-issues — recommend:
   optional first-party modules in the agent-base repo, which also
   dog-foods the module API).
+
+## 6. Known residue after Phase 2 (inherited by Phase 3)
+
+Phase 2's contract was **no import edge from `src/base/` to `src/module/`**,
+and that holds — `npm run imports:check` proves it on every CI run. It is a
+weaker property than "`src/base/` contains nothing community-specific", and
+the gap is listed here honestly rather than left for Phase 3 to rediscover.
+None of it blocks the lift; all of it would embarrass a second agent built on
+the base.
+
+**Locale literals still branching inside base.** The notice catalogue made the
+language/style axes open and module-registered, and every notice *string* is
+module-side. What remains is base code branching on the two literal axis
+values to decide which variant to ask for: `src/base/router.ts` (a dozen
+`lang === 'mi'` branches), `src/base/agent/core.ts`
+(`languagePreference === 'mi'`, `responseStyle === 'plain'`),
+`src/base/agent/systemPrompt.ts`'s `'response-style'`/`'language-preference'`
+slot selectors, and `src/base/moderation/moderator.ts`'s `lang !== 'mi'`
+precedence check. A finance agent with no te reo pack gets dead branches, not
+wrong behaviour. The fix is to push variant selection behind the catalogue
+(select by the caller's raw preference, let the pack decide) rather than to
+add more axis values to base.
+
+**Hardcoded community values in base.**
+
+- `src/base/gatedNotice.ts` — the static fallback is a catalogue entry, but
+  `renderGatedNotice`'s dynamic admin-naming variant builds its sentence
+  ("Kia ora! This assistant is member-only. Ask a community admin — … — to add
+  you as a member and I can help.") inline in base.
+- `src/base/util/nzTime.ts` — `Pacific/Auckland` is pinned as *the* timezone,
+  not injected.
+- `src/base/config/knowledge.ts` — defaults the docs index to
+  `https://platform.claude.com/llms.txt` and the status feed to
+  `https://status.claude.com/api/v2/summary.json`. Overridable by env, but the
+  default is an Anthropic URL in a framework file.
+- The literal `Community guidelines:` join header, duplicated across
+  `src/base/router.ts` and all three adapters.
+
+**Community field NAMES in base contracts.** `CommunityPromptSections`
+(`src/base/agent/promptSpine.ts`) declares slots called `charter`,
+`communityConduct`, `promptReviewClause`, `miLanguagePreference`; the
+`community_users` table name stays as-is by the §Phase-0 decision. These are
+structural types and physical table names — base declares the shape, the
+module supplies the value, and there is no import edge either way — so this is
+naming residue, not coupling. Renaming is cosmetic and is best done at the
+package boundary, where the names become public API.
+
+**Schema is still one manifest.** `src/base/storage/schema/` holds the
+community fragments (`50`–`54`) alongside the base ones and replays them as
+one atomic query. Per-module migration contribution is explicitly Phase 3
+work (§3, `migrations` row).

@@ -1,5 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import '../src/module/strings/notices.js';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -20,7 +24,7 @@ process.env.WHATSAPP_CLOUD_WEBHOOK_PORT = '';
 process.env.INTERACTION_RETENTION_DAYS = '';
 process.env.ROSTER_DEPARTED_RETENTION_DAYS = '';
 
-const { config, emptyStringsToUndefined } = await import('../src/config.js');
+const { config, emptyStringsToUndefined } = await import('../src/base/config.js');
 
 test('emptyStringsToUndefined: blank values become undefined, everything else passes through', () => {
   const result = emptyStringsToUndefined({

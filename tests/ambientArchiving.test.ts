@@ -1,7 +1,11 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { AgentReply } from '../src/agent/core.js';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import '../src/module/strings/notices.js';
+import type { AgentReply } from '../src/base/agent/core.js';
+import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
 
 // Ambient archiving ON (issue #48). config.ts parses env once at import, so
 // the flag-on behaviour lives in this file and the default-off behaviour in
@@ -22,11 +26,12 @@ const skip = hasDb
   ? false
   : 'DATABASE_URL not set — skipping DB-integration tests (CLAUDE.md: exercise against a local Postgres 16 + pgvector)';
 
-const { Router, makeRouterDeps } = await import('../src/router.js');
-const { pool, closeDb } = await import('../src/storage/db.js');
-const { config } = await import('../src/config.js');
+const { Router } = await import('../src/base/router.js');
+const { makeRouterDeps } = await import('../src/module/routerWiring.js');
+const { pool, closeDb } = await import('../src/base/storage/db.js');
+const { config } = await import('../src/base/config.js');
 const pgvector = (await import('pgvector/pg')).default;
-const { embed } = await import('../src/storage/embeddings.js');
+const { embed } = await import('../src/base/storage/embeddings.js');
 const {
   purgeUserData,
   purgeOldInteractions,
@@ -34,7 +39,7 @@ const {
   deleteInteractionByMessageId,
   updateInteractionByMessageId,
   searchMemory,
-} = await import('../src/storage/repository.js');
+} = await import('../src/base/storage/repository.js');
 
 // Pre-warm the (lazily loaded) embedding pipeline outside any timed wait.
 if (hasDb) await embed('warmup').catch(() => {});

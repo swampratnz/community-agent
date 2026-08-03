@@ -1,7 +1,11 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { AgentReply } from '../src/agent/core.js';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import '../src/module/strings/notices.js';
+import type { AgentReply } from '../src/base/agent/core.js';
+import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -27,19 +31,20 @@ process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 process.env.ACCESS_MODE_DISCORD = 'open';
-const { pool, closeDb } = await import('../src/storage/db.js');
-const { Router, makeRouterDeps } = await import('../src/router.js');
+const { pool, closeDb } = await import('../src/base/storage/db.js');
+const { Router } = await import('../src/base/router.js');
+const { makeRouterDeps } = await import('../src/module/routerWiring.js');
 const { PAUSE_NOTICE_TEXT, PAUSE_NOTICE_TEXT_MI, PAUSE_NOTICE_TEXT_PLAIN } =
-  await import('../src/pauseNotice.js');
-const { RATE_LIMIT_NOTICE_TEXT } = await import('../src/rateLimitNotice.js');
-const { embed } = await import('../src/storage/embeddings.js');
+  await import('../src/base/pauseNotice.js');
+const { RATE_LIMIT_NOTICE_TEXT } = await import('../src/base/rateLimitNotice.js');
+const { embed } = await import('../src/base/storage/embeddings.js');
 
 await embed('warmup').catch(() => {});
 
 // Non-gated mode means every trigger() below reaches recordInteraction and is
 // persisted for real (unlike router.test.ts's default gated mode, where a
 // guest's content never lands in `interactions`). The context builder
-// (src/context/builder.ts) clusters inbound interactions by embedding
+// (src/module/context/builder.ts) clusters inbound interactions by embedding
 // similarity across the WHOLE table, unscoped by conversation or test file —
 // an identical message text from >=3 distinct users forms a real cluster. A
 // unique-per-run marker keeps this file's traffic from ever exact-matching
@@ -206,7 +211,7 @@ test('router (paused): a user over the rate limit while paused gets exactly the 
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
 
-  // The paused check runs before the rate-limit check in src/router.ts and
+  // The paused check runs before the rate-limit check in src/base/router.ts and
   // returns first, so userHits is never even populated while paused — a
   // burst well past RATE_LIMIT (8) must still yield only the one debounced
   // pause notice.

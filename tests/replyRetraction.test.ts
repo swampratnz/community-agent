@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 // Pure unit tests for the in-memory reply-retraction map (issue #575) —
-// src/replyRetraction.ts only imports `type { Platform }` (erased at
+// src/base/replyRetraction.ts only imports `type { Platform }` (erased at
 // compile/transpile time), so it never touches config.ts and needs no env
 // setup, unlike almost every other test file in this repo.
 const {
@@ -14,7 +14,7 @@ const {
   mappingsSizeForTests,
   REPLY_RETRACTION_TTL_MS,
   REPLY_RETRACTION_MAX_ENTRIES,
-} = await import('../src/replyRetraction.js');
+} = await import('../src/base/replyRetraction.js');
 
 test('replyRetraction: record + take round-trips the mapping and evicts on read (single-use)', () => {
   resetReplyMappingsForTests();

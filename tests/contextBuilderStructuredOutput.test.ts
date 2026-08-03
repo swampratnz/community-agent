@@ -48,13 +48,13 @@ function mockQuery() {
 // tests/abuseClassifierStructuredOutput.test.ts) — install the mock once and
 // reuse the cached import across every test in this file.
 let modulesPromise: Promise<{
-  summarizeCluster: typeof import('../src/context/builder.js').summarizeCluster;
+  summarizeCluster: typeof import('../src/module/context/builder.js').summarizeCluster;
 }> | null = null;
 async function modules(t: { mock: { module: (specifier: string, opts: unknown) => void } }) {
   if (!modulesPromise) {
     const real = await import('@anthropic-ai/claude-agent-sdk');
     t.mock.module('@anthropic-ai/claude-agent-sdk', { namedExports: { ...real, query: mockQuery } });
-    modulesPromise = import('../src/context/builder.js').then((builder) => ({
+    modulesPromise = import('../src/module/context/builder.js').then((builder) => ({
       summarizeCluster: builder.summarizeCluster,
     }));
   }

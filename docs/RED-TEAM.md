@@ -68,7 +68,7 @@ encoding tricks:
    nickname/WhatsApp push name (the class fixed by issue #227's display-name
    quarantine escape) and see whether *creative* variants (unicode
    look-alikes for `<`/`>`, zero-width characters, RTL overrides) still slip
-   through `sanitizeDisplayName` (`src/agent/systemPrompt.ts`).
+   through `sanitizeDisplayName` (`src/base/agent/systemPrompt.ts`).
 2. **Recalled-content / memory injection** — seed a conversation with
    messages designed to be recalled later (`remember_search`, automatic
    recall) that try to redirect a *future* turn's behaviour.
@@ -92,7 +92,7 @@ encoding tricks:
 
 - Run a sweep **on a schedule** (suggested: monthly) and **before any
   notable prompt or tool change** — new personas, new tools, edits to
-  `src/agent/systemPrompt.ts`/`src/agent/tools.ts`/`src/agent/outbound.ts`.
+  `src/base/agent/systemPrompt.ts`/`src/module/agent/tools.ts`/`src/base/agent/outbound.ts`.
 - A sweep is a few hours of a maintainer's own time and their own Max-pool
   budget; there's no expectation of running it continuously.
 

@@ -29,7 +29,7 @@ site can't carry the metadata.
 ### `ToolDef` — one declaration carries everything
 
 ```ts
-// src/agent/tools/types.ts
+// src/base/agent/tools/types.ts
 export interface ToolDef<Shape extends ZodRawShape = ZodRawShape> {
   /** Bare snake_case name; the registry derives `mcp__community__<name>`
       everywhere — the prefix is never hand-typed again. */
@@ -76,7 +76,7 @@ and five helper closures. Handlers instead take an explicit `ctx`, built once
 per turn by a kernel factory:
 
 ```ts
-// src/agent/tools/context.ts
+// src/module/agent/tools/context.ts
 export interface ToolContext {
   caller: CallerContext;
   adapter: PlatformAdapter;
@@ -108,7 +108,7 @@ Security-critical properties this preserves **in exactly one place**:
 ### Registry assembly and the server
 
 ```ts
-// src/agent/tools/index.ts — THE single source of truth
+// src/module/agent/tools/index.ts — THE single source of truth
 export const TOOL_REGISTRY: readonly ToolDef[] = [
   ...infoTools, ...knowledgeMemberTools, ...memoryTools, ...selfServiceTools,
   ...feedbackTools, ...socialTools, ...projectTools, ...moderationTools,
@@ -153,10 +153,10 @@ name lists. The predicates read live config at call time.
 ## 3. File layout
 
 ```
-src/agent/tools.ts            → pure barrel: re-exports buildToolServer, every
+src/module/agent/tools.ts            → pure barrel: re-exports buildToolServer, every
                                  helper/test-visible export, unchanged paths for
                                  the 21 test files that import from it
-src/agent/tools/
+src/module/agent/tools/
   index.ts                    → TOOL_REGISTRY + buildToolServer
   types.ts                    → ToolDef, ToolContext types
   context.ts                  → makeToolContext (audited/requireConfirm/… kernel)
@@ -182,7 +182,7 @@ sequence, each individually green and behaviour-neutral:
   `ToolContext`, `makeToolContext` (the closure helpers move here), registry
   scaffold, and the **dev-team domain (6 tools) + image gen (1 tool)**
   converted — the cleanest cluster (transport already lives in
-  `src/devTeam/client.ts`). `buildToolServer` becomes
+  `src/module/devTeam/client.ts`). `buildToolServer` becomes
   `[...legacyClosureTools, ...registryTools]`. Crucially PR A adds the
   **cross-check test**: for every converted def, its `minTier`/`platforms`/
   `featureFlag` must agree with the (still-authoritative) hand arrays in

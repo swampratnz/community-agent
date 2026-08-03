@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+import type { OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
 
 // Dev-team-watch consecutive-failure alerting (issue #452). Its own
 // process/file because DEV_TEAM_ENABLED is pinned ON here (opposite of
@@ -20,9 +20,10 @@ process.env.DEV_TEAM_AUTH_TOKEN = 'test-dev-team-token';
 // end of statusCheckAlertThreshold; tests/devTeamWatchAlertCoarseCadence.test.ts
 // pins the floored end with DEV_TEAM_WATCH_POLL_MINUTES=60.
 
-const { startDevTeamWatchPoller, statusCheckAlertThreshold } = await import('../src/backgroundJobs.js');
+const { startDevTeamWatchPoller, statusCheckAlertThreshold } =
+  await import('../src/module/backgroundJobs.js');
 const { getJobHealthSnapshot, resetJobHealthRegistryForTests } =
-  await import('../src/backgroundJobHealth.js');
+  await import('../src/base/backgroundJobHealth.js');
 
 const POLL_MS = 1 * 60_000;
 const THRESHOLD = statusCheckAlertThreshold(1);

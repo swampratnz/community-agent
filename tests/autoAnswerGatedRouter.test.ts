@@ -1,7 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { AgentReply } from '../src/agent/core.js';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import '../src/module/strings/notices.js';
+import type { AgentReply } from '../src/base/agent/core.js';
+import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -18,8 +22,9 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 process.env.AUTO_ANSWER_CHANNEL_IDS = 'auto-chan-1';
 
-const { Router, makeRouterDeps } = await import('../src/router.js');
-const { embed } = await import('../src/storage/embeddings.js');
+const { Router } = await import('../src/base/router.js');
+const { makeRouterDeps } = await import('../src/module/routerWiring.js');
+const { embed } = await import('../src/base/storage/embeddings.js');
 
 await embed('warmup').catch(() => {});
 

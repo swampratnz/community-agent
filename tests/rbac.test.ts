@@ -10,8 +10,11 @@ process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 
+// The tier lists are registered by the tool registry at ITS module scope
+// (rbac.ts fails closed until then), so import the registry first.
+await import('../src/module/agent/tools/index.js');
 const { ADMIN_TOOLS, MEMBER_TOOLS, SUPER_ADMIN_TOOLS, assertAtLeast, atLeast, toolsForRole } =
-  await import('../src/auth/rbac.js');
+  await import('../src/base/auth/rbac.js');
 
 test('tier ordering', () => {
   assert.ok(atLeast('super_admin', 'admin'));

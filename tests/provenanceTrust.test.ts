@@ -2,10 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-// Pure pins for the provenance → trust registration (src/storage/provenance.ts)
+// Pure pins for the provenance → trust registration (src/base/storage/provenance.ts)
 // the AGENT-BASE-PLAN item-4 storage split introduced. provenance.ts is a leaf
 // (no config/db imports), so no dummy env is needed here.
-import { registerProvenance, trustOf } from '../src/storage/provenance.js';
+import { registerProvenance, trustOf } from '../src/base/storage/provenance.js';
 
 test("SECURITY: trustOf is fail-closed — an UNREGISTERED created_by_role value is 'quarantined', never trusted by accident", () => {
   // The old `!== 'auto'` shape failed OPEN: any unknown value was treated as
@@ -37,8 +37,11 @@ test("SQL quarantine predicates keep the fail-closed != 'auto' form — they sta
   // the database: listKnowledgeTopics, listCuratedKnowledgeCreatedSince,
   // listReleaseWatchUpdatesSince. Rewriting any of them as an enumeration of
   // registered-trusted values would flip the boundary from fail-closed to
-  // enumerate-open — see the comment block in src/storage/provenance.ts.
-  const source = readFileSync(new URL('../src/storage/repository/knowledge.ts', import.meta.url), 'utf8');
+  // enumerate-open — see the comment block in src/base/storage/provenance.ts.
+  const source = readFileSync(
+    new URL('../src/base/storage/repository/knowledge.ts', import.meta.url),
+    'utf8',
+  );
   const occurrences = source.match(/AND created_by_role != 'auto'/g) ?? [];
   assert.equal(
     occurrences.length,

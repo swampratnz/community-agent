@@ -1,6 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { IncomingMessage, PlatformAdapter } from '../src/platforms/types.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import '../src/module/strings/notices.js';
+import type { IncomingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment before
 // importing router.ts, matching tests/router.test.ts's convention.
@@ -17,8 +21,9 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.ACCESS_MODE_WHATSAPP = 'open';
 process.env.SUPER_ADMIN_WHATSAPP_NUMBERS = 'super-1,super-2';
 
-const { Router, makeRouterDeps } = await import('../src/router.js');
-const { WindowClosedError } = await import('../src/platforms/whatsapp/cloudAdapter.js');
+const { Router } = await import('../src/base/router.js');
+const { makeRouterDeps } = await import('../src/module/routerWiring.js');
+const { WindowClosedError } = await import('../src/base/platforms/whatsapp/cloudAdapter.js');
 
 /**
  * A fake Cloud-like adapter (same shape as

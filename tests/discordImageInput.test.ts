@@ -1,7 +1,24 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
+// The default bad-word list is community content registered at its own module
+// scope (src/index.ts imports it in production); the moderation wordlist fails
+// closed until then, and constructing a Discord adapter builds a Moderator.
+import '../src/module/moderation/badWords.js';
+// The adapters take their community text pack as a required constructor
+// parameter now (agent-base plan item 6) — production hands it over in
+// src/module/platforms/factories.ts, so these constructions pass the same pack.
+import { DISCORD_TEXT_PACK } from '../src/module/platforms/textPacks.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import '../src/module/strings/notices.js';
 import { ChannelType } from 'discord.js';
-import type { IncomingMessage } from '../src/platforms/types.js';
+import type { IncomingMessage } from '../src/base/platforms/types.js';
+// Community content registrations (prompt sections + persona roster) — the
+// composition-root contract: src/index.ts registers these in production, so
+// tests that assemble prompts register them explicitly here.
+import '../src/module/agent/communityPromptSections.js';
+import '../src/module/agent/personas.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -14,10 +31,10 @@ process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 
-const { DiscordAdapter } = await import('../src/platforms/discord/adapter.js');
-const { config } = await import('../src/config.js');
-const { pool } = await import('../src/storage/db.js');
-const { buildSystemPrompt } = await import('../src/agent/systemPrompt.js');
+const { DiscordAdapter } = await import('../src/base/platforms/discord/adapter.js');
+const { config } = await import('../src/base/config.js');
+const { pool } = await import('../src/base/storage/db.js');
+const { buildSystemPrompt } = await import('../src/base/agent/systemPrompt.js');
 
 type Adapter = InstanceType<typeof DiscordAdapter>;
 
@@ -130,7 +147,7 @@ test('precondition: IMAGE_INPUT_MIN_ROLE defaults to super_admin (acceptance cri
 });
 
 test('Discord image input: an enabled super-admin image attachment is fetched, base64-encoded, and attached to the IncomingMessage (acceptance criterion 2)', async () => {
-  const adapter = new DiscordAdapter() as unknown as DiscordImageAdapter;
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK) as unknown as DiscordImageAdapter;
   let seen: IncomingMessage | null = null;
   adapter.onMessage(async (m) => {
     seen = m;
@@ -161,7 +178,7 @@ test('SECURITY: with IMAGE_INPUT_ENABLED unset/false, Discord message handling �
     { contentType: 'application/pdf', size: 100 },
     undefined,
   ]) {
-    const adapter = new DiscordAdapter() as unknown as DiscordImageAdapter;
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK) as unknown as DiscordImageAdapter;
     let seen: IncomingMessage | null = null;
     let seamCalls = 0;
     adapter.onMessage(async (m) => {
@@ -191,7 +208,7 @@ test('SECURITY: a below-IMAGE_INPUT_MIN_ROLE sender at the default (super_admin)
     dbCalls.push(sql);
     return { rows: [], rowCount: 0 };
   });
-  const adapter = new DiscordAdapter() as unknown as DiscordImageAdapter;
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK) as unknown as DiscordImageAdapter;
   let seamCalls = 0;
   let seen: IncomingMessage | null = null;
   adapter.onMessage(async (m) => {
@@ -219,7 +236,7 @@ test('SECURITY: a below-IMAGE_INPUT_MIN_ROLE sender at the default (super_admin)
 
 test('SECURITY: a below-IMAGE_INPUT_MIN_ROLE sender (role resolved via platform identity -> DB, never message content) is refused with zero fetch (acceptance criterion 3)', async (t) => {
   mockDiscordMemberRole(t, 'user-783-4', null); // no stored row => resolves to 'guest'
-  const adapter = new DiscordAdapter() as unknown as DiscordImageAdapter;
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK) as unknown as DiscordImageAdapter;
   let seamCalls = 0;
   let seen: IncomingMessage | null = null;
   adapter.onMessage(async (m) => {
@@ -237,7 +254,7 @@ test('SECURITY: a below-IMAGE_INPUT_MIN_ROLE sender (role resolved via platform 
 });
 
 test('SECURITY: an attachment over IMAGE_INPUT_MAX_BYTES is refused with zero fetch calls (acceptance criterion 3)', async () => {
-  const adapter = new DiscordAdapter() as unknown as DiscordImageAdapter;
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK) as unknown as DiscordImageAdapter;
   let seamCalls = 0;
   adapter.onMessage(async () => {});
   adapter.fetchImageAttachment = async () => {
@@ -251,7 +268,7 @@ test('SECURITY: an attachment over IMAGE_INPUT_MAX_BYTES is refused with zero fe
 });
 
 test('SECURITY: an attachment outside the MIME allowlist is refused with zero fetch calls (acceptance criterion 3)', async () => {
-  const adapter = new DiscordAdapter() as unknown as DiscordImageAdapter;
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK) as unknown as DiscordImageAdapter;
   let seamCalls = 0;
   adapter.onMessage(async () => {});
   adapter.fetchImageAttachment = async () => {
@@ -268,7 +285,7 @@ test('SECURITY: an attachment outside the MIME allowlist is refused with zero fe
 });
 
 test('SECURITY: IMAGE_INPUT_DAILY_LIMIT_PER_USER bounds a single sender — the (N+1)th image within the day is refused before any fetch (acceptance criterion 3)', async () => {
-  const adapter = new DiscordAdapter() as unknown as DiscordImageAdapter;
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK) as unknown as DiscordImageAdapter;
   let seamCalls = 0;
   const seen: IncomingMessage[] = [];
   adapter.onMessage(async (m) => {

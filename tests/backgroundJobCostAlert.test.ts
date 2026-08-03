@@ -1,6 +1,10 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import '../src/module/strings/notices.js';
+import type { OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -33,11 +37,11 @@ const {
   formatBackgroundJobCostAlertMessage,
   makeDefaultBackgroundJobCostAlertRun,
   startBackgroundJobCostAlert,
-} = await import('../src/backgroundJobCostAlert.js');
-const { pool, closeDb } = await import('../src/storage/db.js');
-const { sumBackgroundJobCosts } = await import('../src/storage/repository.js');
-const { config } = await import('../src/config.js');
-const { WindowClosedError } = await import('../src/platforms/whatsapp/cloudAdapter.js');
+} = await import('../src/base/backgroundJobCostAlert.js');
+const { pool, closeDb } = await import('../src/base/storage/db.js');
+const { sumBackgroundJobCosts } = await import('../src/base/storage/repository.js');
+const { config } = await import('../src/base/config.js');
+const { WindowClosedError } = await import('../src/base/platforms/whatsapp/cloudAdapter.js');
 type BackgroundJob = 'moderation_llm' | 'context_builder' | 'knowledge_refresh';
 
 after(async () => {

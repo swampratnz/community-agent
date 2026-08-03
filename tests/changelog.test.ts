@@ -8,7 +8,7 @@ process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 
-const { loadChangelog, recentChanges } = await import('../src/agent/changelog.js');
+const { loadChangelog, recentChanges } = await import('../src/module/agent/changelog.js');
 
 test('loadChangelog parses top-level ## sections and ignores ### subsections', async () => {
   const sections = await loadChangelog();

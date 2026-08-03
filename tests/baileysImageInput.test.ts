@@ -1,6 +1,14 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import type { IncomingMessage } from '../src/platforms/types.js';
+// The adapters take their community text pack as a required constructor
+// parameter now (agent-base plan item 6) — production hands it over in
+// src/module/platforms/factories.ts, so these constructions pass the same pack.
+import { BAILEYS_TEXT_PACK } from '../src/module/platforms/textPacks.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import '../src/module/strings/notices.js';
+import type { IncomingMessage } from '../src/base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -13,9 +21,9 @@ process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 
-const { BaileysAdapter } = await import('../src/platforms/whatsapp/baileysAdapter.js');
-const { config } = await import('../src/config.js');
-const { pool } = await import('../src/storage/db.js');
+const { BaileysAdapter } = await import('../src/base/platforms/whatsapp/baileysAdapter.js');
+const { config } = await import('../src/base/config.js');
+const { pool } = await import('../src/base/storage/db.js');
 
 type Adapter = InstanceType<typeof BaileysAdapter>;
 
@@ -103,7 +111,7 @@ test('precondition: WHATSAPP_IMAGE_INPUT_MIN_ROLE defaults to super_admin (accep
 });
 
 test('WhatsApp image input: an enabled super-admin image attachment is fetched, base64-encoded, and attached to the IncomingMessage (acceptance criterion 1)', async () => {
-  const adapter = new BaileysAdapter() as unknown as ImageAdapter;
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK) as unknown as ImageAdapter;
   let seen: IncomingMessage | null = null;
   adapter.onMessage(async (m) => {
     seen = m;
@@ -127,7 +135,7 @@ test('WhatsApp image input: an enabled super-admin image attachment is fetched, 
 test('SECURITY: with WHATSAPP_IMAGE_INPUT_ENABLED unset/false, WhatsApp message handling — including any image attachment — is byte-identical to today for every role (acceptance criterion 2)', async () => {
   assert.equal(config.whatsapp.image.enabled, false, 'precondition: default env has image input off');
   for (const opts of [{ mimetype: 'image/png' }, { mimetype: 'application/pdf' }]) {
-    const adapter = new BaileysAdapter() as unknown as ImageAdapter;
+    const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK) as unknown as ImageAdapter;
     let seen: IncomingMessage | null = null;
     let seamCalls = 0;
     adapter.onMessage(async (m) => {
@@ -157,7 +165,7 @@ test('SECURITY: a below-WHATSAPP_IMAGE_INPUT_MIN_ROLE sender at the default (sup
     dbCalls.push(sql);
     return { rows: [], rowCount: 0 };
   });
-  const adapter = new BaileysAdapter() as unknown as ImageAdapter;
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK) as unknown as ImageAdapter;
   let seamCalls = 0;
   let seen: IncomingMessage | null = null;
   adapter.onMessage(async (m) => {
@@ -185,7 +193,7 @@ test('SECURITY: a below-WHATSAPP_IMAGE_INPUT_MIN_ROLE sender at the default (sup
 
 test('SECURITY: a below-WHATSAPP_IMAGE_INPUT_MIN_ROLE sender (role resolved via platform identity -> DB, never message content) is refused with zero download (acceptance criterion 3)', async (t) => {
   mockWhatsappMemberRole(t, '64211230004', null); // no stored row => resolves to 'guest'
-  const adapter = new BaileysAdapter() as unknown as ImageAdapter;
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK) as unknown as ImageAdapter;
   let seamCalls = 0;
   let seen: IncomingMessage | null = null;
   adapter.onMessage(async (m) => {
@@ -203,7 +211,7 @@ test('SECURITY: a below-WHATSAPP_IMAGE_INPUT_MIN_ROLE sender (role resolved via 
 });
 
 test('SECURITY: an attachment over WHATSAPP_IMAGE_INPUT_MAX_BYTES is refused with zero download calls (acceptance criterion 5)', async () => {
-  const adapter = new BaileysAdapter() as unknown as ImageAdapter;
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK) as unknown as ImageAdapter;
   let seamCalls = 0;
   adapter.onMessage(async () => {});
   adapter.fetchImageAttachment = async () => {
@@ -217,7 +225,7 @@ test('SECURITY: an attachment over WHATSAPP_IMAGE_INPUT_MAX_BYTES is refused wit
 });
 
 test('SECURITY: an attachment outside the MIME allowlist is refused with zero download calls (acceptance criterion 5)', async () => {
-  const adapter = new BaileysAdapter() as unknown as ImageAdapter;
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK) as unknown as ImageAdapter;
   let seamCalls = 0;
   adapter.onMessage(async () => {});
   adapter.fetchImageAttachment = async () => {
@@ -231,7 +239,7 @@ test('SECURITY: an attachment outside the MIME allowlist is refused with zero do
 });
 
 test('SECURITY: WHATSAPP_IMAGE_INPUT_DAILY_LIMIT_PER_USER bounds a single sender — the (N+1)th image within the day is refused before any download (acceptance criterion 5)', async () => {
-  const adapter = new BaileysAdapter() as unknown as ImageAdapter;
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK) as unknown as ImageAdapter;
   let seamCalls = 0;
   const seen: IncomingMessage[] = [];
   adapter.onMessage(async (m) => {
@@ -265,7 +273,7 @@ test('SECURITY: enabling Discord IMAGE_INPUT_ENABLED does not enable WhatsApp im
   t.after(() => {
     discordImage.enabled = prevDiscord;
   });
-  const adapter = new BaileysAdapter() as unknown as ImageAdapter;
+  const adapter = new BaileysAdapter(BAILEYS_TEXT_PACK) as unknown as ImageAdapter;
   let seamCalls = 0;
   let seen: IncomingMessage | null = null;
   adapter.onMessage(async (m) => {

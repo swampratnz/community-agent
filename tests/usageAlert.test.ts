@@ -11,7 +11,7 @@ process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 
 const { initialUsageAlertTracker, stepUsageAlertTracker, startUsageAlert, formatUsageAlertMessage } =
-  await import('../src/usageAlert.js');
+  await import('../src/base/usageAlert.js');
 
 const THRESHOLD = 100;
 

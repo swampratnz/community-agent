@@ -1,7 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { AgentReply } from '../src/agent/core.js';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import '../src/module/strings/notices.js';
+import type { AgentReply } from '../src/base/agent/core.js';
+import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it. DATABASE_URL
@@ -15,17 +19,18 @@ process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 // This user bypasses the paused/daily-budget DB reads entirely (see
-// src/router.ts), so the "happy path" tests below never depend on
+// src/base/router.ts), so the "happy path" tests below never depend on
 // `community_users` state — only the (unreachable, harmlessly-caught) DB.
 process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 
-const { config } = await import('../src/config.js');
-const { Router, GATED_NOTICE_MI, makeRouterDeps } = await import('../src/router.js');
-const { INTERNAL_ERROR_REPLY } = await import('../src/agent/core.js');
-const { logger } = await import('../src/logger.js');
-const { embed } = await import('../src/storage/embeddings.js');
-const { registerPendingAction, cancelPendingAction } = await import('../src/agent/pendingActions.js');
-const { pool } = await import('../src/storage/db.js');
+const { config } = await import('../src/base/config.js');
+const { Router, GATED_NOTICE_MI } = await import('../src/base/router.js');
+const { makeRouterDeps } = await import('../src/module/routerWiring.js');
+const { INTERNAL_ERROR_REPLY } = await import('../src/base/agent/core.js');
+const { logger } = await import('../src/base/logger.js');
+const { embed } = await import('../src/base/storage/embeddings.js');
+const { registerPendingAction, cancelPendingAction } = await import('../src/base/agent/pendingActions.js');
+const { pool } = await import('../src/base/storage/db.js');
 
 // recordInteraction embeds every message it stores; the embedding pipeline is
 // downloaded/loaded lazily on first use and then memoised. Pre-warm it here
@@ -380,7 +385,7 @@ test('router: a gated-out guest is unaffected by pause — still gets the gated 
   router.register(adapter);
 
   // Gated-mode guest branch returns before the paused check is ever reached
-  // (src/router.ts), so pause state must have no effect on this path.
+  // (src/base/router.ts), so pause state must have no effect on this path.
   await trigger(makeMessage({ userId: 'unknown-guest-1', isDirect: false, addressedToBot: true }));
 
   assert.equal(typingCalls.length, 0);
@@ -659,7 +664,7 @@ test('config: SHUTDOWN_DRAIN_TIMEOUT_MS defaults to 20000ms when unset', () => {
 });
 
 test('drain(): resolves immediately when there are no in-flight chains — no regression to the fast shutdown path (issue #210)', async () => {
-  const router = new Router();
+  const router = new Router(makeRouterDeps());
   const start = Date.now();
   await router.drain(20_000);
   assert.ok(

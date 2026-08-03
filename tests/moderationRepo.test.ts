@@ -25,8 +25,8 @@ const {
   listMemberWarnings,
   listMutedMembers,
   purgeUserData,
-} = await import('../src/storage/repository.js');
-const { pool, closeDb } = await import('../src/storage/db.js');
+} = await import('../src/base/storage/repository.js');
+const { pool, closeDb } = await import('../src/base/storage/db.js');
 
 const RUN = `modwarn-${Date.now()}`;
 const USER = `${RUN}-user`;

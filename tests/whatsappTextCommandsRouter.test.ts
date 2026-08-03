@@ -1,14 +1,19 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { AgentReply } from '../src/agent/core.js';
-import type { IncomingMessage, OutgoingMessage, Platform, PlatformAdapter } from '../src/platforms/types.js';
+import type { AgentReply } from '../src/base/agent/core.js';
+import type {
+  IncomingMessage,
+  OutgoingMessage,
+  Platform,
+  PlatformAdapter,
+} from '../src/base/platforms/types.js';
 import type {
   MemberInterestRow,
   MemberInterestSearchHit,
   SelfInterestMatchResult,
-} from '../src/storage/repository/memberDiscovery.js';
-import type { MemberProject, MemberProjectSearchHit } from '../src/storage/repository/memberProjects.js';
-import type { ShortcutKind } from '../src/storage/repository/shortcutHits.js';
+} from '../src/base/storage/repository/memberDiscovery.js';
+import type { MemberProject, MemberProjectSearchHit } from '../src/base/storage/repository/memberProjects.js';
+import type { ShortcutKind } from '../src/base/storage/repository/shortcutHits.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -40,10 +45,16 @@ process.env.WHATSAPP_TEXT_COMMANDS_ENABLED = 'true';
 const BUDGET_USER_ID = `wa-cmd-budget-${process.pid}-${Date.now()}`;
 process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 
-const { pool, closeDb } = await import('../src/storage/db.js');
-const { config } = await import('../src/config.js');
-const { Router, makeRouterDeps } = await import('../src/router.js');
-const { countRepliesToUser } = await import('../src/storage/repository.js');
+const { pool, closeDb } = await import('../src/base/storage/db.js');
+const { config } = await import('../src/base/config.js');
+// Side-effect import (mechanism/content split): the router's text-command
+// dispatcher reads commands/registry.ts's registered list, which only the
+// community commands module populates — src/index.ts does this in
+// production.
+await import('../src/module/commands.js');
+const { Router } = await import('../src/base/router.js');
+const { makeRouterDeps } = await import('../src/module/routerWiring.js');
+const { countRepliesToUser } = await import('../src/base/storage/repository.js');
 
 const RUN = `wa-cmd-router-${Date.now()}`;
 
@@ -567,9 +578,9 @@ test('"!projects mine" is checked before the general !projects [query] branch �
   assert.equal(sent[0].text, 'No shared projects match that.');
 });
 
-test('acceptance criterion 4: a bare `new Router()` with no listOwnProjectsFn override still constructs, and an unrelated existing command (!guidelines) behaves unchanged (trailing defaulted field)', async (t) => {
+test('acceptance criterion 4: a default `new Router(makeRouterDeps())` with no listOwnProjectsFn override still constructs, and an unrelated existing command (!guidelines) behaves unchanged (trailing defaulted field)', async (t) => {
   mockPoolRole(t, null);
-  const router = new Router();
+  const router = new Router(makeRouterDeps());
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
 

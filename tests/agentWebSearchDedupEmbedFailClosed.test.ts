@@ -1,5 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import '../src/module/strings/notices.js';
 
 // Issue #706 AC4 (SECURITY): a rejected embed() call during the
 // embedding-similarity half of the WebSearch dedup check must still fail
@@ -25,8 +29,13 @@ process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 
+// The tool registry's module-scope registrations (tool tiers, tool-server
+// parts, feature-flag predicates) — the composition-root contract, matching
+// tests/rbac.test.ts.
+await import('../src/module/agent/tools/index.js');
+
 test('SECURITY: issue #706 AC4 — a rejected embed() call during the similarity check fails closed (denies), never lets the call through unbounded', async (t) => {
-  t.mock.module('../src/storage/embeddings.js', {
+  t.mock.module('../src/base/storage/embeddings.js', {
     namedExports: {
       embed: async () => {
         throw new Error('boom: simulated embedding-backend failure');
@@ -34,7 +43,7 @@ test('SECURITY: issue #706 AC4 — a rejected embed() call during the similarity
     },
   });
 
-  const { buildQueryOptions } = await import('../src/agent/core.js');
+  const { buildQueryOptions } = await import('../src/base/agent/core.js');
   const opts = buildQueryOptions('admin', 'prompt', {}, null, 'ws-dedup-embed-fail-closed') as {
     hooks?: {
       PreToolUse?: Array<{

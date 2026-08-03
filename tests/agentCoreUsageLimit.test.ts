@@ -1,7 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { CallerContext } from '../src/auth/rbac.js';
-import type { OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import '../src/module/strings/notices.js';
+import type { CallerContext } from '../src/base/auth/rbac.js';
+import type { OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
+// Community content registrations (prompt sections + persona roster) — the
+// composition-root contract: src/index.ts registers these in production, so
+// tests that assemble prompts register them explicitly here.
+import '../src/module/agent/communityPromptSections.js';
+import '../src/module/agent/personas.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -14,6 +23,11 @@ process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
+
+// The tool registry's module-scope registrations (tool tiers, tool-server
+// parts, feature-flag predicates) — the composition-root contract, matching
+// tests/rbac.test.ts.
+await import('../src/module/agent/tools/index.js');
 
 type QueryBehavior = { mode: 'throw'; message: string } | { mode: 'success'; text: string };
 let behavior: QueryBehavior = { mode: 'success', text: 'ok' };
@@ -31,13 +45,13 @@ function mockQuery() {
   })();
 }
 
-// query() is a static import inside src/agent/core.ts, so once core.js has
+// query() is a static import inside src/base/agent/core.ts, so once core.js has
 // been dynamically imported anywhere in this process the binding is fixed —
 // a later t.mock.module call can't retarget it (see tests/knowledgeScope.test.ts
 // for the same trap). Install the mock once via the first test's context and
 // reuse the cached import; `behavior` is mutated per-test to vary the
 // underlying query() outcome instead.
-let corePromise: Promise<typeof import('../src/agent/core.js')> | null = null;
+let corePromise: Promise<typeof import('../src/base/agent/core.js')> | null = null;
 async function core(t: { mock: { module: (specifier: string, opts: unknown) => void } }) {
   if (!corePromise) {
     // Preserve the real createSdkMcpServer/tool (agent/tools.ts needs them to
@@ -45,7 +59,7 @@ async function core(t: { mock: { module: (specifier: string, opts: unknown) => v
     // this file's classifier tests actually exercise.
     const real = await import('@anthropic-ai/claude-agent-sdk');
     t.mock.module('@anthropic-ai/claude-agent-sdk', { namedExports: { ...real, query: mockQuery } });
-    corePromise = import('../src/agent/core.js');
+    corePromise = import('../src/base/agent/core.js');
   }
   return corePromise;
 }
@@ -87,7 +101,7 @@ function makeCaller(): CallerContext {
 test('runAgentTurn: a usage-limit/overload error gets the honest reply, without a false "admin notified" claim when the DM flag is off (default)', async (t) => {
   const { runAgentTurn } = await core(t);
   const { USAGE_LIMIT_REPLY, USAGE_LIMIT_REPLY_ADMIN_NOTIFIED } =
-    await import('../src/agent/upstreamFailure.js');
+    await import('../src/base/agent/upstreamFailure.js');
   const { adapter, dms } = makeAdapter();
 
   behavior = { mode: 'throw', message: 'rate_limit_error: Number of request tokens has exceeded your limit' };

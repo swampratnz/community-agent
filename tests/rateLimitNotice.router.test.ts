@@ -1,7 +1,11 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { AgentReply } from '../src/agent/core.js';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import '../src/module/strings/notices.js';
+import type { AgentReply } from '../src/base/agent/core.js';
+import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
 
 // Router-level counterpart to rateLimitNotice.test.ts's pure-function unit
 // tests (issue #300's acceptance criteria call for either) — this file
@@ -17,11 +21,12 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 process.env.ACCESS_MODE_DISCORD = 'open';
 
-const { pool, closeDb } = await import('../src/storage/db.js');
-const { Router, makeRouterDeps } = await import('../src/router.js');
+const { pool, closeDb } = await import('../src/base/storage/db.js');
+const { Router } = await import('../src/base/router.js');
+const { makeRouterDeps } = await import('../src/module/routerWiring.js');
 const { RATE_LIMIT_NOTICE_TEXT, RATE_LIMIT_NOTICE_TEXT_MI, RATE_LIMIT_NOTICE_TEXT_PLAIN } =
-  await import('../src/rateLimitNotice.js');
-const { embed } = await import('../src/storage/embeddings.js');
+  await import('../src/base/rateLimitNotice.js');
+const { embed } = await import('../src/base/storage/embeddings.js');
 
 await embed('warmup').catch(() => {});
 
@@ -91,7 +96,7 @@ function makeReply(text: string): AgentReply {
   return { text };
 }
 
-/** RATE_LIMIT is 8 messages/window (src/router.ts) — the 9th trip over-limit. */
+/** RATE_LIMIT is 8 messages/window (src/base/router.ts) — the 9th trip over-limit. */
 const OVER_LIMIT_MESSAGE_COUNT = 9;
 
 test("router (rate-limited): a caller with a standing 'mi' language preference gets RATE_LIMIT_NOTICE_TEXT_MI, not the English default", async () => {

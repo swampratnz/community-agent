@@ -16,10 +16,10 @@ const skip = hasDb
   ? false
   : 'DATABASE_URL not set — skipping DB-integration tests (CLAUDE.md: exercise against a local Postgres 16 + pgvector)';
 
-const { pool, closeDb } = await import('../src/storage/db.js');
-const { config } = await import('../src/config.js');
+const { pool, closeDb } = await import('../src/base/storage/db.js');
+const { config } = await import('../src/base/config.js');
 const { PROJECT_NOTE_CONTENT_MAX_CHARS, PROJECT_NOTE_TITLE_MAX_CHARS } =
-  await import('../src/storage/repository/projects.js');
+  await import('../src/base/storage/repository/projects.js');
 
 /**
  * Projects (issue #927) enforce TWO checks, both in SQL in `visibleProjectIds`:
@@ -78,10 +78,10 @@ const EMBED_FIXTURES: Record<string, number[]> = {
   [OTHER_NOTE]: oneHot(12),
 };
 
-let repoPromise: Promise<typeof import('../src/storage/repository.js')> | null = null;
+let repoPromise: Promise<typeof import('../src/base/storage/repository.js')> | null = null;
 function repo(t: TestContext) {
   if (!repoPromise) {
-    t.mock.module('../src/storage/embeddings.js', {
+    t.mock.module('../src/base/storage/embeddings.js', {
       namedExports: {
         embed: async (text: string) => {
           const vec = EMBED_FIXTURES[text];
@@ -90,12 +90,12 @@ function repo(t: TestContext) {
         },
       },
     });
-    repoPromise = import('../src/storage/repository.js');
+    repoPromise = import('../src/base/storage/repository.js');
   }
   return repoPromise;
 }
 
-type Repo = typeof import('../src/storage/repository.js');
+type Repo = typeof import('../src/base/storage/repository.js');
 
 /**
  * One project with a Discord member, bound to BOUND_CONVO, holding one note.
@@ -604,7 +604,10 @@ test(
   'SECURITY: projects: project membership grants DATA SCOPE ONLY — it never changes the tool surface, exactly as `persons` never touches role',
   { skip },
   async (t) => {
-    const { toolsForRole } = await import('../src/auth/rbac.js');
+    // The tier lists are registered by the tool registry at ITS module scope
+    // (rbac.ts fails closed until then), so import the registry first.
+    await import('../src/module/agent/tools/index.js');
+    const { toolsForRole } = await import('../src/base/auth/rbac.js');
     const r = await repo(t);
     const { project } = await fixture(r, 'tiersurface');
 

@@ -1,7 +1,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
-import type { BackgroundJobName } from '../src/backgroundJobHealth.js';
+import type { OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
+import type { BackgroundJobName } from '../src/base/backgroundJobHealth.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -56,25 +56,25 @@ const {
   defaultKnowledgeRefreshRun,
   defaultContextBuilderRun,
   defaultKnowledgeLinkCheckRun,
-} = await import('../src/backgroundJobs.js');
-const { startRetentionPurge } = await import('../src/retention.js');
-const { startRosterRetentionPurge } = await import('../src/retention.js');
-const { startAdminDigest } = await import('../src/adminDigest.js');
-const { startDepartedAdminAlert } = await import('../src/departedAdminAlert.js');
-const { startUsageCostDigest } = await import('../src/usageCostDigest.js');
-const { startEngagementAlert } = await import('../src/engagementAlert.js');
-const { startAdminLeverageAlert } = await import('../src/adminLeverageAlert.js');
-const { startMemberDigest } = await import('../src/memberDigest.js');
-const { startBackgroundJobCostAlert } = await import('../src/backgroundJobCostAlert.js');
-const { REFRESH_TOPICS, REFRESH_TITLES } = await import('../src/context/knowledgeRefresh.js');
-const { pool, closeDb } = await import('../src/storage/db.js');
-const { config } = await import('../src/config.js');
+} = await import('../src/module/backgroundJobs.js');
+const { startRetentionPurge } = await import('../src/base/retention.js');
+const { startRosterRetentionPurge } = await import('../src/base/retention.js');
+const { startAdminDigest } = await import('../src/module/adminDigest.js');
+const { startDepartedAdminAlert } = await import('../src/module/departedAdminAlert.js');
+const { startUsageCostDigest } = await import('../src/module/usageCostDigest.js');
+const { startEngagementAlert } = await import('../src/module/engagementAlert.js');
+const { startAdminLeverageAlert } = await import('../src/module/adminLeverageAlert.js');
+const { startMemberDigest } = await import('../src/module/memberDigest.js');
+const { startBackgroundJobCostAlert } = await import('../src/base/backgroundJobCostAlert.js');
+const { REFRESH_TOPICS, REFRESH_TITLES } = await import('../src/module/context/knowledgeRefresh.js');
+const { pool, closeDb } = await import('../src/base/storage/db.js');
+const { config } = await import('../src/base/config.js');
 const pgvector = (await import('pgvector/pg')).default;
 const { getJobHealthSnapshot, resetJobHealthRegistryForTests } =
-  await import('../src/backgroundJobHealth.js');
+  await import('../src/base/backgroundJobHealth.js');
 const { getPendingAlertsForTests, getPendingAlertEntriesForTests, resetPendingAlertsForTests } =
-  await import('../src/pendingAlertQueue.js');
-const { WindowClosedError } = await import('../src/platforms/whatsapp/cloudAdapter.js');
+  await import('../src/base/pendingAlertQueue.js');
+const { WindowClosedError } = await import('../src/base/platforms/whatsapp/cloudAdapter.js');
 
 // Pin the docs-ingest dead-URL feature OFF by default here (issue #611): the
 // pre-existing docs-ingest tests in this file drive real page-fetch failures

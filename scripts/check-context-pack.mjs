@@ -18,11 +18,18 @@
 //     different hunks instead of colliding at a shared append point),
 //   * no entry is left as an unwritten stub.
 //
-// Scope is deliberately `src/` only — the subsystem directories and the
-// top-level modules. Workflows are already documented far better in
-// docs/PIPELINE.md than a one-liner could manage, and gating tests/ would mean
-// 160 entries of upkeep for little orientation value. The map file may describe
-// anything it likes OUTSIDE the checked region; only the region is enforced.
+// Scope is deliberately source only — the subsystem directories and the
+// top-level modules of each scanned root. Workflows are already documented far
+// better in docs/PIPELINE.md than a one-liner could manage, and gating tests/
+// would mean 160 entries of upkeep for little orientation value. The map file
+// may describe anything it likes OUTSIDE the checked region; only the region is
+// enforced.
+//
+// `--src <dir>` is REPEATABLE, because since the base/module split there is no
+// single source root: this repo scans `src` (which yields `src/base/`,
+// `src/module/` and the composition root `src/index.ts`) plus each package root
+// in turn, so a subsystem is described at the level a reader actually opens it.
+// Omitted, it defaults to `src` — which is what the fixture-driven tests use.
 //
 // `--write` mechanises the boring half (add/drop/sort) but deliberately CANNOT
 // make the gate green on its own: it inserts a TODO stub for a new module and
@@ -44,6 +51,13 @@ const repoRoot =
   rootFlag !== -1 && process.argv[rootFlag + 1]
     ? path.resolve(process.argv[rootFlag + 1])
     : path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+// Repeatable `--src <dir>`; defaults to the single `src` root.
+const srcRoots = [];
+for (let i = 0; i < process.argv.length - 1; i++) {
+  if (process.argv[i] === '--src') srcRoots.push(process.argv[i + 1].replace(/\/+$/, ''));
+}
+if (srcRoots.length === 0) srcRoots.push('src');
+
 const mapPath = path.join(repoRoot, 'docs', 'agents', 'module-map.md');
 const REGION_BEGIN = '<!-- module-map:begin -->';
 const REGION_END = '<!-- module-map:end -->';
@@ -53,14 +67,18 @@ const STUB = 'TODO: describe this module in one line.';
 const ENTRY_RE = /^- `([^`]+)` — (.+)$/;
 
 // ---- What the map must cover ----------------------------------------------
-// Directories are listed as `src/<name>/` (trailing slash) so a reader can tell
-// at a glance whether an entry is a subsystem or a single module.
+// Directories are listed as `<root>/<name>/` (trailing slash) so a reader can
+// tell at a glance whether an entry is a subsystem or a single module.
 function requiredPaths() {
-  const srcDir = path.join(repoRoot, 'src');
-  const entries = readdirSync(srcDir, { withFileTypes: true });
-  const dirs = entries.filter((e) => e.isDirectory()).map((e) => `src/${e.name}/`);
-  const files = entries.filter((e) => e.isFile() && e.name.endsWith('.ts')).map((e) => `src/${e.name}`);
-  return [...dirs, ...files].sort();
+  const out = new Set();
+  for (const root of srcRoots) {
+    const entries = readdirSync(path.join(repoRoot, root), { withFileTypes: true });
+    for (const e of entries) {
+      if (e.isDirectory()) out.add(`${root}/${e.name}/`);
+      else if (e.isFile() && e.name.endsWith('.ts')) out.add(`${root}/${e.name}`);
+    }
+  }
+  return [...out].sort();
 }
 
 function pathExists(rel) {

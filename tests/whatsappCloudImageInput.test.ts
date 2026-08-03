@@ -1,7 +1,15 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import type { IncomingMessage } from '../src/platforms/types.js';
-import type { CloudInboundMessage } from '../src/platforms/whatsapp/cloudWire.js';
+// The adapters take their community text pack as a required constructor
+// parameter now (agent-base plan item 6) — production hands it over in
+// src/module/platforms/factories.ts, so these constructions pass the same pack.
+import { WHATSAPP_CLOUD_TEXT_PACK } from '../src/module/platforms/textPacks.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import '../src/module/strings/notices.js';
+import type { IncomingMessage } from '../src/base/platforms/types.js';
+import type { CloudInboundMessage } from '../src/base/platforms/whatsapp/cloudWire.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -19,10 +27,14 @@ process.env.WHATSAPP_CLOUD_ACCESS_TOKEN ??= 'test-access-token';
 process.env.WHATSAPP_CLOUD_VERIFY_TOKEN ??= 'test-verify-token';
 process.env.WHATSAPP_CLOUD_APP_SECRET ??= 'test-app-secret';
 
-const { WhatsAppCloudAdapter } = await import('../src/platforms/whatsapp/cloudAdapter.js');
-const { config } = await import('../src/config.js');
-const { pool } = await import('../src/storage/db.js');
-const { toolsForRole, MEMBER_TOOLS, ADMIN_TOOLS, SUPER_ADMIN_TOOLS } = await import('../src/auth/rbac.js');
+const { WhatsAppCloudAdapter } = await import('../src/base/platforms/whatsapp/cloudAdapter.js');
+const { config } = await import('../src/base/config.js');
+const { pool } = await import('../src/base/storage/db.js');
+// The tier lists are registered by the tool registry at ITS module scope
+// (rbac.ts fails closed until then), so import the registry first.
+await import('../src/module/agent/tools/index.js');
+const { toolsForRole, MEMBER_TOOLS, ADMIN_TOOLS, SUPER_ADMIN_TOOLS } =
+  await import('../src/base/auth/rbac.js');
 
 type Adapter = InstanceType<typeof WhatsAppCloudAdapter>;
 
@@ -118,7 +130,7 @@ test('precondition: WHATSAPP_CLOUD_IMAGE_INPUT_MIN_ROLE defaults to super_admin 
 });
 
 test('happy path: an enabled, in-cap, in-byte, allowlisted image from an at-or-above-MIN_ROLE sender resolves + downloads exactly once and grounds the turn (acceptance criterion 5)', async () => {
-  const adapter = new WhatsAppCloudAdapter() as unknown as ImageAdapter;
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK) as unknown as ImageAdapter;
   let seen: IncomingMessage | null = null;
   adapter.onMessage(async (m) => {
     seen = m;
@@ -140,7 +152,7 @@ test('happy path: an enabled, in-cap, in-byte, allowlisted image from an at-or-a
 test('SECURITY: with WHATSAPP_CLOUD_IMAGE_INPUT_ENABLED unset/false, an inbound image produces no IncomingMessage.image and no reply at all — the same total silence as before #891 (acceptance criterion 1)', async () => {
   assert.equal(config.whatsapp.cloud.image.enabled, false, 'precondition: default env has image input off');
   for (const opts of [{ caption: 'help!' }, {}]) {
-    const adapter = new WhatsAppCloudAdapter() as unknown as ImageAdapter;
+    const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK) as unknown as ImageAdapter;
     let seen: IncomingMessage | null = null;
     adapter.onMessage(async (m) => {
       seen = m;
@@ -158,7 +170,7 @@ test('SECURITY: with WHATSAPP_CLOUD_IMAGE_INPUT_ENABLED unset/false, an inbound 
 });
 
 test('SECURITY: caption survives extractMessages onto the new image field and is promoted to `text` only once the image is accepted — never discarded, never silently swapped (acceptance criterion 2)', async () => {
-  const { extractMessages } = await import('../src/platforms/whatsapp/cloudWire.js');
+  const { extractMessages } = await import('../src/base/platforms/whatsapp/cloudWire.js');
   const wirePayload = {
     object: 'whatsapp_business_account',
     entry: [
@@ -190,7 +202,7 @@ test('SECURITY: caption survives extractMessages onto the new image field and is
   );
   assert.equal(extracted[0].text, '', 'text stays empty at the wire level — only promoted once accepted');
 
-  const adapter = new WhatsAppCloudAdapter() as unknown as ImageAdapter;
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK) as unknown as ImageAdapter;
   let seen: IncomingMessage | null = null;
   adapter.onMessage(async (m) => {
     seen = m;
@@ -212,7 +224,7 @@ test('SECURITY: (gate order a1) a below-WHATSAPP_CLOUD_IMAGE_INPUT_MIN_ROLE send
     dbCalls.push(sql);
     return { rows: [], rowCount: 0 };
   });
-  const adapter = new WhatsAppCloudAdapter() as unknown as ImageAdapter;
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK) as unknown as ImageAdapter;
   let seen: IncomingMessage | null = null;
   adapter.onMessage(async (m) => {
     seen = m;
@@ -233,7 +245,7 @@ test('SECURITY: (gate order a1) a below-WHATSAPP_CLOUD_IMAGE_INPUT_MIN_ROLE send
 
 test('SECURITY: (gate order a2) a below-WHATSAPP_CLOUD_IMAGE_INPUT_MIN_ROLE sender (role resolved via platform identity -> DB) is refused with zero Graph calls (acceptance criterion 3)', async (t) => {
   mockWhatsappMemberRole(t, '64211230005', null); // no stored row => resolves to 'guest'
-  const adapter = new WhatsAppCloudAdapter() as unknown as ImageAdapter;
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK) as unknown as ImageAdapter;
   let seen: IncomingMessage | null = null;
   adapter.onMessage(async (m) => {
     seen = m;
@@ -248,7 +260,7 @@ test('SECURITY: (gate order a2) a below-WHATSAPP_CLOUD_IMAGE_INPUT_MIN_ROLE send
 });
 
 test('SECURITY: (gate order b) WHATSAPP_CLOUD_IMAGE_INPUT_DAILY_LIMIT_PER_USER bounds a sender — the (N+1)th image is refused with zero Graph calls (acceptance criterion 3)', async () => {
-  const adapter = new WhatsAppCloudAdapter() as unknown as ImageAdapter;
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK) as unknown as ImageAdapter;
   const seen: IncomingMessage[] = [];
   adapter.onMessage(async (m) => {
     seen.push(m);
@@ -277,7 +289,7 @@ test('SECURITY: (gate order b) WHATSAPP_CLOUD_IMAGE_INPUT_DAILY_LIMIT_PER_USER b
 });
 
 test('SECURITY: (gate order c) a non-allowlisted MIME (per Meta webhook metadata) is refused with zero Graph calls (acceptance criterion 3)', async () => {
-  const adapter = new WhatsAppCloudAdapter() as unknown as ImageAdapter;
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK) as unknown as ImageAdapter;
   let seen: IncomingMessage | null = null;
   adapter.onMessage(async (m) => {
     seen = m;
@@ -292,7 +304,7 @@ test('SECURITY: (gate order c) a non-allowlisted MIME (per Meta webhook metadata
 });
 
 test('SECURITY: (gate order d) an attachment over WHATSAPP_CLOUD_IMAGE_INPUT_MAX_BYTES is refused after the metadata resolve but with zero byte-download calls (acceptance criterion 3)', async () => {
-  const adapter = new WhatsAppCloudAdapter() as unknown as ImageAdapter;
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK) as unknown as ImageAdapter;
   let seen: IncomingMessage | null = null;
   adapter.onMessage(async (m) => {
     seen = m;
@@ -311,7 +323,7 @@ test('SECURITY: (gate order d) an attachment over WHATSAPP_CLOUD_IMAGE_INPUT_MAX
 });
 
 test("SECURITY: a resolve/download failure is logged and swallowed — the attachment is dropped, not a crash (mirrors #879's failure posture)", async () => {
-  const adapter = new WhatsAppCloudAdapter() as unknown as ImageAdapter;
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK) as unknown as ImageAdapter;
   let seen: IncomingMessage | null = null;
   adapter.onMessage(async (m) => {
     seen = m;
@@ -337,7 +349,7 @@ test('SECURITY: enabling Baileys WHATSAPP_IMAGE_INPUT_ENABLED (or Discord IMAGE_
     baileysImage.enabled = prevBaileys;
     discordImage.enabled = prevDiscord;
   });
-  const adapter = new WhatsAppCloudAdapter() as unknown as ImageAdapter;
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK) as unknown as ImageAdapter;
   let seen: IncomingMessage | null = null;
   adapter.onMessage(async (m) => {
     seen = m;
@@ -369,7 +381,7 @@ test("SECURITY: WHATSAPP_CLOUD_IMAGE_INPUT_ENABLED adds no tool and does not ele
     assert.deepEqual(toolsForRole('member'), before.member);
     assert.deepEqual(toolsForRole('admin'), before.admin);
     assert.deepEqual(toolsForRole('super_admin'), before.super_admin);
-    // toolsForRole is a pure role -> tool-list mapping (src/auth/rbac.ts) with
+    // toolsForRole is a pure role -> tool-list mapping (src/base/auth/rbac.ts) with
     // no config import at all, so this also pins the tool-surface SHAPE for
     // every tier, not just that it's unchanged by the flag.
     assert.deepEqual(toolsForRole('guest'), [...MEMBER_TOOLS]);

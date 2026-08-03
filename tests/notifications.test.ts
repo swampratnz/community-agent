@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+import type { OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -12,10 +12,10 @@ process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_WHATSAPP_NUMBERS = 'super-1';
 
-const { alertSuperAdmins, makeAlertSlotReserver } = await import('../src/notifications.js');
+const { alertSuperAdmins, makeAlertSlotReserver } = await import('../src/base/notifications.js');
 const { getPendingAlertEntriesForTests, resetPendingAlertsForTests } =
-  await import('../src/pendingAlertQueue.js');
-const { WindowClosedError } = await import('../src/platforms/types.js');
+  await import('../src/base/pendingAlertQueue.js');
+const { WindowClosedError } = await import('../src/base/platforms/types.js');
 
 /**
  * A fake Cloud-like adapter (mirrors `tests/backgroundJobCostAlert.test.ts`'s

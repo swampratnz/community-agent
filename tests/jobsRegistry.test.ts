@@ -12,8 +12,8 @@ process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 
-const { JOB_REGISTRY } = await import('../src/jobs/registry.js');
-const { loadConfig } = await import('../src/config.js');
+const { JOB_REGISTRY } = await import('../src/module/jobs/registry.js');
+const { loadConfig } = await import('../src/base/config.js');
 
 // The minimal valid environment: exactly the four required vars (same set as
 // tests/configSlices.test.ts), so every job's enable flag sits at its default.
@@ -28,7 +28,7 @@ const BASE_ENV: NodeJS.ProcessEnv = {
  * One row per registered job, in REGISTRY ORDER — this table doubles as the
  * pinned start-order list (it is exactly the order index.ts's hand-wired
  * startX() calls ran in before the registry existed; see
- * src/jobs/registry.ts for why reordering must be deliberate).
+ * src/module/jobs/registry.ts for why reordering must be deliberate).
  *
  * `on` is the env that turns the job's gate on (numeric gates use their
  * config minimums; dev-team's flag refinement requires its endpoint+token);

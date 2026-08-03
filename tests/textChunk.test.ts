@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chunkText } from '../src/platforms/textChunk.js';
+import { chunkText } from '../src/base/platforms/textChunk.js';
 
 test('chunkText: text at or under the limit passes through as a single chunk', () => {
   assert.deepEqual(chunkText('hello', 2000), ['hello']);

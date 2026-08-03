@@ -6,7 +6,7 @@ import {
   makeCalendarDayReserver,
   makeCooldownReserver,
   makeSlidingWindowReserver,
-} from '../src/util/rateReservation.js';
+} from '../src/base/util/rateReservation.js';
 
 const HOUR_MS = 60 * 60 * 1000;
 

@@ -1,8 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import '../src/module/strings/notices.js';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+// Community content registrations (prompt sections + persona roster) — the
+// composition-root contract: src/index.ts registers these in production, so
+// tests that assemble prompts register them explicitly here.
+import '../src/module/agent/communityPromptSections.js';
+import '../src/module/agent/personas.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it. This file's whole
@@ -16,9 +25,14 @@ process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.AGENT_SKILLS_ENABLED = 'true';
 
-const { buildQueryOptions } = await import('../src/agent/core.js');
-const { buildSystemPrompt } = await import('../src/agent/systemPrompt.js');
-const { config } = await import('../src/config.js');
+// The tool registry's module-scope registrations (tool tiers, tool-server
+// parts, feature-flag predicates) — the composition-root contract, matching
+// tests/rbac.test.ts.
+await import('../src/module/agent/tools/index.js');
+
+const { buildQueryOptions } = await import('../src/base/agent/core.js');
+const { buildSystemPrompt } = await import('../src/base/agent/systemPrompt.js');
+const { config } = await import('../src/base/config.js');
 
 const caller = {
   platform: 'discord' as const,
@@ -82,7 +96,7 @@ test("SECURITY: AC6/AC7 (#755) — skills is always the literal ENABLED_SKILLS a
 test("SECURITY: issue #757 — claude-code-setup resolves to the bundled SKILL.md and changes no role's disallowedTools", () => {
   const skillPath = join(
     dirname(fileURLToPath(import.meta.url)),
-    '../src/agent/skills/claude-code-setup/SKILL.md',
+    '../src/module/agent/skills/claude-code-setup/SKILL.md',
   );
   const body = readFileSync(skillPath, 'utf8');
   assert.match(
@@ -134,11 +148,12 @@ test('flag on: the assembled system prompt no longer contains the prompt-review 
 // their equality (the "flag on" test above only checks the checklist is
 // ABSENT, not that the replacement matches).
 test('PROMPT_REVIEW_CLAUSE is byte-identical to the prompt-review SKILL.md body (no fork between flag states)', async () => {
-  const { PROMPT_REVIEW_CLAUSE } = await import('../src/agent/systemPrompt.js');
+  const { PROMPT_REVIEW_CLAUSE } = await import('../src/module/agent/communityPromptSections.js');
   const skillPath = join(
     dirname(fileURLToPath(import.meta.url)),
     '..',
     'src',
+    'module',
     'agent',
     'skills',
     'prompt-review',
@@ -174,7 +189,7 @@ const FEATURE_FLAGGED_TOOLS = [
 ] as const;
 
 test('SECURITY: AC7 (#755) — enabling the flag (with agent-architecture-review in ENABLED_SKILLS) does not alter allowedTools/disallowedTools beyond the base tools array — no new MCP tool surface', async () => {
-  const { toolsForRole } = await import('../src/auth/rbac.js');
+  const { toolsForRole } = await import('../src/base/auth/rbac.js');
   for (const role of ['guest', 'member', 'admin', 'super_admin'] as const) {
     const opts = buildQueryOptions(role, 'prompt', {}, null, 'conv-1', 'discord');
     const webSearch = role === 'admin' || role === 'super_admin';
@@ -237,7 +252,7 @@ function listFilesRecursive(dir: string): string[] {
 }
 
 test('SECURITY: AC5 — the bundled skill plugin directory contains no hooks/, agents/, commands/, or .mcp.json path', () => {
-  const skillsDir = join(dirname(fileURLToPath(import.meta.url)), '../src/agent/skills');
+  const skillsDir = join(dirname(fileURLToPath(import.meta.url)), '../src/module/agent/skills');
   const files = listFilesRecursive(skillsDir);
   for (const f of files) {
     assert.doesNotMatch(

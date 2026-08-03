@@ -1,7 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import '../src/module/strings/notices.js';
 
-import { RATE_LIMIT_NOTICE_TEXT, shouldNotifyRateLimited } from '../src/rateLimitNotice.js';
+import { RATE_LIMIT_NOTICE_TEXT, shouldNotifyRateLimited } from '../src/base/rateLimitNotice.js';
 
 const WINDOW_MS = 60_000;
 

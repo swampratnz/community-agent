@@ -7,7 +7,7 @@ import {
   parseVerificationRequest,
   timingSafeEqualString,
   verifySignature,
-} from '../src/platforms/whatsapp/cloudWire.js';
+} from '../src/base/platforms/whatsapp/cloudWire.js';
 
 function sign(body: string, secret: string): string {
   return `sha256=${createHmac('sha256', secret).update(body).digest('hex')}`;

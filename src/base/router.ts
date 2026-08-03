@@ -1,0 +1,2679 @@
+import { config } from './config.js';
+import {
+  PRE_TURN_SPINE,
+  registerPostTurnHandler,
+  registerPreTurnIntercept,
+  registeredPostTurnHandlers,
+  registeredPreTurnIntercepts,
+  type InterceptOutcome,
+  type PostTurnContext,
+  type PreTurnContext,
+  type PreTurnIntercept,
+  type SpineStepName,
+} from './routerIntercepts.js';
+import {
+  registeredCommands,
+  TEXT_COMMAND_UNMATCHED,
+  type WhatsAppTextCommandDeps,
+} from './commands/registry.js';
+import { logger } from './logger.js';
+import { isPureAcknowledgement } from './ackClassifier.js';
+import { atLeast, type CallerContext, type Tier } from './auth/rbac.js';
+import { resolveRole, superAdminIds } from './auth/roles.js';
+import type { IncomingMessage, Platform, PlatformAdapter } from './platforms/types.js';
+import { WindowClosedError } from './platforms/types.js';
+import { sanitizeName } from './util/sanitizeName.js';
+import { INTERNAL_ERROR_REPLY, type runAgentTurn, type AgentReply } from './agent/core.js';
+import { notice } from './strings/catalogue.js';
+import {
+  cancelPendingAction,
+  classifyConfirmReply,
+  hasPendingAction,
+  peekPendingAction,
+  sweepExpiredPendingActions,
+  takePendingAction,
+} from './agent/pendingActions.js';
+import type { isPaused } from './storage/policyStore.js';
+import { recordReplyMapping } from './replyRetraction.js';
+import { queuePendingAlert } from './pendingAlertQueue.js';
+import { isKnowledgeStale, isUserBlocked, listAdmins, recordInteraction } from './storage/repository.js';
+import type {
+  countRepliesToUser,
+  getLanguagePreference,
+  getResponseStyle,
+  hasKnowledgeConflictForId,
+  isKnowledgeLowRated,
+  LanguagePreference,
+  listOwnProjects,
+  listRecentInterests,
+  listRecentProjects,
+  markKnowledgeGapsAlerted,
+  markStaleKnowledgeAlerted,
+  recentQuestionClusters,
+  recordAccessRequest,
+  recordEscalatedKnowledgeGap,
+  recordKnowledgeRetrieval,
+  recordShortcutHit as recordShortcutHitDefault,
+  searchKnowledge,
+  searchMemberInterests,
+  searchMemberInterestsForSelf,
+  searchProjects,
+} from './storage/repository.js';
+import { shouldNotifyRateLimited } from './rateLimitNotice.js';
+import { shouldNotifyPaused } from './pauseNotice.js';
+import { shouldNotifyBudgetCheckFailed } from './budgetCheckFailureNotice.js';
+import { makeAlertSlotReserver } from './notifications.js';
+import {
+  appendWaitClause,
+  appendWaitClauseMi,
+  GATED_NOTICE,
+  waitDaysSince,
+  type buildGatedNotice,
+} from './gatedNotice.js';
+
+// Fixed, human-authored te reo Māori variant (issue #363), served instead of
+// GATED_NOTICE to a gated guest with a standing 'mi' language_prefs row
+// (getLanguagePreference, issue #189) — e.g. a former member who set the
+// preference before being removed. Same trust level as the English constant:
+// no model call, no translation, no injection surface.
+export const GATED_NOTICE_MI = notice('gatedNotice', { language: 'mi' });
+
+// Fixed, human-authored plain-language variant (issue #430) of the static
+// GATED_NOTICE fallback ONLY — `getGatedNotice`'s dynamic admin-name
+// interpolation (gatedNotice.ts's `renderGatedNotice`) is unchanged; see the
+// gated-notice call site below for how the two are told apart. Served to a
+// gated guest with a standing 'plain' response-style preference
+// (getResponseStyle, issue #126) whose language preference is NOT 'mi' —
+// 'mi' takes precedence over 'plain'.
+export const GATED_NOTICE_PLAIN = notice('gatedNotice', { style: 'plain' });
+
+// The three fixed strings the CONFIRM/CANCEL intercept itself authors (issue
+// #405) — the one deterministic path #300/#363's own sweep of this file
+// missed. Same `_MI` + `getLanguagePreference` pattern as every constant
+// above: no model call, no translation, no injection surface, and `.catch(()
+// => 'auto')` at each call site fails safe to the English default.
+export const CANCEL_TEXT = notice('cancelConfirm');
+export const CANCEL_TEXT_MI = notice('cancelConfirm', { language: 'mi' });
+// Deliberately no CANCEL_TEXT_PLAIN (issue #430): already at the floor of
+// simplicity, so a plain variant would be change for change's sake.
+
+export const PERMISSIONS_CHANGED_TEXT = notice('permissionsChanged');
+export const PERMISSIONS_CHANGED_TEXT_MI = notice('permissionsChanged', { language: 'mi' });
+// Fixed, human-authored plain-language variant (issue #430) — rewords the
+// English constant's passive-voice, negation-first construction into a
+// short, direct statement. Same trust level as the English constant.
+export const PERMISSIONS_CHANGED_TEXT_PLAIN = notice('permissionsChanged', { style: 'plain' });
+
+// Fixed, human-authored te reo Māori substitute for the literal `'Failed: '`
+// shell prefix a CONFIRM-gated `requireConfirm` outcome falls back to on a
+// thrown execute() (issue #490 — closing the one gap #405 named out of
+// scope: "the per-tool requireConfirm outcome/failure strings ... stay out
+// of scope and English-only"). Only this fixed shell is translated; the
+// dynamic `result`/error text after it is untouched, same "translate the
+// shell, not the payload" discipline as CODE_TRUNCATED_NOTE_MI (#339) and
+// every other constant in this file.
+export const FAILED_PREFIX_MI = notice('confirmFailedPrefix', { language: 'mi' });
+
+// Symmetric te reo Māori substitute for the literal `'Done: '` shell prefix
+// a successful `requireConfirm` outcome uses when it returns the shared
+// `` `Done: ${result}` `` template (issue #538 — the named follow-up #490
+// deferred). Same "translate the shell, not the payload" discipline as
+// FAILED_PREFIX_MI above: only this fixed prefix is translated, the dynamic
+// `result` text stays byte-identical to the English case. The ~10
+// requireConfirm tools that return fully bespoke (non-`Done:`) success
+// strings stay English-only — the same scope boundary FAILED_PREFIX_MI
+// already draws for bespoke failure strings.
+export const DONE_PREFIX_MI = notice('confirmDonePrefix', { language: 'mi' });
+
+// Wrapper around the deterministic pending-action notice (issue #405),
+// mirroring the "translate the shell, leave the dynamic payload alone"
+// pattern `agent/outbound.ts`'s CODE_TRUNCATED_NOTE_MI already established
+// for its own interpolated placeholder (issue #339) — `description` is a
+// tool-authored action summary (e.g. "delete knowledge entry #5"), not
+// free-form member text, and is embedded unchanged in both variants. `CONFIRM`
+// and `CANCEL` must stay literal, untranslated tokens in the `_MI` variant:
+// `classifyConfirmReply` matches exactly those strings, so translating them
+// would break the confirm protocol itself.
+export const PENDING_NOTICE = notice('pendingNotice');
+export const PENDING_NOTICE_MI = notice('pendingNotice', { language: 'mi' });
+// Fixed, human-authored plain-language variant (issue #430) — same
+// "translate the shell, leave CONFIRM/CANCEL and `description` literal"
+// treatment as PENDING_NOTICE_MI, but also rewords the meta, abstract
+// parenthetical into something concrete a plain-language reader can act on.
+export const PENDING_NOTICE_PLAIN = notice('pendingNotice', { style: 'plain' });
+
+// The five opt-in shortcut-reply strings (ack reply/ackClassifier.ts,
+// knowledge-shortcut suffix #162, guest-knowledge nudge #165, repeat-question
+// prefix #259, repeat-max-turns prefix #306) and their fixed, human-authored
+// te reo Māori variants (issue #435, the closing installment of the #266
+// series) live in the strings catalogue (`strings/notices.ts` entries
+// `ackReply`/`knowledgeShortcutSuffix`/`guestKnowledgeShortcutNudge`/
+// `repeatShortcutNotice`/`repeatMaxTurnsShortcutNotice`) and are selected at
+// their call sites via `notice(id, { language })`. Same trust level as every
+// other catalogue entry: no model call, no translation, no injection
+// surface, and `.catch(() => 'auto')` at each call site fails safe to the
+// English default. All are sent via send() so outbound filtering still
+// applies; the ack reply is deliberately not counted toward the daily reply
+// budget (no outbound recordInteraction call for it — only respond() records
+// outbound), since it isn't a real answer.
+
+/**
+ * Real-time admin alert fired the moment a gated guest's FIRST-EVER addressed
+ * message creates a fresh `access_requests` row (issue #480) — the discrete-
+ * event complement to the weekly digest's passive `pendingAccessRequests`
+ * count, mirroring `notifyReportFiled`'s "push what was pullable" precedent
+ * (#90). Called directly off `recordAccessRequest`'s insert-vs-update
+ * `RETURNING` value in `handle()` below — never routed through the agent/
+ * model loop, so a guest's own message content cannot reach this at all: only
+ * their platform + display name are threaded through, matching
+ * `access_requests`' own "identity + counts only" storage contract.
+ * Guild-wide `listAdmins()` audience (the same recipients the weekly digest's
+ * `pendingAccessRequests` count already reaches), not `superAdminIds()` — an
+ * access request is routine admin business, not a super-admin-tier concern.
+ * The guest's display name is sanitised the same way `list_access_requests`
+ * already renders it (`sanitizeName`), so a hostile name can't fake a fresh
+ * instruction line in front of the human admin reading the DM. Best-effort
+ * per admin/platform: a failed DM to one admin never blocks the others,
+ * matching `notifySuperAdmins`'s own fire-and-forget-per-recipient shape.
+ */
+export async function notifyAccessRequest(
+  adapterFor: (platform: Platform) => PlatformAdapter | undefined,
+  guest: { platform: Platform; userId: string; userName?: string },
+  listAdminsFn: typeof listAdmins = listAdmins,
+): Promise<void> {
+  const admins = await listAdminsFn();
+  if (admins.length === 0) return;
+  const name = guest.userName ? sanitizeName(guest.userName) : '';
+  const message = `🔔 New access request from ${name || guest.userId} on ${guest.platform}. Use add_member to let them in.`;
+  const anyConnected = admins.some((admin) => adapterFor(admin.platform)?.isConnected());
+  if (!anyConnected) {
+    logger.warn(
+      { message },
+      'Access-request alert could not be delivered live — no connected adapter; queued for flush on reconnect',
+    );
+    queuePendingAlert(
+      message,
+      // Guest-reachable (any gated guest's first message triggers this,
+      // rate-limited by ACCESS_REQUEST_ALERT_RATE_LIMIT_PER_HOUR) — mirrors
+      // notifyAdmins' (#625) 'low' rationale so a flood of access requests
+      // during an outage can never evict a genuine 'system' alert (#545).
+      'low',
+      admins.map((admin) => ({ platform: admin.platform, platformUserId: admin.platformUserId })),
+    );
+    return;
+  }
+  for (const admin of admins) {
+    const target = adapterFor(admin.platform);
+    if (!target || !target.isConnected()) continue;
+    target.sendDirectMessage(admin.platformUserId, message).catch((err) => {
+      if (err instanceof WindowClosedError && target.queueForWindowReopen) {
+        target.queueForWindowReopen(admin.platformUserId, message, 'low');
+        logger.warn(
+          { platform: admin.platform, id: admin.platformUserId },
+          'Access-request alert: recipient window closed, queued for reopen',
+        );
+        return;
+      }
+      logger.warn({ err, platform: admin.platform }, 'Access-request alert failed');
+    });
+  }
+}
+
+// Real-time admin escalation after a max-turns failure (issue #479). Every
+// piece below is opt-in behind ESCALATION_TO_ADMIN_ENABLED (default off) and
+// lives entirely in this deterministic router layer — never routed through
+// the model — mirroring the CONFIRM/CANCEL intercept's trust level.
+
+// The three escalation texts — the offer suffix appended to
+// MAX_TURNS_REPLY/_MI (see `offerEscalation`), the "yes"-confirmed
+// acknowledgement, and the ESCALATION_RATE_LIMIT_PER_HOUR-exhausted notice
+// (issue #479 acceptance criterion 6) — live in the strings catalogue
+// (`strings/notices.ts` entries `escalationOfferSuffix`/
+// `escalationConfirmed`/`escalationRateLimited`), selected at their call
+// sites via `notice(id, { language })`.
+
+/**
+ * How long a pending escalation offer stays live (issue #479's "reply yes
+ * within 10 minutes") — a separate, longer window from
+ * REPEAT_SHORTCUT_WINDOW_MS, since a member deciding whether to loop in an
+ * admin plausibly takes longer than a double-tap resend.
+ */
+const ESCALATION_WINDOW_MS = 600_000; // 10 minutes
+
+/**
+ * Guild-wide rolling-hour cap on confirmed escalation notifications
+ * (acceptance criterion 6) — same shape and default as
+ * `ANNOUNCE_RATE_LIMIT_PER_HOUR` (`agent/tools.ts`), exported so tests can
+ * exhaust it by exact count rather than a magic-number loop.
+ */
+export const ESCALATION_RATE_LIMIT_PER_HOUR = 5;
+
+/** Short affirmatives that confirm a pending escalation offer — case-insensitive, trimmed only (no fuzzy matching), matching `classifyConfirmReply`'s discipline. */
+function classifyEscalationConfirm(text: string): boolean {
+  const t = text.trim().toLowerCase();
+  return t === 'yes' || t === 'y' || t === 'āe';
+}
+
+/** The subset of a KnowledgeSearchHit the shortcut path carries through — just enough to render `formatKnowledgeCitationNote` (issue #214). */
+interface KnowledgeShortcutHit {
+  id: number;
+  content: string;
+  updatedAt: Date;
+  lastRetrievedAt: Date | null;
+  sourceUrl: string | null;
+  sourceTitle: string | null;
+  verifiedAt: Date | null;
+  /** Weekly link-rot checker's verdict (issue #448); null means never checked. */
+  sourceUnreachable: boolean | null;
+  sourceCheckedAt: Date | null;
+}
+
+/**
+ * Structural signatures for the four injected `RouterDeps` fields whose real
+ * implementations are community-owned (`agent/tools.ts`, `memberDigest.ts`,
+ * `storage/policies.ts`), declared here rather than as `typeof <import>`
+ * (agent-base plan §Phase-2 Stage 4). A `typeof` over a community export is
+ * still a dependency on that module, only spelled at the type level — this
+ * mechanism file must be able to compile with no community module in the
+ * program at all, so the contract lives with the consumer and the real
+ * exports satisfy it structurally. `routerWiring.ts` is where those real
+ * exports are named.
+ */
+export type NotifyAdminsFn = (
+  adapterFor: (platform: Platform) => PlatformAdapter | undefined,
+  message: string,
+  excludeUserId: string,
+) => Promise<void>;
+
+/** Renders the deterministic citation/freshness note appended to a served knowledge hit. */
+export type FormatKnowledgeCitationNoteFn = (
+  hit: {
+    updatedAt: Date;
+    lastRetrievedAt?: Date | null;
+    autoGenerated?: boolean;
+    sourceUrl?: string | null;
+    sourceTitle?: string | null;
+    verifiedAt?: Date | null;
+    sourceUnreachable?: boolean | null;
+    sourceCheckedAt?: Date | null;
+  },
+  staleDays: number,
+  lowRatedCaveat?: boolean,
+  maxAgeDays?: number,
+  lang?: LanguagePreference,
+) => string;
+
+/** Renders a coarse "~N days ago" age for a timestamp. */
+export type FormatRelativeAgeFn = (updatedAt: Date) => string;
+
+/** Truncates member-authored content to the fixed echo length used in admin alerts. */
+export type TruncateForEchoFn = (content: string) => string;
+
+/** Reads an admin-configured policy text, or null when unset/cleared. */
+export type PolicyTextFn = () => Promise<string | null>;
+
+/** Builds the periodic member digest body, or null when there is nothing to report. */
+export type BuildMemberDigestContentFn = () => Promise<string | null>;
+
+/**
+ * The Router's full injectable surface (agent-base plan §Phase-1 item 7) —
+ * ONE typed deps object replacing the former 28 positional constructor
+ * parameters. Every field is REQUIRED: like `MemberDigestContentDeps`
+ * (memberDigest.ts) and per docs/STANDARDS.md, a *partial* deps object would
+ * silently leave un-stubbed reads pointing at live repository functions, the
+ * exact bug class the tests-typecheck ratchet exists to catch. Production
+ * passes `makeRouterDeps()` (routerWiring.ts — the composition file that
+ * names every real implementation, so this mechanism file never imports the
+ * community content the defaults point at); tests build a full object with
+ * `makeRouterDeps({ ...overrides })`.
+ *
+ * Field provenance (formerly the constructor doc):
+ * - `runTurn` defaults to the real agent core; `typingRefireMs` to a sane
+ *   production cadence (Discord auto-clears its indicator after ~10s, so
+ *   re-firing every 8s keeps it continuously visible); `checkPaused` to the
+ *   real policy read; `searchKnowledgeForShortcut`/`recordShortcutRetrieval`
+ *   to the real DB-backed implementations; `countReplies` to the real
+ *   daily-budget read; `getLangPref` to the real standing-language-preference
+ *   read (issue #300); `checkLowRatedKnowledge` to the real low-rated check
+ *   (issue #337), consulted ONLY from the member `sendKnowledgeShortcut`
+ *   path; `getGatedNotice` to the real TTL-cached, admin-naming gated notice
+ *   builder (issue #360). All are overridable in tests so the
+ *   typing-indicator, pause, knowledge-shortcut, budget-check-failure,
+ *   language-notice, and gated-notice behaviour can be exercised without
+ *   spawning a real Claude Code subprocess, waiting 8 real seconds, or a
+ *   live DB.
+ * - `getRespStyle`: the real standing-response-style read (issue #430),
+ *   mirroring `getLangPref` exactly — consulted at the same call sites, but
+ *   only when `getLangPref` didn't already resolve to 'mi' (which takes
+ *   precedence).
+ * - `recordShortcutHit`: the real DB-backed shortcut-hit recorder (issue
+ *   #440), fired at each of the four member-facing shortcut short-circuits,
+ *   plus `sendWhatsAppTextCommand`'s shared send path (issue #874).
+ * - `notifyAccessRequestFn`: the real `notifyAccessRequest` (issue #480),
+ *   consulted only when `ACCESS_REQUEST_ALERT_ENABLED` is on and
+ *   `recordAccessRequest` reports a fresh insert. `recordAccessRequestFn`:
+ *   the real DB-backed upsert; overridable so its insert-vs-update return
+ *   value can be controlled in tests without a live Postgres.
+ * - `notifyAdminsFn`: the real `listAdmins()`-backed admin alert (issue
+ *   #479), fired from the escalation-confirmation intercept in `handle()`.
+ *   `recordEscalatedGapFn`: the real escalated-gap recorder (issue #514),
+ *   fired alongside it from the same intercept.
+ * - `markStaleKnowledgeAlertedFn`: the real atomic gate+stamp (issue #701),
+ *   consulted from `maybeAlertStaleKnowledge`.
+ * - `getCommunityGuidelinesFn`/`getCommunityGuidelinesMiFn`: the real
+ *   TTL-cached policy reads (issue #850), consulted only from the
+ *   gated-notice branch while `waitDays` is falsy.
+ * - `searchMemberInterestsFn`/`searchProjectsFn`/`listRecentProjectsFn`/
+ *   `buildMemberDigestContentFn`: the real repository/digest reads (issue
+ *   #859), consulted only from `tryWhatsAppTextCommand`'s
+ *   `!whois`/`!projects`/`!digest` branches — overridable so the WhatsApp
+ *   text-command tests can assert `runTurn` (and therefore `embed()`) is
+ *   never reached, without a live DB.
+ * - `recentQuestionClustersFn`: the real clustering read (issue #887),
+ *   consulted only from `maybeAlertRepeatQuestion` when
+ *   `config.repeatQuestionAlert.enabled` is true and the per-conversation
+ *   cooldown has elapsed.
+ * - `searchMemberInterestsForSelfFn` (issue #889): consulted only from
+ *   `tryWhatsAppTextCommand`'s bare-`!whois` branch (no captured query),
+ *   porting the self-match `who_is_into`/`/whois` already have.
+ * - `checkKnowledgeConflict` (issue #918): consulted unconditionally (no
+ *   config gate, matching `knowledge_search`/`/kb`'s own unconditional
+ *   conflict check) from the member `sendKnowledgeShortcut` path ONLY —
+ *   never `sendGuestKnowledgeShortcut`, mirroring `checkLowRatedKnowledge`'s
+ *   member-only scope boundary — and `.catch()`-guarded to `false` like
+ *   every other caveat lookup on that path.
+ * - `listOwnProjectsFn` (issue #916): consulted only from
+ *   `tryWhatsAppTextCommand`'s `!projects mine` branch, keyed on
+ *   `msg.platform`/`msg.userId` only.
+ * - `listRecentInterestsFn` (issue #920): consulted only from the
+ *   bare-`!whois` branch when `searchMemberInterestsForSelfFn` reports
+ *   `hasProfile: false` — the same no-profile browse fallback
+ *   who_is_into/`/whois` gained.
+ * - `formatKnowledgeCitationNoteFn`/`formatRelativeAgeFn`/
+ *   `knowledgeConflictCaveatText`/`truncateForEchoFn` (agent-base plan
+ *   §Phase-2 Stage 3a): the deterministic knowledge/echo formatters the
+ *   shortcut and alert paths render with — community-owned content
+ *   (`agent/tools.js`), so the values are injected here rather than imported
+ *   by the router mechanism; the real exports are the defaults.
+ * - `repeatQuestionFreshnessDays`/`repeatQuestionClusterLimit` (same stage):
+ *   the `adminDigest.ts` clustering window/limit constants
+ *   (`FRESHNESS_DAYS`/`CLUSTER_LIMIT`) `maybeAlertRepeatQuestion` threads
+ *   into `recentQuestionClustersFn`.
+ */
+export interface RouterDeps {
+  runTurn: typeof runAgentTurn;
+  typingRefireMs: number;
+  checkPaused: typeof isPaused;
+  searchKnowledgeForShortcut: typeof searchKnowledge;
+  recordShortcutRetrieval: typeof recordKnowledgeRetrieval;
+  countReplies: typeof countRepliesToUser;
+  getLangPref: typeof getLanguagePreference;
+  checkLowRatedKnowledge: typeof isKnowledgeLowRated;
+  getGatedNotice: typeof buildGatedNotice;
+  getRespStyle: typeof getResponseStyle;
+  recordShortcutHit: typeof recordShortcutHitDefault;
+  recordAccessRequestFn: typeof recordAccessRequest;
+  notifyAccessRequestFn: typeof notifyAccessRequest;
+  notifyAdminsFn: NotifyAdminsFn;
+  recordEscalatedGapFn: typeof recordEscalatedKnowledgeGap;
+  markKnowledgeGapsAlertedFn: typeof markKnowledgeGapsAlerted;
+  markStaleKnowledgeAlertedFn: typeof markStaleKnowledgeAlerted;
+  getCommunityGuidelinesFn: PolicyTextFn;
+  getCommunityGuidelinesMiFn: PolicyTextFn;
+  searchMemberInterestsFn: typeof searchMemberInterests;
+  searchProjectsFn: typeof searchProjects;
+  listRecentProjectsFn: typeof listRecentProjects;
+  buildMemberDigestContentFn: BuildMemberDigestContentFn;
+  recentQuestionClustersFn: typeof recentQuestionClusters;
+  searchMemberInterestsForSelfFn: typeof searchMemberInterestsForSelf;
+  checkKnowledgeConflict: typeof hasKnowledgeConflictForId;
+  listOwnProjectsFn: typeof listOwnProjects;
+  listRecentInterestsFn: typeof listRecentInterests;
+  formatKnowledgeCitationNoteFn: FormatKnowledgeCitationNoteFn;
+  formatRelativeAgeFn: FormatRelativeAgeFn;
+  knowledgeConflictCaveatText: string;
+  truncateForEchoFn: TruncateForEchoFn;
+  repeatQuestionFreshnessDays: number;
+  repeatQuestionClusterLimit: number;
+}
+
+/**
+ * Routes normalised messages to the agent and replies on the originating
+ * platform. Responsibilities:
+ *  - resolve the sender's tier (env super admins + membership DB)
+ *  - gated mode: guests get a global-scope FAQ shortcut answer (if enabled and
+ *    matched) or else a pointer to an admin; their message content is NOT
+ *    stored either way
+ *  - intercept CONFIRM/CANCEL replies for pending destructive actions —
+ *    executed deterministically, never through the model
+ *  - optionally offer, and intercept the confirmation of, a real-time admin
+ *    escalation after a max-turns failure — same non-model trust tier as
+ *    CONFIRM/CANCEL
+ *  - respect the paused policy (super admins only while paused; everyone else
+ *    gets a debounced notice instead of silence)
+ *  - persist member+ messages (audit + learning) regardless of reply
+ *  - per-user rate limit and daily reply budget
+ *  - serialise turns per conversation (session resume is not concurrency-safe)
+ *  - filter every outbound reply (secret redaction + code policy)
+ */
+export class Router {
+  private readonly adapters = new Map<string, PlatformAdapter>();
+  private readonly chains = new Map<string, Promise<void>>();
+  private readonly userHits = new Map<string, number[]>();
+  /** conversationId -> auto-answer timestamps, for the per-channel rolling-hour cap (issue #477, AUTO_ANSWER_RATE_LIMIT_PER_HOUR). */
+  private readonly autoAnswerHits = new Map<string, number[]>();
+
+  private readonly RATE_LIMIT = 8; // messages
+  private readonly RATE_WINDOW_MS = 60_000; // per minute
+  /** userKey -> when they were last told they hit the budget (rolling 24h, matching the budget window). */
+  private readonly budgetNotified = new Map<string, number>();
+  /**
+   * userKey -> when they were last warned they're approaching the daily
+   * budget (issue #511) — the pre-cutoff sibling of `budgetNotified` above,
+   * same key shape and same rolling-24h window, so a caller sitting inside
+   * the warning threshold for several messages in a row is warned once, not
+   * on every message. Only written when DAILY_REPLY_BUDGET_WARN_ENABLED is
+   * on (see `respond()`).
+   */
+  private readonly budgetWarned = new Map<string, number>();
+  /** userKey -> when they were last told they're rate-limited (debounced to the rate-limit window). */
+  private readonly rateLimitNotified = new Map<string, number>();
+  /** userKey -> when they were last told the bot is paused (debounced to PAUSE_NOTIFY_WINDOW_MS). */
+  private readonly pauseNotified = new Map<string, number>();
+  /** Process-wide (not per-user) debounce for the daily-budget check-failure super-admin alert. */
+  private budgetCheckFailureNotifiedAt: number | undefined;
+  /**
+   * `platform:conversationId:userId` -> the last successful reply served to
+   * that exact caller (issue #259) — scoped to the caller, never just the
+   * conversation, so a repeat can never replay one caller's answer to
+   * another. Only populated with a genuine answer (`AgentReply.ok === true`)
+   * that did not just register a new pending CONFIRM action; consumed by the
+   * REPEAT_QUESTION_SHORTCUT_ENABLED short-circuit in `handle()`.
+   */
+  private readonly lastReply = new Map<string, { normalizedText: string; replyText: string; at: number }>();
+  /**
+   * `platform:conversationId:userId` -> the last `error_max_turns` failure
+   * served to that exact caller (issue #306) — the sibling of `lastReply`
+   * above, deliberately kept as its own map rather than folded into it:
+   * `lastReply`'s doc comment and read site both assume a hit is "a genuine
+   * answer to replay", which a max-turns failure is not. Same caller-scoped
+   * key, same window, same sweep; only populated when `AgentReply.
+   * maxTurnsExceeded === true`; consumed by the
+   * REPEAT_MAX_TURNS_SHORTCUT_ENABLED short-circuit in `handle()`.
+   */
+  private readonly lastMaxTurnsFailure = new Map<string, { normalizedText: string; at: number }>();
+  /**
+   * `platform:conversationId:userId` -> the live escalation offer for that
+   * exact caller (issue #479) — created atomically with the offer line
+   * appended to a max-turns failure reply (`offerEscalation`, called from
+   * both `respond()` and `sendRepeatMaxTurnsShortcut`), so the offer is never
+   * shown without a matching entry here and vice versa. `query` is the
+   * caller's own original (unnormalized) message text, echoed (truncated) to
+   * admins on confirmation. Single-shot: consumed (deleted) the moment a
+   * confirming "yes" is matched in `handle()`, so a replayed "yes" can never
+   * fire a second notification. Swept on the same TTL as every other pending
+   * map here.
+   */
+  private readonly pendingEscalations = new Map<string, { query: string; at: number }>();
+  /**
+   * Auto-answer thread id -> parent channel id (+ creation time), issue #477.
+   * A CONFIRM/CANCEL or escalation-confirmation the member types INSIDE an
+   * auto-answer thread arrives with the thread's own id as its
+   * `conversationId`, but the pending action / escalation offer was registered
+   * against the PARENT channel (where the original post lived, and where the
+   * agent turn's `caller.conversationId` pointed). This map translates a
+   * confirming reply arriving inside a known auto-answer thread back to that
+   * parent for the pending-LOOKUP only — registration is unchanged — so a
+   * `forget_me`/destructive CONFIRM (or an escalation "yes") typed exactly
+   * where the bot's notice appeared still resolves instead of being silently
+   * swallowed. Pruned in `sweep()` on the escalation window (the longer of the
+   * two confirm TTLs it has to outlive).
+   */
+  private readonly autoAnswerThreadParents = new Map<string, { parent: string; at: number }>();
+
+  /**
+   * Last-checked timestamp per conversation for the repeat-question-cluster
+   * alert (issue #887), keyed by `convoKey` — `${platform}:${conversationId}`.
+   * Gates `recentQuestionClustersFn` itself (not just the resulting DM)
+   * behind `REPEAT_QUESTION_ALERT_COOLDOWN_MINUTES`; see
+   * `shouldCheckRepeatQuestionCluster`'s doc comment. Pruned in `sweep()` on
+   * the cooldown window itself — a stale entry past its own cooldown carries
+   * no meaning and would only grow the map for an inactive conversation.
+   */
+  private readonly repeatQuestionAlertLastCheck = new Map<string, number>();
+
+  private readonly PAUSE_NOTIFY_WINDOW_MS = 3_600_000; // 1 hour — a pause is typically longer-lived than a rate-limit burst
+  private readonly BUDGET_CHECK_FAILURE_ALERT_WINDOW_MS = 900_000; // 15 minutes — a DB recording failure is a systemic condition, not per-user
+  private readonly REPEAT_SHORTCUT_WINDOW_MS = 120_000; // 2 minutes — long enough for a double-tap/impatient-resend, short enough that a genuinely new question with identical text is unlikely
+
+  private readonly runTurn: typeof runAgentTurn;
+  private readonly typingRefireMs: number;
+  private readonly checkPaused: typeof isPaused;
+  private readonly searchKnowledgeForShortcut: typeof searchKnowledge;
+  private readonly recordShortcutRetrieval: typeof recordKnowledgeRetrieval;
+  private readonly countReplies: typeof countRepliesToUser;
+  private readonly getLangPref: typeof getLanguagePreference;
+  private readonly checkLowRatedKnowledge: typeof isKnowledgeLowRated;
+  private readonly getGatedNotice: typeof buildGatedNotice;
+  private readonly getRespStyle: typeof getResponseStyle;
+  private readonly recordShortcutHit: typeof recordShortcutHitDefault;
+  private readonly recordAccessRequestFn: typeof recordAccessRequest;
+  private readonly notifyAccessRequestFn: typeof notifyAccessRequest;
+  private readonly notifyAdminsFn: NotifyAdminsFn;
+  private readonly recordEscalatedGapFn: typeof recordEscalatedKnowledgeGap;
+  private readonly markKnowledgeGapsAlertedFn: typeof markKnowledgeGapsAlerted;
+  private readonly markStaleKnowledgeAlertedFn: typeof markStaleKnowledgeAlerted;
+  private readonly getCommunityGuidelinesFn: PolicyTextFn;
+  private readonly getCommunityGuidelinesMiFn: PolicyTextFn;
+  private readonly searchMemberInterestsFn: typeof searchMemberInterests;
+  private readonly searchProjectsFn: typeof searchProjects;
+  private readonly listRecentProjectsFn: typeof listRecentProjects;
+  private readonly buildMemberDigestContentFn: BuildMemberDigestContentFn;
+  private readonly recentQuestionClustersFn: typeof recentQuestionClusters;
+  private readonly searchMemberInterestsForSelfFn: typeof searchMemberInterestsForSelf;
+  private readonly checkKnowledgeConflict: typeof hasKnowledgeConflictForId;
+  private readonly listOwnProjectsFn: typeof listOwnProjects;
+  private readonly listRecentInterestsFn: typeof listRecentInterests;
+  private readonly formatKnowledgeCitationNoteFn: FormatKnowledgeCitationNoteFn;
+  private readonly formatRelativeAgeFn: FormatRelativeAgeFn;
+  private readonly knowledgeConflictCaveatText: string;
+  private readonly truncateForEchoFn: TruncateForEchoFn;
+  private readonly repeatQuestionFreshnessDays: number;
+  private readonly repeatQuestionClusterLimit: number;
+
+  /**
+   * ONE deps object (agent-base plan §Phase-1 item 7), replacing the 28
+   * positional constructor parameters whose *positions* had become the API —
+   * every new injectable had to be a trailing field so existing
+   * `new Router(...)` call sites stayed unaffected (see `RouterDeps`'s field
+   * docs for each field's provenance). Production passes
+   * `makeRouterDeps()` (routerWiring.ts) — the composition file supplies
+   * every real implementation, so this mechanism file never imports them.
+   * Tests pass a FULL object too, via `makeRouterDeps({ ...overrides })`,
+   * matching the all-or-nothing deps discipline in
+   * `memberDigest.ts`/`docs/STANDARDS.md`: `RouterDeps` has no optional
+   * fields, so a hand-written literal can never silently omit a field and
+   * fall through to a live-Postgres read.
+   */
+  constructor(deps: RouterDeps) {
+    this.runTurn = deps.runTurn;
+    this.typingRefireMs = deps.typingRefireMs;
+    this.checkPaused = deps.checkPaused;
+    this.searchKnowledgeForShortcut = deps.searchKnowledgeForShortcut;
+    this.recordShortcutRetrieval = deps.recordShortcutRetrieval;
+    this.countReplies = deps.countReplies;
+    this.getLangPref = deps.getLangPref;
+    this.checkLowRatedKnowledge = deps.checkLowRatedKnowledge;
+    this.getGatedNotice = deps.getGatedNotice;
+    this.getRespStyle = deps.getRespStyle;
+    this.recordShortcutHit = deps.recordShortcutHit;
+    this.recordAccessRequestFn = deps.recordAccessRequestFn;
+    this.notifyAccessRequestFn = deps.notifyAccessRequestFn;
+    this.notifyAdminsFn = deps.notifyAdminsFn;
+    this.recordEscalatedGapFn = deps.recordEscalatedGapFn;
+    this.markKnowledgeGapsAlertedFn = deps.markKnowledgeGapsAlertedFn;
+    this.markStaleKnowledgeAlertedFn = deps.markStaleKnowledgeAlertedFn;
+    this.getCommunityGuidelinesFn = deps.getCommunityGuidelinesFn;
+    this.getCommunityGuidelinesMiFn = deps.getCommunityGuidelinesMiFn;
+    this.searchMemberInterestsFn = deps.searchMemberInterestsFn;
+    this.searchProjectsFn = deps.searchProjectsFn;
+    this.listRecentProjectsFn = deps.listRecentProjectsFn;
+    this.buildMemberDigestContentFn = deps.buildMemberDigestContentFn;
+    this.recentQuestionClustersFn = deps.recentQuestionClustersFn;
+    this.searchMemberInterestsForSelfFn = deps.searchMemberInterestsForSelfFn;
+    this.checkKnowledgeConflict = deps.checkKnowledgeConflict;
+    this.listOwnProjectsFn = deps.listOwnProjectsFn;
+    this.listRecentInterestsFn = deps.listRecentInterestsFn;
+    this.formatKnowledgeCitationNoteFn = deps.formatKnowledgeCitationNoteFn;
+    this.formatRelativeAgeFn = deps.formatRelativeAgeFn;
+    this.knowledgeConflictCaveatText = deps.knowledgeConflictCaveatText;
+    this.truncateForEchoFn = deps.truncateForEchoFn;
+    this.repeatQuestionFreshnessDays = deps.repeatQuestionFreshnessDays;
+    this.repeatQuestionClusterLimit = deps.repeatQuestionClusterLimit;
+    setInterval(() => this.sweep(), this.RATE_WINDOW_MS * 5).unref();
+  }
+
+  /**
+   * Reserve one access-request-alert slot against the rolling hourly cap
+   * (`ACCESS_REQUEST_ALERT_RATE_LIMIT_PER_HOUR`, issue #480) — the shared
+   * `makeAlertSlotReserver` window from `notifications.ts`: keyless/
+   * guild-wide rather than per-conversation, matching this alert's
+   * guild-wide `listAdmins()` audience. Returns false without reserving if
+   * the guild already hit `limit` within the last hour; the request is
+   * still recorded by the caller either way (issue #480).
+   */
+  private readonly reserveAccessRequestAlertSlot = makeAlertSlotReserver();
+
+  /**
+   * Reserve one knowledge-gap-cluster-alert slot against the rolling hourly
+   * cap (`KNOWLEDGE_GAP_ALERT_RATE_LIMIT_PER_HOUR`, issue #650), its own
+   * `makeAlertSlotReserver` window. Returns false without reserving if the
+   * guild already hit `limit` within the last hour — the caller (below)
+   * leaves the crossed cluster's rows unalerted in that case, so a later gap
+   * in the same cluster can retry the alert once the window frees (issue
+   * #650 acceptance criterion 6).
+   */
+  private readonly reserveKnowledgeGapAlertSlot = makeAlertSlotReserver();
+
+  /**
+   * Reserve one stale-knowledge-alert slot against the rolling hourly cap
+   * (`KNOWLEDGE_STALE_ALERT_RATE_LIMIT_PER_HOUR`, issue #701), its own
+   * `makeAlertSlotReserver` window. Unlike its knowledge-gap sibling, a miss
+   * here does NOT leave the underlying row unstamped —
+   * `maybeAlertStaleKnowledge` below always stamps `stale_alerted_at` via
+   * `markStaleKnowledgeAlertedFn` before even checking this slot, so a
+   * rate-limited entry doesn't retry-storm (acceptance criterion 5c). This
+   * only gates whether the `notifyAdmins` DM itself goes out.
+   */
+  private readonly reserveStaleKnowledgeAlertSlot = makeAlertSlotReserver();
+
+  /**
+   * Real-time admin nudge for a served, stale knowledge entry (issue #701) —
+   * shared by all three call sites (`knowledge_search`'s post-turn
+   * `reply.staleKnowledgeAlertIds`, `sendKnowledgeShortcut`,
+   * `sendGuestKnowledgeShortcut`). Always stamps via `markStaleKnowledgeAlertedFn`
+   * first — that call is the re-arm gate itself (`stale_alerted_at IS NULL OR
+   * stale_alerted_at < updated_at`), atomic against concurrent callers for the
+   * same id — and only then checks the rate limit for whether to actually
+   * send the DM; a miss here still leaves the stamp in place (see
+   * `reserveStaleKnowledgeAlertSlot`'s doc comment). The DM body is a strict
+   * subset of what `list_knowledge` already returns: the entry's title (or a
+   * length-bounded excerpt via `truncateForEcho` for an untitled entry) plus
+   * a relative-age string — never a member/user identity, query text, or
+   * conversation id.
+   */
+  private async maybeAlertStaleKnowledge(id: number, excludeUserId: string): Promise<void> {
+    const info = await this.markStaleKnowledgeAlertedFn(id).catch((err) => {
+      logger.warn({ err, id }, 'Stale-knowledge alert stamp failed');
+      return null;
+    });
+    if (!info) return;
+    if (!this.reserveStaleKnowledgeAlertSlot(config.knowledgeStaleAlert.rateLimitPerHour)) return;
+    const name = info.title ?? this.truncateForEchoFn(info.content);
+    await this.notifyAdminsFn(
+      (platform) => this.adapters.get(platform),
+      `A knowledge entry has been stale for ${this.formatRelativeAgeFn(info.updatedAt)} and was just shown to a ` +
+        `member: "${name}"`,
+      excludeUserId,
+    ).catch((err) => logger.warn({ err, id }, 'Stale-knowledge admin notification failed'));
+  }
+
+  /**
+   * Reserve one repeat-question-cluster-alert slot against the rolling
+   * hourly cap (`REPEAT_QUESTION_ALERT_RATE_LIMIT_PER_HOUR`, issue #887),
+   * its own `makeAlertSlotReserver` window. Returns false without reserving
+   * if the guild already hit `limit` within the last hour — the caller
+   * (below) simply drops the DM in that case; the underlying cluster is
+   * unaffected and still visible via the weekly digest / `question_digest`
+   * (acceptance criterion 4).
+   */
+  private readonly reserveRepeatQuestionAlertSlot = makeAlertSlotReserver();
+
+  /**
+   * Per-conversation cooldown gate for the repeat-question-cluster alert
+   * (issue #887), keyed identically to `convoKey` — `${platform}:${conversationId}`.
+   * Unlike `reserveKnowledgeGapAlertSlot`/`reserveStaleKnowledgeAlertSlot`
+   * (which gate a cheap, already-triggered DM), this gates the underlying
+   * `recentQuestionClusters` DB call itself, since that call scans and
+   * clusters every `addressed_to_bot` inbound message in its window —
+   * running it on every turn would scale query volume with raw message
+   * volume (acceptance criterion 2). Returns `true` (and stamps `now`,
+   * arming the cooldown) at most once per `cooldownMs` per conversation,
+   * regardless of whether the check that follows ends up alerting — the
+   * cooldown doubles as this feature's only anti-repeat mechanism, since
+   * `interactions` has no stable per-cluster identity to persist an
+   * `alerted_at`-style stamp against (unlike `knowledge_gaps`/`knowledge`).
+   */
+  private shouldCheckRepeatQuestionCluster(key: string, cooldownMs: number): boolean {
+    const now = Date.now();
+    const last = this.repeatQuestionAlertLastCheck.get(key);
+    if (last !== undefined && now - last < cooldownMs) return false;
+    this.repeatQuestionAlertLastCheck.set(key, now);
+    return true;
+  }
+
+  /**
+   * Real-time admin nudge for a generic repeat-question cluster (issue #887)
+   * — the third and last signal named in #650's own deferral list, closing
+   * it. Fired from `respond()` after a genuine success (`reply.ok === true`),
+   * gated first by the per-conversation cooldown above (so the underlying
+   * `recentQuestionClustersFn` call itself is skipped, not just the DM), then
+   * scoped to `[msg.conversationId]` ONLY — strictly narrower than the
+   * admin-tier `question_digest` tool's `callerScope()`, so a cluster from a
+   * conversation the triggering turn wasn't in can never surface here.
+   * SECURITY: the DM body is a strict subset of what `question_digest`
+   * already returns for the same single-conversation scope — the cluster's
+   * `representative` text (`truncateForEcho`-capped, the same bound
+   * `maybeAlertStaleKnowledge`/the knowledge-gap alert already apply) and its
+   * `count`, never a conversation id, platform id, or user id.
+   */
+  private async maybeAlertRepeatQuestion(msg: IncomingMessage): Promise<void> {
+    const cooldownMs = config.repeatQuestionAlert.cooldownMinutes * 60_000;
+    if (!this.shouldCheckRepeatQuestionCluster(this.convoKey(msg), cooldownMs)) return;
+
+    const clusters = await this.recentQuestionClustersFn(
+      [msg.conversationId],
+      this.repeatQuestionFreshnessDays,
+      this.repeatQuestionClusterLimit,
+    ).catch((err) => {
+      logger.warn({ err }, 'Repeat-question cluster check failed');
+      return [];
+    });
+    const crossed = clusters.find((c) => c.count >= config.repeatQuestionAlert.threshold);
+    if (!crossed) return;
+    if (!this.reserveRepeatQuestionAlertSlot(config.repeatQuestionAlert.rateLimitPerHour)) return;
+
+    await this.notifyAdminsFn(
+      (platform) => this.adapters.get(platform),
+      `A repeat question has come up ${crossed.count} times recently and might be worth turning ` +
+        `into a FAQ: "${this.truncateForEchoFn(crossed.representative)}"`,
+      msg.userId,
+    ).catch((err) => logger.warn({ err }, 'Repeat-question cluster admin notification failed'));
+  }
+
+  private sweep(): void {
+    const now = Date.now();
+    for (const [key, hits] of this.userHits) {
+      if (hits.every((t) => now - t >= this.RATE_WINDOW_MS)) this.userHits.delete(key);
+    }
+    const autoAnswerWindowMs = 60 * 60 * 1000;
+    for (const [key, hits] of this.autoAnswerHits) {
+      if (hits.every((t) => now - t >= autoAnswerWindowMs)) this.autoAnswerHits.delete(key);
+    }
+    for (const [key, at] of this.budgetNotified) {
+      if (now - at > 24 * 3_600_000) this.budgetNotified.delete(key);
+    }
+    for (const [key, at] of this.budgetWarned) {
+      if (now - at > 24 * 3_600_000) this.budgetWarned.delete(key);
+    }
+    for (const [key, at] of this.rateLimitNotified) {
+      if (now - at > this.RATE_WINDOW_MS) this.rateLimitNotified.delete(key);
+    }
+    for (const [key, at] of this.pauseNotified) {
+      if (now - at > this.PAUSE_NOTIFY_WINDOW_MS) this.pauseNotified.delete(key);
+    }
+    for (const [key, entry] of this.lastReply) {
+      if (now - entry.at > this.REPEAT_SHORTCUT_WINDOW_MS) this.lastReply.delete(key);
+    }
+    for (const [key, entry] of this.lastMaxTurnsFailure) {
+      if (now - entry.at > this.REPEAT_SHORTCUT_WINDOW_MS) this.lastMaxTurnsFailure.delete(key);
+    }
+    for (const [key, entry] of this.pendingEscalations) {
+      if (now - entry.at > ESCALATION_WINDOW_MS) this.pendingEscalations.delete(key);
+    }
+    for (const [key, entry] of this.autoAnswerThreadParents) {
+      if (now - entry.at > ESCALATION_WINDOW_MS) this.autoAnswerThreadParents.delete(key);
+    }
+    const repeatQuestionCooldownMs = config.repeatQuestionAlert.cooldownMinutes * 60_000;
+    for (const [key, at] of this.repeatQuestionAlertLastCheck) {
+      if (now - at > repeatQuestionCooldownMs) this.repeatQuestionAlertLastCheck.delete(key);
+    }
+    sweepExpiredPendingActions();
+  }
+
+  register(adapter: PlatformAdapter): void {
+    this.adapters.set(adapter.platform, adapter);
+    adapter.onMessage((msg) => this.handle(msg));
+  }
+
+  /**
+   * Waits for every currently in-flight per-conversation chain to settle, or
+   * `timeoutMs`, whichever is first (issue #210) — called from shutdown()
+   * BEFORE adapter.stop(), so a reply generated during the drain window still
+   * goes out on a live connection. `enqueue`'s tracked chain wraps the full
+   * turn (generate → filter → send), so waiting on the snapshot already
+   * covers the send, not just generation.
+   *
+   * Snapshots `this.chains.values()` exactly ONCE. Adapters are still
+   * connected during the drain, so a message arriving mid-drain can start a
+   * NEW chain — deliberately not waited on, or a chatty (or adversarial)
+   * conversation could hold shutdown open for the full timeout every time.
+   * That late turn is best-effort only; the timeout is the backstop that
+   * still bounds total shutdown time regardless.
+   */
+  async drain(timeoutMs: number): Promise<void> {
+    const inFlight = [...this.chains.values()];
+    if (inFlight.length === 0) return;
+
+    const timedOut = await Promise.race([
+      Promise.allSettled(inFlight).then(() => false),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(true), timeoutMs).unref()),
+    ]);
+    logger.info(
+      { inFlight: inFlight.length, timedOut },
+      timedOut
+        ? 'Shutdown drain timed out with turns still in flight'
+        : 'Shutdown drain: all in-flight turns settled',
+    );
+  }
+
+  private convoKey(msg: IncomingMessage): string {
+    return `${msg.platform}:${msg.conversationId}`;
+  }
+
+  /** Scoped to the individual caller (issue #259), unlike `convoKey` — so the repeat-question cache can never replay across users sharing a conversation. */
+  private callerKey(msg: IncomingMessage): string {
+    return `${msg.platform}:${msg.conversationId}:${msg.userId}`;
+  }
+
+  /** Whitespace-only normalization for the repeat-question shortcut (issue #259) — deliberately no case-folding or fuzzy matching, so it only ever catches a byte-for-byte resend. */
+  private normalize(text: string): string {
+    return text.trim().replace(/\s+/g, ' ');
+  }
+
+  private rateLimited(userKey: string): boolean {
+    const now = Date.now();
+    const hits = (this.userHits.get(userKey) ?? []).filter((t) => now - t < this.RATE_WINDOW_MS);
+    hits.push(now);
+    this.userHits.set(userKey, hits);
+    return hits.length > this.RATE_LIMIT;
+  }
+
+  /**
+   * Reserve one auto-answer slot for `conversationId` against a rolling
+   * hourly cap (issue #477), same sliding-window shape as agent/tools.ts's
+   * `reserveAnnounceSlot` — kept as its own instance-scoped map here rather
+   * than reused from tools.ts since auto-answer is router-driven, not a
+   * model-invoked tool. Backed by the configurable
+   * `AUTO_ANSWER_RATE_LIMIT_PER_HOUR` rather than a fixed constant. Never
+   * called for an addressed/mention reply — only the auto-answer path.
+   */
+  private reserveAutoAnswerSlot(conversationId: string): boolean {
+    const now = Date.now();
+    const windowMs = 60 * 60 * 1000;
+    const recent = (this.autoAnswerHits.get(conversationId) ?? []).filter((t) => now - t < windowMs);
+    if (recent.length >= config.discord.autoAnswerRateLimitPerHour) {
+      this.autoAnswerHits.set(conversationId, recent);
+      return false;
+    }
+    recent.push(now);
+    this.autoAnswerHits.set(conversationId, recent);
+    return true;
+  }
+
+  /**
+   * Appends the escalation offer to a max-turns failure reply AND, in the
+   * same step, records the live pending entry behind it (issue #479
+   * acceptance criterion 2) — called from both the fresh-failure path
+   * (`respond()`) and the repeat-max-turns shortcut replay
+   * (`sendRepeatMaxTurnsShortcut`), which also serves this same failure text
+   * and would otherwise show a "reply yes" offer with no pending entry to
+   * back it (the adversarial review's named hazard). Each call re-arms a
+   * fresh `ESCALATION_WINDOW_MS` TTL, overwriting any still-live prior entry
+   * for this caller — a repeat failure genuinely re-offers escalation, it
+   * doesn't extend a stale one.
+   */
+  private offerEscalation(msg: IncomingMessage, failureText: string, isMi: boolean): string {
+    this.pendingEscalations.set(this.callerKey(msg), { query: msg.text, at: Date.now() });
+    return `${failureText}${notice('escalationOfferSuffix', { language: isMi ? 'mi' : undefined })}`;
+  }
+
+  /**
+   * Reserve one guild-wide escalation-notification slot against the rolling
+   * hourly cap (issue #479 acceptance criterion 6, backed by
+   * `ESCALATION_RATE_LIMIT_PER_HOUR`) — the shared `makeAlertSlotReserver`
+   * window from `notifications.ts`, single and shared (not
+   * per-conversation): the cap bounds total admin-notification volume
+   * regardless of which conversation or caller tier triggers it.
+   */
+  private readonly reserveEscalationSlot = makeAlertSlotReserver();
+
+  /**
+   * Creates the Discord thread an auto-answer reply is contained in (issue
+   * #477), anchored to the origin post via its native message id. Throws if
+   * the adapter doesn't support it (only Discord does; callers only reach
+   * here when `msg.platform === 'discord'`) or has no message id, or if the
+   * platform call itself fails — either way the caller falls back to
+   * replying directly in the channel rather than losing the answer.
+   */
+  private async startAutoAnswerThread(msg: IncomingMessage, adapter: PlatformAdapter): Promise<string> {
+    if (!adapter.startAutoAnswerThread) throw new Error('Adapter does not support auto-answer threads');
+    if (!msg.messageId) throw new Error('Auto-answer requires a message id to anchor the thread to');
+    const name = msg.text.trim().slice(0, 90) || 'Question';
+    return adapter.startAutoAnswerThread(msg.conversationId, msg.messageId, name);
+  }
+
+  /**
+   * Appends the community guidelines to the gated notice (issue #850), while
+   * `waitDays` is falsy — a guest's first-ever addressed message, and any
+   * message before a whole day has passed (`waitDaysSince`'s truncation
+   * means this is NOT "exactly once per identity"; see the adversarial
+   * review on issue #850). `waitDays` is the same value the caller already
+   * computed from `firstRequestedAtPromise` for the wait clause — no new DB
+   * read. Returning guests (`waitDays >= 1`) skip the lookup entirely,
+   * rendering byte-identical to today. `mi` selects
+   * `getCommunityGuidelinesMiFn() ?? getCommunityGuidelinesFn()`, the same
+   * fallback order as the `community_guidelines` tool's own 'mi' handling
+   * (`agent/tools.ts`). Guidelines are admin-authored (`set_community_guidelines`,
+   * admin tier) and concatenated verbatim, mirroring the welcome message's
+   * own concatenation (the platform adapters' join-welcome send paths) —
+   * never passed through the model. A read failure degrades to the unchanged
+   * base notice, the same fail-open shape as the `getGatedNotice`/
+   * `getRespStyle` catches on this branch: the guest must still get a reply,
+   * never silence.
+   */
+  private async appendCommunityGuidelinesIfFirstMessage(
+    notice: string,
+    waitDays: number | undefined,
+    mi: boolean,
+  ): Promise<string> {
+    if (waitDays) return notice;
+    const guidelines = await (
+      mi
+        ? this.getCommunityGuidelinesMiFn().then(
+            async (value) => value ?? (await this.getCommunityGuidelinesFn()),
+          )
+        : this.getCommunityGuidelinesFn()
+    ).catch((err) => {
+      logger.warn({ err }, 'Community guidelines read failed; sending gated notice without them');
+      return null;
+    });
+    return guidelines ? `${notice}\n\nCommunity guidelines:\n${guidelines}` : notice;
+  }
+
+  /**
+   * Outbound filtering (secrets + code policy) lives in the adapters' send
+   * paths. `language` and `style` are optional and threaded straight into
+   * `adapter.sendMessage` (issues #339, #657) — every call site except the
+   * main reply send below omits both, so they stay byte-identical to before.
+   */
+  private async send(
+    adapter: PlatformAdapter,
+    conversationId: string,
+    text: string,
+    language?: string,
+    style?: string,
+  ): Promise<string[] | undefined> {
+    return adapter.sendMessage({ conversationId, text, language, style });
+  }
+
+  /**
+   * Best-effort super-admin DM when countRepliesToUser itself fails (not
+   * when it succeeds and finds the user over budget) — the daily reply
+   * budget, the main per-user cost/abuse guardrail, is silently unenforced
+   * for as long as the failure persists (issue #203). Static text only: no
+   * message content, no per-user identifiers. Mirrors usageAlert.ts's
+   * alertSuperAdmins loop shape.
+   */
+  private async alertSuperAdminsBudgetCheckFailed(): Promise<void> {
+    const message =
+      '⚠️ Daily reply-budget check failed (DB error) — the per-user daily limit is not being enforced until this clears. Check logs / DB health.';
+    const connected = [...this.adapters.values()].filter((adapter) => adapter.isConnected());
+    if (connected.length === 0) {
+      logger.warn(
+        { message },
+        'Budget check failure alert could not be delivered live — no connected adapter; queued for flush on reconnect',
+      );
+      queuePendingAlert(message, 'system'); // super-admin-only alert — never evicted by a member-reachable alert (#545)
+      return;
+    }
+    for (const adapter of connected) {
+      for (const id of superAdminIds(adapter.platform)) {
+        adapter.sendDirectMessage(id, message).catch((err) => {
+          if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+            adapter.queueForWindowReopen(id, message, 'system');
+            logger.warn(
+              { platform: adapter.platform, id },
+              'Budget check failure alert: recipient window closed, queued for reopen',
+            );
+            return;
+          }
+          logger.warn({ err, platform: adapter.platform, id }, 'Budget check failure alert DM failed');
+        });
+      }
+    }
+  }
+
+  /**
+   * Serialise `task` behind whatever else is already queued for `key` (a
+   * real turn or a prior ack reply), so a fast path can never overtake a
+   * slower one already in flight for the same conversation.
+   */
+  private async enqueue(key: string, label: string, task: () => Promise<void>): Promise<void> {
+    const prev = this.chains.get(key) ?? Promise.resolve();
+    const next = prev.then(task).catch((err) => logger.error({ err }, `${label} failed`));
+    const tracked = next.finally(() => {
+      if (this.chains.get(key) === tracked) this.chains.delete(key);
+    });
+    this.chains.set(key, tracked);
+    await tracked;
+  }
+
+  /**
+   * The spine step implementations, keyed by the frozen `PRE_TURN_SPINE`
+   * names (routerIntercepts.ts) — a `Record` over `SpineStepName` so a
+   * missing or extra implementation is a compile error, and the ORDER
+   * authority stays the frozen array alone. Each step body was moved
+   * VERBATIM from the old inline `handle()` sequence; only the early
+   * `return;`s became `return 'handled';` and cross-step locals moved onto
+   * `ctx.state`.
+   */
+  private readonly spineSteps: Record<SpineStepName, (ctx: PreTurnContext) => Promise<InterceptOutcome>> = {
+    'block-list': (ctx) => this.blockListStep(ctx),
+    'role-resolution': (ctx) => this.roleResolutionStep(ctx),
+    'gated-guest': (ctx) => this.gatedGuestStep(ctx),
+    'record-inbound': (ctx) => this.recordInboundStep(ctx),
+    'confirm-intercept': (ctx) => this.confirmInterceptStep(ctx),
+    'escalation-confirm': (ctx) => this.escalationConfirmStep(ctx),
+    'addressed-gate': (ctx) => this.addressedGateStep(ctx),
+    pause: (ctx) => this.pauseStep(ctx),
+    'rate-limit': (ctx) => this.rateLimitStep(ctx),
+    'daily-budget': (ctx) => this.dailyBudgetStep(ctx),
+    'auto-answer-reserve': (ctx) => this.autoAnswerReserveStep(ctx),
+    'memory-barrier': (ctx) => this.memoryBarrierStep(ctx),
+    'auto-answer-thread': (ctx) => this.autoAnswerThreadStep(ctx),
+  };
+
+  /**
+   * The full ordered pre-turn chain: the frozen security spine first (built
+   * HERE from `PRE_TURN_SPINE` — no registration API can insert, remove or
+   * reorder a spine step), then the module-registered post-spine intercepts
+   * in registration order. Rebuilt per message so late registrations (module
+   * init) apply; the spine prefix is structurally identical every time.
+   */
+  preTurnChain(): readonly PreTurnIntercept[] {
+    return [
+      ...PRE_TURN_SPINE.map((name) => ({ name, run: this.spineSteps[name] })),
+      ...registeredPreTurnIntercepts(),
+    ];
+  }
+
+  /** Chain step names in execution order — inspected by the SECURITY spine test. */
+  preTurnChainNames(): string[] {
+    return this.preTurnChain().map((intercept) => intercept.name);
+  }
+
+  private async handle(msg: IncomingMessage): Promise<void> {
+    const adapter = this.adapters.get(msg.platform);
+    if (!adapter) return;
+
+    // Run the pre-turn intercept chain (routerIntercepts.ts): the security
+    // spine in its frozen order, then the registered community shortcuts.
+    // Each step either fully handles the message (chain stops) or passes it
+    // on; whatever survives every intercept becomes a real agent turn.
+    const ctx: PreTurnContext = { msg, adapter, router: this, state: {} };
+    for (const intercept of this.preTurnChain()) {
+      if ((await intercept.run(ctx)) === 'handled') return;
+    }
+
+    // Serialise per conversation so session resume stays consistent.
+    await this.enqueue(this.convoKey(msg), 'respond', () =>
+      this.respond(msg, ctx.state.role!, adapter, ctx.state.replyBudget, ctx.state.replyConversationId),
+    );
+  }
+
+  private async blockListStep(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg } = ctx;
+    // Block list (issue #572): checked before role resolution and before any
+    // storage, so a blocked sender gets zero footprint — no interaction row,
+    // no reply — and this overrides `open` access mode's default-allow,
+    // which is exactly the gap `remove_member` cannot reach. Fails open (log
+    // and continue) on a DB error, same posture as the role-resolution catch
+    // just below: one failed check must never itself become an outage.
+    try {
+      if (await isUserBlocked(msg.platform, msg.userId)) return 'handled';
+    } catch (err) {
+      logger.error({ err }, 'Block-list check failed; treating sender as not blocked');
+    }
+    return 'continue';
+  }
+
+  private async roleResolutionStep(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg } = ctx;
+    let role: Tier;
+    try {
+      role = await resolveRole(msg.platform, msg.userId);
+    } catch (err) {
+      logger.error({ err }, 'Role resolution failed; treating sender as guest');
+      role = 'guest';
+    }
+    ctx.state.role = role;
+    return 'continue';
+  }
+
+  private async gatedGuestStep(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg, adapter } = ctx;
+    const role = ctx.state.role!;
+    const gated = config.rbac.accessMode[msg.platform] === 'gated';
+
+    // Gated mode: guests are not part of the community — do not store their
+    // content; if they address the bot, point them at an admin (rate-limited)
+    // and record the request (identity + count only) so admins have a queue.
+    if (gated && role === 'guest') {
+      // Ambient archiving (issue #48; WhatsApp parity issue #103): with
+      // DISCORD_ARCHIVE_ALL_MESSAGES on, or WHATSAPP_ARCHIVE_ALL_GROUPS on, or
+      // the WhatsApp JID in WHATSAPP_ARCHIVE_GROUP_JIDS, guest messages in groups
+      // ARE stored — a deliberate, documented posture change requiring
+      // community notice (SECURITY.md). Guest DMs to the bot stay unstored
+      // either way. Storage only: the addressed-check below still solely
+      // decides whether the agent runs.
+      const archiveAmbient =
+        (msg.platform === 'discord' && config.discord.archiveAllMessages) ||
+        (msg.platform === 'whatsapp' &&
+          (config.whatsapp.archiveAllGroups ||
+            config.whatsapp.archiveGroupJids.includes(msg.conversationId)));
+      if (archiveAmbient && !msg.isDirect && msg.text.trim()) {
+        recordInteraction({
+          platform: msg.platform,
+          conversationId: msg.conversationId,
+          userId: msg.userId,
+          userName: msg.userName,
+          role,
+          direction: 'inbound',
+          content: msg.text,
+          addressedToBot: msg.addressedToBot,
+          isDirect: msg.isDirect,
+          messageId: msg.messageId,
+          kind: msg.addressedToBot ? 'addressed' : 'ambient',
+        }).catch((err) => logger.error({ err }, 'Failed to record ambient interaction'));
+      }
+      if ((msg.addressedToBot || msg.isDirect) && msg.text.trim()) {
+        const userKey = `${msg.platform}:${msg.userId}`;
+        // Real-time admin alert (issue #480): fires ONLY on a fresh
+        // `access_requests` row — a repeat ping from the same still-pending
+        // guest (`inserted === false`) never notifies again, the upsert's own
+        // dedup is the entire debounce.
+        //
+        // The insert-vs-update result is only needed WHEN the alert is enabled,
+        // so it's only awaited then. Flag off/unset keeps the record upsert
+        // fire-and-forget exactly as before #480 — the gated guest's reply path
+        // (the raid-exposed hot path) never blocks on the DB round trip, so
+        // behaviour is genuinely byte-identical when the feature is off.
+        // firstRequestedAtPromise (issue #591): the returning-guest wait
+        // clause needs the row's first_requested_at, which recordAccessRequest
+        // now returns off the same RETURNING clause — zero new queries. In
+        // the alert-disabled branch this promise is created but deliberately
+        // NOT awaited here, preserving #480's non-blocking invariant on the
+        // raid-exposed hot path; it is only awaited below, and only on the
+        // one branch that actually renders a static gated notice, matching
+        // the same "already awaits getLangPref/getGatedNotice/getRespStyle"
+        // precedent that branch sets.
+        let firstRequestedAtPromise: Promise<Date | null>;
+        if (config.accessRequestAlert.enabled) {
+          const result = await this.recordAccessRequestFn({
+            platform: msg.platform,
+            userId: msg.userId,
+            userName: msg.userName,
+          }).catch((err) => {
+            logger.warn({ err }, 'Failed to record access request');
+            return { inserted: false, firstRequestedAt: null as Date | null };
+          });
+          firstRequestedAtPromise = Promise.resolve(result.firstRequestedAt);
+          if (
+            result.inserted &&
+            this.reserveAccessRequestAlertSlot(config.accessRequestAlert.rateLimitPerHour)
+          ) {
+            this.notifyAccessRequestFn((platform) => this.adapters.get(platform), {
+              platform: msg.platform,
+              userId: msg.userId,
+              userName: msg.userName,
+            }).catch((err) => logger.warn({ err }, 'Failed to fire access-request alert'));
+          }
+        } else {
+          firstRequestedAtPromise = this.recordAccessRequestFn({
+            platform: msg.platform,
+            userId: msg.userId,
+            userName: msg.userName,
+          })
+            .then((result) => result.firstRequestedAt)
+            .catch((err) => {
+              logger.warn({ err }, 'Failed to record access request');
+              return null;
+            });
+        }
+        if (!this.rateLimited(userKey)) {
+          // Guest knowledge shortcut (issue #165): before the static "ask an
+          // admin" pointer, try a global-only near-exact FAQ match — same
+          // zero-token local-embedding path as the member-tier shortcut, just
+          // scope-restricted. Off by default; falls through to the static
+          // notice on a miss, a lookup failure, or the flag being off.
+          const hit = config.behaviour.guestKnowledgeShortcutEnabled
+            ? await this.tryKnowledgeShortcut(msg, { scopeRestriction: 'global-only' })
+            : null;
+          if (hit) {
+            await this.sendGuestKnowledgeShortcut(msg, adapter, hit).catch((err) =>
+              logger.warn({ err }, 'Failed to send guest knowledge-shortcut reply'),
+            );
+          } else {
+            // Lookup fires only on this static-notice branch — never on the
+            // guest-knowledge-shortcut-hit branch above, and never on the
+            // rate-limited path (the `if (!this.rateLimited(userKey))` guard),
+            // so no extra DB read is paid where no gated notice is sent
+            // (issue #363 adversarial review). A standing 'mi' preference
+            // gets the fixed, human-authored translation (no admin-name
+            // enumeration), plus the te reo wait clause for a returning guest
+            // (issue #716); everyone else gets the dynamic, admin-naming
+            // English builder (issue #360), which already degrades to the
+            // static GATED_NOTICE internally on a DB failure — the extra
+            // catch here is defense-in-depth so an injected/future builder
+            // can never turn a lookup failure into silence for a gated guest.
+            const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
+            let notice: string;
+            if (lang === 'mi') {
+              // Returning-guest wait clause, te reo parity (issue #716):
+              // reuses the same firstRequestedAtPromise already created
+              // above — no new DB round-trip on this branch.
+              const firstRequestedAt = await firstRequestedAtPromise;
+              const waitDays = firstRequestedAt ? waitDaysSince(firstRequestedAt) : undefined;
+              // Community guidelines (issue #850): appended while waitDays is
+              // falsy, using the same waitDays value — no new DB read.
+              notice = await this.appendCommunityGuidelinesIfFirstMessage(GATED_NOTICE_MI, waitDays, true);
+              notice = appendWaitClauseMi(notice, waitDays);
+            } else {
+              notice = await this.getGatedNotice(msg.platform).catch((err) => {
+                logger.warn({ err }, 'Gated notice builder failed; using the static fallback');
+                return GATED_NOTICE;
+              });
+              // _PLAIN only substitutes for the STATIC fallback (issue #430)
+              // — a dynamic, admin-naming notice is left untouched. The
+              // response-style lookup is deliberately nested inside this
+              // branch so it's never paid on the (far more common) dynamic-
+              // notice path.
+              if (notice === GATED_NOTICE) {
+                const style = await this.getRespStyle(msg.platform, msg.userId).catch(
+                  () => 'standard' as const,
+                );
+                if (style === 'plain') notice = GATED_NOTICE_PLAIN;
+              }
+              // Returning-guest wait clause (issue #591): this branch (and
+              // the 'mi' branch above, issue #716) awaits
+              // firstRequestedAtPromise — an intentional, bounded exception
+              // to #480's fire-and-forget default, matching the notice
+              // path's existing awaits above.
+              const firstRequestedAt = await firstRequestedAtPromise;
+              const waitDays = firstRequestedAt ? waitDaysSince(firstRequestedAt) : undefined;
+              // Community guidelines (issue #850): appended while waitDays is
+              // falsy, using the same waitDays value — no new DB read.
+              notice = await this.appendCommunityGuidelinesIfFirstMessage(notice, waitDays, false);
+              notice = appendWaitClause(notice, waitDays);
+            }
+            await this.send(adapter, msg.conversationId, notice).catch((err) =>
+              logger.warn({ err }, 'Failed to send gated notice'),
+            );
+          }
+        }
+      }
+      return 'handled';
+    }
+    return 'continue';
+  }
+
+  private async recordInboundStep(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg } = ctx;
+    const role = ctx.state.role!;
+    // Record member+ (and open-mode guest) traffic for audit + learning.
+    // Fire-and-forget so embedding CPU never blocks channels we won't answer.
+    ctx.state.recorded = recordInteraction({
+      platform: msg.platform,
+      conversationId: msg.conversationId,
+      userId: msg.userId,
+      userName: msg.userName,
+      role,
+      direction: 'inbound',
+      content: msg.text,
+      addressedToBot: msg.addressedToBot,
+      isDirect: msg.isDirect,
+      messageId: msg.messageId,
+      kind: msg.addressedToBot || msg.isDirect ? 'addressed' : 'ambient',
+    }).catch((err) => logger.error({ err }, 'Failed to record inbound interaction'));
+    return 'continue';
+  }
+
+  private async confirmInterceptStep(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg, adapter } = ctx;
+    const role = ctx.state.role!;
+    // Deterministic CONFIRM/CANCEL intercept for pending destructive actions.
+    // Runs BEFORE the addressed check so a bare "CONFIRM" works in groups
+    // (where plain replies aren't "addressed"). Only fires when this exact
+    // actor has a pending action in this conversation, so it never steals
+    // normal messages. Never reaches the model: injection can request, only
+    // a human can confirm.
+    // A CONFIRM/CANCEL typed inside an auto-answer thread (issue #477) may key
+    // its pending action EITHER under the thread's own id — when a follow-up
+    // typed inside the thread registered the action (issue #519) — OR under the
+    // parent channel, when the action came from the origin post. Prefer the
+    // message's OWN conversation id and only fall back to the parent on a miss,
+    // so a confirm the bot's own notice invited is never dropped in-thread
+    // (audit M1). Non-thread messages resolve to their own id either way.
+    const pendingConversationId = hasPendingAction(msg.platform, msg.conversationId, msg.userId)
+      ? msg.conversationId
+      : (this.autoAnswerThreadParents.get(msg.conversationId)?.parent ?? msg.conversationId);
+    const verdict = classifyConfirmReply(msg.text);
+    if (verdict && hasPendingAction(msg.platform, pendingConversationId, msg.userId)) {
+      if (verdict === 'cancel') {
+        cancelPendingAction(msg.platform, pendingConversationId, msg.userId);
+        const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
+        await this.send(adapter, msg.conversationId, notice('cancelConfirm', { language: lang })).catch(
+          () => {},
+        );
+        return 'handled';
+      }
+      const pending = takePendingAction(msg.platform, pendingConversationId, msg.userId);
+      if (pending) {
+        let outcome: string;
+        // Re-check the actor's CURRENT tier: a role revoked inside the
+        // confirm TTL invalidates the queued action.
+        if (!atLeast(role, pending.minTier)) {
+          const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
+          // Style is only looked up once 'mi' is ruled out (it takes
+          // precedence), so the 'mi' path pays no style DB read — the
+          // selection itself lives in strings/notices.ts.
+          const style =
+            lang === 'mi'
+              ? undefined
+              : await this.getRespStyle(msg.platform, msg.userId).catch(() => 'standard' as const);
+          outcome = notice('permissionsChanged', { language: lang, style });
+        } else {
+          try {
+            outcome = await pending.execute();
+          } catch (err) {
+            outcome = `Failed: ${err instanceof Error ? err.message : String(err)}`;
+          }
+          // Translate the generic `Failed: `/`Done: ` shells (issues #490,
+          // #538) — covers the catch-block fallback above and any
+          // requireConfirm tool that returns its own `Failed: ${result}`- or
+          // `Done: ${result}`-shaped string, without touching agent/tools.ts.
+          // Bespoke, non-templated outcome strings some tools author directly
+          // stay English-only, matching #405's scope boundary exactly (just
+          // closing the templated `Failed: `/`Done: ` halves of it).
+          if (outcome.startsWith('Failed: ')) {
+            const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
+            if (lang === 'mi') {
+              outcome = FAILED_PREFIX_MI + outcome.slice('Failed: '.length);
+            }
+          } else if (outcome.startsWith('Done: ')) {
+            const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
+            if (lang === 'mi') {
+              outcome = DONE_PREFIX_MI + outcome.slice('Done: '.length);
+            }
+          }
+        }
+        await this.send(adapter, msg.conversationId, outcome).catch((err) =>
+          logger.error({ err }, 'Failed to send confirm outcome'),
+        );
+        return 'handled';
+      }
+    }
+    return 'continue';
+  }
+
+  private async escalationConfirmStep(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg, adapter } = ctx;
+    // Deterministic escalation-confirmation intercept (issue #479). Sibling
+    // of the CONFIRM/CANCEL intercept above: runs BEFORE the addressed check
+    // (so a bare "yes" works in a group where a plain reply isn't
+    // "addressed"), entirely in the router, and never reaches the model.
+    // `pendingEscalations` is ONLY ever populated atomically alongside the
+    // offer text itself (`offerEscalation`, called from `respond()` and
+    // `sendRepeatMaxTurnsShortcut`), so a live entry here always means the
+    // caller was actually shown the offer. Deleting the entry BEFORE
+    // checking the rate cap makes consumption single-shot regardless of
+    // outcome: a replayed "yes" can never find the entry again, whether or
+    // not the first attempt cleared the cap (acceptance criteria 4 + 6).
+    // Absence here (never offered, or past the 10-minute TTL) falls straight
+    // through — the text is passed to the model as an ordinary message,
+    // never mistaken for a confirmation.
+    if (config.behaviour.escalationToAdminEnabled && classifyEscalationConfirm(msg.text)) {
+      // Same own-id-first resolution as the CONFIRM/CANCEL intercept above
+      // (audit M1): an escalation offer made on a follow-up typed inside an
+      // auto-answer thread is keyed under the THREAD id, so prefer that and only
+      // fall back to the parent channel (the origin-post offer) on a miss —
+      // otherwise a "yes" typed in-thread would never match its offer.
+      const threadEscalationKey = `${msg.platform}:${msg.conversationId}:${msg.userId}`;
+      const escalationConversationId = this.pendingEscalations.has(threadEscalationKey)
+        ? msg.conversationId
+        : (this.autoAnswerThreadParents.get(msg.conversationId)?.parent ?? msg.conversationId);
+      const escalationKey = `${msg.platform}:${escalationConversationId}:${msg.userId}`;
+      const pendingEscalation = this.pendingEscalations.get(escalationKey);
+      if (pendingEscalation && Date.now() - pendingEscalation.at < ESCALATION_WINDOW_MS) {
+        this.pendingEscalations.delete(escalationKey);
+        const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
+        if (this.reserveEscalationSlot(ESCALATION_RATE_LIMIT_PER_HOUR)) {
+          await this.notifyAdminsFn(
+            (platform) => this.adapters.get(platform),
+            `${msg.userName} asked for help and hit my step limit on ${msg.platform} ` +
+              `(conversation ${msg.conversationId}): "${this.truncateForEchoFn(pendingEscalation.query)}"`,
+            msg.userId,
+          ).catch((err) => logger.warn({ err }, 'Escalation admin notification failed'));
+          // Link this confirmed escalation into the knowledge_gaps curation
+          // queue (issue #514) — only reached inside the reserved-slot
+          // branch, so a rate-limited "yes" never writes a row. Same
+          // fire-and-forget, non-blocking shape as notifyAdminsFn above.
+          this.recordEscalatedGapFn(
+            msg.platform,
+            msg.conversationId,
+            msg.userId,
+            pendingEscalation.query,
+          ).catch((err) => logger.warn({ err }, 'Escalated knowledge gap recording failed'));
+          await this.send(
+            adapter,
+            msg.conversationId,
+            notice('escalationConfirmed', { language: lang }),
+          ).catch(() => {});
+        } else {
+          await this.send(
+            adapter,
+            msg.conversationId,
+            notice('escalationRateLimited', { language: lang }),
+          ).catch(() => {});
+        }
+        return 'handled';
+      }
+    }
+    return 'continue';
+  }
+
+  private async addressedGateStep(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg } = ctx;
+    // Auto-answer (issue #477): an operator-allowlisted Discord channel
+    // (AUTO_ANSWER_CHANNEL_IDS) gets an answer for a plain top-level human
+    // post too, not just one that mentions/replies to the bot — this only
+    // relaxes the summon gate immediately below for exactly that case.
+    // Everything else — CONFIRM intercept above, pause/rate-limit/budget
+    // below, and the role-derived tool surface via resolveRole/toolsForRole
+    // — applies completely unchanged; this widens WHICH posts reach them,
+    // never what a post is allowed to do once there. `isBotAuthor` is a
+    // second, router-level backstop against a self/bot/webhook loop, on top
+    // of the adapter already never constructing an IncomingMessage for one.
+    //
+    // A follow-up posted INSIDE a thread the bot itself opened for an
+    // auto-answer (issue #519) also qualifies: `msg.conversationId` there is
+    // the thread's own id, which is never in `autoAnswerChannelIds` (that
+    // list only ever holds parent channel ids), so without this lookup the
+    // very next message in the same back-and-forth would silently revert to
+    // mention-required. Same map, same `ESCALATION_WINDOW_MS` TTL the
+    // CONFIRM/escalation intercepts above already trust — presence here
+    // means "live", sweep() prunes expired entries on its own tick. Unlike
+    // those intercepts (which only ever check presence/`parent`, never
+    // `at`), the follow-up branch below (issue #542) refreshes `at` on every
+    // follow-up so the window slides forward with activity instead of only
+    // ever counting down from thread creation.
+    const autoAnswerThreadParent = this.autoAnswerThreadParents.get(msg.conversationId)?.parent;
+    const isAutoAnswerCandidate =
+      !msg.addressedToBot &&
+      !msg.isDirect &&
+      !msg.isBotAuthor &&
+      msg.platform === 'discord' &&
+      (config.discord.autoAnswerChannelIds.includes(msg.conversationId) ||
+        autoAnswerThreadParent !== undefined);
+
+    // Only respond when addressed (mention/reply), in a direct conversation,
+    // or an auto-answer candidate.
+    if (!msg.addressedToBot && !msg.isDirect && !isAutoAnswerCandidate) return 'handled';
+    if (!msg.text.trim()) return 'handled';
+    ctx.state.autoAnswerThreadParent = autoAnswerThreadParent;
+    ctx.state.isAutoAnswerCandidate = isAutoAnswerCandidate;
+    return 'continue';
+  }
+
+  private async pauseStep(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg, adapter } = ctx;
+    const role = ctx.state.role!;
+    // Paused: only super admins get through (so they can resume it). Everyone
+    // else gets a debounced notice instead of silence (issue #128, mirroring
+    // the rate-limit/budget notices below) — at most once per
+    // PAUSE_NOTIFY_WINDOW_MS per user, so a busy channel during a long pause
+    // isn't spammed. This check runs BEFORE the rate-limit check below, so a
+    // paused user who is also over the rate limit gets exactly the pause
+    // notice, never both.
+    if (role !== 'super_admin' && (await this.checkPaused().catch(() => false))) {
+      const pauseKey = `${msg.platform}:${msg.userId}`;
+      if (shouldNotifyPaused(this.pauseNotified.get(pauseKey), Date.now(), this.PAUSE_NOTIFY_WINDOW_MS)) {
+        this.pauseNotified.set(pauseKey, Date.now());
+        // Lookup sits inside the debounce guard (issue #300) so a paused
+        // channel's shed messages never pay a per-message DB read — at most
+        // once per PAUSE_NOTIFY_WINDOW_MS per user, same as the send itself.
+        const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
+        // Style only looked up once 'mi' is ruled out (it takes precedence) —
+        // no style DB read on the 'mi' path; selection lives in strings/notices.ts.
+        const style =
+          lang === 'mi'
+            ? undefined
+            : await this.getRespStyle(msg.platform, msg.userId).catch(() => 'standard' as const);
+        await this.send(adapter, msg.conversationId, notice('pauseNotice', { language: lang, style })).catch(
+          () => {},
+        );
+      }
+      return 'handled';
+    }
+    return 'continue';
+  }
+
+  private async rateLimitStep(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg, adapter } = ctx;
+    const userKey = `${msg.platform}:${msg.userId}`;
+    if (this.rateLimited(userKey)) {
+      logger.warn({ userKey }, 'User rate limited');
+      // Notify at most once per rate-limit window — a burst of over-limit
+      // messages gets exactly one notice, not silence and not spam.
+      if (shouldNotifyRateLimited(this.rateLimitNotified.get(userKey), Date.now(), this.RATE_WINDOW_MS)) {
+        this.rateLimitNotified.set(userKey, Date.now());
+        // Lookup sits inside the debounce guard (issue #300) — the
+        // rate-limit path exists to shed load, so it must not add a
+        // per-message DB read to every over-limit message.
+        const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
+        // Same lazy style lookup as the pause notice above.
+        const style =
+          lang === 'mi'
+            ? undefined
+            : await this.getRespStyle(msg.platform, msg.userId).catch(() => 'standard' as const);
+        await this.send(
+          adapter,
+          msg.conversationId,
+          notice('rateLimitNotice', { language: lang, style }),
+        ).catch(() => {});
+      }
+      return 'handled';
+    }
+    ctx.state.userKey = userKey;
+    return 'continue';
+  }
+
+  private async dailyBudgetStep(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg, adapter } = ctx;
+    const role = ctx.state.role!;
+    const userKey = ctx.state.userKey!;
+    // Daily reply budget (super admins exempt). `replyBudget` is hoisted out
+    // of this block (issue #511) so the already-fetched `used`/`limit` pair
+    // can be threaded into `respond()` below for the approaching-budget
+    // warning, instead of being discarded once the `used < limit` check
+    // passes — no new DB query, reusing the exact read this block already
+    // makes.
+    const limit = config.behaviour.dailyReplyLimitPerUser;
+    let replyBudget: { used: number; limit: number } | undefined;
+    if (limit > 0 && role !== 'super_admin') {
+      const used = await this.countReplies(msg.platform, msg.userId).catch((err) => {
+        logger.error({ err, platform: msg.platform }, 'daily_reply_budget_check_failed');
+        if (
+          shouldNotifyBudgetCheckFailed(
+            this.budgetCheckFailureNotifiedAt,
+            Date.now(),
+            this.BUDGET_CHECK_FAILURE_ALERT_WINDOW_MS,
+          )
+        ) {
+          this.budgetCheckFailureNotifiedAt = Date.now();
+          void this.alertSuperAdminsBudgetCheckFailed();
+        }
+        return 0;
+      });
+      if (used >= limit) {
+        // Notify at most once per rolling 24h — same window as the budget itself.
+        const lastNotified = this.budgetNotified.get(userKey) ?? 0;
+        if (Date.now() - lastNotified > 24 * 3_600_000) {
+          this.budgetNotified.set(userKey, Date.now());
+          // Lookup sits inside the debounce guard (issue #300) — the daily
+          // budget path exists to shed load, so it must not add a
+          // per-message DB read to every over-budget message.
+          const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
+          // Same lazy style lookup as the pause/rate-limit notices above.
+          const style =
+            lang === 'mi'
+              ? undefined
+              : await this.getRespStyle(msg.platform, msg.userId).catch(() => 'standard' as const);
+          await this.send(
+            adapter,
+            msg.conversationId,
+            notice('dailyBudgetNotice', { language: lang, style }),
+          ).catch(() => {});
+        }
+        return 'handled';
+      }
+      replyBudget = { used, limit };
+    }
+    ctx.state.replyBudget = replyBudget;
+    return 'continue';
+  }
+
+  private async autoAnswerReserveStep(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg } = ctx;
+    const isAutoAnswerCandidate = ctx.state.isAutoAnswerCandidate === true;
+    const autoAnswerThreadParent = ctx.state.autoAnswerThreadParent;
+    // Per-channel rolling-hour cap (issue #477) — bounds the flood/cost risk
+    // of this new untrusted-input path. Reserved HERE, only once pause, the
+    // per-user rate limit, and the daily budget have all passed, so a message
+    // those checks would shed never burns a slot from the shared per-channel
+    // allowance and starves other members' auto-answers. Never applied to an
+    // addressed/mention reply in the same channel, only to auto-answered ones.
+    // SECURITY (issue #519): a thread-follow-up reserves against the PARENT
+    // channel id, not the thread id — the thread id has never had a slot
+    // reserved against it, so keying on it would open an uncapped
+    // side-channel around AUTO_ANSWER_RATE_LIMIT_PER_HOUR the moment a
+    // member replies inside a busy auto-answer thread.
+    if (isAutoAnswerCandidate && !this.reserveAutoAnswerSlot(autoAnswerThreadParent ?? msg.conversationId))
+      return 'handled';
+    return 'continue';
+  }
+
+  private async memoryBarrierStep(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    // If we ARE replying, make sure this message is in memory before the
+    // agent turn runs (so recall can see it and ordering stays sane).
+    await ctx.state.recorded;
+    return 'continue';
+  }
+
+  private async autoAnswerThreadStep(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg, adapter } = ctx;
+    const isAutoAnswerCandidate = ctx.state.isAutoAnswerCandidate === true;
+    const autoAnswerThreadParent = ctx.state.autoAnswerThreadParent;
+    // Auto-answer replies are contained in a new Discord thread anchored to
+    // the origin post (issue #477), never sent bare into the channel — every
+    // shortcut/respond send below is redirected through `replyConversationId`.
+    // A thread-creation failure (e.g. a transient Discord API error) degrades
+    // to answering directly in the channel rather than silently dropping the
+    // reply.
+    let replyConversationId: string | undefined;
+    if (isAutoAnswerCandidate) {
+      if (autoAnswerThreadParent !== undefined) {
+        // Already inside a bot-opened auto-answer thread (issue #519) — this
+        // is a follow-up, not an origin post, so reply in place rather than
+        // opening a second thread anchored to the follow-up message.
+        replyConversationId = msg.conversationId;
+        // Slide the TTL forward (issue #542) — this branch is only reached
+        // when the map lookup above already found a LIVE entry, so this can
+        // only refresh an existing entry, never seed or revive an expired
+        // one. `parent` is carried over unchanged; only `at` moves, keeping
+        // a continuously-active thread answerable past its creation+10min
+        // cutoff while a quiet thread still expires exactly as before.
+        this.autoAnswerThreadParents.set(replyConversationId, {
+          parent: autoAnswerThreadParent,
+          at: Date.now(),
+        });
+      } else {
+        replyConversationId = await this.startAutoAnswerThread(msg, adapter).catch((err) => {
+          logger.warn(
+            { err, conversationId: msg.conversationId },
+            'Auto-answer thread creation failed; replying in channel',
+          );
+          return undefined;
+        });
+        // Record the thread -> parent mapping so a CONFIRM/CANCEL or escalation
+        // "yes" the member types inside this thread resolves back to the parent
+        // channel the pending action/offer was registered against (issue #477).
+        if (replyConversationId) {
+          this.autoAnswerThreadParents.set(replyConversationId, {
+            parent: msg.conversationId,
+            at: Date.now(),
+          });
+        }
+      }
+    }
+    ctx.state.replyConversationId = replyConversationId;
+    return 'continue';
+  }
+
+  /** Post-spine intercept (registered at module scope below): the ack shortcut. */
+  async ackShortcutIntercept(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg, adapter } = ctx;
+    const replyConversationId = ctx.state.replyConversationId;
+    const key = this.convoKey(msg);
+    // Deterministic short-circuit for pure acknowledgements ("thanks", "👍")
+    // that carry no information for the agent to act on: skip the expensive
+    // turn (memory recall + a query() subprocess against the shared Max
+    // pool) and send one static reply instead. Off by default. Routed
+    // through the same per-conversation chain as a real turn so it can
+    // never overtake one already in flight.
+    if (config.behaviour.ackShortcutEnabled && isPureAcknowledgement(msg.text)) {
+      logger.debug(
+        { platform: msg.platform, conversationId: msg.conversationId },
+        'ack_shortcut_skipped_turn',
+      );
+      this.recordShortcutHit('ack').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
+      const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
+      await this.enqueue(key, 'ack reply', async () => {
+        await this.send(
+          adapter,
+          replyConversationId ?? msg.conversationId,
+          notice('ackReply', { language: lang }),
+        );
+      });
+      return 'handled';
+    }
+    return 'continue';
+  }
+
+  /** Post-spine intercept (registered at module scope below): the near-exact FAQ shortcut. */
+  async knowledgeShortcutIntercept(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg, adapter } = ctx;
+    const replyConversationId = ctx.state.replyConversationId;
+    const key = this.convoKey(msg);
+    // Deterministic-ish near-exact FAQ short-circuit (issue #162): if the
+    // message scores at or above a strict floor against an existing
+    // knowledge entry, reply with that entry's content instead of spawning a
+    // full agent turn. Looked up here (before the per-conversation chain) so
+    // a slow embed/DB round-trip never blocks other conversations, but the
+    // actual send is still routed through `enqueue` so it can never overtake
+    // a turn already in flight for THIS conversation, mirroring the ack
+    // shortcut. A lookup/DB failure falls through to a normal turn rather
+    // than dropping the message.
+    if (config.behaviour.knowledgeShortcutEnabled) {
+      const hit = await this.tryKnowledgeShortcut(msg);
+      if (hit) {
+        await this.enqueue(key, 'knowledge shortcut reply', () =>
+          this.sendKnowledgeShortcut(msg, adapter, hit, replyConversationId),
+        );
+        return 'handled';
+      }
+    }
+    return 'continue';
+  }
+
+  /** Post-spine intercept (registered at module scope below): the WhatsApp `!` text commands. */
+  async whatsappTextCommandIntercept(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg, adapter } = ctx;
+    const role = ctx.state.role!;
+    const key = this.convoKey(msg);
+    // WhatsApp-only, zero-model-call text commands (issue #859): the
+    // WhatsApp counterpart to Discord's slash commands (slashCommands.ts),
+    // checked alongside the shortcuts above. Off by default. A gate failure
+    // (unrecognised prefix, wrong platform, or an ineligible caller's tier —
+    // see tryWhatsAppTextCommand) returns null rather than a denial reply, so
+    // the message falls through to a normal turn exactly as if the
+    // `!`-prefixed text weren't recognised at all — a WhatsApp group reply
+    // has no ephemeral concept, so a bespoke denial (unlike Discord's) would
+    // out an ineligible caller's tier to the whole group.
+    if (config.behaviour.whatsappTextCommandsEnabled) {
+      const replyText = await this.tryWhatsAppTextCommand(msg, role);
+      if (replyText !== null) {
+        await this.enqueue(key, 'whatsapp text command reply', () =>
+          this.sendWhatsAppTextCommand(msg, adapter, replyText),
+        );
+        return 'handled';
+      }
+    }
+    return 'continue';
+  }
+
+  /** Post-spine intercept (registered at module scope below): the repeat-question replay shortcut. */
+  async repeatQuestionShortcutIntercept(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg, adapter } = ctx;
+    const replyConversationId = ctx.state.replyConversationId;
+    const key = this.convoKey(msg);
+    // Deterministic repeat-question short-circuit (issue #259): the same
+    // caller (platform + conversation + user) sending the exact
+    // whitespace-normalized text again inside REPEAT_SHORTCUT_WINDOW_MS gets
+    // the cached reply from their own last successful turn instead of a
+    // second full query() turn. Evaluated after both the ack and knowledge
+    // shortcuts above. `lastReply` is only ever populated in `respond()` with
+    // a genuine answer (`AgentReply.ok === true`) that did not just register
+    // a new pending CONFIRM action, so there is never a stale confirm/error
+    // reply to replay. Off by default.
+    if (config.behaviour.repeatQuestionShortcutEnabled) {
+      const cached = this.lastReply.get(this.callerKey(msg));
+      if (
+        cached &&
+        cached.normalizedText === this.normalize(msg.text) &&
+        Date.now() - cached.at < this.REPEAT_SHORTCUT_WINDOW_MS
+      ) {
+        logger.debug(
+          { platform: msg.platform, conversationId: msg.conversationId },
+          'repeat_question_shortcut_hit',
+        );
+        this.recordShortcutHit('repeat_question').catch((err) =>
+          logger.warn({ err }, 'shortcut_hit_record_failed'),
+        );
+        await this.enqueue(key, 'repeat-question shortcut reply', () =>
+          this.sendRepeatShortcut(msg, adapter, cached.replyText, replyConversationId),
+        );
+        return 'handled';
+      }
+    }
+    return 'continue';
+  }
+
+  /** Post-spine intercept (registered at module scope below): the repeat-max-turns replay shortcut. */
+  async repeatMaxTurnsShortcutIntercept(ctx: PreTurnContext): Promise<InterceptOutcome> {
+    const { msg, adapter } = ctx;
+    const replyConversationId = ctx.state.replyConversationId;
+    const key = this.convoKey(msg);
+    // Deterministic max-turns repeat short-circuit (issue #306): the sibling
+    // of the shortcut above, for the one outcome it deliberately excludes — a
+    // turn that exhausted AGENT_MAX_TURNS. Same caller key, same normalized
+    // text match, same window; guaranteed to hit the exact same wall again
+    // (same input, tools, system prompt), so a second full turn is pure
+    // wasted spend. Off by default.
+    if (config.behaviour.repeatMaxTurnsShortcutEnabled) {
+      const cachedFailure = this.lastMaxTurnsFailure.get(this.callerKey(msg));
+      if (
+        cachedFailure &&
+        cachedFailure.normalizedText === this.normalize(msg.text) &&
+        Date.now() - cachedFailure.at < this.REPEAT_SHORTCUT_WINDOW_MS
+      ) {
+        logger.debug(
+          { platform: msg.platform, conversationId: msg.conversationId },
+          'repeat_max_turns_shortcut_hit',
+        );
+        this.recordShortcutHit('repeat_max_turns').catch((err) =>
+          logger.warn({ err }, 'shortcut_hit_record_failed'),
+        );
+        await this.enqueue(key, 'repeat-max-turns shortcut reply', () =>
+          this.sendRepeatMaxTurnsShortcut(msg, adapter, replyConversationId),
+        );
+        return 'handled';
+      }
+    }
+    return 'continue';
+  }
+
+  /**
+   * Top-1 knowledge-search lookup against the strict shortcut threshold
+   * (separate from, and much stricter than, `knowledge_search`'s own
+   * relevance floor — see config.ts). Returns null on a sub-threshold match
+   * OR a lookup failure; either way the caller falls through (a full turn for
+   * a member, the static gated notice for a guest).
+   *
+   * `opts.scopeRestriction: 'global-only'` (issue #165) is passed through
+   * unchanged to `searchKnowledge` for the gated-guest shortcut, so a guest
+   * can never be served a platform- or conversation-scoped entry.
+   */
+  private async tryKnowledgeShortcut(
+    msg: IncomingMessage,
+    opts: { scopeRestriction?: 'global-only' } = {},
+  ): Promise<KnowledgeShortcutHit | null> {
+    let hits: Awaited<ReturnType<typeof searchKnowledge>>;
+    try {
+      hits = await this.searchKnowledgeForShortcut(
+        msg.text,
+        { platform: msg.platform, conversationId: msg.conversationId },
+        1,
+        opts,
+      );
+    } catch (err) {
+      logger.warn({ err }, 'Knowledge shortcut lookup failed; falling through to a full turn');
+      return null;
+    }
+    const top = hits[0];
+    if (!top || top.similarity < config.behaviour.knowledgeShortcutThreshold) return null;
+    // Never direct-serve machine-researched (unreviewed) knowledge: the shortcut
+    // bypasses the model and its untrusted-quarantine, so an 'auto' entry falls
+    // through instead — to a full turn (members: knowledge_search quarantines it)
+    // or the static gated notice (guests). The shortcut is for trusted,
+    // human-authored FAQs only.
+    if (top.autoGenerated) return null;
+    return {
+      id: top.id,
+      content: top.content,
+      updatedAt: top.updatedAt,
+      lastRetrievedAt: top.lastRetrievedAt,
+      sourceUrl: top.sourceUrl,
+      sourceTitle: top.sourceTitle,
+      verifiedAt: top.verifiedAt,
+      sourceUnreachable: top.sourceUnreachable,
+      sourceCheckedAt: top.sourceCheckedAt,
+    };
+  }
+
+  /**
+   * Sends the shortcut's KB content and records it exactly like a normal
+   * agent reply (issue #162, point 4): counted toward
+   * `dailyReplyLimitPerUser`, visible to admin history/digest views, and
+   * bumps the served entry's `retrieval_count`/`last_retrieved_at` — unlike
+   * the ack shortcut, this reply stands in for a real answer, not a
+   * no-content courtesy reply.
+   */
+  private async sendKnowledgeShortcut(
+    msg: IncomingMessage,
+    adapter: PlatformAdapter,
+    hit: KnowledgeShortcutHit,
+    replyConversationId?: string,
+  ): Promise<void> {
+    const target = replyConversationId ?? msg.conversationId;
+    logger.debug({ platform: msg.platform, conversationId: msg.conversationId }, 'knowledge_shortcut_hit');
+    this.recordShortcutHit('knowledge').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
+    // Member-facing low-rated-answer caveat (issue #337) — opt-in, and
+    // deliberately only ever computed on THIS path (never the guest
+    // shortcut or knowledge_search): the extra count query is skipped
+    // entirely when the feature is disabled (the default), and a lookup
+    // failure falls back to `false` rather than blocking the reply.
+    const lowRatedCaveat =
+      config.behaviour.knowledgeLowRatedCaveatMinUnhelpful > 0
+        ? await this.checkLowRatedKnowledge(
+            hit.id,
+            config.behaviour.knowledgeLowRatedCaveatMinUnhelpful,
+          ).catch((err) => {
+            logger.warn({ err }, 'Knowledge low-rated caveat lookup failed; omitting the caveat');
+            return false;
+          })
+        : false;
+    // Member-facing conflict caveat (issue #918) — the single-id sibling of
+    // #389's knowledge_search/`/kb` check, reaching the third (and highest-
+    // volume) knowledge answer path. Unconditional, unlike lowRatedCaveat
+    // above: knowledge_search/`/kb` both compute their conflict caveat
+    // unconditionally too, so a config gate here would be an inconsistent
+    // third convention for the same information. `.catch()`-guarded to
+    // `false` like every other caveat lookup on this path.
+    const hasConflict = await this.checkKnowledgeConflict(hit.id).catch((err) => {
+      logger.warn({ err }, 'Knowledge conflict caveat lookup failed; omitting the caveat');
+      return false;
+    });
+    // Language preference (issue #789) is resolved BEFORE the citation note
+    // so both the note's low-rated caveat and the trailing suffix below
+    // render from the same single lookup — a reorder, not a second DB read.
+    const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
+    // Deterministic, send-path-only citation/freshness note (issue #214) — the
+    // shortcut never involves the model, so this is formatted from stored
+    // fields exactly like knowledge_search's own note.
+    const note = this.formatKnowledgeCitationNoteFn(
+      hit,
+      config.adminDigest.knowledgeStaleDays,
+      lowRatedCaveat,
+      undefined,
+      lang,
+    );
+    // Trailing conflict-caveat line (issue #918), appended after the note
+    // exactly like formatKnowledgeSearchResults' own trailing line for
+    // knowledge_search — never merged into the note's own parenthetical,
+    // which is per-hit low-rated/staleness framing, not this whole-reply
+    // signal.
+    const conflictCaveat = hasConflict ? `\n\n(${this.knowledgeConflictCaveatText})` : '';
+    const suffix = notice('knowledgeShortcutSuffix', { language: lang });
+    const replyText = `${hit.content}${note}${conflictCaveat}${suffix}`;
+    await this.send(adapter, target, replyText);
+    this.recordShortcutRetrieval([hit.id]).catch((err) =>
+      logger.warn({ err }, 'Knowledge shortcut retrieval count update failed'),
+    );
+    // Real-time stale-knowledge admin nudge (issue #701) — fire-and-forget,
+    // never delays or blocks the member-facing reply already sent above.
+    // Gated on the flag FIRST so this is a no-op (no isKnowledgeStale call,
+    // no DB write) when off, matching acceptance criterion 4.
+    if (
+      config.knowledgeStaleAlert.enabled &&
+      isKnowledgeStale(
+        { updatedAt: hit.updatedAt, lastRetrievedAt: hit.lastRetrievedAt ?? null },
+        config.adminDigest.knowledgeStaleDays,
+        config.adminDigest.knowledgeStaleMaxAgeDays,
+      )
+    ) {
+      this.maybeAlertStaleKnowledge(hit.id, msg.userId).catch((err) =>
+        logger.warn({ err }, 'Stale-knowledge alert failed'),
+      );
+    }
+    await recordInteraction({
+      platform: msg.platform,
+      conversationId: target,
+      userId: 'bot',
+      userName: 'CommunityAgent',
+      role: 'member',
+      direction: 'outbound',
+      content: replyText,
+      meta: {
+        replyToUserId: msg.userId,
+        knowledgeShortcut: true,
+        knowledgeEntryId: hit.id,
+        // Auto-answer cost visibility (issue #552) — same unspoofable
+        // `replyConversationId !== undefined` derivation as `respond()`;
+        // see that call site for the full rationale.
+        ...(replyConversationId !== undefined ? { autoAnswer: true } : {}),
+      },
+    }).catch((err) => logger.error({ err }, 'Failed to record knowledge-shortcut outbound interaction'));
+  }
+
+  /**
+   * WhatsApp-only, zero-model-call text-command dispatcher (issue #859) — the
+   * WhatsApp counterpart to Discord's slash commands (slashCommands.ts),
+   * re-keyed for a platform with no native command UI. `!kb` is deliberately
+   * absent: `KNOWLEDGE_SHORTCUT_ENABLED` already gives WhatsApp an (implicit,
+   * similarity-matched) equivalent, so a second literal-prefix path to the
+   * same knowledge read would be redundant scope.
+   *
+   * Returns `null` on any of: the platform isn't WhatsApp, the trimmed text
+   * matches none of the five prefixes, or the caller doesn't clear the
+   * command's tier floor — every one of those causes the caller in
+   * `handle()` to fall through to a normal turn, never a distinguishing
+   * reply (see the call site's comment for why silent fallthrough, not a
+   * denial reply, is the deliberate choice here).
+   *
+   * Since the command-registry split (agent-base plan §3 `commands` row) the
+   * per-command matchers/handlers live VERBATIM in `src/module/commands.ts` — one
+   * registry consumed by this dispatcher AND Discord slash registration —
+   * with the tier-floor rationale documented there. Each entry's `whatsapp`
+   * handler gets the trimmed text and either declines
+   * (`TEXT_COMMAND_UNMATCHED` → this loop tries the next entry), matches but
+   * falls through (`null` — the ineligible-tier case above), or returns the
+   * reply text. The injected repository reads are threaded through as
+   * same-named deps, so every existing test fake reaches the moved handlers
+   * unchanged.
+   */
+  private async tryWhatsAppTextCommand(msg: IncomingMessage, role: Tier): Promise<string | null> {
+    if (msg.platform !== 'whatsapp') return null;
+    const text = msg.text.trim();
+    const deps: WhatsAppTextCommandDeps = {
+      searchMemberInterestsFn: this.searchMemberInterestsFn,
+      searchMemberInterestsForSelfFn: this.searchMemberInterestsForSelfFn,
+      listRecentInterestsFn: this.listRecentInterestsFn,
+      listOwnProjectsFn: this.listOwnProjectsFn,
+      searchProjectsFn: this.searchProjectsFn,
+      listRecentProjectsFn: this.listRecentProjectsFn,
+      getLangPref: this.getLangPref,
+      getCommunityGuidelinesFn: this.getCommunityGuidelinesFn,
+      getCommunityGuidelinesMiFn: this.getCommunityGuidelinesMiFn,
+      buildMemberDigestContentFn: this.buildMemberDigestContentFn,
+    };
+    for (const command of registeredCommands()) {
+      if (!command.whatsapp) continue;
+      const result = await command.whatsapp(text, msg, role, deps);
+      if (result !== TEXT_COMMAND_UNMATCHED) return result;
+    }
+    return null;
+  }
+
+  /**
+   * Sends a served WhatsApp text-command reply and records it exactly like a
+   * normal agent reply — counted toward `dailyReplyLimitPerUser`, visible to
+   * admin history/digest views — mirroring `sendKnowledgeShortcut`'s
+   * precedent (issue #162 point 4, reused for issue #859). Also records a
+   * `whatsapp_text_command` shortcut hit (issue #874) — the WhatsApp
+   * counterpart to `slashCommands.ts`'s `recordShortcutHit('slash_command')`
+   * call sites — from this one shared send path, so every `!` command
+   * (including the `!projects mine` sub-command, issue #916) is covered
+   * without a per-command call site.
+   */
+  private async sendWhatsAppTextCommand(
+    msg: IncomingMessage,
+    adapter: PlatformAdapter,
+    replyText: string,
+  ): Promise<void> {
+    await this.send(adapter, msg.conversationId, replyText);
+    this.recordShortcutHit('whatsapp_text_command').catch((err) =>
+      logger.warn({ err }, 'shortcut_hit_record_failed'),
+    );
+    await recordInteraction({
+      platform: msg.platform,
+      conversationId: msg.conversationId,
+      userId: 'bot',
+      userName: 'CommunityAgent',
+      role: 'member',
+      direction: 'outbound',
+      content: replyText,
+      meta: { replyToUserId: msg.userId, whatsappTextCommand: true },
+    }).catch((err) => logger.error({ err }, 'Failed to record WhatsApp text-command outbound interaction'));
+  }
+
+  /**
+   * Guest counterpart to `sendKnowledgeShortcut` (issue #165). Deliberately
+   * does NOT call `recordInteraction`: gated-guest content — and the bot's
+   * reply to it — is never stored, matching the invariant every other branch
+   * of the gated-guest path already preserves (docs/SECURITY.md). Retrieval
+   * count/last_retrieved_at is still bumped, same as any other shortcut hit.
+   * Also deliberately excluded from `shortcut_hits`/`recordShortcutHit`
+   * (issue #440): the `knowledge` kind counts the member-facing shortcut
+   * above only, so `usage_stats`'s count is never misread as covering guest
+   * hits too.
+   */
+  private async sendGuestKnowledgeShortcut(
+    msg: IncomingMessage,
+    adapter: PlatformAdapter,
+    hit: KnowledgeShortcutHit,
+  ): Promise<void> {
+    logger.debug(
+      { platform: msg.platform, conversationId: msg.conversationId },
+      'guest_knowledge_shortcut_hit',
+    );
+    // Language preference (issue #848) is resolved BEFORE the citation note
+    // so the note's stale-tag fragment and the trailing suffix/nudge below
+    // render from the same single lookup — a reorder, not a second DB read
+    // (mirrors #789's identical fix to the member `sendKnowledgeShortcut`
+    // path).
+    const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
+    const note = this.formatKnowledgeCitationNoteFn(
+      hit,
+      config.adminDigest.knowledgeStaleDays,
+      undefined,
+      undefined,
+      lang,
+    );
+    const suffix = notice('knowledgeShortcutSuffix', { language: lang });
+    const nudge = notice('guestKnowledgeShortcutNudge', { language: lang });
+    const replyText = `${hit.content}${note}${suffix}${nudge}`;
+    await this.send(adapter, msg.conversationId, replyText);
+    this.recordShortcutRetrieval([hit.id]).catch((err) =>
+      logger.warn({ err }, 'Guest knowledge shortcut retrieval count update failed'),
+    );
+    // Real-time stale-knowledge admin nudge (issue #701) — same fire-and-forget
+    // shape as `sendKnowledgeShortcut`'s identical block; the alerted entry is
+    // admin-authored knowledge, not guest data, so this path is in scope too
+    // despite the guest path's stricter never-store-guest-content invariant
+    // elsewhere in this function.
+    if (
+      config.knowledgeStaleAlert.enabled &&
+      isKnowledgeStale(
+        { updatedAt: hit.updatedAt, lastRetrievedAt: hit.lastRetrievedAt ?? null },
+        config.adminDigest.knowledgeStaleDays,
+        config.adminDigest.knowledgeStaleMaxAgeDays,
+      )
+    ) {
+      this.maybeAlertStaleKnowledge(hit.id, msg.userId).catch((err) =>
+        logger.warn({ err }, 'Stale-knowledge alert failed'),
+      );
+    }
+  }
+
+  /**
+   * Sends a cached reply for a repeat-question shortcut hit (issue #259) and
+   * records it exactly like a normal agent reply — counted toward
+   * `dailyReplyLimitPerUser`, visible to admin history/digest views — mirroring
+   * `sendKnowledgeShortcut`'s precedent (#162, point 4).
+   */
+  private async sendRepeatShortcut(
+    msg: IncomingMessage,
+    adapter: PlatformAdapter,
+    cachedReplyText: string,
+    replyConversationId?: string,
+  ): Promise<void> {
+    const target = replyConversationId ?? msg.conversationId;
+    // Only the fixed wrapper is translated — `cachedReplyText` is the
+    // original (already-served) answer's language, left untouched (issue
+    // #339/#405's "translate the shell, not the dynamic payload" discipline).
+    const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
+    const repeatNotice = notice('repeatShortcutNotice', { language: lang });
+    const replyText = `${repeatNotice}${cachedReplyText}`;
+    await this.send(adapter, target, replyText);
+    await recordInteraction({
+      platform: msg.platform,
+      conversationId: target,
+      userId: 'bot',
+      userName: 'CommunityAgent',
+      role: 'member',
+      direction: 'outbound',
+      content: replyText,
+      meta: {
+        replyToUserId: msg.userId,
+        repeatShortcut: true,
+        // Auto-answer cost visibility (issue #552) — see
+        // `sendKnowledgeShortcut`'s identical derivation for rationale.
+        ...(replyConversationId !== undefined ? { autoAnswer: true } : {}),
+      },
+    }).catch((err) => logger.error({ err }, 'Failed to record repeat-shortcut outbound interaction'));
+  }
+
+  /**
+   * Sends the canned max-turns message for a repeat-max-turns shortcut hit
+   * (issue #306) without spawning a second full agent turn, and records it
+   * like a normal outbound reply — mirroring `sendRepeatShortcut`'s
+   * precedent (#259). Also re-offers escalation (issue #479) when the flag
+   * is on: this replay serves the exact same failure text `respond()` would
+   * have appended the offer to, so it must carry its own live pending entry
+   * rather than a dead "reply yes" left over from — or absent entirely
+   * despite — the original failure.
+   */
+  private async sendRepeatMaxTurnsShortcut(
+    msg: IncomingMessage,
+    adapter: PlatformAdapter,
+    replyConversationId?: string,
+  ): Promise<void> {
+    const target = replyConversationId ?? msg.conversationId;
+    const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
+    const repeatNotice = notice('repeatMaxTurnsShortcutNotice', { language: lang });
+    const failure = notice('maxTurnsReply', { language: lang });
+    const replyText = config.behaviour.escalationToAdminEnabled
+      ? `${repeatNotice}${this.offerEscalation(msg, failure, lang === 'mi')}`
+      : `${repeatNotice}${failure}`;
+    await this.send(adapter, target, replyText);
+    await recordInteraction({
+      platform: msg.platform,
+      conversationId: target,
+      userId: 'bot',
+      userName: 'CommunityAgent',
+      role: 'member',
+      direction: 'outbound',
+      content: replyText,
+      meta: {
+        replyToUserId: msg.userId,
+        repeatMaxTurnsShortcut: true,
+        // Auto-answer cost visibility (issue #552) — see
+        // `sendKnowledgeShortcut`'s identical derivation for rationale.
+        ...(replyConversationId !== undefined ? { autoAnswer: true } : {}),
+      },
+    }).catch((err) =>
+      logger.error({ err }, 'Failed to record repeat-max-turns-shortcut outbound interaction'),
+    );
+  }
+
+  /**
+   * Post-turn handler (registered at module scope below): real-time admin
+   * escalation for a member's own thumbs-down (issue #598) — a direct-fire
+   * sibling of the max-turns offer in `respond()`, not a speculative offer:
+   * `rate_answer(helpful: false)` IS the explicit action already taken, so
+   * there is nothing to confirm and no `pendingEscalations` entry is
+   * registered. Never touches `outboundText`/`reply.text` — the member still
+   * just sees "Thanks for the feedback, noted." Shares (never adds to) the
+   * same guild-wide `ESCALATION_RATE_LIMIT_PER_HOUR` cap as the max-turns
+   * producer; when the cap is exhausted this is silently suppressed, not
+   * queued or retried.
+   */
+  async unhelpfulAnswerEscalationHandler(ctx: PostTurnContext): Promise<void> {
+    const { msg, reply } = ctx;
+    if (config.behaviour.escalationToAdminEnabled && reply.turnState?.unhelpfulAnswerRated === true) {
+      if (this.reserveEscalationSlot(ESCALATION_RATE_LIMIT_PER_HOUR)) {
+        await this.notifyAdminsFn(
+          (platform) => this.adapters.get(platform),
+          `${msg.userName} rated my last answer unhelpful on ${msg.platform} ` +
+            `(conversation ${msg.conversationId}): "${this.truncateForEchoFn(msg.text)}"`,
+          msg.userId,
+        ).catch((err) => logger.warn({ err }, 'Unhelpful-answer admin notification failed'));
+      }
+    }
+  }
+
+  /**
+   * Post-turn handler (registered at module scope below): real-time admin
+   * escalation for a member's own explicit ask (issue #808) — a third
+   * direct-fire sibling: the member's own words ARE the explicit action,
+   * mirroring #598's reasoning exactly ("the rating itself is the explicit
+   * action, so there's nothing to confirm"), so no `pendingEscalations`
+   * entry is registered. Never touches `outboundText`/`reply.text` — the
+   * member still just sees the model's own reply, informed only by the
+   * tool's fixed neutral acknowledgement text. Shares (never adds to) the
+   * same guild-wide `ESCALATION_RATE_LIMIT_PER_HOUR` cap as both producers
+   * above — the per-caller daily cap that bounds a single member's own
+   * worst-case share of that budget is enforced inside the
+   * `request_human_help` tool handler itself (`tools.ts`), before
+   * `turnState.humanHelpRequested` is ever set.
+   */
+  async humanHelpEscalationHandler(ctx: PostTurnContext): Promise<void> {
+    const { msg, reply } = ctx;
+    if (config.behaviour.escalationToAdminEnabled && reply.turnState?.humanHelpRequested === true) {
+      if (this.reserveEscalationSlot(ESCALATION_RATE_LIMIT_PER_HOUR)) {
+        await this.notifyAdminsFn(
+          (platform) => this.adapters.get(platform),
+          `${msg.userName} asked to talk to a human on ${msg.platform} ` +
+            `(conversation ${msg.conversationId}): "${this.truncateForEchoFn(msg.text)}"`,
+          msg.userId,
+        ).catch((err) => logger.warn({ err }, 'Human-help-request admin notification failed'));
+      }
+    }
+  }
+
+  /**
+   * Post-turn handler (registered at module scope below): real-time admin
+   * nudge when a knowledge-gap cluster crosses KNOWLEDGE_GAP_ALERT_THRESHOLD
+   * (issue #650) — the "asked N times, never confidently answered" signal
+   * promoted from the weekly digest's bare count to an instant DM.
+   * `turnState.knowledgeGapCluster` is only ever set (by the
+   * knowledge_search tool handler) when config.knowledgeGapAlert.enabled is
+   * true and the turn ended in genuine success, so no separate flag check is
+   * needed here. The rate slot is reserved BEFORE marking the cluster
+   * alerted: on a miss, the cluster's rows are deliberately left unalerted
+   * (not marked) so a later gap in the same cluster can retry once the
+   * trailing hour frees up — the underlying gap is still recorded and still
+   * counted by the weekly digest either way (acceptance criterion 6).
+   * SECURITY: unlike the escalation/unhelpful-answer alerts above, the
+   * message deliberately omits `msg.platform`/`msg.conversationId` —
+   * acceptance criterion 5 requires the DM body to be a strict subset of
+   * what `list_knowledge_gaps` already returns for the same scope (query
+   * text + count only, no new field), and that tool's own output never
+   * includes a conversation id.
+   */
+  async knowledgeGapAlertHandler(ctx: PostTurnContext): Promise<void> {
+    const { msg, reply } = ctx;
+    if (reply.turnState?.knowledgeGapCluster) {
+      const cluster = reply.turnState.knowledgeGapCluster;
+      if (this.reserveKnowledgeGapAlertSlot(config.knowledgeGapAlert.rateLimitPerHour)) {
+        await this.markKnowledgeGapsAlertedFn(cluster.rowIds).catch((err) =>
+          logger.warn({ err }, 'Failed to mark knowledge gap cluster alerted'),
+        );
+        await this.notifyAdminsFn(
+          (platform) => this.adapters.get(platform),
+          `A knowledge gap has come up ${cluster.count} times recently and might be worth turning ` +
+            `into a FAQ: "${this.truncateForEchoFn(cluster.representative)}"`,
+          msg.userId,
+        ).catch((err) => logger.warn({ err }, 'Knowledge gap cluster admin notification failed'));
+      }
+    }
+  }
+
+  /**
+   * Post-turn handler (registered at module scope below): real-time admin
+   * nudge for a served, stale knowledge entry (issue #701) — the
+   * `knowledge_search` call site's half of the mechanism; the two shortcut
+   * call sites (`sendKnowledgeShortcut`/`sendGuestKnowledgeShortcut`) call
+   * the identical `maybeAlertStaleKnowledge` directly, since they never go
+   * through the model/turn-state plumbing `knowledge_search` does.
+   * `turnState.staleKnowledgeAlertIds` is only ever set (by the
+   * `knowledge_search` tool handler) when `config.knowledgeStaleAlert.enabled`
+   * is true and the turn ended in genuine success, so no separate flag check
+   * is needed here.
+   */
+  async staleKnowledgeAlertHandler(ctx: PostTurnContext): Promise<void> {
+    const { msg, reply } = ctx;
+    if (reply.turnState?.staleKnowledgeAlertIds) {
+      for (const id of reply.turnState.staleKnowledgeAlertIds) {
+        await this.maybeAlertStaleKnowledge(id, msg.userId);
+      }
+    }
+  }
+
+  /**
+   * Post-turn handler (registered at module scope below): best-effort
+   * knowledge_search-hit correlation on the normal (non-shortcut) outbound
+   * path (issue #411) — contributes the same scalar `knowledgeEntryId` meta
+   * key `sendKnowledgeShortcut` already writes, so both paths feed
+   * `listKnowledgeFeedbackSummary`/`listAnswerFeedback` with no query/schema
+   * change. Absent whenever no `knowledge_search` call in the turn had a hit
+   * clear the relevance floor.
+   */
+  async knowledgeEntryMetaHandler(ctx: PostTurnContext): Promise<void> {
+    if (ctx.reply.turnState?.knowledgeEntryId != null) {
+      ctx.outboundMeta.knowledgeEntryId = ctx.reply.turnState.knowledgeEntryId;
+    }
+  }
+
+  private async respond(
+    msg: IncomingMessage,
+    role: Tier,
+    adapter: PlatformAdapter,
+    replyBudget?: { used: number; limit: number },
+    replyConversationId?: string,
+  ): Promise<void> {
+    const target = replyConversationId ?? msg.conversationId;
+    const caller: CallerContext = {
+      platform: msg.platform,
+      userId: msg.userId,
+      userName: msg.userName,
+      role,
+      conversationId: msg.conversationId,
+      isDirect: msg.isDirect,
+      messageId: msg.messageId,
+    };
+
+    // Best-effort "processing…" signal, fired immediately and then re-fired
+    // periodically since a turn can run longer than a single indicator lasts
+    // (e.g. Discord auto-clears after ~10s). Never awaited: a hung or
+    // rejecting indicator must not delay or break the actual reply. Cleared
+    // in `finally` so a thrown turn can't leave a dangling timer.
+    const fireTypingIndicator = (): void => {
+      adapter.sendTypingIndicator?.(msg).catch((err) => logger.debug({ err }, 'Typing indicator failed'));
+    };
+    fireTypingIndicator();
+    const typingTimer = setInterval(fireTypingIndicator, this.typingRefireMs).unref();
+
+    try {
+      // Backstop (issue #52): any unexpected failure between recall and the
+      // reply-send must degrade to the same fallback text execTurn already
+      // uses — the member always gets *some* reply, never silence. It wraps
+      // ONLY the pre-send path: a failure during or after the send is not
+      // retried, so at most one outbound reply ever goes out. The error is
+      // still logged at error level, and a *persistent* DB outage still
+      // trips /healthz + the startup healthcheck — this degradation is
+      // per-request only.
+      // Snapshot any pre-existing pending action so we can tell a freshly
+      // registered one (this turn) from one already waiting.
+      const priorPending = peekPendingAction(msg.platform, msg.conversationId, msg.userId);
+
+      let reply: AgentReply;
+      try {
+        // Backs cross-platform resolution DMs (issue #157): a per-turn tool
+        // handler can look up another platform's already-registered adapter
+        // through this instead of only ever having its own turn's adapter.
+        reply = await this.runTurn(
+          caller,
+          msg.text,
+          adapter,
+          (platform) => this.adapters.get(platform),
+          msg.image,
+        );
+      } catch (err) {
+        logger.error(
+          { err, conversationId: msg.conversationId },
+          'Turn failed before send; sending fallback reply',
+        );
+        // Explicit `ok: false` (never rely on the field being absent/falsy —
+        // issue #259's repeat-question shortcut reads `reply.ok` directly).
+        reply = { text: INTERNAL_ERROR_REPLY, ok: false };
+      }
+
+      // Real-time admin escalation (issue #479): append the "reply yes"
+      // offer and atomically register its live pending entry (see
+      // `offerEscalation`'s doc comment) ONLY for a genuine max-turns
+      // failure — `reply.ok`/other failure modes are untouched. Threaded
+      // into `outboundText` (not `reply.text` itself) so the caches below
+      // that key off `reply.text`/`reply.ok` stay exactly as before.
+      let outboundText =
+        config.behaviour.escalationToAdminEnabled && reply.maxTurnsExceeded === true
+          ? this.offerEscalation(msg, reply.text, reply.languagePreference === 'mi')
+          : reply.text;
+
+      // Post-turn handler chain (routerIntercepts.ts): the module-registered
+      // handlers — today the four community alert readers plus the
+      // knowledge-entry meta stamp, each moved verbatim into a named handler
+      // below — run in registration order at exactly the point their inline
+      // blocks sat. Handlers read module signals off `reply.turnState` and
+      // may contribute outbound-meta entries; they never touch
+      // `outboundText`, the caches, or anything the pre-turn spine decided.
+      const postCtx: PostTurnContext = { msg, adapter, reply, router: this, outboundMeta: {} };
+      for (const handler of registeredPostTurnHandlers()) {
+        await handler.run(postCtx);
+      }
+
+      // Real-time admin nudge for a generic repeat-question cluster (issue
+      // #887) — the last of the three signals #650 explicitly named as
+      // future work, closing that deferral. Unlike the two alerts above,
+      // this isn't threaded off a tool-set `AgentReply` field: it reuses
+      // `recentQuestionClusters` directly, so the gate is explicit here —
+      // `reply.ok === true` only, matching the "turn ended in genuine
+      // success" bar the other two alerts get for free from their own
+      // turn-scoped-ref plumbing. See `maybeAlertRepeatQuestion`'s own doc
+      // comment for the cooldown/rate-limit/scope mechanics.
+      if (config.repeatQuestionAlert.enabled && reply.ok === true) {
+        await this.maybeAlertRepeatQuestion(msg);
+      }
+
+      // Approaching-daily-budget warning (issue #511): append-only, same
+      // shape as `offerEscalation` above — never replaces `outboundText`, so
+      // the caches below (keyed off `reply.text`/`reply.ok`, not
+      // `outboundText`) stay exactly as before. `replyBudget` is only ever
+      // set for a non-super-admin caller under a positive limit (see
+      // `handle()`), so no separate role check is needed here. `remaining`
+      // is the count AFTER this reply is sent/counted, matching the
+      // acceptance criterion's `limit - (used + 1)`.
+      if (config.behaviour.dailyReplyBudgetWarnEnabled && replyBudget) {
+        const remaining = replyBudget.limit - (replyBudget.used + 1);
+        if (remaining >= 0 && remaining <= config.behaviour.dailyReplyBudgetWarnRemaining) {
+          const userKey = `${msg.platform}:${msg.userId}`;
+          const lastWarned = this.budgetWarned.get(userKey) ?? 0;
+          if (Date.now() - lastWarned > 24 * 3_600_000) {
+            this.budgetWarned.set(userKey, Date.now());
+            // Style only looked up once 'mi' is ruled out (it takes
+            // precedence) — no style DB read on the 'mi' path; selection
+            // lives in strings/notices.ts.
+            const style =
+              reply.languagePreference === 'mi'
+                ? undefined
+                : await this.getRespStyle(msg.platform, msg.userId).catch(() => 'standard' as const);
+            outboundText += notice('dailyReplyBudgetWarning', {
+              language: reply.languagePreference,
+              style,
+            })(remaining);
+          }
+        }
+      }
+
+      // This call site (the real-agent-turn main reply, issue #339), the
+      // gated notice (#363), and cancel/permissions-changed/pending-notice
+      // (#405) all thread the caller's language preference into the send.
+      // What's still intentionally English-only: the ack-shortcut reply and
+      // per-tool `requireConfirm` outcome/failure strings (`pending.execute()`
+      // and the `Failed: ...` fallback below) — see #405's proposal for why
+      // those are out of scope. `reply.responseStyle` is threaded the same
+      // way (issue #657) so a standing 'plain' preference reaches the
+      // outbound code-policy note here too; `filterOutbound`/
+      // `applyCodePolicy` already give `language: 'mi'` precedence over
+      // `style: 'plain'` internally, so passing both unconditionally is safe.
+      const sentMessageIds = await this.send(
+        adapter,
+        target,
+        outboundText,
+        reply.languagePreference === 'mi' ? 'mi' : undefined,
+        reply.responseStyle === 'plain' ? 'plain' : undefined,
+      );
+
+      // Auto-retraction mapping (issue #575): only for a genuine addressed
+      // message (msg.messageId set) that actually produced reply id(s) — this
+      // is the ONLY call site that ever writes to the map, so shortcut/ack
+      // replies and any other `this.send()` call site are never retractable,
+      // matching the proposal's "single top-level-message" v1 scope. Off by
+      // default (`autoRetractReplyEnabled` unset), so this is a no-op and the
+      // map stays empty — byte-identical behaviour to before this feature.
+      // `sentMessageIds` carries EVERY chunk id a platform's `sendMessage`
+      // split a long reply into (e.g. Discord's 2000-char cap), so a
+      // retraction later deletes all of them, not just the last chunk.
+      if (config.behaviour.autoRetractReplyEnabled && msg.messageId && sentMessageIds?.length) {
+        recordReplyMapping(msg.platform, msg.conversationId, msg.messageId, {
+          replyConversationId: target,
+          botReplyMessageIds: sentMessageIds,
+          senderId: msg.userId,
+        });
+      }
+
+      // If the turn registered a NEW pending destructive action, the model
+      // composed the reply above and could have hidden or misrepresented the
+      // action behind an innocuous "reply CONFIRM" (an injection lever). Emit
+      // the authoritative pending description ourselves, deterministically, so
+      // the human always sees the true action before they can confirm it
+      // (issue: CONFIRM gate was request-side model-mediated).
+      const pending = peekPendingAction(msg.platform, msg.conversationId, msg.userId);
+      const registeredNewPending = Boolean(pending && pending !== priorPending);
+      if (pending && registeredNewPending) {
+        const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
+        // Style only looked up once 'mi' is ruled out (it takes precedence) —
+        // no style DB read on the 'mi' path; selection lives in
+        // strings/notices.ts.
+        const style =
+          lang === 'mi'
+            ? undefined
+            : await this.getRespStyle(msg.platform, msg.userId).catch(() => 'standard' as const);
+        const pendingText = notice('pendingNotice', { language: lang, style })(pending.description);
+        await this.send(adapter, target, pendingText).catch((err) =>
+          logger.warn({ err }, 'Failed to send deterministic pending notice'),
+        );
+      }
+
+      // Cache this reply for the repeat-question shortcut (issue #259):
+      // only ever a genuine answer (never a fallback/error — reply.ok must
+      // be exactly true) that did NOT just register a new pending CONFIRM
+      // action, so a repeat can never replay stale "reply CONFIRM" text with
+      // no live pending action behind it.
+      if (config.behaviour.repeatQuestionShortcutEnabled && reply.ok === true && !registeredNewPending) {
+        this.lastReply.set(this.callerKey(msg), {
+          normalizedText: this.normalize(msg.text),
+          replyText: reply.text,
+          at: Date.now(),
+        });
+      }
+
+      // Cache this failure for the max-turns repeat shortcut (issue #306):
+      // only ever a genuine `error_max_turns` failure (`reply.maxTurnsExceeded
+      // === true`, never a truthy-ish absent value) — never a success, never
+      // any other kind of failure — so a repeat can only ever short-circuit
+      // the one guaranteed-to-repeat outcome.
+      if (config.behaviour.repeatMaxTurnsShortcutEnabled && reply.maxTurnsExceeded === true) {
+        this.lastMaxTurnsFailure.set(this.callerKey(msg), {
+          normalizedText: this.normalize(msg.text),
+          at: Date.now(),
+        });
+      }
+
+      await recordInteraction({
+        platform: msg.platform,
+        conversationId: target,
+        userId: 'bot',
+        userName: 'CommunityAgent',
+        role: 'member',
+        direction: 'outbound',
+        content: outboundText,
+        costUsd: reply.costUsd,
+        meta: {
+          replyToUserId: msg.userId,
+          ...(reply.maxTurnsExceeded === true ? { maxTurnsExceeded: true } : {}),
+          // Handler-contributed meta (the former inline `knowledgeEntryId`
+          // spread, issue #411 — see `knowledgeEntryMetaHandler` below):
+          // spread at the exact position the scalar key previously held, so
+          // the recorded meta shape is unchanged.
+          ...postCtx.outboundMeta,
+          // Cache-usage telemetry (issue #522): mirrors the conditional-spread
+          // pattern above, but gated on `> 0` rather than `!= null` — a turn
+          // whose SDK result carried no `usage` at all (undefined) AND a turn
+          // whose `usage` reported all-zero cache counts must both write
+          // neither key (acceptance criterion 2), so a zero here is treated
+          // the same as "nothing to report", not as a real reading.
+          ...(reply.cacheReadTokens != null && reply.cacheReadTokens > 0
+            ? { cacheReadTokens: reply.cacheReadTokens }
+            : {}),
+          ...(reply.cacheCreationTokens != null && reply.cacheCreationTokens > 0
+            ? { cacheCreationTokens: reply.cacheCreationTokens }
+            : {}),
+          // Per-model cost telemetry (issue #792): mirrors the cache-telemetry
+          // conditional immediately above — a turn whose SDK result carried no
+          // `modelUsage` at all, or only zero-cost entries, must write no
+          // `modelUsage` key at all (never a fabricated empty object), so
+          // `usageStats()`'s aggregation can tell "no data" apart from "landed
+          // on a model that cost nothing".
+          ...(reply.modelUsage != null && Object.keys(reply.modelUsage).length > 0
+            ? { modelUsage: reply.modelUsage }
+            : {}),
+          // Auto-answer cost visibility (issue #552): `replyConversationId` is
+          // populated ONLY inside the `isAutoAnswerCandidate` branch above
+          // (origin thread creation or an in-thread follow-up), so this is
+          // unspoofable internal router state, never message content/model
+          // output. Absent (never `false`) on a normal @mention/DM reply,
+          // matching the conditional-spread convention above.
+          ...(replyConversationId !== undefined ? { autoAnswer: true } : {}),
+        },
+      }).catch((err) => logger.error({ err }, 'Failed to record outbound interaction'));
+    } finally {
+      clearInterval(typingTimer);
+    }
+  }
+}
+
+// The five community shortcut/command intercepts, registered through the same
+// post-spine extension point a future module would use (agent-base plan §3
+// `intercepts` row). Order is load-bearing and long-standing: ack → knowledge
+// → WhatsApp `!` commands → repeat-question → repeat-max-turns — pinned
+// (along with the spine prefix) by the SECURITY chain test
+// (tests/routerInterceptChain.test.ts). Registration can only ever land AFTER
+// the frozen spine, so none of these can run before block/role/gate/CONFIRM/
+// pause/rate/budget.
+registerPreTurnIntercept({ name: 'ack-shortcut', run: (ctx) => ctx.router.ackShortcutIntercept(ctx) });
+registerPreTurnIntercept({
+  name: 'knowledge-shortcut',
+  run: (ctx) => ctx.router.knowledgeShortcutIntercept(ctx),
+});
+registerPreTurnIntercept({
+  name: 'whatsapp-text-commands',
+  run: (ctx) => ctx.router.whatsappTextCommandIntercept(ctx),
+});
+registerPreTurnIntercept({
+  name: 'repeat-question-shortcut',
+  run: (ctx) => ctx.router.repeatQuestionShortcutIntercept(ctx),
+});
+registerPreTurnIntercept({
+  name: 'repeat-max-turns-shortcut',
+  run: (ctx) => ctx.router.repeatMaxTurnsShortcutIntercept(ctx),
+});
+
+// The five community post-turn handlers (agent-base plan §3
+// `postTurnHandlers` row), registered in the exact order their inline blocks
+// ran in `respond()`: the four alert readers of the (former) AgentReply
+// community fields — now `reply.turnState` keys — then the outbound-meta
+// knowledge-entry stamp. Handlers observe the finished turn and fire
+// deterministic side effects only; they never rewrite the reply.
+registerPostTurnHandler({
+  name: 'unhelpful-answer-escalation',
+  run: (ctx) => ctx.router.unhelpfulAnswerEscalationHandler(ctx),
+});
+registerPostTurnHandler({
+  name: 'human-help-escalation',
+  run: (ctx) => ctx.router.humanHelpEscalationHandler(ctx),
+});
+registerPostTurnHandler({
+  name: 'knowledge-gap-alert',
+  run: (ctx) => ctx.router.knowledgeGapAlertHandler(ctx),
+});
+registerPostTurnHandler({
+  name: 'stale-knowledge-alert',
+  run: (ctx) => ctx.router.staleKnowledgeAlertHandler(ctx),
+});
+registerPostTurnHandler({
+  name: 'knowledge-entry-meta',
+  run: (ctx) => ctx.router.knowledgeEntryMetaHandler(ctx),
+});

@@ -1,5 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import '../src/module/strings/notices.js';
 
 // config.ts validates env at import time — provide a dummy environment before
 // importing anything that (transitively) loads it, matching router.test.ts.
@@ -11,8 +15,9 @@ process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 
-const { PRE_TURN_SPINE, registerPreTurnIntercept } = await import('../src/routerIntercepts.js');
-const { Router, makeRouterDeps } = await import('../src/router.js');
+const { PRE_TURN_SPINE, registerPreTurnIntercept } = await import('../src/base/routerIntercepts.js');
+const { Router } = await import('../src/base/router.js');
+const { makeRouterDeps } = await import('../src/module/routerWiring.js');
 
 /** The five community shortcuts/commands router.ts registers, in their long-standing evaluation order. */
 const COMMUNITY_INTERCEPTS = [

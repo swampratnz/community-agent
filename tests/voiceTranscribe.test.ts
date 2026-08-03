@@ -7,7 +7,7 @@ process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 
-const { ffmpegDecodeArgs, pcmBufferToFloat32 } = await import('../src/media/voiceTranscribe.js');
+const { ffmpegDecodeArgs, pcmBufferToFloat32 } = await import('../src/base/media/voiceTranscribe.js');
 
 test('ffmpegDecodeArgs pins mono / 16 kHz / f32le raw PCM from stdin to stdout', () => {
   const args = ffmpegDecodeArgs();

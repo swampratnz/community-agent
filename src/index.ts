@@ -1,15 +1,39 @@
-import { config } from './config.js';
-import { logger } from './logger.js';
-import { installCrashHandlers } from './crashHandlers.js';
-import { configureSubscriptionAuth } from './agent/auth.js';
-import { Router } from './router.js';
-import { closeDb, healthcheck } from './storage/db.js';
-import { verifyEmbeddingDim } from './storage/repository.js';
-import { startRegisteredJobs, stopRegisteredJobs } from './jobs/registry.js';
-import { startHealthServer } from './health.js';
-import { assertToolAvailabilityConsistent } from './platforms/registry.js';
-import { ADAPTER_FACTORIES, createConfiguredAdapters } from './platforms/factories.js';
-import { TOOL_REGISTRY } from './agent/tools/index.js';
+import { config } from './base/config.js';
+import { logger } from './base/logger.js';
+// Side-effect imports: the community content registrations (prompt sections
+// into promptSpine.ts's slot set, the turn-state finalizer into
+// agent/turnState.ts, the persona roster into personaRegistry.ts, the skills
+// manifest into skillsManifest.ts, the notice pack into strings/catalogue.ts,
+// the community policy keys into storage/policyStore.ts, the default
+// bad-word list into moderation/wordlist.ts, the command list into
+// commands/registry.ts).
+// They live HERE, at the composition root, so the base modules that consume
+// them (systemPrompt.ts, core.ts) no longer import community content
+// themselves — each registry fails closed if its module never loaded. Must
+// stay above anything that could run a turn — the notice pack in particular
+// must land before any import whose subtree evaluates a notice consumer
+// (router.ts, agent/core.ts and the leaf notice modules derive exported
+// consts from `notice()` at their own module scope).
+import './module/strings/notices.js';
+import './module/storage/policies.js';
+import './module/moderation/badWords.js';
+import './module/agent/communityPromptSections.js';
+import './module/agent/communityTurnState.js';
+import './module/agent/personas.js';
+import './module/agent/enabledSkills.js';
+import './module/commands.js';
+import { installCrashHandlers } from './base/crashHandlers.js';
+import { configureSubscriptionAuth } from './base/agent/auth.js';
+import { Router } from './base/router.js';
+import { makeRouterDeps } from './module/routerWiring.js';
+import { closeDb, healthcheck } from './base/storage/db.js';
+import { verifyEmbeddingDim } from './base/storage/repository.js';
+import { JOB_REGISTRY } from './module/jobs/registry.js';
+import { startRegisteredJobs, stopRegisteredJobs } from './base/jobs/runner.js';
+import { startHealthServer } from './base/health.js';
+import { assertToolAvailabilityConsistent } from './base/platforms/registry.js';
+import { ADAPTER_FACTORIES, createConfiguredAdapters } from './module/platforms/factories.js';
+import { TOOL_REGISTRY } from './module/agent/tools/index.js';
 
 async function main(): Promise<void> {
   logger.info('Starting Community Agent');
@@ -30,14 +54,14 @@ async function main(): Promise<void> {
 
   // 3. Build platform adapters via the factory registry (agent-base plan
   //    item 9) — construction order and the WhatsApp provider switch are
-  //    unchanged, they just live in src/platforms/factories.ts now. First,
+  //    unchanged, they just live in src/module/platforms/factories.ts now. First,
   //    the capability invariant: every tool's platform restriction must be
   //    consistent with what the registered adapters declare they can do, so
   //    a drifted restriction fails the deploy loudly instead of silently
   //    offering (or hiding) a tool somewhere wrong.
   assertToolAvailabilityConsistent(TOOL_REGISTRY, ADAPTER_FACTORIES);
 
-  const router = new Router();
+  const router = new Router(makeRouterDeps());
   const adapters = createConfiguredAdapters();
 
   for (const adapter of adapters) {
@@ -49,11 +73,11 @@ async function main(): Promise<void> {
   logger.info({ platforms: adapters.map((a) => a.platform) }, 'Community Agent running');
 
   // 4b. Background jobs — every periodic timer in the process, started in
-  //     the registry's pinned order (src/jobs/registry.ts, which preserves
+  //     the registry's pinned order (src/module/jobs/registry.ts, which preserves
   //     the old hand-wired startX() sequence exactly). Each spec keeps its
   //     own enable gate, cadence mechanism and failure-tracker wiring; a
   //     disabled job contributes a null timer that the shutdown sweep skips.
-  const jobs = startRegisteredJobs(adapters);
+  const jobs = startRegisteredJobs(JOB_REGISTRY, adapters);
 
   // 4c. The optional /healthz endpoint. Deliberately NOT a registry job: it
   //     is an HTTP server, not a timer — no cadence, no failure tracker, and

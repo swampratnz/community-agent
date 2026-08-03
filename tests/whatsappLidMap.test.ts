@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 /**
- * Persisted WhatsApp LID -> phone mapping (src/storage/schema/70-whatsapp.sql,
+ * Persisted WhatsApp LID -> phone mapping (src/base/storage/schema/70-whatsapp.sql,
  * docs/SECURITY.md §6b).
  *
  * The adapter always learned this mapping, but only in an in-memory Map that
@@ -27,7 +27,7 @@ const PHONE = '64270000001';
 
 test('remembers a LID -> phone mapping and reads it back', { skip }, async () => {
   const { rememberLidPhone, phoneForLid, forgetLidMappingsForPhone } =
-    await import('../src/storage/repository/whatsappLidMap.js');
+    await import('../src/base/storage/repository/whatsappLidMap.js');
   try {
     assert.equal(await phoneForLid(LID), null, 'unknown LID resolves to null, not a guess');
     await rememberLidPhone(LID, PHONE);
@@ -39,7 +39,7 @@ test('remembers a LID -> phone mapping and reads it back', { skip }, async () =>
 
 test('re-learning a LID is idempotent, and a REASSIGNED lid takes the newest number', { skip }, async () => {
   const { rememberLidPhone, phoneForLid, forgetLidMappingsForPhone } =
-    await import('../src/storage/repository/whatsappLidMap.js');
+    await import('../src/base/storage/repository/whatsappLidMap.js');
   const newer = '64270000002';
   try {
     await rememberLidPhone(LID, PHONE);
@@ -62,12 +62,12 @@ test(
   { skip },
   async () => {
     const { rememberLidPhone, phoneForLid, forgetLidMappingsForPhone } =
-      await import('../src/storage/repository/whatsappLidMap.js');
+      await import('../src/base/storage/repository/whatsappLidMap.js');
     // Via the BARREL, not budgetsPrivacy.js directly: purgeUserData now runs
-    // the registered PurgeContributor set (src/storage/lifecycle.ts), and the
+    // the registered PurgeContributor set (src/base/storage/lifecycle.ts), and the
     // contributors register at module load of their owning domain files —
     // which the barrel's `export *` lines are what load, same as production.
-    const { purgeUserData } = await import('../src/storage/repository.js');
+    const { purgeUserData } = await import('../src/base/storage/repository.js');
     const lidA = `8${Date.now()}`.slice(0, 15);
     const lidB = `7${Date.now()}`.slice(0, 15);
     const phone = '64270000003';
@@ -91,7 +91,7 @@ test(
 
 test(`SECURITY: erasing one person's mapping leaves another's intact`, { skip }, async () => {
   const { rememberLidPhone, phoneForLid, forgetLidMappingsForPhone } =
-    await import('../src/storage/repository/whatsappLidMap.js');
+    await import('../src/base/storage/repository/whatsappLidMap.js');
   const mine = `6${Date.now()}`.slice(0, 15);
   const theirs = `5${Date.now()}`.slice(0, 15);
   try {
@@ -107,7 +107,7 @@ test(`SECURITY: erasing one person's mapping leaves another's intact`, { skip },
 });
 
 test(`${RUN}: forgetting an unknown phone is a no-op, never an error`, { skip }, async () => {
-  const { forgetLidMappingsForPhone } = await import('../src/storage/repository/whatsappLidMap.js');
+  const { forgetLidMappingsForPhone } = await import('../src/base/storage/repository/whatsappLidMap.js');
   assert.equal(await forgetLidMappingsForPhone('64279999999'), 0);
 });
 
@@ -121,12 +121,12 @@ test(
     // of the privacy contract — a member told "3 records deleted" when it was 5
     // has been given a wrong answer about their own data.
     const { rememberLidPhone, forgetLidMappingsForPhone } =
-      await import('../src/storage/repository/whatsappLidMap.js');
+      await import('../src/base/storage/repository/whatsappLidMap.js');
     // Via the BARREL, not budgetsPrivacy.js directly: purgeUserData now runs
-    // the registered PurgeContributor set (src/storage/lifecycle.ts), and the
+    // the registered PurgeContributor set (src/base/storage/lifecycle.ts), and the
     // contributors register at module load of their owning domain files —
     // which the barrel's `export *` lines are what load, same as production.
-    const { purgeUserData } = await import('../src/storage/repository.js');
+    const { purgeUserData } = await import('../src/base/storage/repository.js');
     const phone = '64270000006';
     const lids = [`4${Date.now()}`.slice(0, 15), `3${Date.now()}`.slice(0, 15)];
     try {
@@ -148,9 +148,9 @@ test(
     // Calling the pool-based default from in there would delete on a SEPARATE
     // connection, which would survive a rollback and leave the mapping gone
     // while everything else came back. Proven by rolling back deliberately.
-    const { pool } = await import('../src/storage/db.js');
+    const { pool } = await import('../src/base/storage/db.js');
     const { rememberLidPhone, phoneForLid, forgetLidMappingsForPhone } =
-      await import('../src/storage/repository/whatsappLidMap.js');
+      await import('../src/base/storage/repository/whatsappLidMap.js');
     const phone = '64270000007';
     const lid = `2${Date.now()}`.slice(0, 15);
     const client = await pool.connect();

@@ -14,7 +14,7 @@ process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 
-const { config } = await import('../src/config.js');
+const { config } = await import('../src/base/config.js');
 
 test('embed(): a model whose output width != EMBEDDING_DIM throws instead of returning a wrong-length vector (audit 2026-07-28 N5)', async (t) => {
   // A model that produces the WRONG number of dims — the config/model drift
@@ -35,7 +35,7 @@ test('embed(): a model whose output width != EMBEDDING_DIM throws instead of ret
     },
   });
 
-  const { embed } = await import('../src/storage/embeddings.js');
+  const { embed } = await import('../src/base/storage/embeddings.js');
 
   await assert.rejects(
     () => embed('some content'),

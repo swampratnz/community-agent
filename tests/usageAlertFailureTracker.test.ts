@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+import type { OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
 
 // usage-alert consecutive-failure alerting (issue #426): its own process/file
 // because USAGE_ALERT_DAILY_REPLIES must be pinned ON here, and usageStats
@@ -20,7 +20,7 @@ process.env.USAGE_ALERT_DAILY_REPLIES = '10';
 
 const POLL_MS = 60 * 60_000; // usageAlert.ts's fixed hourly CHECK_INTERVAL_MS
 
-type UsageStats = Awaited<ReturnType<typeof import('../src/storage/repository.js').usageStats>>;
+type UsageStats = Awaited<ReturnType<typeof import('../src/base/storage/repository.js').usageStats>>;
 
 const BASE_STATS: Omit<UsageStats, 'outbound'> = {
   inbound: 10,
@@ -47,16 +47,16 @@ async function mockUsageStats(): Promise<UsageStats> {
 // tests/backgroundJobCost.test.ts) — install the mock once and reuse the
 // cached import across every test in this file.
 let modulesPromise: Promise<{
-  startUsageAlert: typeof import('../src/usageAlert.js').startUsageAlert;
+  startUsageAlert: typeof import('../src/base/usageAlert.js').startUsageAlert;
   BACKGROUND_JOB_FAILURE_ALERT_THRESHOLD: number;
-  getJobHealthSnapshot: typeof import('../src/backgroundJobHealth.js').getJobHealthSnapshot;
-  resetJobHealthRegistryForTests: typeof import('../src/backgroundJobHealth.js').resetJobHealthRegistryForTests;
+  getJobHealthSnapshot: typeof import('../src/base/backgroundJobHealth.js').getJobHealthSnapshot;
+  resetJobHealthRegistryForTests: typeof import('../src/base/backgroundJobHealth.js').resetJobHealthRegistryForTests;
 }> | null = null;
 async function modules(t: { mock: { module: (specifier: string, opts: unknown) => void } }) {
   if (!modulesPromise) {
     modulesPromise = (async () => {
-      const realRepo = await import('../src/storage/repository.js');
-      t.mock.module('../src/storage/repository.js', {
+      const realRepo = await import('../src/base/storage/repository.js');
+      t.mock.module('../src/base/storage/repository.js', {
         namedExports: { ...realRepo, usageStats: mockUsageStats },
       });
       const [
@@ -64,9 +64,9 @@ async function modules(t: { mock: { module: (specifier: string, opts: unknown) =
         { BACKGROUND_JOB_FAILURE_ALERT_THRESHOLD },
         { getJobHealthSnapshot, resetJobHealthRegistryForTests },
       ] = await Promise.all([
-        import('../src/usageAlert.js'),
-        import('../src/backgroundJobs.js'),
-        import('../src/backgroundJobHealth.js'),
+        import('../src/base/usageAlert.js'),
+        import('../src/base/jobs/trackedJob.js'),
+        import('../src/base/backgroundJobHealth.js'),
       ]);
       return {
         startUsageAlert,

@@ -1,7 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { CallerContext } from '../src/auth/rbac.js';
-import type { OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import '../src/module/strings/notices.js';
+import type { CallerContext } from '../src/base/auth/rbac.js';
+import type { OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
+// Community content registrations (prompt sections + persona roster) — the
+// composition-root contract: src/index.ts registers these in production, so
+// tests that assemble prompts register them explicitly here.
+import '../src/module/agent/communityPromptSections.js';
+import '../src/module/agent/personas.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -16,9 +25,14 @@ process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 
-const { pool } = await import('../src/storage/db.js');
-const { logger } = await import('../src/logger.js');
-const { searchMemory, getClaudeSession } = await import('../src/storage/repository.js');
+const { pool } = await import('../src/base/storage/db.js');
+const { logger } = await import('../src/base/logger.js');
+const { searchMemory, getClaudeSession } = await import('../src/base/storage/repository.js');
+
+// The tool registry's module-scope registrations (tool tiers, tool-server
+// parts, feature-flag predicates) — the composition-root contract, matching
+// tests/rbac.test.ts.
+await import('../src/module/agent/tools/index.js');
 
 // The real Postgres error text emitted when statement_timeout cancels a
 // query (SQLSTATE 57014) — used verbatim so this test proves the actual
@@ -76,7 +90,7 @@ test('SECURITY: a full agent turn completes normally, and the raw Postgres state
     throw new Error(STATEMENT_TIMEOUT_MESSAGE);
   });
 
-  const { runAgentTurn } = await import('../src/agent/core.js');
+  const { runAgentTurn } = await import('../src/base/agent/core.js');
 
   const adapter: PlatformAdapter = {
     platform: 'discord',

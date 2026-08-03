@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+import type { OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
 
 // Anthropic status-check consecutive-failure alerting (issue #321). Its own
 // process/file because STATUS_CHECK_ENABLED is pinned ON here (opposite of
@@ -22,17 +22,17 @@ const {
   statusCheckAlertThreshold,
   stepStatusIncidentTracker,
   initialStatusIncidentTracker,
-} = await import('../src/backgroundJobs.js');
+} = await import('../src/module/backgroundJobs.js');
 const { getJobHealthSnapshot, resetJobHealthRegistryForTests } =
-  await import('../src/backgroundJobHealth.js');
+  await import('../src/base/backgroundJobHealth.js');
 const {
   pollAnthropicStatus,
   resetStatusCacheForTests,
   formatStatusResolvedAlert,
   formatStatusMessage,
   getStatusCache,
-} = await import('../src/status/anthropicStatus.js');
-const { WindowClosedError } = await import('../src/platforms/whatsapp/cloudAdapter.js');
+} = await import('../src/module/status/anthropicStatus.js');
+const { WindowClosedError } = await import('../src/base/platforms/whatsapp/cloudAdapter.js');
 
 const POLL_MS = 5 * 60_000;
 const THRESHOLD = statusCheckAlertThreshold(5);

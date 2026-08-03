@@ -14,7 +14,7 @@ This directory is that orientation, **written down once and committed**:
 
 | File | What it is for |
 |---|---|
-| [`module-map.md`](module-map.md) | Where things live. One line per `src/` subsystem and module. Gated by `npm run context:check`, so it cannot silently rot. |
+| [`module-map.md`](module-map.md) | Where things live. One line per subsystem and module across both halves of `src/`. Gated by `npm run context:check`, so it cannot silently rot. |
 | [`recipes.md`](recipes.md) | The shape of a typical change: which files a given kind of work touches, and which gate will fail if you miss one. |
 
 ## How to use it
@@ -54,9 +54,14 @@ someone writes the one-line description. That is the whole point — a fixer tha
 auto-satisfied the gate would let modules enter the tree undescribed, which is
 exactly the rot the gate exists to prevent.
 
-Scope is `src/` only. Workflows are documented properly in
+Scope is `src/` only — all three roots: `src/base/` (the community-agnostic
+framework), `src/module/` (this deployment's content and wiring) and the
+`src/index.ts` composition root. Workflows are documented properly in
 [`../PIPELINE.md`](../PIPELINE.md), and gating the ~160 test files would be a
 lot of upkeep for very little orientation.
+
+The pack does not enforce the boundary between those halves; `npm run
+imports:check` does, and `recipes.md` has the recipe for a failure.
 
 ## The other half: handoff notes
 

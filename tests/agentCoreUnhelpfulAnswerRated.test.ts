@@ -1,7 +1,19 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { CallerContext } from '../src/auth/rbac.js';
-import type { OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import '../src/module/strings/notices.js';
+import type { CallerContext } from '../src/base/auth/rbac.js';
+import type { OutgoingMessage, PlatformAdapter } from '../src/base/platforms/types.js';
+// Community content registrations (prompt sections + persona roster) — the
+// composition-root contract: src/index.ts registers these in production, so
+// tests that assemble prompts register them explicitly here.
+import '../src/module/agent/communityPromptSections.js';
+import '../src/module/agent/personas.js';
+// Community turn-state registration — the finalizer that surfaces this
+// module's keys on AgentReply.turnState (src/index.ts loads it in production).
+import '../src/module/agent/communityTurnState.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -69,19 +81,19 @@ function mockQuery(params: { options: { mcpServers: Record<string, unknown> } })
 }
 
 // Both query() and createAnswerFeedback() are static imports inside
-// src/agent/core.ts / src/agent/tools.ts, so once those modules have been
+// src/base/agent/core.ts / src/module/agent/tools.ts, so once those modules have been
 // dynamically imported anywhere in this process the bindings are fixed — a
 // later t.mock.module call can't retarget them (see
 // tests/agentCoreMaxTurns.test.ts for the same trap). Install both mocks
 // once and reuse the cached import; `script` is mutated per-test to vary the
 // simulated rate_answer call pattern.
-let corePromise: Promise<typeof import('../src/agent/core.js')> | null = null;
+let corePromise: Promise<typeof import('../src/base/agent/core.js')> | null = null;
 async function core(t: { mock: { module: (specifier: string, opts: unknown) => void } }) {
   if (!corePromise) {
     const realSdk = await import('@anthropic-ai/claude-agent-sdk');
     t.mock.module('@anthropic-ai/claude-agent-sdk', { namedExports: { ...realSdk, query: mockQuery } });
-    const realRepo = await import('../src/storage/repository.js');
-    t.mock.module('../src/storage/repository.js', {
+    const realRepo = await import('../src/base/storage/repository.js');
+    t.mock.module('../src/base/storage/repository.js', {
       namedExports: {
         ...realRepo,
         createAnswerFeedback: async (_input: unknown) => {
@@ -91,7 +103,12 @@ async function core(t: { mock: { module: (specifier: string, opts: unknown) => v
         },
       },
     });
-    corePromise = import('../src/agent/core.js');
+    // Load the tool registry AFTER the repository mock above, so the tool
+    // handlers (and the base kernel's registered parts) bind the mocked
+    // repository exports — the same ordering the pre-split core.js import
+    // graph gave this file.
+    await import('../src/module/agent/tools/index.js');
+    corePromise = import('../src/base/agent/core.js');
   }
   return corePromise;
 }

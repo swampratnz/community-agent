@@ -18,6 +18,37 @@ otherwise re-derive this repo's layout on every single run. Use it instead of a
 broad exploration sweep — then read the actual code, because the pack is
 orientation and never authority. If it is wrong, fix it in your PR.
 
+## Base and module
+
+`src/` has two halves and a composition root:
+
+- **`src/base/`** — the community-agnostic framework: agent kernel and prompt
+  spine, adapters, storage, router spine, jobs mechanism, RBAC, config, the
+  notice-catalogue mechanism, alert/health infra, leaf utils. **No community
+  content**: a new base file must not carry Claude/Anthropic/NZ prose, te reo
+  or plain-language strings, or one of this deployment's product decisions. If
+  it does, it belongs in `src/module/`.
+- **`src/module/`** — this deployment's content and wiring: the tool registry
+  and its `ToolDef` domain files, prose, personas, skills, the notice pack,
+  community jobs and digests, the integrations, and the composition wiring
+  (`routerWiring.ts`, `platforms/factories.ts`, `jobs/registry.ts`,
+  `commands.ts`).
+- **`src/index.ts`** — the composition root: the only file that may import
+  both, and where the community side-effect imports live.
+
+**Base may never import module — not even a type — and module may never import
+the composition root.** Gated by `npm run imports:check` (below) and eslint.
+When a base file needs something a module owns, do NOT weaken the rule:
+invert it. Declare a registry slot in base, register into it from the module
+at its own import time, and add the side-effect import to `index.ts`
+(`registerToolTiers`, `registerToolServerParts`, `registerNoticePack`,
+`registerPolicyKeys`, `registerCommands` are the worked examples). For a
+`typeof <community export>` in a base deps interface, write the type
+structurally in base instead. Keep every slot **fail-closed**: content slots
+throw when read before registration, additive slots reject a duplicate or
+unknown name. A slot that degrades to an empty list is a silent downgrade
+nobody sees.
+
 ## Build / test / verify
 
 - `npm run typecheck` — must be clean. This now also runs
@@ -61,6 +92,22 @@ orientation and never authority. If it is wrong, fix it in your PR.
   discoverable by a new phrasing, add a matching golden query there —
   queries must be paraphrases of the target entry, never near-verbatim
   quotes, or the eval proves nothing.
+- `npm run imports:check` — the ONE-WAY IMPORT RULE between the two halves of
+  `src/`. `src/base/` is the community-agnostic framework, `src/module/` is
+  this deployment's NZ-community content and wiring, and `src/index.ts` is the
+  composition root — the only file allowed to import both. Base may never
+  import module, because Phase 3 lifts `src/base/` into the agent-base package
+  on its own and one edge the wrong way makes it un-liftable. Invert instead:
+  base declares a registry slot, the module registers into it at its own import
+  time (`turnState.ts`, `strings/catalogue.ts`, `commands/registry.ts` are the
+  worked examples), and `index.ts` carries the side-effect import. A type-only
+  import counts — a `typeof <community export>` in a deps interface is the edge
+  this repo kept re-growing; write the signature structurally in base instead.
+  Enforced twice on purpose: eslint's `no-restricted-imports` on
+  `src/base/**` gives the fast local signal from the specifier text, and
+  `scripts/check-import-direction.mjs` resolves every specifier against the
+  file system, so it sees through any depth of `../` and has no config of its
+  own to weaken. Runs in CI's `lint` job; pinned by `tests/importDirection.test.ts`.
 - `npm run context:check` — freshness gate on the agent context pack
   (`docs/agents/`). Fails if a `src/` subsystem or top-level module has no
   entry in `docs/agents/module-map.md`, if an entry names a path that no longer
@@ -71,9 +118,9 @@ orientation and never authority. If it is wrong, fix it in your PR.
   check keeps failing until someone writes the one-line description. A fixer
   that auto-satisfied this gate would let modules enter the tree undescribed,
   which is the exact rot it exists to prevent. Runs in CI's `lint` job.
-- `npm run build` — tsc + copies the `src/storage/schema/` fragments into
-  `dist/`, then smoke-checks that `dist/storage/schema/` matches the manifest
-  (`scripts/check-dist-schema.mjs`).
+- `npm run build` — tsc + copies the `src/base/storage/schema/` fragments into
+  `dist/`, then smoke-checks that `dist/base/storage/schema/` matches the
+  manifest (`scripts/check-dist-schema.mjs`).
 - DB-touching changes: CI runs `tests/repository.test.ts` against a real
   `pgvector/pgvector:pg16` service container (see `.github/workflows/ci.yml`),
   so this is enforced, not just a manual reminder. Do it locally too for the
@@ -143,7 +190,7 @@ ownership rules:
   didn't have — without it the DB-backed `test:security` fails on a stale schema
   (`column/relation ... does not exist`) and the resolver falsely escalated
   `needs-human` on a non-issue. Since the config split, migrate's import chain
-  validates only the storage boot slice (`src/config/boot.ts`: db+log), so a
+  validates only the storage boot slice (`src/base/config/boot.ts`: db+log), so a
   bare `npm run migrate` works with just `DATABASE_URL` set — it no longer
   exits(1) demanding `CLAUDE_CODE_OAUTH_TOKEN` (config validation exits(1)
   rather than throwing). `migrate:ci` remains as a compatibility alias
@@ -289,7 +336,7 @@ ownership rules:
 ## Conventions
 
 - Match existing style; keep comments at the density of surrounding code.
-- Never commit secrets. `.env` is git-ignored; `whatsapp-auth/` and `src/auth/`
+- Never commit secrets. `.env` is git-ignored; `whatsapp-auth/` and `src/base/auth/`
   are distinct — the latter is source and must stay tracked.
 - Do not put model identifiers in commits, PR bodies, or code.
 - `CHANGELOG.md` `##` section dates are the **Pacific/Auckland (NZ)** calendar
