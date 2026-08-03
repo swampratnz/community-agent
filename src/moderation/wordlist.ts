@@ -1,25 +1,43 @@
 // Stage 1 bad-language detection: a zero-cost, case-insensitive, whole-word
 // match against a curated term list. Runs on EVERY scanned message when
-// moderation is enabled. Operators extend the defaults via MODERATION_BAD_WORDS
-// (config.moderation.badWords); community-specific slurs are best added there
-// rather than shipped verbatim in source.
+// moderation is enabled. The default terms are registered by the community
+// list (src/moderation/badWords.ts); operators extend them via
+// MODERATION_BAD_WORDS (config.moderation.badWords), and community-specific
+// slurs are best added there rather than shipped verbatim in source.
 
 /**
- * A deliberately small default set of common profanity so the feature has a
- * sane out-of-the-box floor. It is NOT comprehensive and does not attempt to
- * catch obfuscation/leetspeak — real deployments should tune
- * MODERATION_BAD_WORDS to their community's standards.
+ * The default term list is community CONTENT, so it is REGISTERED here by
+ * `src/moderation/badWords.ts` at that module's import time rather than
+ * defined in this mechanism file (agent-base plan §3). Exactly once per
+ * process; a second registration throws rather than swapping the floor after
+ * boot, matching the tool-tier and prompt-section registries.
  */
-export const DEFAULT_BAD_WORDS: readonly string[] = [
-  'fuck',
-  'shit',
-  'bitch',
-  'asshole',
-  'bastard',
-  'cunt',
-  'dickhead',
-  'motherfucker',
-];
+let registeredDefaults: readonly string[] | null = null;
+
+export function registerDefaultBadWords(terms: readonly string[]): void {
+  if (registeredDefaults) {
+    throw new Error(
+      'default bad words already registered — the default term list cannot be swapped after boot',
+    );
+  }
+  registeredDefaults = Object.freeze([...terms]);
+}
+
+/**
+ * The registered defaults. FAILS LOUD rather than degrading to an empty
+ * list: an unregistered read means the community module never loaded, and
+ * silently matching nothing but the operator's extra terms would be a
+ * moderation downgrade nobody sees. Import `moderation/badWords.js` (as
+ * src/index.ts does) before building a detector.
+ */
+function defaultBadWords(): readonly string[] {
+  if (!registeredDefaults) {
+    throw new Error(
+      'no default bad words registered — import the community list (src/moderation/badWords.js) before building a wordlist detector',
+    );
+  }
+  return registeredDefaults;
+}
 
 export interface Detection {
   /** Short label for the warning ("bad language (...)", "abuse (...)"). */
@@ -48,7 +66,7 @@ function escapeRegExp(s: string): string {
  */
 export function makeWordlistDetector(extraTerms: string[] = []): (text: string) => Detection | null {
   const terms = Array.from(
-    new Set([...DEFAULT_BAD_WORDS, ...extraTerms].map((t) => t.trim().toLowerCase()).filter(Boolean)),
+    new Set([...defaultBadWords(), ...extraTerms].map((t) => t.trim().toLowerCase()).filter(Boolean)),
   );
   if (terms.length === 0) return () => null;
   const pattern = new RegExp(`\\b(${terms.map(escapeRegExp).join('|')})\\b`, 'i');

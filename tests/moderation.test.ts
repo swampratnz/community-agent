@@ -16,6 +16,10 @@ process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 
+// The default bad-word list is community content registered at its own
+// module scope (src/index.ts imports it in production), and wordlist.ts fails
+// closed until then — import it before building a detector.
+await import('../src/moderation/badWords.js');
 const { makeWordlistDetector } = await import('../src/moderation/wordlist.js');
 const {
   Moderator,

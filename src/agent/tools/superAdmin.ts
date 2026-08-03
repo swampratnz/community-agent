@@ -46,6 +46,15 @@ import { defineTool } from './types.js';
 const ADMIN_DM_FAILED_NOTE = " (Couldn't DM them about the promotion — they may not know yet.)";
 
 /**
+ * This deployment's systemd redeploy unit — community content (it names THIS
+ * bot's service), so the base runner (agent/redeploy.ts) takes it as a
+ * parameter rather than hard-coding it. Same unit the nightly timer starts,
+ * so the flock inside scripts/redeploy.sh rules out overlap between the
+ * chat-triggered and timer-triggered paths.
+ */
+const REDEPLOY_UNIT = 'community-agent-redeploy.service';
+
+/**
  * After a role change (grant_admin/revoke_admin) commits, reset the target's
  * active-conversation sessions so their new tier takes effect on the very next
  * message rather than being shadowed by stale in-session context until the
@@ -403,7 +412,7 @@ export const superAdminTools = [
         async () => {
           const { success, result } = await audited({
             actionKind: 'redeploy_bot',
-            run: () => triggerRedeploy(),
+            run: () => triggerRedeploy(REDEPLOY_UNIT),
           });
           return success ? result : `Failed: ${result}`;
         },
