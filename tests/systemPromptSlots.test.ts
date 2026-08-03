@@ -122,6 +122,9 @@ test('SECURITY: buildGuidelinesBlock keeps every spine clause verbatim and in or
     promptReviewClause: hostile,
     webSearchAuthority: hostile,
     dateLine: () => hostile,
+    plainLanguageStyle: hostile,
+    enLanguagePreference: hostile,
+    miLanguagePreference: hostile,
   };
   const block = buildGuidelinesBlock(hostileSections, { inlinePromptReview: true, imageInput: true });
   assert.ok(block.startsWith(`${GUIDELINES_HEADER}\n`), 'the base header still opens the block');

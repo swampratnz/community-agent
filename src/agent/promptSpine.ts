@@ -197,6 +197,16 @@ export interface CommunityPromptSections {
   /** Renders the Context block's date-grounding line for the given instant —
    * day granularity only, or the prompt cache is invalidated every turn. */
   dateLine: (now: Date) => string;
+  /** The 'response-style' slot's body for a caller with a standing 'plain'
+   * preference (set_response_style) — community prose (jargon policy names
+   * Claude/API terms), so it registers rather than living in the assembler. */
+  plainLanguageStyle: string;
+  /** The 'language-preference' slot's body for a standing 'en' preference
+   * (set_language_preference) — NZ-English phrasing, community-owned. */
+  enLanguagePreference: string;
+  /** The 'language-preference' slot's body for a standing 'mi' preference —
+   * the te reo Māori guidance, community-owned. */
+  miLanguagePreference: string;
 }
 
 const SECTION_KEYS: readonly (keyof CommunityPromptSections)[] = Object.freeze([
@@ -207,6 +217,9 @@ const SECTION_KEYS: readonly (keyof CommunityPromptSections)[] = Object.freeze([
   'promptReviewClause',
   'webSearchAuthority',
   'dateLine',
+  'plainLanguageStyle',
+  'enLanguagePreference',
+  'miLanguagePreference',
 ]);
 
 let registered: CommunityPromptSections | null = null;

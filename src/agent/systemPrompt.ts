@@ -43,34 +43,6 @@ function guidelines(): string {
   });
 }
 
-const PLAIN_LANGUAGE_STYLE = `
-This requester has asked for plain-language replies (set_response_style):
-- Avoid unexplained jargon. If you must use a Claude/API-specific term,
-  define it in the same sentence, briefly.
-- Prefer short sentences and short paragraphs over nested bullet lists.
-`.trim();
-
-const EN_LANGUAGE_PREFERENCE = `
-This requester has asked to always receive replies in NZ English
-(set_language_preference), regardless of what language their own message is
-written in, unless they ask you to switch.
-`.trim();
-
-const MI_LANGUAGE_PREFERENCE = `
-This requester has asked to always receive replies in te reo Māori
-(set_language_preference), regardless of what language their own message is
-written in, unless they ask you to switch. This does NOT relax the charter's
-existing te reo guidance above — it still applies in full:
-- Keep replies simple and short rather than overreaching, and preserve
-  macrons and other diacritics exactly.
-- Keep Claude/API-specific terms, product names, and code untouched (in
-  English), same as any other language.
-- If you cannot render some content (a technical explanation, code, an error
-  message) confidently and accurately in te reo Māori, fall back to NZ
-  English for that part rather than forcing a low-quality translation —
-  accuracy comes before honouring the language preference.
-`.trim();
-
 /**
  * Shared no-web-search disclosure for the two tiers WITHOUT WebSearch. The
  * old "say so if asked" phrasing meant a member whose question needed current
@@ -159,10 +131,14 @@ export function buildSystemPrompt(
       `Context:\n- Platform: ${caller.platform}\n- Conversation: ${caller.conversationId}\n${sections.dateLine(now)}`,
     'role-note': () => roleNote(caller.role),
     'code-policy': () => codePolicyNote(policy.codeAnswers),
-    'response-style': () => (policy.responseStyle === 'plain' ? PLAIN_LANGUAGE_STYLE : null),
+    // The style/language slot BODIES are registered community prose (the
+    // plain-language jargon policy and the NZ-English/te reo Māori standing
+    // preferences); which slot renders for which policy value stays a base
+    // decision here.
+    'response-style': () => (policy.responseStyle === 'plain' ? sections.plainLanguageStyle : null),
     'language-preference': () => {
-      if (policy.languagePreference === 'en') return EN_LANGUAGE_PREFERENCE;
-      if (policy.languagePreference === 'mi') return MI_LANGUAGE_PREFERENCE;
+      if (policy.languagePreference === 'en') return sections.enLanguagePreference;
+      if (policy.languagePreference === 'mi') return sections.miLanguagePreference;
       return null;
     },
   };

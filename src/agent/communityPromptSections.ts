@@ -195,6 +195,34 @@ export const PROMPT_REVIEW_CLAUSE = `
 const WEB_SEARCH_AUTHORITY =
   'Weigh source authority: for claims about Anthropic products, plans, or pricing, ground specifics in official pages (anthropic.com, claude.com, support.claude.com, or the relevant vendor\'s own docs) and cite those; treat third-party blogs, aggregators, and SEO content as unverified — a specific figure, date, or dollar amount that appears only in such a source must be presented as unverified ("one blog claims..."), never stated as fact.';
 
+const PLAIN_LANGUAGE_STYLE = `
+This requester has asked for plain-language replies (set_response_style):
+- Avoid unexplained jargon. If you must use a Claude/API-specific term,
+  define it in the same sentence, briefly.
+- Prefer short sentences and short paragraphs over nested bullet lists.
+`.trim();
+
+const EN_LANGUAGE_PREFERENCE = `
+This requester has asked to always receive replies in NZ English
+(set_language_preference), regardless of what language their own message is
+written in, unless they ask you to switch.
+`.trim();
+
+const MI_LANGUAGE_PREFERENCE = `
+This requester has asked to always receive replies in te reo Māori
+(set_language_preference), regardless of what language their own message is
+written in, unless they ask you to switch. This does NOT relax the charter's
+existing te reo guidance above — it still applies in full:
+- Keep replies simple and short rather than overreaching, and preserve
+  macrons and other diacritics exactly.
+- Keep Claude/API-specific terms, product names, and code untouched (in
+  English), same as any other language.
+- If you cannot render some content (a technical explanation, code, an error
+  message) confidently and accurately in te reo Māori, fall back to NZ
+  English for that part rather than forcing a low-quality translation —
+  accuracy comes before honouring the language preference.
+`.trim();
+
 const NZ_DATE_FORMAT = new Intl.DateTimeFormat('en-NZ', {
   timeZone: 'Pacific/Auckland',
   weekday: 'long',
@@ -217,4 +245,7 @@ registerPromptSections({
    * prefix on every turn; day precision keeps it stable for a whole NZ day.
    */
   dateLine: (now: Date) => `- Current date (NZ): ${NZ_DATE_FORMAT.format(now)}`,
+  plainLanguageStyle: PLAIN_LANGUAGE_STYLE,
+  enLanguagePreference: EN_LANGUAGE_PREFERENCE,
+  miLanguagePreference: MI_LANGUAGE_PREFERENCE,
 });
