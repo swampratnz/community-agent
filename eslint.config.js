@@ -39,30 +39,47 @@ export default tseslint.config(
     },
   },
   {
-    // The one-way import rule (agent-base plan §Phase-2): src/base/ is the
-    // community-agnostic framework and must stay liftable into the agent-base
-    // package on its own, so it may never import src/module/. Patterns cover
-    // every depth of `../` a base file could climb, and `allowTypeImports` is
-    // deliberately NOT set — a type-level dependency is still a design
-    // dependency, and a `typeof <community export>` in a deps interface is the
-    // exact edge this repo kept re-growing.
+    // The composition-direction rules (agent-base package flip). `src/module/`
+    // is this deployment's content; `src/index.ts` is the only file that
+    // composes it. Two things it may never do:
+    //
+    //   - import the composition root, which sits at the top of the graph;
+    //   - import a composition entry point from the package — a module
+    //     CONTRIBUTES a manifest (src/module/agentModule.ts), it never
+    //     composes one, because the registration ORDER is precisely what
+    //     `createAgent` exists to own.
+    //
+    // `allowTypeImports` is deliberately NOT set for the composition root: a
+    // type-level dependency is still a design dependency. The manifest TYPE
+    // (`AgentModuleManifest`) is a different import and stays allowed.
     //
     // This is the fast local half of the rule. The authoritative half is
     // scripts/check-import-direction.mjs, which resolves each specifier against
-    // the file system instead of matching its text, and runs in CI's lint job.
-    files: ['src/base/**/*.ts'],
+    // the file system (and additionally fails if `src/base/` is ever
+    // re-created), and runs in CI's lint job.
+    files: ['src/module/**/*.ts'],
     rules: {
       'no-restricted-imports': [
         'error',
         {
           patterns: [
             {
-              group: ['**/module/**', '**/module', '../../index.js', '../index.js'],
+              group: ['**/src/index.js', '../index.js', '../../index.js', '../../../index.js'],
               message:
-                'src/base/ must not import src/module/ (or the composition root). Declare a registry slot ' +
-                'in base and let the module register into it at its own import time — see ' +
-                'src/base/agent/turnState.ts or src/base/strings/catalogue.ts — or declare the type ' +
-                'structurally in base. Verified by scripts/check-import-direction.mjs.',
+                'src/module/ must not import the composition root. src/index.ts wires this module; ' +
+                'nothing it wires may reach back up to it. Verified by ' +
+                'scripts/check-import-direction.mjs.',
+            },
+          ],
+          paths: [
+            {
+              name: '@swampratnz/agent-base',
+              importNames: ['createAgent', 'planComposition', 'assertRegistrationsComplete'],
+              message:
+                'Only src/index.ts composes the agent. A module exports an AgentModuleManifest ' +
+                '(src/module/agentModule.ts) and the composition root hands it to createAgent, which ' +
+                'owns the ordering: plan, init, singleton registrations, additive registrations, ' +
+                'readiness probe, migrate, start.',
             },
           ],
         },
