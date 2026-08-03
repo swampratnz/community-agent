@@ -100,7 +100,7 @@ let registered: { axes: NoticeAxes; entries: Record<string, NoticeEntry<NoticeVa
 
 /**
  * Register THE notice pack, exactly once per process — called by the pack
- * module (src/strings/notices.ts) at its own module scope, so importing the
+ * module (src/module/strings/notices.ts) at its own module scope, so importing the
  * pack anywhere is what makes `notice` servable. A second registration
  * throws rather than swapping packs after boot, matching `registerToolTiers`
  * (auth/rbac.ts) and the skills-manifest/prompt-sections registries.
@@ -128,7 +128,7 @@ export function registerNoticePack(
 export function notice<K extends keyof NoticeIdMap>(id: K, selection?: NoticeSelection): NoticeIdMap[K] {
   if (!registered) {
     throw new Error(
-      'no notice pack registered — import the pack module (src/strings/notices.js) before requesting a notice',
+      'no notice pack registered — import the pack module (src/module/strings/notices.js) before requesting a notice',
     );
   }
   const entry = registered.entries[id as string];

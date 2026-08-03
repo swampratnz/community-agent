@@ -54,7 +54,7 @@ async function main(): Promise<void> {
 
   // 3. Build platform adapters via the factory registry (agent-base plan
   //    item 9) — construction order and the WhatsApp provider switch are
-  //    unchanged, they just live in src/platforms/factories.ts now. First,
+  //    unchanged, they just live in src/module/platforms/factories.ts now. First,
   //    the capability invariant: every tool's platform restriction must be
   //    consistent with what the registered adapters declare they can do, so
   //    a drifted restriction fails the deploy loudly instead of silently
@@ -73,7 +73,7 @@ async function main(): Promise<void> {
   logger.info({ platforms: adapters.map((a) => a.platform) }, 'Community Agent running');
 
   // 4b. Background jobs — every periodic timer in the process, started in
-  //     the registry's pinned order (src/jobs/registry.ts, which preserves
+  //     the registry's pinned order (src/module/jobs/registry.ts, which preserves
   //     the old hand-wired startX() sequence exactly). Each spec keeps its
   //     own enable gate, cadence mechanism and failure-tracker wiring; a
   //     disabled job contributes a null timer that the shutdown sweep skips.

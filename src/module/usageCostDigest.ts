@@ -176,7 +176,7 @@ async function alertSuperAdmins(adapters: readonly PlatformAdapter[], message: s
   });
 }
 
-// Registry entry (see src/jobs/registry.ts) — gate mirrors startUsageCostDigest's own flag.
+// Registry entry (see src/module/jobs/registry.ts) — gate mirrors startUsageCostDigest's own flag.
 export const usageCostDigestJob: JobSpec = {
   name: 'usage-cost-digest',
   enabled: (cfg) => cfg.usageCostDigest.enabled,

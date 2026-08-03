@@ -12,7 +12,7 @@ import type { ToolServerTurnState } from './turnState.js';
  * community CONTENT (the tool inventory, the context factory, and the MCP
  * server name that roots every `mcp__<name>__*` id) is registered by the
  * module at its own import time (`registerToolServerParts`, called from
- * src/agent/tools/index.ts's module scope). Everything here FAILS CLOSED
+ * src/module/agent/tools/index.ts's module scope). Everything here FAILS CLOSED
  * before registration, matching the tool-tier registry in auth/rbac.ts.
  */
 
@@ -67,7 +67,7 @@ let registered: ToolServerParts<any> | null = null;
 
 /**
  * Register the tool-server parts, exactly once per process — called by the
- * tool registry (src/agent/tools/index.ts) at its own module scope, so
+ * tool registry (src/module/agent/tools/index.ts) at its own module scope, so
  * importing the registry anywhere is what makes a tool server buildable. A
  * second registration throws rather than swapping the inventory after boot,
  * matching registerToolTiers/registerPromptSections.
@@ -85,7 +85,7 @@ export function registerToolServerParts<Ctx>(parts: ToolServerParts<Ctx>): void 
 function registeredParts(): ToolServerParts<any> {
   if (!registered) {
     throw new Error(
-      'no tool-server parts registered — import the tool registry (src/agent/tools/index.js) before building a tool server',
+      'no tool-server parts registered — import the tool registry (src/module/agent/tools/index.js) before building a tool server',
     );
   }
   return registered;

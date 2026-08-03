@@ -19,7 +19,7 @@ import type { Tier } from './tiers.js';
  * agent/pendingActions.ts). Roles come from env/DB only — never chat text.
  *
  * The tier lists are REGISTERED by the tool registry
- * (src/agent/tools/index.ts calls `registerToolTiers` at its module scope,
+ * (src/module/agent/tools/index.ts calls `registerToolTiers` at its module scope,
  * deriving each list from `ToolDef.minTier`) rather than imported from it,
  * so this module never depends on the community tool inventory. Each tool's
  * `minTier` stays the single source of truth — a tool can no longer be
@@ -69,7 +69,7 @@ let registered: ToolTierRegistration | null = null;
 
 /**
  * Register the tier lists, exactly once per process — called by the tool
- * registry (src/agent/tools/index.ts) at its own module scope, so importing
+ * registry (src/module/agent/tools/index.ts) at its own module scope, so importing
  * the registry anywhere is what makes the RBAC surface derivable. A second
  * registration throws rather than swapping the lists after boot, matching
  * the skills-manifest/prompt-sections registries.
@@ -93,7 +93,7 @@ export function registerToolTiers(tiers: ToolTierRegistration): void {
 function registeredTiers(): ToolTierRegistration {
   if (!registered) {
     throw new Error(
-      'no tool tiers registered — import the tool registry (src/agent/tools/index.js) before deriving a tool surface',
+      'no tool tiers registered — import the tool registry (src/module/agent/tools/index.js) before deriving a tool surface',
     );
   }
   return registered;

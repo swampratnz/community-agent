@@ -1286,7 +1286,7 @@ export function startAdminDigest(
   return startTrackedJob('admin-digest', adapters, config.adminDigest.enabled, runOnce);
 }
 
-// Registry entry (see src/jobs/registry.ts) — gate mirrors startAdminDigest's own flag.
+// Registry entry (see src/module/jobs/registry.ts) — gate mirrors startAdminDigest's own flag.
 export const adminDigestJob: JobSpec = {
   name: 'admin-digest',
   enabled: (cfg) => cfg.adminDigest.enabled,

@@ -5,7 +5,7 @@ import type { PlatformAdapter } from '../platforms/types.js';
 export type JobTimer = ReturnType<typeof setInterval>;
 
 /**
- * One background job, as registered in `src/jobs/registry.ts` (agent-base
+ * One background job, as registered in `src/module/jobs/registry.ts` (agent-base
  * plan §3, the `jobs: JobSpec[]` extension point). Deliberately thin: the
  * spec does NOT own the cadence — today's jobs are a mix of
  * `startTrackedJob`'s shared 6h tick + per-job freshness guards, bespoke

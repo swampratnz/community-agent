@@ -34,7 +34,7 @@ export const ENABLED_SKILLS = [
 /**
  * Repo-bundled Agent Skills plugin directory (issue #741), resolved the same
  * way the schema manifest locates its fragments: relative to this file's own
- * compiled location, so it resolves to src/agent/skills in dev (tsx) and
+ * compiled location, so it resolves to src/module/agent/skills in dev (tsx) and
  * dist/agent/skills in the built artifact (package.json's build script
  * copies it there, mirroring the existing schema-fragments copy step).
  * Contains only a `.claude-plugin/plugin.json` manifest and static per-skill

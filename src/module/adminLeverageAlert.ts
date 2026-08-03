@@ -104,7 +104,7 @@ export function startAdminLeverageAlert(
   return startTrackedJob('admin-leverage-alert', adapters, config.adminLeverageAlert.enabled, runOnce);
 }
 
-// Registry entry (see src/jobs/registry.ts) — gate mirrors startAdminLeverageAlert's own flag.
+// Registry entry (see src/module/jobs/registry.ts) — gate mirrors startAdminLeverageAlert's own flag.
 export const adminLeverageAlertJob: JobSpec = {
   name: 'admin-leverage-alert',
   enabled: (cfg) => cfg.adminLeverageAlert.enabled,

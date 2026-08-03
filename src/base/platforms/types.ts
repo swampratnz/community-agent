@@ -15,7 +15,7 @@
  * the closed `'discord' | 'whatsapp'` union that was duplicated across
  * core.ts/tools metadata/zod enums. The set of platforms that actually
  * exists in a deployment is the registry (`src/platforms/registry.ts`:
- * `PLATFORM_DESCRIPTORS` + `src/platforms/factories.ts`: `ADAPTER_FACTORIES`)
+ * `PLATFORM_DESCRIPTORS` + `src/module/platforms/factories.ts`: `ADAPTER_FACTORIES`)
  * — adding a platform is a registration, not a type edit fanned out across
  * the codebase.
  *

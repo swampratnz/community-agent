@@ -150,7 +150,7 @@ async function alertSuperAdmins(adapters: readonly PlatformAdapter[], message: s
   });
 }
 
-// Registry entry (see src/jobs/registry.ts) — gate mirrors startBackgroundJobCostAlert's own flag.
+// Registry entry (see src/module/jobs/registry.ts) — gate mirrors startBackgroundJobCostAlert's own flag.
 export const backgroundJobCostAlertJob: JobSpec = {
   name: 'background-job-cost-alert',
   enabled: (cfg) => cfg.backgroundJobCostAlert.enabled,

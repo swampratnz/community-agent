@@ -68,7 +68,7 @@ export function startDisconnectAlerts(adapters: readonly PlatformAdapter[]): Ret
   return timer;
 }
 
-// Registry entry (see src/jobs/registry.ts). Always on — sustained-disconnect
+// Registry entry (see src/module/jobs/registry.ts). Always on — sustained-disconnect
 // alerting has no user-facing surface to disable, so there is no enable flag
 // (same convention as the embedding-model health check). Note this job never
 // records into the job-health registry: its 30s bespoke tick predates

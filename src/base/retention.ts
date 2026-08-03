@@ -95,7 +95,7 @@ export function startAccessRequestRetentionPurge(
   });
 }
 
-// Registry entries (see src/jobs/registry.ts). Each `enabled` mirrors the
+// Registry entries (see src/module/jobs/registry.ts). Each `enabled` mirrors the
 // `days > 0` gate startRetentionJob already passes to startTrackedJob —
 // declarative metadata only, pinned by tests/jobsRegistry.test.ts.
 export const interactionRetentionPurgeJob: JobSpec = {

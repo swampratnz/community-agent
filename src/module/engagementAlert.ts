@@ -108,7 +108,7 @@ export function startEngagementAlert(
   return startTrackedJob('engagement-alert', adapters, config.engagementAlert.enabled, runOnce);
 }
 
-// Registry entry (see src/jobs/registry.ts) — gate mirrors startEngagementAlert's own flag.
+// Registry entry (see src/module/jobs/registry.ts) — gate mirrors startEngagementAlert's own flag.
 export const engagementAlertJob: JobSpec = {
   name: 'engagement-alert',
   enabled: (cfg) => cfg.engagementAlert.enabled,

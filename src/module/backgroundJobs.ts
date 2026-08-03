@@ -231,7 +231,7 @@ export function startEmbeddingHealthCheckJob(
   return startTrackedJob('embedding-model', adapters, true, runOnce);
 }
 
-// Registry entries for the jobs this module owns (see src/jobs/registry.ts).
+// Registry entries for the jobs this module owns (see src/module/jobs/registry.ts).
 // Each `enabled` mirrors the flag its starter already passes to
 // startTrackedJob / checks itself — declarative metadata only, pinned by
 // tests/jobsRegistry.test.ts.
@@ -383,7 +383,7 @@ export function startStatusCheck(
   return timer;
 }
 
-// Registry entry (see src/jobs/registry.ts) — bespoke configurable poll
+// Registry entry (see src/module/jobs/registry.ts) — bespoke configurable poll
 // cadence, never startTrackedJob's 6h tick (see startStatusCheck above).
 export const anthropicStatusCheckJob: JobSpec = {
   name: 'anthropic-status-check',
@@ -616,7 +616,7 @@ export function startDevTeamWatchPoller(
   return timer;
 }
 
-// Registry entry (see src/jobs/registry.ts) — bespoke configurable poll
+// Registry entry (see src/module/jobs/registry.ts) — bespoke configurable poll
 // cadence, same shape as anthropicStatusCheckJob above.
 export const devTeamWatchJob: JobSpec = {
   name: 'dev-team-watch',

@@ -339,7 +339,7 @@ export function startMemberDigest(
   return startTrackedJob('member-digest', adapters, config.memberDigest.enabled, runOnce);
 }
 
-// Registry entry (see src/jobs/registry.ts) — gate mirrors startMemberDigest's own flag.
+// Registry entry (see src/module/jobs/registry.ts) — gate mirrors startMemberDigest's own flag.
 export const memberDigestJob: JobSpec = {
   name: 'member-digest',
   enabled: (cfg) => cfg.memberDigest.enabled,

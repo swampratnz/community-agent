@@ -125,7 +125,7 @@ async function alertSuperAdmins(adapters: readonly PlatformAdapter[], message: s
   await sendSuperAdminAlert(adapters, message, { label: 'Usage alert', queueWhenDisconnected: true });
 }
 
-// Registry entry (see src/jobs/registry.ts) — bespoke hourly cadence, and the
+// Registry entry (see src/module/jobs/registry.ts) — bespoke hourly cadence, and the
 // gate mirrors startUsageAlert's own `if (!threshold) return null`.
 export const usageAlertJob: JobSpec = {
   name: 'usage-alert',

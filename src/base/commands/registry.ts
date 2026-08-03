@@ -16,7 +16,7 @@ import type {
 
 // The base command-registry MECHANISM (agent-base plan §Phase-2 Stage 3a):
 // the sentinel, the handler/binding/command types, the fail-loud
-// registration slot the community command list (src/commands.ts) registers
+// registration slot the community command list (src/module/commands.ts) registers
 // itself into at its own module's import time, and the Discord late-binding
 // hook. No command content lives here — the router's WhatsApp `!` intercept
 // and Discord slash registration both read whatever list was registered, so
@@ -112,7 +112,7 @@ let registered: readonly RegisteredCommand[] | undefined;
 
 /**
  * Register THE command list — called exactly once, by the community commands
- * module (src/commands.ts) at its own module scope, mirroring
+ * module (src/module/commands.ts) at its own module scope, mirroring
  * `registerNoticePack`/`registerToolTiers`. Double registration throws (two
  * modules both claiming to be the command list is a wiring bug, never a
  * merge), and the stored list is a frozen shallow copy so no later mutation
@@ -138,7 +138,7 @@ export function registeredCommands(): readonly RegisteredCommand[] {
   if (!registered) {
     throw new Error(
       'registeredCommands: no command list registered — import the community commands module ' +
-        '(src/commands.ts) before using a command surface',
+        '(src/module/commands.ts) before using a command surface',
     );
   }
   return registered;

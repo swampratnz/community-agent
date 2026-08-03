@@ -2023,7 +2023,7 @@ export class Router {
    * denial reply, is the deliberate choice here).
    *
    * Since the command-registry split (agent-base plan §3 `commands` row) the
-   * per-command matchers/handlers live VERBATIM in `src/commands.ts` — one
+   * per-command matchers/handlers live VERBATIM in `src/module/commands.ts` — one
    * registry consumed by this dispatcher AND Discord slash registration —
    * with the tier-floor rationale documented there. Each entry's `whatsapp`
    * handler gets the trimmed text and either declines

@@ -63,7 +63,7 @@ export interface HealthzPayload {
  * a CONFIRMED outage, not a single sub-threshold blip) also flips the
  * top-level `status` to `"degraded"`, the same signal `db`/`adapters` already
  * contribute. Never widen this beyond the fixed registered job-name key
- * (a literal in the job's owning module — see src/jobs/registry.ts — never a
+ * (a literal in the job's owning module — see src/module/jobs/registry.ts — never a
  * runtime-derived string) + integer + ISO timestamp fields below: `/healthz`
  * is unauthenticated and world-reachable if
  * `HEALTH_HOST` is opened, so no dynamic string (an error message, a stack)

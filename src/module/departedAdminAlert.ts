@@ -71,7 +71,7 @@ export function startDepartedAdminAlert(
   return startTrackedJob('departed-admin-alert', adapters, config.departedAdminAlert.enabled, runOnce);
 }
 
-// Registry entry (see src/jobs/registry.ts) — gate mirrors startDepartedAdminAlert's own flag.
+// Registry entry (see src/module/jobs/registry.ts) — gate mirrors startDepartedAdminAlert's own flag.
 export const departedAdminAlertJob: JobSpec = {
   name: 'departed-admin-alert',
   enabled: (cfg) => cfg.departedAdminAlert.enabled,
