@@ -1223,10 +1223,13 @@ export class BaileysAdapter implements PlatformAdapter {
     if (!this.sock) throw new Error('WhatsApp socket not connected');
     switch (action.kind) {
       case 'warn_user': {
-        const prefix =
-          action.params?.language === 'mi'
-            ? this.textPack.warnUserDmPrefixMi
-            : this.textPack.warnUserDmPrefix;
+        // The target's standing language preference (threaded as
+        // params.language by the `moderate` tool) selects a registered
+        // variant when the pack has one; anything else — including no
+        // preference at all — keeps the default prefix, byte-identical to
+        // the pre-map `language === 'mi'` branch.
+        const language = paramString(action.params?.language);
+        const prefix = this.textPack.warnUserDmPrefixByLanguage?.[language] ?? this.textPack.warnUserDmPrefix;
         await this.sendDirectMessage(
           action.targetUserId ?? '',
           `${prefix} ${paramString(action.params?.reason)}`,

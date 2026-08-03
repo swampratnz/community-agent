@@ -12,6 +12,10 @@ import type { AdapterTextPack } from './types.js';
  * supplies a different pack without forking the adapter. Everything an
  * adapter builds from a pack still leaves through that adapter's own
  * `filtered()` send paths, so an injected pack gains no new egress path.
+ *
+ * The te reo Māori warn-DM variants (issue #618) ride in each pack's
+ * `warnUserDmPrefixByLanguage` map: the `'mi'` axis is community-registered,
+ * so the base `AdapterTextPack` contract names no locale of its own.
  */
 
 // Fixed wrapper prefix for a manual warn_user DM (the admin's `reason` is
@@ -46,7 +50,7 @@ export const DISCORD_TEXT_PACK: AdapterTextPack = {
   welcomeMessage: WELCOME_MESSAGE,
   welcomeMessageOpen: WELCOME_MESSAGE_OPEN,
   warnUserDmPrefix: DISCORD_WARN_USER_DM_PREFIX,
-  warnUserDmPrefixMi: DISCORD_WARN_USER_DM_PREFIX_MI,
+  warnUserDmPrefixByLanguage: { mi: DISCORD_WARN_USER_DM_PREFIX_MI },
 };
 
 // Fixed wrapper prefix for a manual warn_user DM (the admin's `reason` is
@@ -79,7 +83,7 @@ export const BAILEYS_TEXT_PACK: AdapterTextPack = {
   welcomeMessage: WHATSAPP_GROUP_WELCOME_MESSAGE,
   welcomeMessageOpen: WHATSAPP_GROUP_WELCOME_MESSAGE_OPEN,
   warnUserDmPrefix: BAILEYS_WARN_USER_DM_PREFIX,
-  warnUserDmPrefixMi: BAILEYS_WARN_USER_DM_PREFIX_MI,
+  warnUserDmPrefixByLanguage: { mi: BAILEYS_WARN_USER_DM_PREFIX_MI },
 };
 
 // Fixed wrapper prefix for a manual warn_user DM (the admin's `reason` is
@@ -115,5 +119,5 @@ export const WHATSAPP_CLOUD_TEXT_PACK: AdapterTextPack = {
   welcomeMessage: WHATSAPP_CLOUD_WELCOME_MESSAGE,
   welcomeMessageOpen: WHATSAPP_CLOUD_WELCOME_MESSAGE_OPEN,
   warnUserDmPrefix: WHATSAPP_CLOUD_WARN_USER_DM_PREFIX,
-  warnUserDmPrefixMi: WHATSAPP_CLOUD_WARN_USER_DM_PREFIX_MI,
+  warnUserDmPrefixByLanguage: { mi: WHATSAPP_CLOUD_WARN_USER_DM_PREFIX_MI },
 };

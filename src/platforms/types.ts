@@ -161,8 +161,16 @@ export interface AdapterTextPack {
   welcomeMessageOpen: string;
   /** Fixed shell prefixed to a manual `warn_user` DM — the admin's reason is appended verbatim. */
   warnUserDmPrefix: string;
-  /** Fixed, human-authored te reo Māori variant of `warnUserDmPrefix` (issue #618). */
-  warnUserDmPrefixMi: string;
+  /**
+   * Per-language variants of `warnUserDmPrefix`, keyed by the OPEN language
+   * axis the strings catalogue registers (this repo's community pack
+   * registers `'mi'`, issue #618) — base names no locale, so an adapter can
+   * serve a target's standing language preference without knowing which
+   * languages exist. A missing key (including no map at all) falls back to
+   * `warnUserDmPrefix`, which is exactly the English-default behaviour every
+   * non-registered language had.
+   */
+  warnUserDmPrefixByLanguage?: Readonly<Record<string, string>>;
 }
 
 /**
