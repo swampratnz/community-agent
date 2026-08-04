@@ -90,7 +90,7 @@ const ADMIN_CAPABILITIES_TEXT =
   '- Assign a Discord role, remove a Discord role, or list which roles are available to assign\n' +
   "- Set up team projects: create one, give a member access, take a member's access away, allow or " +
   'stop it being discussed here, review who has access, or archive a finished project and bring it ' +
-  'back again\n' +
+  'back again, or batch-create a whole team (project, roster, and this channel) in one confirmed call\n' +
   '- Generate an image, or check recent changes to the bot and community (the changelog)';
 
 /**
