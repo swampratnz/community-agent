@@ -54,13 +54,14 @@ someone writes the one-line description. That is the whole point — a fixer tha
 auto-satisfied the gate would let modules enter the tree undescribed, which is
 exactly the rot the gate exists to prevent.
 
-Scope is `src/` only — all three roots: `src/base/` (the community-agnostic
-framework), `src/module/` (this deployment's content and wiring) and the
-`src/index.ts` composition root. Workflows are documented properly in
-[`../PIPELINE.md`](../PIPELINE.md), and gating the ~160 test files would be a
+Scope is `src/` only — the gate runs `--src src --src src/module`, i.e. this
+deployment's content and wiring plus the top-level `index.ts`/`migrate.ts`. The
+framework is the `@swampratnz/agent-base` package and is documented in its own
+repo; nothing here maps it. Workflows are documented properly in
+[`../PIPELINE.md`](../PIPELINE.md), and gating the ~180 test files would be a
 lot of upkeep for very little orientation.
 
-The pack does not enforce the boundary between those halves; `npm run
+The pack does not enforce the composition-direction rules; `npm run
 imports:check` does, and `recipes.md` has the recipe for a failure.
 
 ## The other half: handoff notes

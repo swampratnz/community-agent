@@ -1,5 +1,17 @@
 # Tool registry — design sketch
 
+**Status: SHIPPED (Phase 1 item 2).** This is the design sketch as written
+*before* the work, in the future tense throughout, and it is kept as the record
+of what was decided — not as a description of the tree. Two things to hold in
+mind while reading: the registry it proposes is live today
+(`src/module/agent/tools/`, with `TOOL_REGISTRY` in `index.ts` and the derived
+`COMMUNITY_TOOL_TIERS`/`COMMUNITY_TOOL_SERVER_PARTS`/
+`COMMUNITY_FLAGGED_TOOL_PREDICATES` named in `src/module/agentModule.ts`); and
+every `src/base/…` path below now means a file inside the
+`@swampratnz/agent-base` package, since the framework was extracted after this
+was written. For how it actually works now, read
+`docs/agents/module-map.md` and the code.
+
 Phase 1 item 2 of `docs/AGENT-BASE-PLAN.md`: the declarative `ToolDef` registry
 that kills the four-places-per-tool problem and splits `tools.ts`. This sketch
 is grounded in a fresh audit of HEAD (all counts and line refs verified).
