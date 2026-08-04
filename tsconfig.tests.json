@@ -37,6 +37,7 @@
     "tests/projectScope.test.ts",
     "tests/routerInterceptChain.test.ts",
     "tests/schemaConstraintIdempotency.test.ts",
+    "tests/toolTierMap.test.ts",
     "tests/stringsCatalogue.test.ts",
     "tests/systemPromptByteStability.test.ts",
     "tests/systemPromptSlots.test.ts",

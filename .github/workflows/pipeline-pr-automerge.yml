@@ -187,6 +187,32 @@ jobs:
             # — those are per-PR DATA nearly every PR touches; excluding them
             # would merge nothing. This list is the files that change the RULES.)
             #
+            # Three entries are here because of the agent-base split, not CI:
+            #   - src/module/agentModule.ts is THE manifest. Every extension
+            #     point this deployment registers passes through it — tool
+            #     tiers, feature-flag predicates, skills. Before the split the
+            #     same authority was spread across rbac.ts arrays and a
+            #     megaclosure; concentrating it in one file made that file a
+            #     rules file, so it is governed like one. Measured cost: it
+            #     appears in 8% of the last 40 merges, so governing it is
+            #     nearly free.
+            #
+            #     DELIBERATELY NOT src/module/agent/tools/index.ts, which
+            #     defines COMMUNITY_TOOL_TIERS. It is the more dangerous file
+            #     (a one-word 'admin' -> 'member' widens the privileged surface
+            #     while typechecking), but every new tool must register a tier
+            #     there: it appears in 62% of the last 40 merges, so governing
+            #     it would send most feature work to a human press and gut the
+            #     auto-merge loop. It is covered instead by the tier-map
+            #     snapshot in tests/toolTierMap.test.ts, which no tier change
+            #     can pass without editing the expected map in the same PR —
+            #     turning a silent widening into a reviewable diff at zero
+            #     throughput cost.
+            #   - docs/VISION.md is the rubric the research loop proposes
+            #     against and the adversarial loop judges against. Editing it
+            #     changes what the pipeline will build next, which is exactly
+            #     the "rewrite its own guardrails" risk this list exists for.
+            #
             # A governance hit does NOT stop evaluation, only the merge: the
             # pipeline's own acceptance criteria make most feature PRs document
             # themselves in docs/SECURITY.md, so a silent skip here stranded
@@ -196,7 +222,7 @@ jobs:
             # merge it requires actually gets requested.
             files="$(gh pr view "$n" --repo "$REPO" --json files --jq '.files[].path')"
             governance_hit='false'
-            if printf '%s\n' "$files" | grep -qE '^(\.github/|scripts/|CLAUDE\.md$|docs/PIPELINE\.md$|docs/SECURITY\.md$|package(-lock)?\.json$|tsconfig([.-].*)?\.json$|eslint\.config\.|\.prettier)'; then
+            if printf '%s\n' "$files" | grep -qE '^(\.github/|scripts/|CLAUDE\.md$|docs/PIPELINE\.md$|docs/SECURITY\.md$|docs/VISION\.md$|src/module/agentModule\.ts$|package(-lock)?\.json$|tsconfig([.-].*)?\.json$|eslint\.config\.|\.prettier)'; then
               governance_hit='true'
               echo "PR #$n: touches a governance/CI/config path (workflows, check machinery, or governance docs) — will never auto-merge; still evaluating for the human-merge-ready escalation."
             fi

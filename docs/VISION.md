@@ -4,6 +4,38 @@ The shared north star for the pipeline. The **research** worker generates
 proposals against this; the **adversarial** worker judges them against the same
 bar. Tune quality by editing this file, not the loop prompts.
 
+## Where this repo ends
+
+This repo is a **module on a framework**, not the whole agent. The framework is
+[`@swampratnz/agent-base`](https://github.com/swampratnz/agent-base), consumed
+as an npm package; this repo is `src/module/` plus the composition root, and
+`src/module/agentModule.ts` is the manifest that registers everything it
+contributes.
+
+That boundary decides what is proposable here, because **the build worker can
+only edit this repo**. A proposal needing a base change cannot be built no
+matter how good it is — it has to land in agent-base first and arrive as a
+version bump.
+
+Roughly:
+
+- **This repo** — tools and their tiers, community prompt sections and persona,
+  notice/string packs (including te reo), skills, module schema fragments,
+  community jobs and digests, moderation *policy*, ingest sources and topics.
+- **agent-base** — the turn engine and prompt spine, the router's security
+  sequence, CONFIRM and outbound filtering, RBAC mechanism, platform adapters,
+  storage/migration machinery, the job runner, retention and budgets, health,
+  and the config schema itself (so **a new env var is an agent-base change**).
+
+Two consequences worth internalising before proposing:
+
+- Some theme areas below are now mostly base-owned — **Reliability & ops** and
+  **Cost efficiency** especially, and parts of **Accessibility & inclusion**
+  (base selects the language/style axis; this repo supplies the strings). Prefer
+  the module-side half of those themes, or pick another theme.
+- "Make the bot do X" is usually module work. "Make the *framework* do X" is
+  not proposable here, however desirable.
+
 ## Mission
 
 Make the **NZ Claude Community** more valuable to its members and lower-effort
@@ -100,11 +132,21 @@ Each research run is memoryless, so deliberately vary across:
 - **Moderation & safety** — lighter, safer admin workflows; abuse handling.
 - **Admin insight** — analytics, digests, what the community is asking about.
 - **Reliability & ops** — resilience, observability, graceful degradation.
+  *Mostly agent-base-owned; only the module-side half is proposable here.*
 - **Cost efficiency** — doing more within the subscription's usage limits.
+  *The turn engine and shortcuts are agent-base; module-side levers are job
+  cadence, digest scope and prompt-section size.*
 - **Accessibility & inclusion** — clarity, language, reachability.
 
 ## Guardrails — do NOT propose
 
+- **Anything requiring an `@swampratnz/agent-base` change** — a new or changed
+  env var, or behaviour owned by the turn engine, router security sequence,
+  CONFIRM/outbound filtering, adapters, storage/migration machinery, the job
+  runner, retention/budgets or health. The build worker cannot edit the
+  framework, so such a proposal is unbuildable here however strong it is; it
+  belongs in the agent-base repo. See "Where this repo ends" above. If the
+  module-side half is independently valuable, propose only that half.
 - **Rewrites** or sweeping refactors; anything not shippable in ~one PR.
 - Features that **expand the attack surface** (new privileged tools, broader
   data access, new untrusted inputs) without a clear, proportionate payoff.
