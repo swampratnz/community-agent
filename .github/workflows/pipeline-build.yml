@@ -350,6 +350,7 @@ jobs:
                  - npm run build
                  - npm run test:security
                  - npm run context:check  (docs/agents/ map vs the tree; `npm run context:fix` does the mechanical part)
+                 - npm run imports:check  (composition-direction rules: no src/base/, no module→root import, only the root composes)
                Do not open the PR until all of these pass. CI runs the identical
                checks, so a red PR only creates rework for a human.
             3. FRESHEN before opening: main may have moved while you built
