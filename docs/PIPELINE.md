@@ -135,9 +135,19 @@ Create them once: **Actions → "Setup pipeline labels" → Run workflow**, or
   `no-auto-resolve`). Crucially, it **routes any PR touching a governance/CI/
   config path to a human merge** — `.github/**` (workflows/CI, including this
   loop itself), `scripts/**` (the check machinery), `package.json`,
-  typecheck/lint/format config, and the `CLAUDE.md`/`docs/PIPELINE.md`/
-  `docs/SECURITY.md` governance docs — so the pipeline can never auto-merge a
-  change to its own guardrails or to what "green" means (and since
+  typecheck/lint/format config, the `CLAUDE.md`/`docs/PIPELINE.md`/
+  `docs/SECURITY.md`/`docs/VISION.md` governance docs, and
+  `src/module/agentModule.ts` — THE manifest the agent-base split turned into a
+  rules file, since every extension point this deployment registers passes
+  through it — so the pipeline can never auto-merge a
+  change to its own guardrails or to what "green" means. (`docs/VISION.md` is
+  on the list because it is the rubric research proposes against and
+  adversarial judges by: editing it changes what the pipeline builds next.
+  `src/module/agent/tools/index.ts`, which defines the tier map, is
+  deliberately **not** — every new tool registers a tier there, so it appears
+  in 62% of recent merges and governing it would gut auto-merge; the tier-map
+  snapshot in `tests/toolTierMap.test.ts` covers it instead, at no throughput
+  cost.) (and since
   `pull_request` CI runs the workflow version from the PR branch, a PR could
   otherwise weaken a check and still show it "passing"). Because the pipeline's
   own acceptance criteria make most feature PRs document themselves in
