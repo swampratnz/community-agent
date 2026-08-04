@@ -29,7 +29,7 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 
 ### Changed
 - **Under the hood: the framework half is now a separate, reusable package**
-  and this repo installs it like any other dependency. Nothing you can see has
+  (#960) and this repo installs it like any other dependency. Nothing you can see has
   changed — same tools, same replies, same wording, same permissions. The
   agent turn engine, the Discord and WhatsApp adapters, memory and storage,
   the router's security checks and the roles system all moved out to
