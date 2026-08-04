@@ -1,15 +1,18 @@
 # Slide deck — `community-agent` repo overview
 
-An 11-slide walkthrough of the repo: what the bot does, how it's built, the
-self-improving pipeline that develops it, and how the design lines up with
-published agentic-engineering practice. Each slide has headline bullets plus
+A 12-slide walkthrough of the repo: what the bot does, how it's built, the
+framework it was split into, the self-improving pipeline that develops it, and
+how the design lines up with published agentic-engineering practice. Each slide has headline bullets plus
 a short talk track for the presenter. Sources: `README.md`,
 `docs/ARCHITECTURE.md`, `docs/SECURITY.md`, `docs/PIPELINE.md`,
 `docs/VISION.md`, `docs/agents/`, `CLAUDE.md`.
 
 Figures (module/test/security-test counts) are approximate and drift as the
 pipeline ships — re-check them against the repo before presenting. **Last
-verified against `main` on 2026-07-30.** The one-liners to re-run:
+verified against `main` on 2026-08-04.** Note that since the framework was
+extracted (slide 6), the source counts below measure THIS repo only — the
+framework's own modules and tests live in `swampratnz/agent-base`, so a drop
+in these numbers is not the system shrinking. The one-liners to re-run:
 
 ```bash
 find src -name '*.ts' | wc -l                       # source modules
@@ -28,12 +31,14 @@ grep -c '^## ' CHANGELOG.md                         # changelog sections
   two platforms: **Discord + WhatsApp**.
 - Built on the **Claude Agent SDK** with subscription auth (no per-token
   billing).
-- One repo, **two stories**: the bot itself, and the **self-improving
-  pipeline** that proposes, reviews, and builds its own features.
+- **Three stories**: the bot itself, the **framework** it was split into and
+  published as a package, and the **self-improving pipeline** that proposes,
+  reviews, and builds its own features.
 
-> **Talk track:** frame the deck around the two halves — slides 2–5 cover the
-> product, slides 6–9 cover the pipeline that builds it, slide 10 wraps up,
-> and slide 11 maps the design onto published agentic best practice.
+> **Talk track:** frame the deck in three parts — slides 2–5 cover the
+> product, slide 6 the framework extraction, slides 7–10 the pipeline that
+> builds it, slide 11 wraps up, and slide 12 maps the design onto published
+> agentic best practice.
 
 ---
 
@@ -81,13 +86,18 @@ Discord ─► DiscordAdapter ─┐                 ┌─ BaileysAdapter ◄�
                            ▼
                     PostgreSQL + pgvector
                     (interactions · knowledge · sessions · admin_audit)
+
+     every box above now ships in @swampratnz/agent-base (slide 6);
+     this repo supplies the tools, prose and wiring that fill it
 ```
 
 - **PlatformAdapter** is the seam: Discord and WhatsApp (Baileys or official
   Meta Cloud API) are swappable adapters over a platform-agnostic core.
 - TypeScript on Node 22+, discord.js v14, local embeddings via
   transformers.js, systemd on Ubuntu.
-- ~100 source modules, ~36k lines of TypeScript.
+- **68 source modules, 16.8k lines of TypeScript** in this repo — down from
+  ~100/~36k because the framework moved into a package (slide 6), not because
+  the system got smaller.
 
 > **Talk track:** the router decides *whether* to reply; storage is decoupled
 > from response (opt-in ambient archiving), so recall works even for messages
@@ -99,8 +109,8 @@ Discord ─► DiscordAdapter ─┐                 ┌─ BaileysAdapter ◄�
 
 - **Three-tier RBAC** (super admin / admin / member) — roles come from env +
   the database, **never from message content**; tool surface is tier-derived
-  and privileged tools re-assert the tier. ~105 tools in all: **31 member,
-  54 admin, 20 super-admin**, further filtered by platform and feature flag —
+  and privileged tools re-assert the tier. **117 tools in all: 34 member,
+  63 admin, 20 super-admin**, further filtered by platform and feature flag —
   only ever subtractively.
 - Built-in Claude Code tools **disabled every turn** (`tools: []`); only
   admin+ turns get `WebSearch`; `WebFetch` for no one.
@@ -139,7 +149,44 @@ Discord ─► DiscordAdapter ─┐                 ┌─ BaileysAdapter ◄�
 
 ---
 
-## Slide 6 — The self-improving pipeline
+## Slide 6 — The extraction: from one codebase to a framework + a module
+
+```
+swampratnz/agent-base            swampratnz/community-agent
+  @swampratnz/agent-base   ◄──── src/module/   NZ content + wiring
+  (public npm, MIT)               src/index.ts  createAgent({ modules })
+  agent kernel · adapters
+  storage · router spine
+  RBAC · jobs · registries
+```
+
+- The framework half — turn engine, Discord/WhatsApp adapters, storage,
+  router security spine, RBAC, jobs — is now **`@swampratnz/agent-base` on
+  public npm**. This repo is a *deployment*: its tools, prose, personas,
+  te reo Māori strings, digests and integrations, plus the composition root.
+- **The boundary is enforced, not intended.** The framework may not import the
+  deployment; the deployment may not import the composition root; only the
+  composition root may compose. Checked by an eslint rule *and* an independent
+  resolver script, both run in CI.
+- **A module contributes a manifest, not calls.** Tools, jobs, notice packs,
+  policy keys, prompt slots, commands, schema fragments and adapter text packs
+  are all data handed to `createAgent`, which owns registration order and
+  refuses to return an agent if anything required is missing.
+- **Releases publish by OIDC** — tag, and GitHub Actions publishes with no npm
+  token existing anywhere. A daily **canary** builds this repo against the
+  framework's `main`, so a breaking change upstream is caught before a release.
+
+> **Talk track:** the honest version — the split was done by inverting every
+> coupling *first* (registries, injected deps, manifests) and moving files
+> *last*, so the physical move was mechanical. The interesting bit for an
+> audience: every defect this exposed was in build, release and test
+> machinery, never in product logic — including a startup crash that all
+> 2,830 tests and a green CI run missed, because nothing booted the built
+> app. That is now the top of the backlog: a smoke test that starts it.
+
+---
+
+## Slide 7 — The self-improving pipeline
 
 ```
 research ──creates──► Issue [proposal, status:draft]
@@ -166,7 +213,7 @@ auto-merge ──merges fully-vetted bot PRs──► main   (humans merge the r
 
 ---
 
-## Slide 7 — The support loops: keeping PRs moving without humans
+## Slide 8 — The support loops: keeping PRs moving without humans
 
 - **ci-retry** — one free machine rerun before any agent engages (flakes cost
   zero agent time).
@@ -194,17 +241,18 @@ auto-merge ──merges fully-vetted bot PRs──► main   (humans merge the r
 
 ---
 
-## Slide 8 — Quality gates: what "green" means here
+## Slide 9 — Quality gates: what "green" means here
 
 - **CI parity**: the build worker runs the full CI gate (typecheck, lint,
   format, migrate, tests against a real pgvector Postgres container, build,
   security suite, context-pack freshness) *before* opening a PR — "green
   locally" is defined as matching CI.
-- **Security floor**: ~1,170 `SECURITY:`-prefixed tests across ~149 files,
+- **Security floor**: **1,099** `SECURITY:`-prefixed tests across **149 files**
+  here (plus 180 more in the framework repo),
   enforced by a per-file manifest (`tests/security-floor.json`) — exact
   counts, so a deleted security test can't slip through silently; per-file
   entries so concurrent PRs don't conflict.
-- ~196 test files overall; DB-touching tests skip cleanly without a local
+- **181 test files** here; DB-touching tests skip cleanly without a local
   Postgres so contributors aren't blocked. `tests/` is also being brought
   under the typechecker on an **incremental ratchet** — an allowlist of files
   clean today, never shrunk to turn a build green.
@@ -216,7 +264,7 @@ auto-merge ──merges fully-vetted bot PRs──► main   (humans merge the r
 
 ---
 
-## Slide 9 — Lessons baked into the design
+## Slide 10 — Lessons baked into the design
 
 - **Prompt-only compliance is unreliable** → a deterministic post-agent
   *checkpoint step* pushes committed-but-unpushed work; born from real
@@ -256,11 +304,11 @@ auto-merge ──merges fully-vetted bot PRs──► main   (humans merge the r
 
 ---
 
-## Slide 10 — Status, caveats, and where next
+## Slide 11 — Status, caveats, and where next
 
-- **Live and self-developing**: 29 dated changelog sections covering ~4 weeks
-  (2026-07-02 → today) and ~300 referenced PRs; **12 of the last 15 merges to
-  `main` were authored by the build loop**. A human remains the merge gate for
+- **Live and self-developing**: 32 dated changelog sections covering ~5 weeks
+  (2026-07-02 → 2026-08-03) and ~400 referenced PRs; **12 of the last 15
+  merges to `main` were authored by the build loop**. A human remains the merge gate for
   anything touching governance, CI, or its own guardrails.
 - **Known caveats, documented not hidden**: Baileys WhatsApp violates WhatsApp
   ToS — the official Meta Cloud API adapter has shipped as the supported
@@ -278,12 +326,13 @@ auto-merge ──merges fully-vetted bot PRs──► main   (humans merge the r
   backstops.
 
 > **Talk track:** end on the takeaway — the bot is useful, but the
-> reproducible asset is the pipeline pattern. Slide 11 backs this up by
-> mapping the design onto published agentic-engineering practice.
+> reproducible asset is the pipeline pattern — and now, literally, the
+> framework it produced. Slide 12 backs this up by mapping the design onto
+> published agentic-engineering practice.
 
 ---
 
-## Slide 11 — How the design maps to agentic best practice
+## Slide 12 — How the design maps to agentic best practice
 
 Benchmarked against the published pattern vocabulary — Andrew Ng's four
 agentic design patterns and Anthropic's five workflow patterns (e.g. the
@@ -296,7 +345,7 @@ agentic design patterns and Anthropic's five workflow patterns (e.g. the
 - **Evaluator-Optimizer with stopping rules** — build → review → revise is
   the classic generate/evaluate loop; every loop has an attempt cap (2/2/1/3)
   and escalates `needs-human` — the prescribed "escalate rather than retry a
-  third time." Deterministic checks (CI, ~1,170 security tests) always run
+  third time." Deterministic checks (CI, ~1,100 security tests) always run
   before subjective LLM review.
 - **Explicit, immutable rubric** — `VISION.md` is the shared scoring rubric;
   quality is tuned by editing it, not the loop prompts.
