@@ -83,8 +83,8 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   works. Private 1:1 chats with the bot are still never archived, and deleting
   your message still deletes the stored copy. If your community turns this on,
   every group the bot is in should be told — see docs/SECURITY.md.
-- **The bot now remembers which WhatsApp privacy id belongs to which number.**
-  WhatsApp gives people a phone number and a separate "privacy id", and only the
+- **The bot now remembers which WhatsApp privacy id belongs to which number**
+  (#935). WhatsApp gives people a phone number and a separate "privacy id", and only the
   number identifies someone here. The bot already worked out the link when it
   saw someone post in a group, but forgot it whenever it restarted — so adding
   that person could fail for no visible reason. It now remembers, which means
@@ -107,7 +107,7 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 
 ### Fixed
 - **Members added by a WhatsApp "LID" are now refused instead of silently
-  failing.** WhatsApp gives each person a phone number *and* a privacy id
+  failing** (#934). WhatsApp gives each person a phone number *and* a privacy id
   ("LID"). A LID looks like a long phone number, so one could be accepted as a
   member id — but the bot only ever recognises people by phone number, so such
   members were never actually recognised: they stayed gated guests while
