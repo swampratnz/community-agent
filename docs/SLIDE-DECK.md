@@ -95,7 +95,7 @@ Discord ─► DiscordAdapter ─┐                 ┌─ BaileysAdapter ◄�
   Meta Cloud API) are swappable adapters over a platform-agnostic core.
 - TypeScript on Node 22+, discord.js v14, local embeddings via
   transformers.js, systemd on Ubuntu.
-- **68 source modules, ~17k lines of TypeScript** in this repo — down from
+- **68 source modules, 16.8k lines of TypeScript** in this repo — down from
   ~100/~36k because the framework moved into a package (slide 6), not because
   the system got smaller.
 
