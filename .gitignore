@@ -11,7 +11,10 @@ dist/
 *.key
 
 # WhatsApp (Baileys) auth state — contains session credentials, NEVER commit
-# (anchored to repo root: src/auth/ is source code and must be tracked)
+# Anchored to the repo root on purpose. An unanchored `auth/` matches at ANY
+# depth, so it would swallow a source directory of that name — this repo has
+# none today (the framework's auth/ is inside @swampratnz/agent-base), which is
+# exactly why the anchor must not be dropped as "unnecessary".
 /auth/
 /whatsapp-auth/
 .wwebjs_auth/
