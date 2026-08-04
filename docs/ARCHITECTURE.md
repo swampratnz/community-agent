@@ -116,9 +116,11 @@ holds:
   an unregistered tier read returning `[]` would look like a healthy
   deployment with no tools; an unregistered bad-word list returning `[]` is a
   silent moderation downgrade; an unregistered notice pack returning `''`
-  sends members blank text. Several notice consumers derive exported consts
-  from `notice()` at their own module scope, so a missing registration import
-  surfaces as a throw at load time rather than as blank text hours later.
+  sends members blank text. The throw is what makes a missed registration a
+  startup failure rather than blank text in front of a member hours later —
+  which is also why no module-scope `export const X = notice('id')` may exist
+  (see above): the pack is registered *after* every module is imported, so
+  that read would throw at import, before the process can say why.
 - **Additive slots start empty legitimately and fail closed on collision.**
   Intercepts, lifecycle hooks, personas and provenance ids reject a duplicate
   name, a second registration, or an unknown slot key rather than shadowing or
@@ -127,34 +129,46 @@ holds:
   region that starts *after* the frozen `PRE_TURN_SPINE`, and rejects any name
   that collides with one of its steps (docs/SECURITY.md §1).
 
-### The one-way import rule
+### The composition-direction rules
 
-`@swampratnz/agent-base/` may never import `src/module/`, and `src/module/` may never import
-the composition root. The first is the property the extraction depends on:
-base has to be liftable into the agent-base package on its own, and a single
-edge the wrong way makes it un-liftable. The second keeps the graph acyclic —
-`index.ts` sits above both halves and nothing it wires may reach back up to
-it.
+Three rules, all enforced by `npm run imports:check` (CI's lint job):
 
-A **type-only** import counts. A `typeof <community export>` in a base deps
-interface is a design dependency even though it emits no runtime edge, and it
-is the edge this repo kept re-growing. The fix is to state the type
-structurally in base: `agent/toolServer.ts`'s `ToolServerToolDef` declares
-only the slice of a tool definition the kernel actually touches
-(name/description/schema/handler/`readOnlyHint`), and the module's much richer
-`ToolDef` satisfies it without base ever naming it.
+1. **`src/base/` must not exist.** The framework is the published package. A
+   local copy forks it silently — the same file compiling in two places, one
+   of them not getting upstream fixes. This is what the old "base may never
+   import module" rule became: that rule is what made the lift possible, and
+   with the lift done the way to keep it is to keep the framework out of the
+   tree entirely.
+2. **`src/module/` may never import the composition root** — not even a type.
+   `index.ts` sits at the top of the graph and nothing it wires may reach back
+   up to it.
+3. **Only the composition root may compose** — no module may import
+   `createAgent`, `planComposition` or `assertRegistrationsComplete`. A module
+   contributes a manifest; the registration ORDER is exactly what `createAgent`
+   exists to own, and composing from inside a module would put it back in an
+   import list where nothing enforces it.
 
 Enforced twice, on purpose:
 
-- **eslint** — a `no-restricted-imports` block scoped to `@swampratnz/agent-base/**`. Fast,
-  in-editor, matched against the specifier text; `allowTypeImports` is
-  deliberately not set.
-- **`scripts/check-import-direction.mjs`** (`npm run imports:check`, CI's lint
-  job) — the authoritative layer. It resolves every relative specifier against
-  the file system, so it sees through any depth of `../`, and it is a plain
-  node script with no config of its own to weaken. Pinned by
-  `tests/importDirection.test.ts`, which drives it against fixture trees in
-  both directions rather than only against this repo's passing state.
+- **eslint** — a `no-restricted-imports` block scoped to `src/module/**`,
+  covering rules 2 and 3. Fast, in-editor, matched against the specifier text;
+  `allowTypeImports` is deliberately not set for the composition root, since a
+  type-level dependency is still a design dependency. (The manifest *type*,
+  `AgentModuleManifest`, is a different import and stays allowed.)
+- **`scripts/check-import-direction.mjs`** (`npm run imports:check`) — resolves
+  every relative specifier against the file system, so it sees through any
+  depth of `../`, and it is a plain node script with no config of its own to
+  weaken. It also owns rule 1, which eslint cannot express. Pinned by
+  `tests/importDirection.test.ts`, which drives it against fixture trees —
+  including a two-halves tree, so the retired base↛module scan still has
+  something to bite on — rather than only against this repo's passing state.
+
+The framework's own internal discipline — no framework file carrying community
+content, no `typeof <community export>` in a framework deps interface, types
+stated structurally instead (`agent/toolServer.ts`'s `ToolServerToolDef`
+declares only the slice of a tool definition the kernel touches, and this
+module's much richer `ToolDef` satisfies it) — is now enforced upstream in
+`swampratnz/agent-base`. Nothing in this repo can check it.
 
 ## Components
 
@@ -1072,7 +1086,22 @@ separate send, never replacing the model's answer, mirroring `offerEscalation`
 check above already reads (no new query), is debounced to once per rolling
 24h per caller (`budgetWarned`, same window and sweep cadence as
 `budgetNotified`), and honours the caller's standing `'mi'`/`'plain'`
-preference the same way the other fixed notices do. These three deterministic, non-agent
+preference the same way the other fixed notices do.
+
+> **Vocabulary note.** The `*_MI`/`*_PLAIN` constant names used throughout the
+> rest of this section are the *historical* shape and no longer exist to grep
+> for. Every one of those values moved VERBATIM into this deployment's notice
+> pack (`src/module/strings/notices.ts`, registered through
+> `agentModule.ts`'s `notices` field), and the selection is now a single call:
+> `notice(id, { language, style })`, resolved against the axes the pack
+> declares (`languages: ['mi']`, `styles: ['plain']`). The behaviour below —
+> which surface honours which preference, the precedence, the fail-safe reads,
+> the untranslated `CONFIRM`/`CANCEL` tokens — is unchanged and still accurate;
+> only the lookup changed from "import the right constant" to "ask for the
+> right variant". Read a name like `GATED_NOTICE_MI` below as "the `mi`
+> variant of the gated-notice entry".
+
+These three deterministic, non-agent
 notices (issue #300) also honour a standing `'mi'` `language_preference`,
 same as `community_guidelines` (#266): the debounced send reads
 `getLanguagePreference` once per notified window and picks each notice's
@@ -2035,7 +2064,7 @@ Two on-demand surfaces call it directly, mirroring `admin_digest`'s
   `atLeast(caller.role, 'member')` explicitly in the handler (excluding
   open-mode guests), the same discipline `who_is_into`/`share_project` use,
   since the content includes the same project/topic counts those tools gate.
-- **`/digest`** (Discord slash command, `@swampratnz/agent-base/platforms/discord/
+- **`/digest`** (Discord slash command, `src/module/platforms/discord/
   slashCommands.ts`): defers ephemerally first, re-checks the same
   `atLeast(role, 'member')` floor, then calls `buildMemberDigestContent()`
   directly (never through the tool/model) and replies ephemeral with the
@@ -2575,20 +2604,46 @@ the full security posture and its test references.
 
 ## Discord slash commands (issue #744)
 
-`DISCORD_SLASH_COMMANDS_ENABLED` (off by default) registers four read-only,
+`DISCORD_SLASH_COMMANDS_ENABLED` (off by default) registers five read-only,
 zero-model-call Discord application commands — `/kb <query>`,
-`/whois <query>`, `/projects [query]`, `/guidelines` — the discoverable,
-per-command generalisation of the knowledge shortcut (see "Known cost/latency
-characteristic" below): each answers a common lookup with a deterministic
-repository read instead of a full `query()` turn, and Discord's command picker
-surfaces them where a member would otherwise have to guess a phrase close
-enough to trigger a shortcut or address the bot at all.
+`/whois <query>`, `/projects [query]`, `/guidelines`, `/digest` — the
+discoverable, per-command generalisation of the knowledge shortcut (see "Known
+cost/latency characteristic" below): each answers a common lookup with a
+deterministic repository read instead of a full `query()` turn, and Discord's
+command picker surfaces them where a member would otherwise have to guess a
+phrase close enough to trigger a shortcut or address the bot at all.
 
-**Registration** happens in `src/module/platforms/discord/slashCommands.ts`
-(`registerSlashCommands`), called fire-and-forget from the existing
-`Events.ClientReady` handler in `adapter.ts` alongside `backfillRoster`/
-`reconcileMutedRole` — a registration failure is logged and never blocks
-message handling. Commands are registered **guild-scoped**
+**The mechanism is the package's; the commands are this module's.** The two
+Discord-client hooks — `registerSlashCommands` and `handleInteraction` — live
+in `@swampratnz/agent-base/platforms/discord/slashDispatch.ts` and are called
+by the package's own `adapter.ts`. Neither drives a hardcoded command list:
+both walk whatever was registered into `commands/registry.ts`, so the adapter
+owns registration and dispatch without importing a single community command.
+This module supplies the content — `src/module/commands.ts` declares the
+registry entries (named in `agentModule.ts`'s `commands` field, registered by
+`createAgent`), and `src/module/platforms/discord/slashCommands.ts` exports
+one function, `bindCommunitySlashCommands()`, which attaches each entry's
+Discord half: its `SlashCommandBuilder` JSON and its handler.
+
+**Binding is called from `createConfiguredAdapters()`** (`platforms/
+factories.ts`), NOT at module scope — and that is load-bearing, not
+stylistic. Binding reads the registered command list, but under `createAgent`
+that list is registered during the singleton phase, which runs when
+`index.ts`'s *body* calls `createAgent` — long after this module was evaluated
+as part of the static import graph. Binding at module load therefore always
+ran first and threw `registeredCommands: no command list registered`, killing
+the process at startup (#961). `createConfiguredAdapters()` is the earliest
+point guaranteed to be after `createAgent`, and it runs before any adapter
+exists to dispatch an interaction. The bind is idempotent (a `bound` latch,
+plus `bindDiscordCommand` rejecting a duplicate name) because tests build
+adapters more than once per process. Under the old side-effect composition
+`index.ts` imported the commands module early and the order happened to work;
+the flip to `createAgent` inverted it.
+
+Registration itself is fire-and-forget from `adapter.ts`'s existing
+`Events.ClientReady` handler, alongside `backfillRoster`/`reconcileMutedRole`
+— a registration failure is logged and never blocks message handling.
+Commands are registered **guild-scoped**
 (`client.application.commands.set(commands, config.discord.guildId)`), never
 globally: this deployment is single-guild, and global registration both
 propagates over up to an hour and exposes the commands to any guild the bot
@@ -2645,7 +2700,8 @@ gaps an adversarial review pass flagged in the underlying proposal:
 - **Every slash-command reply is passed through the adapter's existing
   outbound filter** (`this.filtered()` → `filterOutbound()`: secret redaction
   + code-answers policy), via a small `SlashCommandDeps` interface
-  (`{ filtered }`) so `slashCommands.ts` doesn't need the whole adapter class.
+  (`{ filtered }`, declared in the package's `commands/registry.ts` alongside
+  the mechanism) so `slashCommands.ts` doesn't need the whole adapter class.
   A raw `interaction.reply()` would otherwise be a new, unfiltered outbound
   path — the one thing every other send in `adapter.ts` is explicit about
   never allowing.

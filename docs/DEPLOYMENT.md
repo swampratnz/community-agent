@@ -45,7 +45,12 @@ sudo -u community-agent nano .env      # fill in all values
 ```
 Set at least: `CLAUDE_CODE_OAUTH_TOKEN`, `DISCORD_BOT_TOKEN`,
 `DISCORD_GUILD_ID`, `SUPER_ADMIN_DISCORD_IDS`, `SUPER_ADMIN_WHATSAPP_NUMBERS`,
-`DATABASE_URL` (with the password from step 1). Access is **gated** by
+`DATABASE_URL` (with the password from step 1), plus
+`DISPLAY_TIMEZONE=Pacific/Auckland` and `DISPLAY_LOCALE=en-NZ` — the framework
+package cannot assume a deployment's timezone and defaults these to
+`UTC`/`en-GB`, so `src/module/agentModule.ts`'s `init()` refuses to boot
+unless they are exactly those two values rather than let every member-facing
+event time silently render an hour out. Access is **gated** by
 default — after startup, message the bot as a super admin and use
 `add_member` / `grant_admin` to onboard people.
 
@@ -370,6 +375,10 @@ tar czf whatsapp-auth-$(date +%F).tgz -C /opt/community-agent whatsapp-auth
 ## Troubleshooting
 - **`Invalid environment configuration`** — a required env var is missing; the
   log lists which.
+- **`this deployment renders member-facing times in NZ local time, but the
+  display settings do not say so`** — a thrown startup error (not the zod
+  message above) naming `DISPLAY_TIMEZONE` and/or `DISPLAY_LOCALE`. Set them to
+  `Pacific/Auckland` / `en-NZ` in `.env` (step 4) and restart.
 - **WhatsApp keeps showing a QR / `logged out`** — re-run step 6.
 - **Meta webhook verification fails (Cloud API)** — confirm the service is
   reachable over HTTPS at the exact Callback URL configured, and that

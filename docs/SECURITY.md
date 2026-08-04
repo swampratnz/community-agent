@@ -93,13 +93,26 @@ degrading — a bad-word list that silently returned `[]` is a moderation
 downgrade nobody would see, and a policy key that silently defaulted is a
 phantom policy that always reads null.
 
-The rule that keeps this true is mechanical: `@swampratnz/agent-base/` may never import
-`src/module/` (not even a type), enforced by an eslint
-`no-restricted-imports` block on `@swampratnz/agent-base/**` and, authoritatively, by
-`scripts/check-import-direction.mjs` (`npm run imports:check`, CI's lint job),
-which resolves every specifier against the file system and has no config of
-its own to weaken. `src/module/` may not import the composition root either.
+The rules that keep this true are mechanical, and it matters which ones this
+repo can enforce. `npm run imports:check` (CI's lint job) enforces exactly
+three, all about the composition direction: **`src/base/` must not exist** (a
+local copy of the framework forks the package silently, so the spine a
+reviewer audits stops being the spine that runs); **`src/module/` may never
+import the composition root**; and **only `src/index.ts` may compose** — no
+module may import `createAgent`, `planComposition` or
+`assertRegistrationsComplete`, because the registration ORDER is the guarantee
+`createAgent` exists to own, and a module that composed could choose it.
+Enforced twice: an eslint `no-restricted-imports` block scoped to
+`src/module/**` covers the last two from the specifier text, and
+`scripts/check-import-direction.mjs` resolves every specifier against the file
+system, owns the `src/base/` rule, and has no config of its own to weaken.
 Pinned by `tests/importDirection.test.ts`.
+
+The framework-may-never-import-the-module rule still holds — it is why the
+spine could be lifted into a package at all — but it is now enforced **in
+`swampratnz/agent-base`**, against that repo's tree. Nothing here can check
+the inside of a dependency; what this repo checks is that the dependency stays
+one.
 
 **What this split does not claim.** It is a structural boundary inside one
 process, not a sandbox: module code runs with the same privileges as base
@@ -717,8 +730,8 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   member flooding the signal, pinned by a `SECURITY:` test. The read side,
   `list_knowledge_gaps`, is read-only, admin-tier, conversation-scoped via
   `callerScope()` exactly like `question_digest` (pinned by a `SECURITY:`
-  RBAC-placement test and a scoping test mirroring
-  `repository.test.ts`'s `recentQuestionClusters` scope test), and
+  RBAC-placement test and a scoping test mirroring agent-base's
+  `tests/repository.test.ts` `recentQuestionClusters` scope test), and
   `untrusted()`-wraps its output like `list_suggestions`/`list_reports` since
   the representative query text is member-authored. `forget_me`/
   `purge_user_data` delete the caller's own `knowledge_gaps` rows, pinned by
@@ -1561,7 +1574,8 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   — race-safe against two concurrent serves of the same row — so an admin
   edit through `update_knowledge`/`accept_knowledge_candidate` (which bumps
   `updated_at`) automatically re-arms the gate with no separate reset logic,
-  pinned by `repository.test.ts`. **Guild-wide rolling-hour cap**,
+  pinned by agent-base's `tests/repository.test.ts`. **Guild-wide rolling-hour
+  cap**,
   `KNOWLEDGE_STALE_ALERT_RATE_LIMIT_PER_HOUR` (default 5, identical
   sliding-window shape to `reserveKnowledgeGapAlertSlot`), bounds worst-case
   admin DM volume from an organic or adversarial serve burst, pinned by a
@@ -1647,6 +1661,15 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   invariant on the raid-exposed hot path. `GATED_NOTICE_MI` is unchanged
   byte-for-byte — te reo parity for this clause is an explicit, documented
   follow-up, not this PR.
+> **Vocabulary note.** The `*_MI`/`*_PLAIN` constant names in this section and
+> the ones around it are the historical shape. Those constants no longer
+> exist: every value moved verbatim into this deployment's notice pack
+> (`src/module/strings/notices.ts`) and is selected by
+> `notice(id, { language, style })`. The security-relevant properties below —
+> fixed human-authored text only, no model call, no translation of
+> `CONFIRM`/`CANCEL`, `'mi'` taking precedence over `'plain'`, every
+> preference read failing safe — are unchanged; only the lookup is.
+
 - **Standing response-style preference** (`response_style_prefs`, issue
   #126): a member/guest-tier tool, `set_response_style`, lets any caller opt
   into plain-language replies without re-asking every message. The argument
@@ -1947,7 +1970,9 @@ grouping identities under a shared `persons.id` (`community_users.person_id`).
 - **NEVER propagates tier**: linking never touches `role`. A member linked to
   an admin still resolves as member-only — tier stays strictly per-platform-
   row, which kills the obvious link-to-an-admin escalation vector. Covered by
-  a `SECURITY:` test in `tests/repository.test.ts`.
+  a `SECURITY:` test in agent-base's `tests/repository.test.ts` ("linking a
+  member to an admin never propagates tier — each identity keeps its own
+  role"), which moved there with the repository itself.
 - **Unlinking is total, not partial**: dropping below two linked identities
   dissolves the whole group (every remaining member's `person_id` cleared,
   the `persons` row deleted) rather than leaving a dangling one-member group
@@ -1962,8 +1987,10 @@ does mean an admin who links a victim's account to a throwaway/controlled
 identity gives that throwaway the power to erase the victim's data via
 `forget_me`. The mitigation is that the *link* itself — not the eventual
 purge — is the gated, visible, reversible step: CONFIRM + `admin_audit` +
-super-admin DM alert. See the `SECURITY:` cascade test in
-`tests/repository.test.ts` for the asserted behaviour.
+super-admin DM alert. See the `SECURITY:` cascade test in agent-base's
+`tests/repository.test.ts` ("purgeUserData … cascades across linked
+identities — linking deliberately expands the blast radius, so forget_me from
+EITHER identity erases BOTH") for the asserted behaviour.
 
 ### 8. Image generation via the host Grok CLI (`generate_image`)
 Off by default (`IMAGE_GEN_ENABLED=false`). When enabled, the admin/super-admin
