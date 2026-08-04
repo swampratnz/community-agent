@@ -42,14 +42,14 @@ function mockQuery() {
 // as tests/abuseClassifierStructuredOutput.test.ts) — install the mock once
 // and reuse the cached import across every test in this file.
 let modulesPromise: Promise<{
-  researchTopic: typeof import('../src/context/knowledgeRefresh.js').researchTopic;
-  parseResearchResult: typeof import('../src/context/knowledgeRefresh.js').parseResearchResult;
+  researchTopic: typeof import('../src/module/context/knowledgeRefresh.js').researchTopic;
+  parseResearchResult: typeof import('../src/module/context/knowledgeRefresh.js').parseResearchResult;
 }> | null = null;
 async function modules(t: { mock: { module: (specifier: string, opts: unknown) => void } }) {
   if (!modulesPromise) {
     const real = await import('@anthropic-ai/claude-agent-sdk');
     t.mock.module('@anthropic-ai/claude-agent-sdk', { namedExports: { ...real, query: mockQuery } });
-    modulesPromise = import('../src/context/knowledgeRefresh.js').then((mod) => ({
+    modulesPromise = import('../src/module/context/knowledgeRefresh.js').then((mod) => ({
       researchTopic: mod.researchTopic,
       parseResearchResult: mod.parseResearchResult,
     }));

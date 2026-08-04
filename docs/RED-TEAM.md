@@ -68,7 +68,7 @@ encoding tricks:
    nickname/WhatsApp push name (the class fixed by issue #227's display-name
    quarantine escape) and see whether *creative* variants (unicode
    look-alikes for `<`/`>`, zero-width characters, RTL overrides) still slip
-   through `sanitizeDisplayName` (`src/agent/systemPrompt.ts`).
+   through `sanitizeDisplayName` (`@swampratnz/agent-base/agent/systemPrompt.ts`).
 2. **Recalled-content / memory injection** — seed a conversation with
    messages designed to be recalled later (`remember_search`, automatic
    recall) that try to redirect a *future* turn's behaviour.
@@ -91,8 +91,15 @@ encoding tricks:
 ## Cadence
 
 - Run a sweep **on a schedule** (suggested: monthly) and **before any
-  notable prompt or tool change** — new personas, new tools, edits to
-  `src/agent/systemPrompt.ts`/`src/agent/tools.ts`/`src/agent/outbound.ts`.
+  notable prompt or tool change**. In this repo that means: new personas
+  (`src/module/agent/personas.ts`), new or re-tiered tools
+  (`src/module/agent/tools/`, `src/module/agent/tools.ts`), and edits to the
+  community prompt prose (`src/module/agent/communityPromptSections.ts`) or
+  the notice pack (`src/module/strings/notices.ts`). It also means **on an
+  `@swampratnz/agent-base` version bump that touches the prompt spine or the
+  outbound filter** (`agent/systemPrompt.ts`, `agent/outbound.ts`) — those
+  files can no longer change in this tree, so a trigger that only watched them
+  here would never fire.
 - A sweep is a few hours of a maintainer's own time and their own Max-pool
   budget; there's no expectation of running it continuously.
 

@@ -14,7 +14,7 @@ This directory is that orientation, **written down once and committed**:
 
 | File | What it is for |
 |---|---|
-| [`module-map.md`](module-map.md) | Where things live. One line per `src/` subsystem and module. Gated by `npm run context:check`, so it cannot silently rot. |
+| [`module-map.md`](module-map.md) | Where things live. One line per subsystem and module across both halves of `src/`. Gated by `npm run context:check`, so it cannot silently rot. |
 | [`recipes.md`](recipes.md) | The shape of a typical change: which files a given kind of work touches, and which gate will fail if you miss one. |
 
 ## How to use it
@@ -54,9 +54,15 @@ someone writes the one-line description. That is the whole point — a fixer tha
 auto-satisfied the gate would let modules enter the tree undescribed, which is
 exactly the rot the gate exists to prevent.
 
-Scope is `src/` only. Workflows are documented properly in
-[`../PIPELINE.md`](../PIPELINE.md), and gating the ~160 test files would be a
+Scope is `src/` only — the gate runs `--src src --src src/module`, i.e. this
+deployment's content and wiring plus the top-level `index.ts`/`migrate.ts`. The
+framework is the `@swampratnz/agent-base` package and is documented in its own
+repo; nothing here maps it. Workflows are documented properly in
+[`../PIPELINE.md`](../PIPELINE.md), and gating the ~180 test files would be a
 lot of upkeep for very little orientation.
+
+The pack does not enforce the composition-direction rules; `npm run
+imports:check` does, and `recipes.md` has the recipe for a failure.
 
 ## The other half: handoff notes
 

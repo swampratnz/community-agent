@@ -1,6 +1,6 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { PlatformAdapter } from '../src/platforms/types.js';
+import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -20,7 +20,7 @@ const skip = hasDb
   ? false
   : 'DATABASE_URL not set — skipping DB-integration tests (CLAUDE.md: exercise against a local Postgres 16 + pgvector)';
 
-const { pool, closeDb } = await import('../src/storage/db.js');
+const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
 const {
   upsertMember,
   recordAdminDigestSent,
@@ -62,12 +62,12 @@ const {
   resolveModerationAppeal,
   recordHelperNotificationIfUnderCap,
   recordProjectConnectionIfUnderCap,
-} = await import('../src/storage/repository.js');
+} = await import('@swampratnz/agent-base/storage/repository.js');
 const { buildAdminDigestMessage, buildAdminDigestForAdmin, runAdminDigestOnce, startAdminDigest } =
-  await import('../src/adminDigest.js');
+  await import('../src/module/adminDigest.js');
 const { readFileSync } = await import('node:fs');
 const pgvector = (await import('pgvector/pg')).default;
-const { config } = await import('../src/config.js');
+const { config } = await import('@swampratnz/agent-base/config.js');
 
 const RUN = `t${Date.now()}${Math.floor(Math.random() * 1e6)}`;
 
@@ -5701,7 +5701,7 @@ test(
     const suggesterId = `${RUN}-run-roster-wa-suggester`;
     await upsertMember({ platform: 'whatsapp', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
 
-    // Only src/platforms/discord/adapter.ts ever calls upsertRosterMember/
+    // Only src/base/platforms/discord/adapter.ts ever calls upsertRosterMember/
     // markRosterLeave — no code path writes a 'whatsapp' row to
     // server_roster — so rosterCounts('whatsapp') is always zero. Verify
     // that invariant holds for this run before relying on it, so a future
@@ -6231,7 +6231,7 @@ test(
     ]);
     // (d) a row whose interaction_id is NULL (as if the rated reply had
     // since been purged via forget_me/purge_user_data, which sets
-    // interaction_id to NULL on delete per schema.sql) — excluded, since
+    // interaction_id to NULL on delete per schema/25-answer-feedback.sql) — excluded, since
     // there's no interaction left to classify as grounded/ungrounded.
     const purgedUserId = `${RUN}-generalunhelpful-purged`;
     users.push(purgedUserId);
@@ -6355,7 +6355,7 @@ test(
     ]);
     // (f) a row whose interaction_id is NULL (as if the rated reply had since
     // been purged via forget_me/purge_user_data, which sets interaction_id to
-    // NULL on delete per schema.sql) — excluded, there's no interaction left
+    // NULL on delete per schema/25-answer-feedback.sql) — excluded, there's no interaction left
     // to join.
     const purgedUserId = `${RUN}-overallrate-purged`;
     users.push(purgedUserId);
@@ -7049,7 +7049,7 @@ test(
   'buildAdminDigestForAdmin: the gathering Promise.all has exactly one call site in adminDigest.ts — ' +
     'runAdminDigestOnce delegates to the shared helper rather than keeping its own copy (issue #499, no drift)',
   () => {
-    const source = readFileSync(new URL('../src/adminDigest.ts', import.meta.url), 'utf8');
+    const source = readFileSync(new URL('../src/module/adminDigest.ts', import.meta.url), 'utf8');
     const promiseAllCount = (source.match(/await Promise\.all\(\[/g) ?? []).length;
     const gatheringCallCount = (source.match(/recentQuestionClusters\(scope/g) ?? []).length;
     assert.equal(

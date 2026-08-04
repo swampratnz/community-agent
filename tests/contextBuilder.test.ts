@@ -36,10 +36,10 @@ const skip = hasDb
   ? false
   : 'DATABASE_URL not set — skipping DB-integration tests (CLAUDE.md: exercise against a local Postgres 16 + pgvector)';
 
-const { pool, closeDb } = await import('../src/storage/db.js');
-const { config } = await import('../src/config.js');
+const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
+const { config } = await import('@swampratnz/agent-base/config.js');
 const pgvector = (await import('pgvector/pg')).default;
-const { runContextBuilder, shouldRunContextBuilder } = await import('../src/context/builder.js');
+const { runContextBuilder, shouldRunContextBuilder } = await import('../src/module/context/builder.js');
 const {
   declineKnowledgeCandidate,
   insertContextDigest,
@@ -49,7 +49,7 @@ const {
   purgeUserData,
   recentInboundForClustering,
   saveKnowledge,
-} = await import('../src/storage/repository.js');
+} = await import('@swampratnz/agent-base/storage/repository.js');
 
 const RUN = `ctx${Date.now()}${Math.floor(Math.random() * 1e6)}`;
 

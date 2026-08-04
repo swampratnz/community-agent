@@ -1,6 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { PlatformAdapter } from '../src/platforms/types.js';
+// The adapters take their community text pack as a required constructor
+// parameter now (agent-base plan item 6) — production hands it over in
+// src/module/platforms/factories.ts, so these constructions pass the same pack.
+import { WHATSAPP_CLOUD_TEXT_PACK } from '../src/module/platforms/textPacks.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import './support/registerNotices.js';
+import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // (including WHATSAPP_PROVIDER=cloud config) before importing anything that
@@ -25,20 +33,22 @@ const {
   flushPendingAlerts,
   getPendingAlertsForTests,
   resetPendingAlertsForTests,
-} = await import('../src/health.js');
+} = await import('@swampratnz/agent-base/health.js');
 const { getPendingAlertEntriesForTests, queuePendingAlert: queueRawPendingAlert } =
-  await import('../src/pendingAlertQueue.js');
-const { WhatsAppCloudAdapter } = await import('../src/platforms/whatsapp/cloudAdapter.js');
-const { logger } = await import('../src/logger.js');
+  await import('@swampratnz/agent-base/pendingAlertQueue.js');
+const { WhatsAppCloudAdapter } = await import('@swampratnz/agent-base/platforms/whatsapp/cloudAdapter.js');
+const { logger } = await import('@swampratnz/agent-base/logger.js');
 // Cross-producer cap test below (issue #545) drives the OTHER two shared-
 // queue producers directly, without their own test files' env/setup.
-const { startTrackedJob } = await import('../src/backgroundJobs.js');
-const { notifyReportFiled } = await import('../src/agent/tools.js');
+const { startTrackedJob } = await import('@swampratnz/agent-base/jobs/trackedJob.js');
+await import('./support/registerToolRegistry.js');
+const { notifyReportFiled } = await import('../src/module/agent/tools.js');
 // One of #593's four new pending-alert-queue producers, imported directly to
 // prove the flush path (unmodified since #545) also drains a message queued
 // from a NEW producer, not just the original three.
-const { alertSuperAdmins: departedAdminAlertSuperAdmins } = await import('../src/departedAdminAlert.js');
-const { WindowClosedError } = await import('../src/platforms/whatsapp/cloudAdapter.js');
+const { alertSuperAdmins: departedAdminAlertSuperAdmins } =
+  await import('../src/module/departedAdminAlert.js');
+const { WindowClosedError } = await import('@swampratnz/agent-base/platforms/whatsapp/cloudAdapter.js');
 
 /**
  * A fake Cloud-like adapter (mirrors `tests/notifyAdminsWindowReopenQueue.test.ts`'s
@@ -495,7 +505,7 @@ test(
 );
 
 test('a WhatsApp Cloud adapter whose consecutive-send-failure counter has crossed the threshold is reported disconnected, and health.ts still fires the sustained-disconnect error log even with no other adapter to DM through', (t) => {
-  const adapter = new WhatsAppCloudAdapter();
+  const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
   // Simulate `start()` having succeeded (listener up) and 3 consecutive
   // real-message send failures (e.g. a revoked access token), without
   // spinning up a real HTTP server or making real Graph API calls.

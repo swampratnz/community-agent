@@ -1,11 +1,20 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import './support/registerNotices.js';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { CallerContext } from '../src/auth/rbac.js';
-import type { OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
-import type { StoredSession } from '../src/storage/repository.js';
+import type { CallerContext } from '@swampratnz/agent-base/auth/rbac.js';
+import type { OutgoingMessage, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
+import type { StoredSession } from '@swampratnz/agent-base/storage/repository.js';
+// Community content registrations (prompt sections + persona roster) — the
+// composition-root contract: src/index.ts registers these in production, so
+// tests that assemble prompts register them explicitly here.
+import './support/registerPromptSections.js';
+import './support/registerPersonas.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -25,6 +34,17 @@ process.env.AGENT_TURN_TIMEOUT_MS = '50';
 // real ordering rather than exempting the test is the point: the invariant
 // holds everywhere, including here.
 process.env.IMAGE_GEN_TIMEOUT_MS = '10';
+
+// The tool registry's module-scope registrations (tool tiers, tool-server
+// parts, feature-flag predicates) — the composition-root contract, matching
+// tests/rbac.test.ts.
+await import('./support/registerToolRegistry.js');
+
+// Notice constants agent-base deleted in the package flip (they named this
+// community's axis values in framework code, and rendered at import time). Same
+// catalogue entries, same values — see tests/support/legacyNotices.ts.
+const { USAGE_LIMIT_REPLY, USAGE_LIMIT_REPLY_ADMIN_NOTIFIED, INTERNAL_ERROR_REPLY } =
+  await import('./support/legacyNotices.js');
 
 type QueryBehavior =
   | { mode: 'hang' }
@@ -65,18 +85,18 @@ function mockQuery(params: { prompt: string; options: { resume?: string } }) {
 }
 
 // query() and the repository functions are static imports inside
-// src/agent/core.ts, so once core.js has been dynamically imported anywhere
+// src/base/agent/core.ts, so once core.js has been dynamically imported anywhere
 // in this process the bindings are fixed — a later t.mock.module call can't
 // retarget them (see tests/agentCoreSessionTail.test.ts for the same trap).
 // Install the mocks once and reuse the cached import; `behavior`/`storedSession`
 // are mutated per-test instead.
-let corePromise: Promise<typeof import('../src/agent/core.js')> | null = null;
+let corePromise: Promise<typeof import('@swampratnz/agent-base/agent/core.js')> | null = null;
 async function core(t: { mock: { module: (specifier: string, opts: unknown) => void } }) {
   if (!corePromise) {
     const realSdk = await import('@anthropic-ai/claude-agent-sdk');
     t.mock.module('@anthropic-ai/claude-agent-sdk', { namedExports: { ...realSdk, query: mockQuery } });
-    const realRepo = await import('../src/storage/repository.js');
-    t.mock.module('../src/storage/repository.js', {
+    const realRepo = await import('@swampratnz/agent-base/storage/repository.js');
+    t.mock.module('@swampratnz/agent-base/storage/repository.js', {
       namedExports: {
         ...realRepo,
         getClaudeSession: async () => storedSession,
@@ -84,7 +104,7 @@ async function core(t: { mock: { module: (specifier: string, opts: unknown) => v
         searchMemory: async () => [],
       },
     });
-    corePromise = import('../src/agent/core.js');
+    corePromise = import('@swampratnz/agent-base/agent/core.js');
   }
   return corePromise;
 }
@@ -130,7 +150,7 @@ function reset() {
 }
 
 test('runAgentTurn: a query() call that never yields and never settles resolves within the configured timeout, not hangs (issue #826)', async (t) => {
-  const { runAgentTurn, INTERNAL_ERROR_REPLY } = await core(t);
+  const { runAgentTurn } = await core(t);
   reset();
   const { adapter } = makeAdapter();
 
@@ -149,7 +169,7 @@ test('runAgentTurn: a wedged turn that CLEARS after the timeout cannot change th
   // resume. This pins the part that matters to a member: the reply they got
   // is final, and the late result is discarded rather than racing a second
   // reply into the conversation.
-  const { runAgentTurn, INTERNAL_ERROR_REPLY } = await core(t);
+  const { runAgentTurn } = await core(t);
   reset();
   const { adapter } = makeAdapter();
 
@@ -204,7 +224,7 @@ test(
   'SECURITY: the internal turn-timeout marker never appears anywhere in reply.text on a hang (issue #826) — ' +
     'only the existing, unmodified INTERNAL_ERROR_REPLY constant is ever returned',
   async (t) => {
-    const { runAgentTurn, INTERNAL_ERROR_REPLY } = await core(t);
+    const { runAgentTurn } = await core(t);
     reset();
     const { adapter } = makeAdapter();
 
@@ -221,8 +241,6 @@ test(
     'no usage-limit reply text and no admin-notification DM',
   async (t) => {
     const { runAgentTurn } = await core(t);
-    const { USAGE_LIMIT_REPLY, USAGE_LIMIT_REPLY_ADMIN_NOTIFIED } =
-      await import('../src/agent/upstreamFailure.js');
     reset();
     const { adapter, dms } = makeAdapter();
 
@@ -314,7 +332,7 @@ test(
       dts,
       /abortController\?:\s*AbortController;/,
       "the SDK's Options type must still expose `abortController?: AbortController` — if this field's name or " +
-        "shape changed, re-verify src/agent/core.ts's execTurn abort wiring against the new contract before " +
+        "shape changed, re-verify src/base/agent/core.ts's execTurn abort wiring against the new contract before " +
         'merging an SDK bump, or the abort call silently becomes a no-op',
     );
   },

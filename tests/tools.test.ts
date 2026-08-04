@@ -1,9 +1,36 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { ENABLED_SKILLS } from '../src/agent/enabledSkills.js';
-import { readFileSync } from 'node:fs';
-import type { AdapterLookup, Platform, PlatformAdapter, UpcomingEvent } from '../src/platforms/types.js';
-import { formatNzEventTime } from '../src/util/nzTime.js';
+// The default bad-word list is community content registered at its own module
+// scope (src/index.ts imports it in production); the moderation wordlist fails
+// closed until then, and constructing a Discord adapter builds a Moderator.
+import './support/registerBadWords.js';
+// The notice pack, for the three catalogue lookups below (the manifest does
+// this in production — src/module/agentModule.ts).
+import './support/registerNotices.js';
+import { notice } from '../src/module/strings/notices.js';
+import { agentBasePath } from './support/agentBasePath.js';
+
+// These three were exported constants in src/module/agent/tools/helpers.ts
+// until the agent-base package flip removed every module-scope `notice()`
+// render (the pack is registered by `createAgent`, after imports). The text
+// is unchanged — it is the same catalogue entry, selected the same way — so
+// the SECURITY: exact-string assertions below still pin exactly what they did.
+const KNOWLEDGE_LOW_RATED_CAVEAT_TEXT = notice('knowledgeLowRatedCaveat');
+const KNOWLEDGE_LOW_RATED_CAVEAT_TEXT_MI = notice('knowledgeLowRatedCaveat', { language: 'mi' });
+const KNOWLEDGE_STALE_NOTE_MI = notice('knowledgeStaleNote', { language: 'mi' });
+// The adapters take their community text pack as a required constructor
+// parameter now (agent-base plan item 6) — production hands it over in
+// src/module/platforms/factories.ts, so these constructions pass the same pack.
+import { DISCORD_TEXT_PACK, WHATSAPP_CLOUD_TEXT_PACK } from '../src/module/platforms/textPacks.js';
+import { ENABLED_SKILLS } from '../src/module/agent/enabledSkills.js';
+import { readFileSync, readdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import type {
+  AdapterLookup,
+  Platform,
+  PlatformAdapter,
+  UpcomingEvent,
+} from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -32,6 +59,7 @@ const skip = hasDb
 // exported and tested directly here rather than through the full MCP
 // tool-call transport, which the rest of add_member (upsertMember/audited/
 // clearAccessRequest, all DB-backed) already exercises via repository.test.ts.
+await import('./support/registerToolRegistry.js');
 const {
   notifyMemberApproved,
   notifyAdminApproved,
@@ -56,9 +84,6 @@ const {
   resolveSanitizedLabel,
   formatKnowledgeCitationNote,
   formatRelativeAge,
-  KNOWLEDGE_LOW_RATED_CAVEAT_TEXT,
-  KNOWLEDGE_LOW_RATED_CAVEAT_TEXT_MI,
-  KNOWLEDGE_STALE_NOTE_MI,
   KNOWLEDGE_CONFLICT_CAVEAT_TEXT,
   KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD,
   KNOWLEDGE_TIE_MARGIN,
@@ -84,11 +109,11 @@ const {
   ANNOUNCE_RATE_LIMIT_PER_HOUR,
   EVENTS_LIST_LIMIT,
   APPEAL_MODERATION_REASON_MAX_CHARS,
-  reserveVoiceTranscriptionSlot,
   HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER,
   PROJECT_NOTE_RETENTION_NOTICE,
-} = await import('../src/agent/tools.js');
-const { filterOutbound } = await import('../src/agent/outbound.js');
+} = await import('../src/module/agent/tools.js');
+const { reserveVoiceTranscriptionSlot } = await import('@swampratnz/agent-base/agent/rateReservers.js');
+const { filterOutbound } = await import('@swampratnz/agent-base/agent/outbound.js');
 const {
   MODERATION_ACTION_KINDS,
   saveKnowledge,
@@ -144,26 +169,30 @@ const {
   setMemberInterests,
   purgeUserData,
   recordProjectConnectionIfUnderCap,
-} = await import('../src/storage/repository.js');
-const { pool, closeDb } = await import('../src/storage/db.js');
-const { embed } = await import('../src/storage/embeddings.js');
+} = await import('@swampratnz/agent-base/storage/repository.js');
+const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
+const { embed } = await import('@swampratnz/agent-base/storage/embeddings.js');
 const pgvector = (await import('pgvector/pg')).default;
 const { cancelPendingAction, hasPendingAction, takePendingAction } =
-  await import('../src/agent/pendingActions.js');
-const { config } = await import('../src/config.js');
-const {
-  getCommunityGuidelines,
-  getCommunityGuidelinesMi,
-  getWelcomeMessage,
-  getWelcomeMessageMi,
-  resetPolicyCacheForTests,
-} = await import('../src/storage/policies.js');
-const { MEMBER_TOOLS, ADMIN_TOOLS, SUPER_ADMIN_TOOLS } = await import('../src/auth/rbac.js');
-const { superAdminIds } = await import('../src/auth/roles.js');
-const { WhatsAppCloudAdapter, WindowClosedError } = await import('../src/platforms/whatsapp/cloudAdapter.js');
-const { buildAdminDigestForAdmin } = await import('../src/adminDigest.js');
-const { buildMemberDigestContent } = await import('../src/memberDigest.js');
-const { getPendingAlertsForTests, resetPendingAlertsForTests } = await import('../src/pendingAlertQueue.js');
+  await import('@swampratnz/agent-base/agent/pendingActions.js');
+const { config } = await import('@swampratnz/agent-base/config.js');
+// `formatEventTime` is imported DYNAMICALLY, after the dummy env above:
+// agent-base's util/eventTime.ts reads DISPLAY_TIMEZONE/DISPLAY_LOCALE off the
+// config singleton (community-agent's util/nzTime.ts hardcoded them and
+// imported nothing), so a static import would validate the env too early.
+const { formatEventTime } = await import('@swampratnz/agent-base/util/eventTime.js');
+await import('./support/registerPolicyKeys.js');
+const { getCommunityGuidelines, getCommunityGuidelinesMi, getWelcomeMessage, getWelcomeMessageMi } =
+  await import('../src/module/storage/policies.js');
+const { resetPolicyCacheForTests } = await import('@swampratnz/agent-base/storage/policyStore.js');
+const { MEMBER_TOOLS, ADMIN_TOOLS, SUPER_ADMIN_TOOLS } = await import('@swampratnz/agent-base/auth/rbac.js');
+const { superAdminIds } = await import('@swampratnz/agent-base/auth/roles.js');
+const { WhatsAppCloudAdapter, WindowClosedError } =
+  await import('@swampratnz/agent-base/platforms/whatsapp/cloudAdapter.js');
+const { buildAdminDigestForAdmin } = await import('../src/module/adminDigest.js');
+const { buildMemberDigestContent } = await import('../src/module/memberDigest.js');
+const { getPendingAlertsForTests, resetPendingAlertsForTests } =
+  await import('@swampratnz/agent-base/pendingAlertQueue.js');
 
 // Unique per test-run scope so the knowledge_search handler test's fixture
 // row never collides across runs, mirroring the RUN-tag convention in
@@ -5191,8 +5220,8 @@ test(
     'primitive is WhatsApp-only, Discord already has full ban_user coverage (issue #572 acceptance ' +
     'criterion #6)',
   async () => {
-    const { DiscordAdapter } = await import('../src/platforms/discord/adapter.js');
-    const adapter = new DiscordAdapter();
+    const { DiscordAdapter } = await import('@swampratnz/agent-base/platforms/discord/adapter.js');
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     assert.equal(adapter.adminCapabilities.has('block_user'), false);
     assert.equal(adapter.adminCapabilities.has('unblock_user'), false);
     assert.equal(
@@ -5950,10 +5979,7 @@ test(
     config.moderation.strikeLimit = 3;
     config.moderation.strikeWindowDays = 30;
     try {
-      const result = await listMutedMembersHandler(
-        'admin',
-        LIST_MUTED_PLATFORM as unknown as Platform,
-      ).handler();
+      const result = await listMutedMembersHandler('admin', LIST_MUTED_PLATFORM).handler();
       assert.notEqual(result.isError, true);
       const text = result.content[0]?.text ?? '';
 
@@ -6000,10 +6026,7 @@ test(
     const originalLimit = config.moderation.strikeLimit;
     config.moderation.strikeLimit = 3;
     try {
-      const result = await listMutedMembersHandler(
-        'admin',
-        LIST_MUTED_PLATFORM as unknown as Platform,
-      ).handler();
+      const result = await listMutedMembersHandler('admin', LIST_MUTED_PLATFORM).handler();
       const text = result.content[0]?.text ?? '';
       assert.match(text, new RegExp(user));
       assert.doesNotMatch(text, new RegExp(distinctiveReason), 'the reason never reaches the output');
@@ -6029,10 +6052,7 @@ test(
     // deterministic regardless of any other concurrently-running platform.
     config.moderation.strikeLimit = 1_000_000;
     try {
-      const result = await listMutedMembersHandler(
-        'admin',
-        `${RUN}-list-muted-empty` as unknown as Platform,
-      ).handler();
+      const result = await listMutedMembersHandler('admin', `${RUN}-list-muted-empty`).handler();
       assert.equal(result.content[0]?.text, 'No members are currently muted.');
     } finally {
       config.moderation.strikeLimit = originalLimit;
@@ -6083,7 +6103,7 @@ test(
     await blockUser(platform, withReason, 'admin-1', 'harassment');
     await blockUser(platform, withoutReason, 'admin-2', null);
     try {
-      const result = await listBlockedMembersHandler('admin', platform as unknown as Platform).handler();
+      const result = await listBlockedMembersHandler('admin', platform).handler();
       assert.notEqual(result.isError, true);
       // untrusted() strips '\n' from the rendered body (issue #227
       // quarantine-escape fix), so rows are space-joined, not newline-joined
@@ -6115,10 +6135,7 @@ test(
   'list_blocked_members reports "No blocked users." when nothing is blocked on that platform (issue #924)',
   { skip },
   async () => {
-    const result = await listBlockedMembersHandler(
-      'admin',
-      `${RUN}-list-blocked-empty` as unknown as Platform,
-    ).handler();
+    const result = await listBlockedMembersHandler('admin', `${RUN}-list-blocked-empty`).handler();
     assert.equal(result.content[0]?.text, 'No blocked users.');
   },
 );
@@ -6136,12 +6153,12 @@ test(
     await blockUser(platformA, userA, 'admin-1', 'harassment');
     await blockUser(platformB, userB, 'admin-1', 'spam');
     try {
-      const resultA = await listBlockedMembersHandler('admin', platformA as unknown as Platform).handler();
+      const resultA = await listBlockedMembersHandler('admin', platformA).handler();
       const textA = resultA.content[0]?.text ?? '';
       assert.match(textA, new RegExp(userA), "platform A's caller sees platform A's block");
       assert.doesNotMatch(textA, new RegExp(userB), "platform A's caller must never see platform B's block");
 
-      const resultB = await listBlockedMembersHandler('admin', platformB as unknown as Platform).handler();
+      const resultB = await listBlockedMembersHandler('admin', platformB).handler();
       const textB = resultB.content[0]?.text ?? '';
       assert.match(textB, new RegExp(userB), "platform B's caller sees platform B's block");
       assert.doesNotMatch(textB, new RegExp(userA), "platform B's caller must never see platform A's block");
@@ -7347,7 +7364,7 @@ test('SECURITY: cancel_event registers a CONFIRM-gated pending action whose desc
   );
   assert.match(
     result.content[0].text,
-    new RegExp(formatNzEventTime(EVENT_FUTURE_START).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+    new RegExp(formatEventTime(EVENT_FUTURE_START).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
     'the CONFIRM text must quote the resolved start time in NZ-local time, not raw ISO (issue #577)',
   );
   assert.doesNotMatch(
@@ -8995,12 +9012,15 @@ test('SECURITY: feature_flags handler refuses a forged direct call from a non-su
   // first statement in the handler body, and formatFeatureFlags (the only
   // config read) is only reached afterwards — so a refusal can never fall
   // through to a config read, not merely "usually doesn't" in practice.
-  const source = readFileSync(new URL('../src/agent/tools.ts', import.meta.url), 'utf8');
-  const defStart = source.indexOf("'feature_flags',");
+  // The tool moved to the tool-registry split's super-admin domain file
+  // (src/module/agent/tools/superAdmin.ts) — same assertion, scanned where it now
+  // lives.
+  const source = readFileSync(new URL('../src/module/agent/tools/superAdmin.ts', import.meta.url), 'utf8');
+  const defStart = source.indexOf("name: 'feature_flags',");
   assert.notEqual(defStart, -1, 'feature_flags tool definition not found');
   const handlerMatch = source
     .slice(defStart)
-    .match(/async \(\) => \{([\s\S]*?)\},\s*\{ annotations: \{ readOnlyHint: true \} \},\s*\);/);
+    .match(/handler: async \(_args, \{ caller \}\) => \{([\s\S]*?)\},\s*\}\),/);
   assert.ok(handlerMatch, 'feature_flags handler body not found');
   const body = handlerMatch[1];
   const assertIdx = body.indexOf('assertAtLeast(');
@@ -9023,7 +9043,9 @@ test('SECURITY: feature_flags allowlist purity — a planted secret-shaped field
 });
 
 test('SECURITY: feature_flags handler + formatter never call Object.entries/Object.values/spread on the object they read — only fixed allowlist paths are indexed (issue #559)', () => {
-  const source = readFileSync(new URL('../src/agent/tools.ts', import.meta.url), 'utf8');
+  // The formatter moved to the tool-registry split's helpers module
+  // (src/module/agent/tools/helpers.ts) — same assertion, scanned where it now lives.
+  const source = readFileSync(new URL('../src/module/agent/tools/helpers.ts', import.meta.url), 'utf8');
   const formatterStart = source.indexOf('export function formatFeatureFlags(');
   const getterStart = source.indexOf('function getConfigBoolean(');
   assert.ok(formatterStart !== -1 && getterStart !== -1, 'formatFeatureFlags/getConfigBoolean not found');
@@ -9070,7 +9092,20 @@ function assertFeatureFlagEnvVarsCovered(envVars: string[], map: readonly { envV
 }
 
 test('feature_flags: FEATURE_FLAG_MAP covers every *_ENABLED env var in config.ts (issue #559 anti-drift pin)', () => {
-  const configSource = readFileSync(new URL('../src/config.ts', import.meta.url), 'utf8');
+  // The env schema lives in the agent-base package now: the composed barrel
+  // (config.js) plus the per-domain slices under config/. Scanned from the
+  // INSTALLED package rather than from src/, so this still counts a flag added
+  // in either place — and resolving through the package (not a hand-built
+  // relative path) keeps it honest about what this deployment actually runs.
+  const configEntry = agentBasePath('@swampratnz/agent-base/config.js');
+  const configDir = join(dirname(configEntry), 'config');
+  const configSource = [
+    readFileSync(configEntry, 'utf8'),
+    ...readdirSync(configDir)
+      .filter((f) => f.endsWith('.js'))
+      .sort()
+      .map((f) => readFileSync(join(configDir, f), 'utf8')),
+  ].join('\n');
   const envVars = extractEnabledEnvVars(configSource);
   assert.equal(
     envVars.length,
@@ -9094,12 +9129,15 @@ test('feature_flags anti-drift pin fails loudly for an uncovered *_ENABLED flag 
 });
 
 test('SECURITY: feature_flags handler makes no repository or query() call — synchronous read of the in-memory config only (issue #559)', () => {
-  const source = readFileSync(new URL('../src/agent/tools.ts', import.meta.url), 'utf8');
-  const defStart = source.indexOf("'feature_flags',");
+  // The tool moved to the tool-registry split's super-admin domain file
+  // (src/module/agent/tools/superAdmin.ts) — same assertion, scanned where it now
+  // lives.
+  const source = readFileSync(new URL('../src/module/agent/tools/superAdmin.ts', import.meta.url), 'utf8');
+  const defStart = source.indexOf("name: 'feature_flags',");
   assert.notEqual(defStart, -1, 'feature_flags tool definition not found');
   const handlerMatch = source
     .slice(defStart)
-    .match(/async \(\) => \{([\s\S]*?)\},\s*\{ annotations: \{ readOnlyHint: true \} \},\s*\);/);
+    .match(/handler: async \(_args, \{ caller \}\) => \{([\s\S]*?)\},\s*\}\),/);
   assert.ok(handlerMatch, 'feature_flags handler body not found');
   const body = handlerMatch[1];
   assert.doesNotMatch(
@@ -9221,7 +9259,9 @@ test('feature_flags: every OTHER_CONFIGURED_KNOBS entry resolves against the rea
 });
 
 test('SECURITY: feature_flags handler + "Other configured knobs" formatter never call Object.entries/Object.values/spread on the object they read (issue #616)', () => {
-  const source = readFileSync(new URL('../src/agent/tools.ts', import.meta.url), 'utf8');
+  // The formatter moved to the tool-registry split's helpers module
+  // (src/module/agent/tools/helpers.ts) — same assertion, scanned where it now lives.
+  const source = readFileSync(new URL('../src/module/agent/tools/helpers.ts', import.meta.url), 'utf8');
   const formatterStart = source.indexOf('export function formatOtherConfiguredKnobs(');
   assert.notEqual(formatterStart, -1, 'formatOtherConfiguredKnobs not found');
   const region = source.slice(formatterStart, source.indexOf('\n}\n', formatterStart) + 3);
@@ -10234,7 +10274,12 @@ test(
 );
 
 test("SECURITY: the knowledge_search tool handler never calls notifyAdmins directly — a real-time alert (issue #650) may only fire from router.ts reading the turn-scoped flag post-turn, mirroring rate_answer's own invariant (issue #598)", () => {
-  const source = readFileSync(new URL('../src/agent/tools.ts', import.meta.url), 'utf8');
+  // The handler moved from the tools.ts closure into the knowledgeMember
+  // ToolDef domain (docs/TOOL-REGISTRY-DESIGN.md §3); same body, new home.
+  const source = readFileSync(
+    new URL('../src/module/agent/tools/knowledgeMember.ts', import.meta.url),
+    'utf8',
+  );
   const start = source.indexOf("'knowledge_search',");
   const end = source.indexOf("'list_knowledge_topics',");
   assert.notEqual(start, -1, 'knowledge_search tool definition not found');
@@ -12876,7 +12921,7 @@ test(
     cloud.phoneNumberId = 'test-phone-id';
     cloud.accessToken = 'test-access-token';
 
-    const adapter = new WhatsAppCloudAdapter();
+    const adapter = new WhatsAppCloudAdapter(WHATSAPP_CLOUD_TEXT_PACK);
     // Marks the reporter's number as within the 24h customer-service window
     // without a real webhook round-trip, same as markInboundNow in
     // tests/whatsappCloudAdapter.test.ts.
@@ -13380,7 +13425,7 @@ test(
   'SECURITY: project_add_member refuses a target who is not already a community member (docs/SECURITY.md layer 3 — without it a membership row exists for an identity that never passed add_member, which open mode reaches at guest tier)',
   { skip },
   async () => {
-    const { createProject, upsertMember } = await import('../src/storage/repository.js');
+    const { createProject, upsertMember } = await import('@swampratnz/agent-base/storage/repository.js');
     const slug = `${RUN}-addmember-guard`;
     await createProject({ slug, name: 'Guard Lab', createdBy: 'test' });
 
@@ -13410,7 +13455,7 @@ test(
     // project_archive is not CONFIRM-gated because project_unarchive undoes
     // it. That argument only holds if the undo is reachable from the tool
     // surface, so exercise both handlers, not just the repository functions.
-    const { createProject } = await import('../src/storage/repository.js');
+    const { createProject } = await import('@swampratnz/agent-base/storage/repository.js');
     const slug = `${RUN}-archive-roundtrip`;
     await createProject({ slug, name: 'Round Trip Lab', createdBy: 'test' });
 
@@ -13447,7 +13492,7 @@ test(
   async () => {
     // These three were only exercised at the repository-function level, unlike
     // their siblings — so the audited() wiring and reply text went untested.
-    const { createProject, upsertMember } = await import('../src/storage/repository.js');
+    const { createProject, upsertMember } = await import('@swampratnz/agent-base/storage/repository.js');
     const slug = `${RUN}-handler-paths`;
     await createProject({ slug, name: 'Handler Lab', createdBy: 'test' });
     const member = `${RUN.slice(1)}777`.slice(0, 19);
@@ -13497,7 +13542,7 @@ test(
     // getProjectBySlug deliberately does not exclude archived projects — an
     // admin must still be able to tidy a team up before an unarchive. But
     // nothing they change takes effect until then, so the reply has to say it.
-    const { createProject, upsertMember } = await import('../src/storage/repository.js');
+    const { createProject, upsertMember } = await import('@swampratnz/agent-base/storage/repository.js');
     const slug = `${RUN}-archived-edits`;
     await createProject({ slug, name: 'Archived Lab', createdBy: 'test' });
     const member = `${RUN.slice(1)}888`.slice(0, 19);
@@ -14374,13 +14419,14 @@ test(
     const rendered = await listTool.handler({});
     assert.match(rendered.content[0]?.text ?? '', /link: https:\/\/example\.com\/my-project/);
 
-    const toolsSource = readFileSync(new URL('../src/agent/tools.ts', import.meta.url), 'utf8');
-    const shareStart = toolsSource.indexOf("'share_project',");
-    const adminSectionStart = toolsSource.indexOf('// --- Admin tools');
-    assert.ok(shareStart !== -1 && adminSectionStart !== -1 && shareStart < adminSectionStart);
-    const toolsRegion = toolsSource.slice(shareStart, adminSectionStart);
+    // share_project/list_projects moved to the social ToolDef domain (tool
+    // registry split), so scan that WHOLE FILE — same module-boundary
+    // reasoning as the memberProjects.ts scan below, and strictly stronger
+    // than the old tools.ts region slice between section banners.
+    const toolsSource = readFileSync(new URL('../src/module/agent/tools/social.ts', import.meta.url), 'utf8');
+    assert.ok(toolsSource.includes("name: 'share_project',"), 'share_project tool definition not found');
     assert.doesNotMatch(
-      toolsRegion,
+      toolsSource,
       /\bfetch\(|axios|http\.get\(|https\.get\(|XMLHttpRequest/,
       'a stored project link must never be fetched or previewed — only rendered verbatim as text',
     );
@@ -14395,8 +14441,10 @@ test(
     // cleanup it orphaned a project row and cascaded into the next three
     // line-count assertions). A module boundary can't drift the way a comment
     // delimiter can.
+    // The repository module is agent-base's now, so scan the INSTALLED
+    // package's compiled copy — what this deployment actually runs.
     const repoProjectsSource = readFileSync(
-      new URL('../src/storage/repository/memberProjects.ts', import.meta.url),
+      agentBasePath('@swampratnz/agent-base/storage/repository/memberProjects.js'),
       'utf8',
     );
     assert.doesNotMatch(repoProjectsSource, /\bfetch\(|axios|http\.get\(|https\.get\(/);
@@ -14724,7 +14772,8 @@ test(
     );
     const projectId = Number(dbRow.rows[0].id);
 
-    const { PROJECT_CONNECTION_REQUESTER_DAILY_LIMIT } = await import('../src/storage/repository.js');
+    const { PROJECT_CONNECTION_REQUESTER_DAILY_LIMIT } =
+      await import('@swampratnz/agent-base/storage/repository.js');
     for (let i = 0; i < PROJECT_CONNECTION_REQUESTER_DAILY_LIMIT; i++) {
       await pool.query(
         `INSERT INTO project_connection_requests
@@ -14771,7 +14820,8 @@ test(
     );
     const projectId = Number(dbRow.rows[0].id);
 
-    const { PROJECT_CONNECTION_OWNER_WEEKLY_LIMIT } = await import('../src/storage/repository.js');
+    const { PROJECT_CONNECTION_OWNER_WEEKLY_LIMIT } =
+      await import('@swampratnz/agent-base/storage/repository.js');
     for (let i = 0; i < PROJECT_CONNECTION_OWNER_WEEKLY_LIMIT; i++) {
       await pool.query(
         `INSERT INTO project_connection_requests
@@ -15364,12 +15414,12 @@ test('list_events formats each event with id, name, start/end time, location, an
   );
   assert.match(
     replyText,
-    new RegExp(formatNzEventTime('2099-06-01T19:00:00.000Z').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+    new RegExp(formatEventTime('2099-06-01T19:00:00.000Z').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
     "must render the event's start in NZ-local time (issue #577)",
   );
   assert.match(
     replyText,
-    new RegExp(formatNzEventTime('2099-06-01T21:00:00.000Z').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+    new RegExp(formatEventTime('2099-06-01T21:00:00.000Z').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
     "must render the event's end in NZ-local time (issue #577)",
   );
   assert.match(replyText, /Wellington Central Library/);

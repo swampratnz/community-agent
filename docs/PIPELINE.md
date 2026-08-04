@@ -30,7 +30,7 @@ build ──addresses feedback──▶ …
 | `status:draft` | Awaiting adversarial review | research |
 | `status:approved` | Survived adversarial review; buildable | adversarial |
 | `status:rejected` | Failed review (issue closed) | adversarial |
-| `status:building` | Claimed by the build loop (**WIP = 1**) | build |
+| `status:building` | Claimed by the build loop (WIP = 1 for the fallback Routine; the Actions lane runs one per issue, in parallel) | build |
 | `status:built` | PR open, awaiting review/merge | build |
 | `needs-human` | Escalated — a human must decide | any loop |
 | `theme:<area>` | Diversity tag on a proposal (one VISION theme area) | research |

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { PlatformAdapter } from '../src/platforms/types.js';
+import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
 // create_thread's defensive self-refuse guard (issue #229 adversarial review:
 // a bot-created thread must never open a space moderation wouldn't scan)
@@ -16,7 +16,7 @@ process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.DISCORD_MODERATION_ENABLED = 'true';
 process.env.DISCORD_ALLOWED_CHANNEL_IDS = 'parent-allowed';
 
-// isKnownConversation is a real DB query with no fallback (src/storage/
+// isKnownConversation is a real DB query with no fallback (src/base/storage/
 // repository.ts), so any test that reaches it (target !== caller's own
 // conversation) needs a real Postgres — skip cleanly without one, matching
 // CLAUDE.md's DB-integration convention (tests/tools.test.ts's `skip`).
@@ -24,7 +24,8 @@ const skip = hasDb
   ? false
   : 'DATABASE_URL not set — skipping DB-integration tests (CLAUDE.md: exercise against a local Postgres 16 + pgvector)';
 
-const { buildToolServer } = await import('../src/agent/tools.js');
+await import('./support/registerToolRegistry.js');
+const { buildToolServer } = await import('../src/module/agent/tools.js');
 
 function stubAdapter(
   performAdminAction: PlatformAdapter['performAdminAction'],

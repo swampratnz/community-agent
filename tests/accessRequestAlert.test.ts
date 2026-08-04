@@ -1,6 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { OutgoingMessage, Platform, PlatformAdapter } from '../src/platforms/types.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import './support/registerNotices.js';
+import type { OutgoingMessage, Platform, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — router.ts (which notifyAccessRequest
 // lives in) transitively loads it. Provide a dummy environment before
@@ -11,8 +15,8 @@ process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 
-const { notifyAccessRequest } = await import('../src/router.js');
-const { WindowClosedError } = await import('../src/platforms/whatsapp/cloudAdapter.js');
+const { notifyAccessRequest } = await import('@swampratnz/agent-base/router.js');
+const { WindowClosedError } = await import('@swampratnz/agent-base/platforms/whatsapp/cloudAdapter.js');
 
 function makeAdapter(
   platform: Platform,

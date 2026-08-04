@@ -1,5 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import './support/registerNotices.js';
 
 // Issue #706 AC3: once isDuplicateWebSearchQuery falls through to the
 // embedding-similarity check, it calls embed() — but the exact-normalized-
@@ -7,7 +11,7 @@ import assert from 'node:assert/strict';
 // discipline already proven for candidateTopicAlreadyReviewed (repository.ts,
 // issue #503 AC1, tests/knowledgeCandidateDedupDegradation.test.ts). Mocking
 // embed() to throw pins that the exact-match path structurally cannot reach
-// it. Mock BEFORE the first import of core.js/tools.js — a later
+// it. Mock BEFORE the first import of core.js/webSearchGuard.js — a later
 // t.mock.module call can't retarget an already-imported module (same trap
 // noted in tests/agentWebSearchDedupFailClosed.test.ts) — so this lives in
 // its OWN file, same split as that file / tests/agentWebSearchDedupNoLog.test.ts.
@@ -16,6 +20,11 @@ process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
 process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
+
+// The tool registry's module-scope registrations (tool tiers, tool-server
+// parts, feature-flag predicates) — the composition-root contract, matching
+// tests/rbac.test.ts.
+await import('./support/registerToolRegistry.js');
 
 test('SECURITY: issue #706 AC3 — a verbatim (post-normalization) repeat is denied WITHOUT any ADDITIONAL call to embed()', async (t) => {
   // The FIRST occurrence of any query is, by definition, never an exact
@@ -27,7 +36,7 @@ test('SECURITY: issue #706 AC3 — a verbatim (post-normalization) repeat is den
   // adds no further embed() call at all: the count after the repeat must
   // equal the count after the first call.
   let embedCalls = 0;
-  t.mock.module('../src/storage/embeddings.js', {
+  t.mock.module('@swampratnz/agent-base/storage/embeddings.js', {
     namedExports: {
       embed: async () => {
         embedCalls += 1;
@@ -36,7 +45,7 @@ test('SECURITY: issue #706 AC3 — a verbatim (post-normalization) repeat is den
     },
   });
 
-  const { buildQueryOptions } = await import('../src/agent/core.js');
+  const { buildQueryOptions } = await import('@swampratnz/agent-base/agent/core.js');
   const opts = buildQueryOptions('admin', 'prompt', {}, null, 'ws-dedup-embed-short-circuit') as {
     hooks?: {
       PreToolUse?: Array<{

@@ -14,9 +14,10 @@ const {
   grokEnv,
   sandboxBreached,
   SANDBOX_PROFILE,
-  sandboxDenyPaths,
+  sandboxProbePath,
   buildSandboxToml,
-} = await import('../src/media/grokImage.js');
+} = await import('../src/module/media/grokImage.js');
+const { onDiskSecretPaths } = await import('@swampratnz/agent-base/config.js');
 
 test('sniffImageType detects JPEG / PNG / WebP from magic bytes', () => {
   assert.deepEqual(sniffImageType(Buffer.from([0xff, 0xd8, 0xff, 0xe0])), {
@@ -62,7 +63,11 @@ test('SECURITY: buildGrokArgs runs grok under the custom deny sandbox, no --alwa
 test('SECURITY: the sandbox deny profile kernel-denies the bot secrets + resolves a relative auth dir', () => {
   // Platform-agnostic (prod is Linux; `join`/`isAbsolute` differ on Windows).
   const cwd = process.platform === 'win32' ? 'C:\\app' : '/opt/community-agent';
-  const { envPath, authPath, probePath } = sandboxDenyPaths(cwd, './whatsapp-auth');
+  // The secret-paths list is composed by config.ts (the module that owns the
+  // deployment's secret layout) and INJECTED into grokImage — the image-gen
+  // client itself no longer knows what this bot's secrets are.
+  const [envPath, authPath] = onDiskSecretPaths(cwd, './whatsapp-auth');
+  const probePath = sandboxProbePath(cwd);
   // The bot's .env and a dedicated probe path, both under the bot's cwd.
   assert.ok(envPath.startsWith(cwd) && envPath.endsWith('.env'), "the bot's .env must be a deny target");
   assert.ok(probePath.startsWith(cwd) && probePath.endsWith('.grok-image-sandbox-probe'));
@@ -72,9 +77,9 @@ test('SECURITY: the sandbox deny profile kernel-denies the bot secrets + resolve
     'a relative auth dir resolves against cwd',
   );
   const abs = process.platform === 'win32' ? 'C:\\wa' : '/var/wa';
-  assert.equal(sandboxDenyPaths(cwd, abs).authPath, abs, 'an absolute auth dir is used as-is');
+  assert.equal(onDiskSecretPaths(cwd, abs)[1], abs, 'an absolute auth dir is used as-is');
 
-  const toml = buildSandboxToml([envPath, authPath, probePath]);
+  const toml = buildSandboxToml([...onDiskSecretPaths(cwd, './whatsapp-auth'), probePath]);
   assert.match(toml, /\[profiles\.imagegen\]/);
   assert.match(toml, /restrict_network = true/);
   assert.match(toml, /deny = \[/);

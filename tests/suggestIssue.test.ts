@@ -1,6 +1,6 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { PlatformAdapter } from '../src/platforms/types.js';
+import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment before
 // anything that (transitively) loads it, matching tests/tools.test.ts. The
@@ -16,8 +16,8 @@ process.env.GITHUB_ISSUE_TOKEN ??= 'ghp_testtoken';
 
 const hasDb = Boolean(process.env.DATABASE_URL) && !process.env.DATABASE_URL.includes('test:test');
 
-const { closeDb } = await import('../src/storage/db.js');
-const { takePendingAction } = await import('../src/agent/pendingActions.js');
+const { closeDb } = await import('@swampratnz/agent-base/storage/db.js');
+const { takePendingAction } = await import('@swampratnz/agent-base/agent/pendingActions.js');
 
 after(async () => {
   await closeDb();
@@ -28,10 +28,10 @@ after(async () => {
 // is first imported (node:test module mocks bake into the cached import), so
 // it's done lazily on first use, like tests/generateImageCaption.test.ts.
 const issueCalls: Array<{ title: string; body: string; labels: readonly string[] }> = [];
-let toolsPromise: Promise<typeof import('../src/agent/tools.js')> | null = null;
+let toolsPromise: Promise<typeof import('../src/module/agent/tools.js')> | null = null;
 function tools(t: { mock: { module: (specifier: string, opts: unknown) => void } }) {
   if (!toolsPromise) {
-    t.mock.module('../src/github/issues.js', {
+    t.mock.module('../src/module/github/issues.js', {
       namedExports: {
         createIssue: async (input: { title: string; body: string; labels: readonly string[] }) => {
           issueCalls.push(input);
@@ -39,7 +39,13 @@ function tools(t: { mock: { module: (specifier: string, opts: unknown) => void }
         },
       },
     });
-    toolsPromise = import('../src/agent/tools.js');
+    // The tool-registry registrations (the manifest's `toolTiers`/
+    // `toolServerParts`/`flaggedToolPredicates` in production) load the whole
+    // registry, so they must come AFTER the mock above — importing the
+    // registry is what caches the real module this test replaces.
+    toolsPromise = import('./support/registerToolRegistry.js').then(
+      () => import('../src/module/agent/tools.js'),
+    );
   }
   return toolsPromise;
 }

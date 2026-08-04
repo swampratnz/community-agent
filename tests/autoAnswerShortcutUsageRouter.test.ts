@@ -1,7 +1,15 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
-import type { searchKnowledge } from '../src/storage/repository.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import './support/registerNotices.js';
+import type {
+  IncomingMessage,
+  OutgoingMessage,
+  PlatformAdapter,
+} from '@swampratnz/agent-base/platforms/types.js';
+import type { searchKnowledge } from '@swampratnz/agent-base/storage/repository.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -32,10 +40,15 @@ process.env.KNOWLEDGE_SHORTCUT_ENABLED = 'true';
 process.env.REPEAT_QUESTION_SHORTCUT_ENABLED = 'true';
 process.env.REPEAT_MAX_TURNS_SHORTCUT_ENABLED = 'true';
 
-const { pool, closeDb } = await import('../src/storage/db.js');
-const { Router } = await import('../src/router.js');
-const { embed } = await import('../src/storage/embeddings.js');
-const { MAX_TURNS_REPLY } = await import('../src/agent/core.js');
+const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
+const { Router } = await import('@swampratnz/agent-base/router.js');
+const { makeRouterDeps } = await import('../src/module/routerWiring.js');
+const { embed } = await import('@swampratnz/agent-base/storage/embeddings.js');
+
+// Notice constants agent-base deleted in the package flip (they named this
+// community's axis values in framework code, and rendered at import time). Same
+// catalogue entries, same values — see tests/support/legacyNotices.ts.
+const { MAX_TURNS_REPLY } = await import('./support/legacyNotices.js');
 
 await embed('warmup').catch(() => {});
 
@@ -147,13 +160,14 @@ test(
   { skip: !hasDb },
   async () => {
     const router = new Router(
-      async () => {
-        throw new Error('runTurn must not be called for a near-exact knowledge-shortcut match');
-      },
-      20,
-      undefined,
-      FIXED_HIT_SEARCH,
-      async () => {},
+      makeRouterDeps({
+        runTurn: async () => {
+          throw new Error('runTurn must not be called for a near-exact knowledge-shortcut match');
+        },
+        typingRefireMs: 20,
+        searchKnowledgeForShortcut: FIXED_HIT_SEARCH,
+        recordShortcutRetrieval: async () => {},
+      }),
     );
     const { adapter, sent, threadCalls, trigger } = makeAdapter();
     router.register(adapter);
@@ -184,13 +198,14 @@ test(
   async () => {
     let calls = 0;
     const router = new Router(
-      async () => {
-        calls += 1;
-        return { text: 'the context window is 200k tokens', ok: true };
-      },
-      20,
-      undefined,
-      NO_HIT_SEARCH,
+      makeRouterDeps({
+        runTurn: async () => {
+          calls += 1;
+          return { text: 'the context window is 200k tokens', ok: true };
+        },
+        typingRefireMs: 20,
+        searchKnowledgeForShortcut: NO_HIT_SEARCH,
+      }),
     );
     const { adapter, sent, threadCalls, trigger } = makeAdapter();
     router.register(adapter);
@@ -217,10 +232,11 @@ test(
   { skip: !hasDb },
   async () => {
     const router = new Router(
-      async () => ({ text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true }),
-      20,
-      undefined,
-      NO_HIT_SEARCH,
+      makeRouterDeps({
+        runTurn: async () => ({ text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true }),
+        typingRefireMs: 20,
+        searchKnowledgeForShortcut: NO_HIT_SEARCH,
+      }),
     );
     const { adapter, sent, threadCalls, trigger } = makeAdapter();
     router.register(adapter);

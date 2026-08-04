@@ -1,7 +1,15 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { AgentReply } from '../src/agent/core.js';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import './support/registerNotices.js';
+import type { AgentReply } from '@swampratnz/agent-base/agent/core.js';
+import type {
+  IncomingMessage,
+  OutgoingMessage,
+  PlatformAdapter,
+} from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -31,9 +39,10 @@ const AUTO_CHAN = `${RUN}-chan`;
 process.env.AUTO_ANSWER_CHANNEL_IDS = AUTO_CHAN;
 process.env.REPEAT_QUESTION_SHORTCUT_ENABLED = 'true';
 
-const { pool, closeDb } = await import('../src/storage/db.js');
-const { Router } = await import('../src/router.js');
-const { embed } = await import('../src/storage/embeddings.js');
+const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
+const { Router } = await import('@swampratnz/agent-base/router.js');
+const { makeRouterDeps } = await import('../src/module/routerWiring.js');
+const { embed } = await import('@swampratnz/agent-base/storage/embeddings.js');
 
 await embed('warmup').catch(() => {});
 
@@ -108,10 +117,15 @@ function makeMessage(overrides: Partial<IncomingMessage> = {}): IncomingMessage 
 
 test('SECURITY: the repeat-question shortcut still applies on the auto-answer path — the same caller resending the same text gets the cached reply, not a second turn (issue #477)', async () => {
   let calls = 0;
-  const router = new Router(async () => {
-    calls += 1;
-    return { text: 'the context window is 200k tokens', ok: true };
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => {
+        calls += 1;
+        return { text: 'the context window is 200k tokens', ok: true };
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, sent, threadCalls, trigger } = makeAdapter();
   router.register(adapter);
 

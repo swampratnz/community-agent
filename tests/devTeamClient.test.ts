@@ -10,10 +10,10 @@ import {
   listJobs,
   verifyFinding,
   type FetchImpl,
-} from '../src/devTeam/client.js';
+} from '../src/module/devTeam/client.js';
 
 // The dev-team client is dependency-free (no config, no DB, no real network):
-// `fetchImpl` is always injected here, mirroring src/status/anthropicStatus.ts.
+// `fetchImpl` is always injected here, mirroring src/module/status/anthropicStatus.ts.
 
 const ENDPOINT = 'http://ubuntudevagent:8738';
 const TOKEN = 'dev-team-super-secret-bearer-token';

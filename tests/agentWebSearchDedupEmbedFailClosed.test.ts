@@ -1,11 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import './support/registerNotices.js';
 
 // Issue #706 AC4 (SECURITY): a rejected embed() call during the
 // embedding-similarity half of the WebSearch dedup check must still fail
 // closed (deny), extending #412 AC-5 / #589's fail-closed guarantee to the
 // new code path — isDuplicateWebSearchQuery deliberately does NOT catch a
-// thrown embed() itself (see its doc comment in tools.ts), relying on the
+// thrown embed() itself (see its doc comment in webSearchGuard.ts), relying on the
 // SAME outer try/catch in core.ts's PreToolUse hook that
 // tests/agentWebSearchDedupFailClosed.test.ts already pins for a thrown
 // isDuplicateWebSearchQuery. This file exercises that same outer catch via
@@ -25,8 +29,13 @@ process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 
+// The tool registry's module-scope registrations (tool tiers, tool-server
+// parts, feature-flag predicates) — the composition-root contract, matching
+// tests/rbac.test.ts.
+await import('./support/registerToolRegistry.js');
+
 test('SECURITY: issue #706 AC4 — a rejected embed() call during the similarity check fails closed (denies), never lets the call through unbounded', async (t) => {
-  t.mock.module('../src/storage/embeddings.js', {
+  t.mock.module('@swampratnz/agent-base/storage/embeddings.js', {
     namedExports: {
       embed: async () => {
         throw new Error('boom: simulated embedding-backend failure');
@@ -34,7 +43,7 @@ test('SECURITY: issue #706 AC4 — a rejected embed() call during the similarity
     },
   });
 
-  const { buildQueryOptions } = await import('../src/agent/core.js');
+  const { buildQueryOptions } = await import('@swampratnz/agent-base/agent/core.js');
   const opts = buildQueryOptions('admin', 'prompt', {}, null, 'ws-dedup-embed-fail-closed') as {
     hooks?: {
       PreToolUse?: Array<{

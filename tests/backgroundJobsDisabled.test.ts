@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+import type { OutgoingMessage, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time. CONTEXT_BUILDER_ENABLED /
 // KNOWLEDGE_REFRESH_ENABLED / DOCS_INGEST_ENABLED / KNOWLEDGE_LINK_CHECK_ENABLED /
@@ -24,16 +24,16 @@ const {
   startKnowledgeLinkCheck,
   startStatusCheck,
   startEmbeddingHealthCheckJob,
-} = await import('../src/backgroundJobs.js');
-const { startRetentionPurge } = await import('../src/interactionRetention.js');
-const { startRosterRetentionPurge } = await import('../src/rosterRetention.js');
-const { startAdminDigest } = await import('../src/adminDigest.js');
-const { startDepartedAdminAlert } = await import('../src/departedAdminAlert.js');
-const { startUsageCostDigest } = await import('../src/usageCostDigest.js');
-const { startEngagementAlert } = await import('../src/engagementAlert.js');
-const { startAdminLeverageAlert } = await import('../src/adminLeverageAlert.js');
-const { startMemberDigest } = await import('../src/memberDigest.js');
-const { startBackgroundJobCostAlert } = await import('../src/backgroundJobCostAlert.js');
+} = await import('../src/module/backgroundJobs.js');
+const { startRetentionPurge } = await import('@swampratnz/agent-base/retention.js');
+const { startRosterRetentionPurge } = await import('@swampratnz/agent-base/retention.js');
+const { startAdminDigest } = await import('../src/module/adminDigest.js');
+const { startDepartedAdminAlert } = await import('../src/module/departedAdminAlert.js');
+const { startUsageCostDigest } = await import('../src/module/usageCostDigest.js');
+const { startEngagementAlert } = await import('../src/module/engagementAlert.js');
+const { startAdminLeverageAlert } = await import('../src/module/adminLeverageAlert.js');
+const { startMemberDigest } = await import('../src/module/memberDigest.js');
+const { startBackgroundJobCostAlert } = await import('@swampratnz/agent-base/backgroundJobCostAlert.js');
 
 function makeAdapter(): { adapter: PlatformAdapter; dms: Array<{ userId: string; text: string }> } {
   const dms: Array<{ userId: string; text: string }> = [];

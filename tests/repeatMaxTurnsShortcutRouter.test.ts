@@ -1,6 +1,14 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import './support/registerNotices.js';
+import type {
+  IncomingMessage,
+  OutgoingMessage,
+  PlatformAdapter,
+} from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -32,12 +40,17 @@ process.env.SUPER_ADMIN_DISCORD_IDS ??= `super-1,super-2,${BUDGET_USER_ID}`;
 process.env.SUPER_ADMIN_WHATSAPP_NUMBERS ??= 'super-1';
 process.env.REPEAT_MAX_TURNS_SHORTCUT_ENABLED = 'true';
 
-const { pool, closeDb } = await import('../src/storage/db.js');
-const { config } = await import('../src/config.js');
-const { Router } = await import('../src/router.js');
-const { embed } = await import('../src/storage/embeddings.js');
-const { countRepliesToUser } = await import('../src/storage/repository.js');
-const { MAX_TURNS_REPLY, MAX_TURNS_REPLY_MI } = await import('../src/agent/core.js');
+const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
+const { config } = await import('@swampratnz/agent-base/config.js');
+const { Router } = await import('@swampratnz/agent-base/router.js');
+const { makeRouterDeps } = await import('../src/module/routerWiring.js');
+const { embed } = await import('@swampratnz/agent-base/storage/embeddings.js');
+const { countRepliesToUser } = await import('@swampratnz/agent-base/storage/repository.js');
+
+// Notice constants agent-base deleted in the package flip (they named this
+// community's axis values in framework code, and rendered at import time). Same
+// catalogue entries, same values — see tests/support/legacyNotices.ts.
+const { MAX_TURNS_REPLY, MAX_TURNS_REPLY_MI } = await import('./support/legacyNotices.js');
 
 await embed('warmup').catch(() => {});
 
@@ -152,10 +165,15 @@ test('config: REPEAT_MAX_TURNS_SHORTCUT_ENABLED=true is reflected in config.beha
 
 test('router (repeat-max-turns shortcut): the same caller resending the same whitespace-normalized text after a max-turns failure results in exactly one runTurn call, and the second reply is the canned max-turns message prefixed with the repeat notice', async () => {
   let calls = 0;
-  const router = new Router(async () => {
-    calls++;
-    return { text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true };
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => {
+        calls++;
+        return { text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true };
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
   const conversationId = `${RUN}-happy`;
@@ -176,19 +194,13 @@ test('router (repeat-max-turns shortcut): the same caller resending the same whi
 test('router (repeat-max-turns shortcut): a hit records a shortcut_hits row of kind "repeat_max_turns" (issue #440)', async () => {
   const calls: string[] = [];
   const router = new Router(
-    async () => ({ text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true }),
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async (kind) => {
-      calls.push(kind);
-    },
+    makeRouterDeps({
+      runTurn: async () => ({ text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true }),
+      typingRefireMs: 20,
+      recordShortcutHit: async (kind) => {
+        calls.push(kind);
+      },
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -207,10 +219,15 @@ test('router (repeat-max-turns shortcut): a hit records a shortcut_hits row of k
 
 test('router (repeat-max-turns shortcut): a DIFFERENT message from the same caller after a max-turns failure is not short-circuited', async () => {
   let calls = 0;
-  const router = new Router(async () => {
-    calls++;
-    return { text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true };
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => {
+        calls++;
+        return { text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true };
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
   const conversationId = `${RUN}-different`;
@@ -224,10 +241,15 @@ test('router (repeat-max-turns shortcut): a DIFFERENT message from the same call
 
 test('router (repeat-max-turns shortcut): a reply with maxTurnsExceeded !== true is never cached — a resend after a successful or other-failure reply always runs a fresh turn', async () => {
   let calls = 0;
-  const router = new Router(async () => {
-    calls++;
-    return { text: `${RUN} answer #${calls}`, ok: true };
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => {
+        calls++;
+        return { text: `${RUN} answer #${calls}`, ok: true };
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
   const conversationId = `${RUN}-success-only`;
@@ -249,10 +271,15 @@ test('router (repeat-max-turns shortcut): with REPEAT_MAX_TURNS_SHORTCUT_ENABLED
   (config.behaviour as { repeatMaxTurnsShortcutEnabled: boolean }).repeatMaxTurnsShortcutEnabled = false;
   try {
     let calls = 0;
-    const router = new Router(async () => {
-      calls++;
-      return { text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true };
-    }, 20);
+    const router = new Router(
+      makeRouterDeps({
+        runTurn: async () => {
+          calls++;
+          return { text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true };
+        },
+        typingRefireMs: 20,
+      }),
+    );
     const { adapter, sent, trigger } = makeAdapter();
     router.register(adapter);
     const conversationId = `${RUN}-flag-off`;
@@ -272,10 +299,15 @@ test('router (repeat-max-turns shortcut): with REPEAT_MAX_TURNS_SHORTCUT_ENABLED
 test('router (repeat-max-turns shortcut): a resend after REPEAT_SHORTCUT_WINDOW_MS has elapsed (advanced via an injectable clock, never a real sleep) runs a fresh turn, and the stale entry is pruned by sweep()', async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: 0 });
   let calls = 0;
-  const router = new Router(async () => {
-    calls++;
-    return { text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true };
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => {
+        calls++;
+        return { text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true };
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, trigger } = makeAdapter();
   router.register(adapter);
   const conversationId = `${RUN}-expiry`;
@@ -330,8 +362,10 @@ test(
       const before = await countRepliesToUser('discord', userId);
 
       const router = new Router(
-        async () => ({ text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true }),
-        20,
+        makeRouterDeps({
+          runTurn: async () => ({ text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true }),
+          typingRefireMs: 20,
+        }),
       );
       const { adapter, sent, trigger } = makeAdapter();
       router.register(adapter);
@@ -370,10 +404,15 @@ test(
 
 test("SECURITY: router (repeat-max-turns shortcut): a max-turns failure cached for one caller never short-circuits a different caller's identical-text turn when they differ in platform, conversationId, or userId — isolation is structural (part of the key), never a text-only match", async () => {
   let calls = 0;
-  const router = new Router(async () => {
-    calls++;
-    return { text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true };
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => {
+        calls++;
+        return { text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true };
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const {
     adapter: discordAdapter,
     sent: discordSent,
@@ -434,16 +473,14 @@ test("SECURITY: router (repeat-max-turns shortcut): a max-turns failure cached f
 test("router (repeat-max-turns shortcut): a caller with a standing 'mi' language preference gets REPEAT_MAX_TURNS_SHORTCUT_NOTICE_MI prefixed onto MAX_TURNS_REPLY_MI, not MAX_TURNS_REPLY", async () => {
   let calls = 0;
   const router = new Router(
-    async () => {
-      calls++;
-      return { text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true };
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async () => 'mi',
+    makeRouterDeps({
+      runTurn: async () => {
+        calls++;
+        return { text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true };
+      },
+      typingRefireMs: 20,
+      getLangPref: async () => 'mi',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -463,16 +500,14 @@ test("router (repeat-max-turns shortcut): a caller with a standing 'mi' language
 test("router (repeat-max-turns shortcut): a caller with 'auto' (the default) still gets today's English notice + MAX_TURNS_REPLY, byte-identical", async () => {
   let calls = 0;
   const router = new Router(
-    async () => {
-      calls++;
-      return { text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true };
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async () => 'auto',
+    makeRouterDeps({
+      runTurn: async () => {
+        calls++;
+        return { text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true };
+      },
+      typingRefireMs: 20,
+      getLangPref: async () => 'auto',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -487,15 +522,13 @@ test("router (repeat-max-turns shortcut): a caller with 'auto' (the default) sti
 
 test('SECURITY: a getLanguagePreference failure on the repeat-max-turns shortcut still sends the English default, never throws or drops the reply', async () => {
   const router = new Router(
-    async () => ({ text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true }),
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async () => {
-      throw new Error('language_prefs read boom');
-    },
+    makeRouterDeps({
+      runTurn: async () => ({ text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true }),
+      typingRefireMs: 20,
+      getLangPref: async () => {
+        throw new Error('language_prefs read boom');
+      },
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -510,13 +543,11 @@ test('SECURITY: a getLanguagePreference failure on the repeat-max-turns shortcut
 
 test('SECURITY: REPEAT_MAX_TURNS_SHORTCUT_NOTICE_MI and MAX_TURNS_REPLY_MI are fixed, non-interpolated strings — byte-identical across distinct conversations/callers', async () => {
   const router = new Router(
-    async () => ({ text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true }),
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async () => 'mi',
+    makeRouterDeps({
+      runTurn: async () => ({ text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true }),
+      typingRefireMs: 20,
+      getLangPref: async () => 'mi',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);

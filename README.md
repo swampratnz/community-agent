@@ -11,6 +11,15 @@ authenticated with a **Claude subscription** (no per-token API billing). The rep
 also runs a **self-improving development pipeline** (see below) that proposes,
 reviews, and builds its own features.
 
+> **The framework is a package.** The turn engine, router spine, platform
+> adapters, storage, RBAC and config live in
+> [`@swampratnz/agent-base`](https://github.com/swampratnz/agent-base) and are
+> consumed as a dependency. What is in this repo is `src/module/` — this
+> community's tools, prose, personas, skills, jobs and integrations — plus
+> `src/index.ts`, which hands `src/module/agentModule.ts`'s manifest to the
+> package's `createAgent`. Paths spelled `@swampratnz/agent-base/…` below name
+> a module inside that package, not a file here.
+
 ## What it does
 
 **Answers & knowledge**
@@ -80,25 +89,46 @@ privileged action is RBAC-gated, CONFIRM-guarded where destructive, and audited.
 | Service | systemd on Ubuntu |
 
 ## Repository layout
+
+The framework — agent kernel and prompt spine, router spine, platform
+adapters, storage, RBAC, config, the notice mechanism, jobs, alert/health
+infra — is the **[`@swampratnz/agent-base`](https://github.com/swampratnz/agent-base)**
+package, not a directory here. What this repo holds is the deployment:
+
 ```
 src/
-  config.ts               env loading + validation
-  router.ts               inbound → agent → outbound orchestration
-  agent/                  auth, core turn loop, system prompt, personas, MCP tools, skills
-  context/                offline context builder, docs ingest, export, knowledge refresh
-  moderation/             bad-word/abuse scan, strikes, muted-role enforcement
-  auth/rbac.ts            admin/user roles + per-role tool gating
-  platforms/              PlatformAdapter interface + Discord/WhatsApp adapters
-  storage/                Postgres pool, schema, migrations, embeddings, repo
-  media/                  image generation (Grok Build CLI) + voice-note transcription
-  status/                 Anthropic status-page checker
-  github/                 GitHub issue filing (suggest_issue)
-  devTeam/                remote dev-team build-service client
-scripts/                  CI gate helpers (security-test floor, changelog coverage, labels)
+  index.ts                composition root — the only file that may call createAgent
+  migrate.ts              npm run migrate: base schema fragments, then this module's
+  module/                 the NZ Claude Community module
+    agentModule.ts        THE manifest — every extension point this deployment fills
+    routerWiring.ts       the router's deps, assembled from module + package pieces
+    commands.ts           the community command set
+    agent/                tool registry (tools/), prompt sections, personas, skills bundle
+    platforms/            adapter factories, adapter text packs, Discord slash commands
+    jobs/                 the job registry (pinned start order) + community jobs
+    storage/              this deployment's schema fragments + policy keys
+    strings/              the notice pack (ids, axes, entries)
+    moderation/           the community bad-word list
+    context/              offline context builder, docs ingest, export, knowledge refresh
+    media/                image generation (Grok Build CLI)
+    status/               Anthropic status-page checker
+    github/               GitHub issue filing (suggest_issue)
+    devTeam/              remote dev-team build-service client
+scripts/                  CI gate helpers (security-test floor, context pack, imports, labels)
 tests/                    Node test-runner suites (SECURITY: invariants, knowledge eval, …)
 deploy/                   Ubuntu provisioning script + systemd unit
 docs/                     ARCHITECTURE, SECURITY, DEPLOYMENT, VISION, PIPELINE, PERSONAS, …
 ```
+
+Three composition rules are enforced by `npm run imports:check` (CI's lint job)
+and, for the last two, by an eslint rule scoped to `src/module/**`: `src/base/`
+must not exist — a local copy of the framework forks the package silently;
+`src/module/` may never import the composition root; and only the composition
+root may call `createAgent`, because the registration order is precisely what
+`createAgent` exists to own. A module contributes a manifest and nothing else:
+there are no side-effect imports in `index.ts`. See
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) → "The framework package, this
+module, and the composition root".
 
 ## Quick start (local dev)
 ```bash

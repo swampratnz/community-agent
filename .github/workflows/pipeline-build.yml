@@ -124,6 +124,11 @@ jobs:
       DISCORD_BOT_TOKEN: ci-dummy-token
       DISCORD_GUILD_ID: ci-dummy-guild
       WHATSAPP_PROVIDER: disabled
+      # This deployment renders member-facing times in NZ local time; the
+      # framework package defaults them to UTC/en-GB and the module manifest's
+      # init() refuses to boot on anything else (see .env.example).
+      DISPLAY_TIMEZONE: Pacific/Auckland
+      DISPLAY_LOCALE: en-NZ
       # Pinned explicitly (matches the config.ts default) so the embedding-model
       # cache key below derives from it — see the cache step.
       EMBEDDING_MODEL: Xenova/all-MiniLM-L6-v2
@@ -345,6 +350,7 @@ jobs:
                  - npm run build
                  - npm run test:security
                  - npm run context:check  (docs/agents/ map vs the tree; `npm run context:fix` does the mechanical part)
+                 - npm run imports:check  (composition-direction rules: no src/base/, no module→root import, only the root composes)
                Do not open the PR until all of these pass. CI runs the identical
                checks, so a red PR only creates rework for a human.
             3. FRESHEN before opening: main may have moved while you built

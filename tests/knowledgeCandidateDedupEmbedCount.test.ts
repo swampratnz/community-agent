@@ -33,7 +33,7 @@ test(
   async (t) => {
     let embeddingDim = 384;
     let embedCalls = 0;
-    t.mock.module('../src/storage/embeddings.js', {
+    t.mock.module('@swampratnz/agent-base/storage/embeddings.js', {
       namedExports: {
         // Call-count is this test's only concern; semantic accuracy of the
         // dedup checks themselves is covered with REAL embeddings in
@@ -47,12 +47,12 @@ test(
       },
     });
 
-    const { pool, closeDb } = await import('../src/storage/db.js');
-    const { config } = await import('../src/config.js');
+    const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
+    const { config } = await import('@swampratnz/agent-base/config.js');
     embeddingDim = config.db.embeddingDim;
     const pgvector = (await import('pgvector/pg')).default;
-    const { runContextBuilder } = await import('../src/context/builder.js');
-    const { recentInboundForClustering } = await import('../src/storage/repository.js');
+    const { runContextBuilder } = await import('../src/module/context/builder.js');
+    const { recentInboundForClustering } = await import('@swampratnz/agent-base/storage/repository.js');
 
     // config is `as const` (deep-readonly at the type level only) — same
     // narrow-cast-and-mutate convention as tests/contextBuilder.test.ts,

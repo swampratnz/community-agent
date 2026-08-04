@@ -1,7 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { AgentReply } from '../src/agent/core.js';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import './support/registerNotices.js';
+import type { AgentReply } from '@swampratnz/agent-base/agent/core.js';
+import type {
+  IncomingMessage,
+  OutgoingMessage,
+  PlatformAdapter,
+} from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -16,9 +24,10 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 process.env.ACK_SHORTCUT_ENABLED = 'true';
 
-const { config } = await import('../src/config.js');
-const { Router } = await import('../src/router.js');
-const { embed } = await import('../src/storage/embeddings.js');
+const { config } = await import('@swampratnz/agent-base/config.js');
+const { Router } = await import('@swampratnz/agent-base/router.js');
+const { makeRouterDeps } = await import('../src/module/routerWiring.js');
+const { embed } = await import('@swampratnz/agent-base/storage/embeddings.js');
 
 await embed('warmup').catch(() => {});
 
@@ -87,9 +96,14 @@ test('config: ACK_SHORTCUT_ENABLED=true is reflected in config.behaviour.ackShor
 });
 
 test('router (ack shortcut enabled): an exact ack message skips runTurn and sends the canned reply', async () => {
-  const router = new Router(async () => {
-    throw new Error('runTurn must not be called for a pure acknowledgement');
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a pure acknowledgement');
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -100,9 +114,14 @@ test('router (ack shortcut enabled): an exact ack message skips runTurn and send
 });
 
 test('router (ack shortcut enabled): an emoji-only ack message skips runTurn', async () => {
-  const router = new Router(async () => {
-    throw new Error('runTurn must not be called for a pure acknowledgement');
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a pure acknowledgement');
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -113,7 +132,9 @@ test('router (ack shortcut enabled): an emoji-only ack message skips runTurn', a
 });
 
 test('SECURITY/regression: a message that merely starts with an ack word still reaches runTurn', async () => {
-  const router = new Router(async () => ({ text: 'real answer' }), 20);
+  const router = new Router(
+    makeRouterDeps({ runTurn: async () => ({ text: 'real answer' }), typingRefireMs: 20 }),
+  );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -124,7 +145,9 @@ test('SECURITY/regression: a message that merely starts with an ack word still r
 });
 
 test('SECURITY/regression: a message that merely ends with an ack word still reaches runTurn', async () => {
-  const router = new Router(async () => ({ text: 'real answer' }), 20);
+  const router = new Router(
+    makeRouterDeps({ runTurn: async () => ({ text: 'real answer' }), typingRefireMs: 20 }),
+  );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -139,7 +162,7 @@ test('ordering: an in-flight real turn is still delivered before a subsequent ac
   const turnPromise = new Promise<AgentReply>((resolve) => {
     resolveTurn = resolve;
   });
-  const router = new Router(async () => turnPromise, 20);
+  const router = new Router(makeRouterDeps({ runTurn: async () => turnPromise, typingRefireMs: 20 }));
   const { adapter, sent, typingCalls, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -171,21 +194,15 @@ test('ordering: an in-flight real turn is still delivered before a subsequent ac
 test('router (ack shortcut enabled): a hit records a shortcut_hits row of kind "ack" (issue #440)', async () => {
   const calls: string[] = [];
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a pure acknowledgement');
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async (kind) => {
-      calls.push(kind);
-    },
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a pure acknowledgement');
+      },
+      typingRefireMs: 20,
+      recordShortcutHit: async (kind) => {
+        calls.push(kind);
+      },
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -198,21 +215,15 @@ test('router (ack shortcut enabled): a hit records a shortcut_hits row of kind "
 
 test('SECURITY: router (ack shortcut enabled): a recordShortcutHit rejection never blocks or delays the ack reply (issue #440)', async () => {
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a pure acknowledgement');
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async () => {
-      throw new Error('shortcut_hits insert failed (simulated)');
-    },
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a pure acknowledgement');
+      },
+      typingRefireMs: 20,
+      recordShortcutHit: async () => {
+        throw new Error('shortcut_hits insert failed (simulated)');
+      },
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -227,15 +238,13 @@ test('SECURITY: router (ack shortcut enabled): a recordShortcutHit rejection nev
 
 test("router (ack shortcut enabled): a caller with a standing 'mi' language preference gets ACK_REPLY_TEXT_MI, not the English default", async () => {
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a pure acknowledgement');
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async () => 'mi',
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a pure acknowledgement');
+      },
+      typingRefireMs: 20,
+      getLangPref: async () => 'mi',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -248,15 +257,13 @@ test("router (ack shortcut enabled): a caller with a standing 'mi' language pref
 
 test("router (ack shortcut enabled): a caller with 'auto' (the default) still gets byte-identical 'No worries!'", async () => {
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a pure acknowledgement');
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async () => 'auto',
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a pure acknowledgement');
+      },
+      typingRefireMs: 20,
+      getLangPref: async () => 'auto',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -269,17 +276,15 @@ test("router (ack shortcut enabled): a caller with 'auto' (the default) still ge
 
 test('SECURITY: a getLanguagePreference failure on the ack shortcut still sends the English default, never throws or drops the reply', async () => {
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a pure acknowledgement');
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async () => {
-      throw new Error('language_prefs read boom');
-    },
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a pure acknowledgement');
+      },
+      typingRefireMs: 20,
+      getLangPref: async () => {
+        throw new Error('language_prefs read boom');
+      },
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -292,15 +297,13 @@ test('SECURITY: a getLanguagePreference failure on the ack shortcut still sends 
 
 test('SECURITY: ACK_REPLY_TEXT_MI is a fixed, non-interpolated string — byte-identical regardless of the caller or message content', async () => {
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a pure acknowledgement');
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async () => 'mi',
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a pure acknowledgement');
+      },
+      typingRefireMs: 20,
+      getLangPref: async () => 'mi',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -314,9 +317,14 @@ test('SECURITY: ACK_REPLY_TEXT_MI is a fixed, non-interpolated string — byte-i
 });
 
 test('router (ack shortcut enabled): the ack path still respects the gated-guest gate ahead of it', async () => {
-  const router = new Router(async () => {
-    throw new Error('runTurn must not be called');
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called');
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
 

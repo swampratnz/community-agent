@@ -37,23 +37,161 @@ Claude-powered agent, with a Postgres-backed memory for learning.
                      └──────────────────────────────┘
 ```
 
+## The framework package, this module, and the composition root
+
+`src/` is not the whole program. The framework half was extracted to
+[`@swampratnz/agent-base`](https://github.com/swampratnz/agent-base) and is
+consumed as a dependency (docs/AGENT-BASE-PLAN.md, Phase 3), so this repo is
+this deployment's module plus the two files that bring it up:
+
+| Path | What lives there |
+|---|---|
+| `@swampratnz/agent-base` (the package) | The community-agnostic framework: the agent turn engine and prompt spine, the platform abstraction and the three adapters, Postgres/pgvector storage and the repositories, the router's pre-turn security spine, the job-runner mechanism, RBAC, config, the notice-catalogue mechanism, health/notification/alert infrastructure, and the leaf utilities. Every `@swampratnz/agent-base/…` path in these docs names a module inside it. |
+| `src/module/` | This deployment's NZ Claude Community module: the tool registry and its per-domain `ToolDef` files, the community prose (charter, behaviour guidelines, the Dave persona, the bundled skills), the notice pack with its te reo Māori and plain-language variants, the community jobs and digests, the optional integrations (Grok image gen, dev-team dispatch, GitHub issues, Anthropic status), its schema fragments, and the wiring that names all of it. `src/module/agentModule.ts` is the manifest that declares every extension point it fills. |
+| `src/index.ts` | The composition root: it hands the manifest to `createAgent`, then wires adapters, the router and the job registry, and owns startup/shutdown ordering. |
+| `src/migrate.ts` | `npm run migrate`: base fragments, then this module's, as one atomic query. |
+
+**The line is drawn by dependency, not by feel.** Framework code is mechanism
+with no community content; module code names Claude, Anthropic, this community,
+te reo Māori, or one of this deployment's product decisions. A framework-level
+change is an upstream change plus a version bump — `npm run imports:check`
+fails if `src/base/` is ever re-created here, and if a module file imports
+either the composition root or `createAgent`.
+
+### Composition, in one ordered pass
+
+`createAgent({ modules: [nzCommunityModule] })` replaces the side-effect import
+list `src/index.ts` used to carry. It runs a fixed sequence: a **pure plan
+pass** (unique module names, exactly one claimant per once-per-process
+registry, every required registry claimed) before a single side effect, so a
+composition that cannot serve a turn is rejected with the process untouched;
+then each module's `init()`; then the singleton registrations (notice pack,
+tool tiers, tool-server parts, flagged-tool predicates, skills manifest, prompt
+sections, commands, default bad words); then the additive ones (personas,
+turn-state finalizers, policy keys, provenance, purge contributors, pre-turn
+intercepts, post-turn handlers); then a **readiness probe** of the real
+accessors; then migrations; then start.
+
+The practical consequence for module code: nothing may READ a registry at its
+own module scope, because registration happens after every module has been
+imported. In particular `notice()` must be called at the call site — a
+module-scope `export const X = notice('id')` throws at import.
+
+### What the module registers
+
+Anything the framework needs FROM this deployment arrives by registration. The
+values are declared in the files that own the content and named ONCE, as data,
+in `src/module/agentModule.ts`; `createAgent` performs every registration in
+the order above. (Before the package flip each file called `register*()` at its
+own module scope and `src/index.ts` carried a load-bearing import list.)
+
+| Manifest field → framework slot | Value declared in |
+|---|---|
+| `toolTiers` → `auth/rbac.ts` | `module/agent/tools/index.ts`, derived from each `ToolDef.minTier`/`platforms` |
+| `toolServerParts` → `agent/toolServer.ts` | the same file: the MCP server name, the tool inventory, and the per-turn context factory |
+| `flaggedToolPredicates` → `agent/featureFlags.ts` | the same file, derived from each `ToolDef.featureFlag` |
+| `promptSections` → `agent/promptSpine.ts` | `module/agent/communityPromptSections.ts` |
+| `personas` → `agent/personaRegistry.ts` | `module/agent/personas.ts` |
+| `skills` → `agent/skillsManifest.ts` | `module/agent/enabledSkills.ts` |
+| `turnStateFinalizers` → `agent/turnState.ts` | `module/agent/communityTurnState.ts` |
+| `notices` → `strings/catalogue.ts` | `module/strings/notices.ts` |
+| `policyKeys` → `storage/policyStore.ts` | `module/storage/policies.ts` |
+| `defaultBadWords` → `moderation/wordlist.ts` | `module/moderation/badWords.ts` |
+| `commands` → `commands/registry.ts` | `module/commands.ts` |
+| `migrations` → `storage/migrate.ts` | `module/storage/schema/manifest.ts` |
+
+Alongside those, base owns additive extension registries for its own
+sequences: `routerIntercepts.ts`'s post-spine intercepts and post-turn
+handlers, `storage/lifecycle.ts`'s purge contributors and
+interaction/member/roster hooks, and `storage/provenance.ts`'s trust
+registrations.
+
+**Every registry fails closed**, in one of two shapes depending on what it
+holds:
+
+- **Content slots throw when read before registration.** Tool tiers,
+  tool-server parts, flagged predicates, prompt sections, the skills manifest,
+  the notice pack, the command list and the bad-word defaults all raise rather
+  than returning an empty value. That is a correctness property, not tidiness:
+  an unregistered tier read returning `[]` would look like a healthy
+  deployment with no tools; an unregistered bad-word list returning `[]` is a
+  silent moderation downgrade; an unregistered notice pack returning `''`
+  sends members blank text. The throw is what makes a missed registration a
+  startup failure rather than blank text in front of a member hours later —
+  which is also why no module-scope `export const X = notice('id')` may exist
+  (see above): the pack is registered *after* every module is imported, so
+  that read would throw at import, before the process can say why.
+- **Additive slots start empty legitimately and fail closed on collision.**
+  Intercepts, lifecycle hooks, personas and provenance ids reject a duplicate
+  name, a second registration, or an unknown slot key rather than shadowing or
+  swapping what is already there — and the security-relevant ones refuse
+  outright to name a spine step: `registerPreTurnIntercept` appends to a
+  region that starts *after* the frozen `PRE_TURN_SPINE`, and rejects any name
+  that collides with one of its steps (docs/SECURITY.md §1).
+
+### The composition-direction rules
+
+Three rules, all enforced by `npm run imports:check` (CI's lint job):
+
+1. **`src/base/` must not exist.** The framework is the published package. A
+   local copy forks it silently — the same file compiling in two places, one
+   of them not getting upstream fixes. This is what the old "base may never
+   import module" rule became: that rule is what made the lift possible, and
+   with the lift done the way to keep it is to keep the framework out of the
+   tree entirely.
+2. **`src/module/` may never import the composition root** — not even a type.
+   `index.ts` sits at the top of the graph and nothing it wires may reach back
+   up to it.
+3. **Only the composition root may compose** — no module may import
+   `createAgent`, `planComposition` or `assertRegistrationsComplete`. A module
+   contributes a manifest; the registration ORDER is exactly what `createAgent`
+   exists to own, and composing from inside a module would put it back in an
+   import list where nothing enforces it.
+
+Enforced twice, on purpose:
+
+- **eslint** — a `no-restricted-imports` block scoped to `src/module/**`,
+  covering rules 2 and 3. Fast, in-editor, matched against the specifier text;
+  `allowTypeImports` is deliberately not set for the composition root, since a
+  type-level dependency is still a design dependency. (The manifest *type*,
+  `AgentModuleManifest`, is a different import and stays allowed.)
+- **`scripts/check-import-direction.mjs`** (`npm run imports:check`) — resolves
+  every relative specifier against the file system, so it sees through any
+  depth of `../`, and it is a plain node script with no config of its own to
+  weaken. It also owns rule 1, which eslint cannot express. Pinned by
+  `tests/importDirection.test.ts`, which drives it against fixture trees —
+  including a two-halves tree, so the retired base↛module scan still has
+  something to bite on — rather than only against this repo's passing state.
+
+The framework's own internal discipline — no framework file carrying community
+content, no `typeof <community export>` in a framework deps interface, types
+stated structurally instead (`agent/toolServer.ts`'s `ToolServerToolDef`
+declares only the slice of a tool definition the kernel touches, and this
+module's much richer `ToolDef` satisfies it) — is now enforced upstream in
+`swampratnz/agent-base`. Nothing in this repo can check it.
+
 ## Components
+
+Paths below say which half each component is on; `docs/agents/module-map.md`
+has the per-module one-liners.
 
 | Module | Responsibility |
 |---|---|
-| `src/config.ts` | Loads + validates all env (zod). Fails fast on misconfig. |
-| `src/platforms/types.ts` | `PlatformAdapter` interface + normalised `IncomingMessage`. The seam that decouples the agent from any specific chat platform. |
-| `src/platforms/discord/adapter.ts` | discord.js client; normalises messages, resolves roles, performs moderation actions. |
-| `src/platforms/whatsapp/baileysAdapter.ts` | WhatsApp via Baileys (linked-device protocol, dedicated number). |
-| `src/platforms/whatsapp/cloudAdapter.ts` | The official Meta Cloud API adapter — webhook intake + Graph API send, the documented upgrade path from Baileys. |
-| `src/auth/rbac.ts` | Role resolution (`admin`/`user`) + the per-role allowed-tool lists. |
-| `src/agent/core.ts` | Runs one agent turn: memory recall → prompt → `query()` → reply. |
-| `src/agent/tools.ts` | In-process MCP tools (search memory/knowledge, moderate, announce, …). |
-| `src/agent/auth.ts` | Forces Claude **subscription** auth via `CLAUDE_CODE_OAUTH_TOKEN`. |
-| `src/agent/upstreamFailure.ts` | Classifies a usage-limit/overload `query()` failure vs. a generic internal error, + the debounce latch for the optional super-admin DM. |
-| `src/storage/*` | Postgres pool, schema, migrations, embeddings, repository. |
-| `src/router.ts` | Orchestrates inbound → agent → outbound and persistence. |
-| `src/health.ts` / `src/healthState.ts` | `/healthz` endpoint + sustained-disconnect super-admin alerting; `healthState.ts` holds the pure, tested debounce/payload logic. |
+| `@swampratnz/agent-base/config.ts` | Loads + validates all env (zod). Fails fast on misconfig. |
+| `@swampratnz/agent-base/platforms/types.ts` | `PlatformAdapter` interface + normalised `IncomingMessage`. The seam that decouples the agent from any specific chat platform. |
+| `@swampratnz/agent-base/platforms/discord/adapter.ts` | discord.js client; normalises messages, resolves roles, performs moderation actions. |
+| `@swampratnz/agent-base/platforms/whatsapp/baileysAdapter.ts` | WhatsApp via Baileys (linked-device protocol, dedicated number). |
+| `@swampratnz/agent-base/platforms/whatsapp/cloudAdapter.ts` | The official Meta Cloud API adapter — webhook intake + Graph API send, the documented upgrade path from Baileys. |
+| `@swampratnz/agent-base/auth/rbac.ts` | Role resolution (`admin`/`user`) + the per-role allowed-tool lists. |
+| `@swampratnz/agent-base/agent/core.ts` | Runs one agent turn: memory recall → prompt → `query()` → reply. |
+| `src/module/agent/tools.ts` | In-process MCP tools (search memory/knowledge, moderate, announce, …). |
+| `@swampratnz/agent-base/agent/auth.ts` | Forces Claude **subscription** auth via `CLAUDE_CODE_OAUTH_TOKEN`. |
+| `@swampratnz/agent-base/agent/upstreamFailure.ts` | Classifies a usage-limit/overload `query()` failure vs. a generic internal error, + the debounce latch for the optional super-admin DM. |
+| `@swampratnz/agent-base/storage/*` | Postgres pool, schema, migrations, embeddings, repository. |
+| `@swampratnz/agent-base/router.ts` | Orchestrates inbound → agent → outbound and persistence. |
+| `@swampratnz/agent-base/health.ts` / `@swampratnz/agent-base/healthState.ts` | `/healthz` endpoint + sustained-disconnect super-admin alerting; `healthState.ts` holds the pure, tested debounce/payload logic. |
+| `src/module/routerWiring.ts` | `makeRouterDeps()` — the one place the real implementation behind every `RouterDeps` field is named, so the router mechanism itself never imports the community content its wiring points at. |
+| `src/index.ts` | The composition root (above): config, adapters, router, job registry, shutdown ordering, and the community side-effect imports. |
 
 ## Ambient archiving
 
@@ -115,7 +253,7 @@ reply for an addressed message that carried an inbound `messageId`, it
 records an in-memory, TTL'd (30 min), size-capped (1000 entries, oldest-first
 eviction) mapping — `(platform, conversationId, inboundMessageId) →
 { botReplyMessageIds, replyConversationId, senderId }` — in
-`src/replyRetraction.ts`. That module is a directly-imported shared singleton
+`@swampratnz/agent-base/replyRetraction.ts`. That module is a directly-imported shared singleton
 (not Router instance state, despite mirroring the shape of `Router`'s own
 `lastReply`/`pendingEscalations` maps): both the write side (the router,
 right after a send) and the read side (an adapter's own native delete/revoke
@@ -187,7 +325,7 @@ Because the model is English-only, a sender with a stored `'mi'` language
 preference (`getLanguagePreference`) gets a separate, fixed, debounced
 caveat DM after a successful transcription — a signal that the acted-on
 transcript may not match what they actually said (issue #655). It never
-gates or alters the transcript itself; see `src/voiceLanguageCaveatNotice.ts`
+gates or alters the transcript itself; see `@swampratnz/agent-base/voiceLanguageCaveatNotice.ts`
 and SECURITY.md §13 for the full behaviour.
 
 ## Discord voice-message transcription
@@ -203,7 +341,7 @@ message would. Configured independently via `DISCORD_VOICE_MODEL`/
 knobs — since a guild's risk profile (public-ish, larger membership) differs
 from a single WhatsApp number; `DISCORD_VOICE_MIN_ROLE` also defaults to
 `'super_admin'`. The gate (`maybeTranscribeVoiceMessage` in
-`src/platforms/discord/adapter.ts`) mirrors `maybeTranscribeVoiceNote`'s
+`@swampratnz/agent-base/platforms/discord/adapter.ts`) mirrors `maybeTranscribeVoiceNote`'s
 order exactly, and the same `'mi'`-preference caveat DM (verbatim, reused
 from `voiceLanguageCaveatNotice.ts`) is sent after a successful
 transcription. The hourly rate-limit key is now platform-qualified
@@ -230,16 +368,16 @@ deliberately deferred. `WhatsAppCloudAdapter` was out of scope for #879
 (matching the `WHATSAPP_VOICE_*`/Baileys-only precedent); #891 closes that
 named gap.
 
-The gate — `maybeFetchImageAttachment` in `src/platforms/discord/adapter.ts`
-for Discord, the same-named method in `src/platforms/whatsapp/baileysAdapter.ts`
-for WhatsApp/Baileys, and again in `src/platforms/whatsapp/cloudAdapter.ts`
+The gate — `maybeFetchImageAttachment` in `@swampratnz/agent-base/platforms/discord/adapter.ts`
+for Discord, the same-named method in `@swampratnz/agent-base/platforms/whatsapp/baileysAdapter.ts`
+for WhatsApp/Baileys, and again in `@swampratnz/agent-base/platforms/whatsapp/cloudAdapter.ts`
 for WhatsApp Cloud API — mirrors the voice gate's shape above on all three
 adapters: flag → `IMAGE_INPUT_MIN_ROLE` / `WHATSAPP_IMAGE_INPUT_MIN_ROLE` /
 `WHATSAPP_CLOUD_IMAGE_INPUT_MIN_ROLE` (default `'super_admin'` on all three)
 → `IMAGE_INPUT_DAILY_LIMIT_PER_USER` / `WHATSAPP_IMAGE_INPUT_DAILY_LIMIT_PER_USER`
 / `WHATSAPP_CLOUD_IMAGE_INPUT_DAILY_LIMIT_PER_USER` (a rolling calendar-day
 cap per platform-qualified sender, shared `reserveImageInputDaily` in
-`src/agent/tools.ts`) → MIME allowlist (`image/png`, `image/jpeg`,
+`src/module/agent/tools.ts`) → MIME allowlist (`image/png`, `image/jpeg`,
 `image/webp`) + `IMAGE_INPUT_MAX_BYTES` / `WHATSAPP_IMAGE_INPUT_MAX_BYTES` /
 `WHATSAPP_CLOUD_IMAGE_INPUT_MAX_BYTES` → fetch. Discord and Baileys read MIME
 and byte size from the attachment's own pre-fetch metadata (Discord's
@@ -256,7 +394,7 @@ independent — `WHATSAPP_`/`WHATSAPP_CLOUD_`-prefixed and separate from the
 unprefixed Discord flags and from each other, mirroring the existing
 `DISCORD_VOICE_*`/`WHATSAPP_VOICE_*` split rather than sharing one flag pair.
 
-`runAgentTurn`/`execTurn` (`src/agent/core.ts`) thread that optional image
+`runAgentTurn`/`execTurn` (`@swampratnz/agent-base/agent/core.ts`) thread that optional image
 through to the SDK: absent an image, `query()`'s `prompt` stays the plain
 string it always has been; with one, `execTurn` instead passes a
 single-message `AsyncIterable<SDKUserMessage>` whose `content` is
@@ -353,7 +491,7 @@ memory**:
    discovery gap: it greedily
    clusters recent addressed-to-bot messages by embedding similarity (reusing
    the same vectors, no new embedding calls) to surface "N people asked this"
-   patterns worth turning into a knowledge entry. `src/adminDigest.ts` (issue
+   patterns worth turning into a knowledge entry. `src/module/adminDigest.ts` (issue
    #97) pushes this same signal proactively instead of relying on an admin to
    call the tool: a daily timer (off unless `ADMIN_DIGEST_ENABLED`) DMs each
    `community_users` admin at most once a week — restart-safe via the
@@ -385,7 +523,7 @@ memory**:
    config.moderation.strikeLimit, config.moderation.strikeWindowDays)`, which
    reuses `countActiveWarnings`'s exact `platform`/`user_id`/`cleared_at IS
    NULL`/optional-rolling-window shape so the digest's "muted" definition can
-   never drift from the actual mute trigger in `src/moderation/moderator.ts`
+   never drift from the actual mute trigger in `@swampratnz/agent-base/moderation/moderator.ts`
    — the pull-only complement to `moderation_history`/`clear_warnings`.
    As bare integers with no member name/id, it's guild-wide like the
    access-request/suggestion/candidate counts, not conversation-scoped;
@@ -405,7 +543,7 @@ memory**:
    `countMaxTurnsFailures(scope, ...)` — conversation-scoped like the
    knowledge-gaps count because `interactions` also has a `conversation_id`.
    It counts both the primary `reply.maxTurnsExceeded === true` stamp (the
-   first, non-repeated time a turn hits `error_max_turns`, `src/agent/core.ts`)
+   first, non-repeated time a turn hits `error_max_turns`, `@swampratnz/agent-base/agent/core.ts`)
    and the `repeatMaxTurnsShortcut: true` stamp issue #306's shortcut already
    writes for a replayed wall-hit, since each is a distinct member-facing
    failure — a bare integer only, no message content, question text, user id,
@@ -461,7 +599,7 @@ memory**:
    `countAcceptedKnowledgeCandidatesSince(since)` (the throughput complement to
    the pending-candidates backlog count above: candidates actually cleared
    into `knowledge`, windowed by `reviewed_at`) and `countProjectsSharedSince(since)`
-   (the same guild-wide aggregate `src/memberDigest.ts` already runs weekly for
+   (the same guild-wide aggregate `src/module/memberDigest.ts` already runs weekly for
    its own "come browse the showcase" nudge, wired here for the first time as
    an admin-facing trend), both over the identical `FRESHNESS_DAYS`-derived
    `since` window `memberDigest.ts` uses. Rendered only when at least one is
@@ -570,7 +708,7 @@ no CONFIRM; issue #877, pairing/scope fix issue #911) answers the one
 north-star metric `docs/VISION.md` names — "time-to-first-answer in
 auto-answer channels down" — derived entirely from `interactions` timestamps
 and `meta` already written on every turn, no new column or tracking.
-`responseLatencyStats` (`src/storage/repository/responseLatency.ts`) pairs
+`responseLatencyStats` (`@swampratnz/agent-base/storage/repository/responseLatency.ts`) pairs
 each qualifying OUTBOUND row — `direction = 'outbound'` with
 `meta.replyToUserId` set, i.e. a real reply to a member, never a proactive
 digest/alert push (those never set that key) — with the most recent prior
@@ -605,7 +743,7 @@ envelope.
 don't: "which of this deployment's ~28 opt-in `*_ENABLED` config flags are
 actually on right now?" — previously only answerable by reading env vars on
 the deploy host directly. It is deliberately **not** a generic config dump: a
-fixed, hand-maintained `FEATURE_FLAG_MAP` (`src/agent/tools.ts`) allowlists
+fixed, hand-maintained `FEATURE_FLAG_MAP` (`src/module/agent/tools.ts`) allowlists
 exactly the boolean `*_ENABLED` flags, each mapped to a dotted `configPath`
 into the already-loaded `config` singleton, a human label, and a category
 (Moderation, Knowledge & Learning, Admin Alerts & Digest, Onboarding,
@@ -668,20 +806,27 @@ Where that checklist text *lives* depends on `AGENT_SKILLS_ENABLED` (off by
 default):
 
 - **Off (default):** the checklist stays inline in `GUIDELINES`
-  (`src/agent/systemPrompt.ts`), exactly as #635 shipped it — paid for on
+  (`@swampratnz/agent-base/agent/systemPrompt.ts`), exactly as #635 shipped it — paid for on
   every turn, whether or not that turn is a prompt review. No new tool, tier,
   table, or data flow; the tool surface (`toolsForRole`/`buildQueryOptions`)
   is byte-identical to pre-#741.
 - **On:** the same checklist text moves, byte-for-byte, into
-  `src/agent/skills/prompt-review/SKILL.md` and is dropped from `GUIDELINES`
+  `src/module/agent/skills/prompt-review/SKILL.md` and is dropped from `GUIDELINES`
   — the skill replaces the bullet, never duplicates it. `buildQueryOptions`
-  (`src/agent/core.ts`) adds `'Skill'` to the base `tools` array (uniformly
+  (`@swampratnz/agent-base/agent/core.ts`) adds `'Skill'` to the base `tools` array (uniformly
   for every role, matching the checklist's pre-#741 ungated behaviour) and
-  loads `plugins: [{ type: 'local', path: <bundled skills dir> }]` with
-  `skills: ['prompt-review', 'agent-architecture-review', 'project-showcase',
-  'claude-code-setup']` — an explicit, hand-written literal array, never
-  `'all'`, so a future skill added to the directory needs a deliberate second
-  edit to activate. The bundled plugin directory (`src/agent/skills/`)
+  loads `plugins: [{ type: 'local', path: skillsManifest().skillsDir }]` with
+  `skills: [...skillsManifest().enabledSkills]`. Both come from the manifest
+  the module registers at import time (`ENABLED_SKILLS` in
+  `src/module/agent/enabledSkills.ts` → `registerSkillsManifest` in
+  `@swampratnz/agent-base/agent/skillsManifest.ts`): an explicit, hand-written literal
+  array, never `'all'`, so a future skill added to the directory needs a
+  deliberate second edit to activate. Registration enforces that — a
+  non-array, an empty name, or the literal `'all'` is rejected, the list is
+  copied and frozen, and a second registration throws — and `feature_flags`
+  reports the same array rather than a hand-written sentence about it, which
+  is how the label used to fall behind the real set.
+  The bundled plugin directory (`src/module/agent/skills/`)
   contains only a `.claude-plugin/plugin.json` manifest and one `SKILL.md`
   per bundled skill — no `hooks/`, `agents/`, `commands/`, or `.mcp.json` —
   so nothing beyond those static, code-reviewed markdown bodies is ever
@@ -704,7 +849,7 @@ specifics drift, and it defers to the same `code_answers` policy as
 `prompt-review`.
 
 A second skill, `agent-architecture-review` (issue #755), lives at
-`src/agent/skills/agent-architecture-review/SKILL.md` and shares this exact
+`src/module/agent/skills/agent-architecture-review/SKILL.md` and shares this exact
 mechanism — same flag, same allowlist, same bundled/plugin directory. It has
 no `GUIDELINES`-inline fallback: it is purely on-demand, covering a member
 asking for a critique of a multi-step agent/pipeline design (stage/model
@@ -730,7 +875,7 @@ Tiers: **super_admin > admin > member > guest**.
   with admin-tier tools; `list_admins` (super-admin, read-only, issue #428) is
   the visibility tool that surfaces this state (flags a `community_users`
   admin whose `server_roster` row shows `left_at` set) so a super admin can
-  notice and decide whether to revoke. `src/departedAdminAlert.ts` (off
+  notice and decide whether to revoke. `src/module/departedAdminAlert.ts` (off
   unless `DEPARTED_ADMIN_ALERT_ENABLED`, issue #472) turns that same signal
   proactive — see "Departed-admin alert" below.
 - **member** — granted by an admin (`add_member`); stored in `community_users`.
@@ -754,8 +899,8 @@ flags (issue #535): `toolsForRole` itself drops Discord-only tools
 `create_thread`/`archive_thread`/`assign_community_role`/
 `remove_community_role`/`list_assignable_roles` — every tool structurally
 gated on a Discord-only `PlatformAdapter` capability, per
-`DISCORD_ONLY_TOOLS` in `src/auth/rbac.ts`) on WhatsApp, and
-`buildQueryOptions` (`src/agent/core.ts`) further drops `generate_image`/
+`DISCORD_ONLY_TOOLS` in `@swampratnz/agent-base/auth/rbac.ts`) on WhatsApp, and
+`buildQueryOptions` (`@swampratnz/agent-base/agent/core.ts`) further drops `generate_image`/
 `suggest_issue`/the 6 `dev_team_*` tools/`set_helper_availability`+`find_helper`
 when their respective
 `IMAGE_GEN_ENABLED`/`GITHUB_ISSUE_ENABLED`/`DEV_TEAM_ENABLED`/`FIND_HELPER_ENABLED`
@@ -929,8 +1074,8 @@ allows falling back to English for content it can't render accurately.
 #68) completely unchanged. None of the router's silent-drop
 conditions stay silent: hitting the rate limit, the daily budget, or (issue
 #128) a super-admin `pause_bot` all send the member a static, debounced notice
-instead of nothing — once per window per user (`src/rateLimitNotice.ts`, the
-inline `budgetNotified` check, and `src/pauseNotice.ts` respectively), so none
+instead of nothing — once per window per user (`@swampratnz/agent-base/rateLimitNotice.ts`, the
+inline `budgetNotified` check, and `@swampratnz/agent-base/pauseNotice.ts` respectively), so none
 of them read as the bot being broken. A push-side complement to the hard
 cutoff above (issue #511, opt-in via `DAILY_REPLY_BUDGET_WARN_ENABLED`,
 default off): once a non-super-admin caller's remaining daily replies fall to
@@ -941,7 +1086,22 @@ separate send, never replacing the model's answer, mirroring `offerEscalation`
 check above already reads (no new query), is debounced to once per rolling
 24h per caller (`budgetWarned`, same window and sweep cadence as
 `budgetNotified`), and honours the caller's standing `'mi'`/`'plain'`
-preference the same way the other fixed notices do. These three deterministic, non-agent
+preference the same way the other fixed notices do.
+
+> **Vocabulary note.** The `*_MI`/`*_PLAIN` constant names used throughout the
+> rest of this section are the *historical* shape and no longer exist to grep
+> for. Every one of those values moved VERBATIM into this deployment's notice
+> pack (`src/module/strings/notices.ts`, registered through
+> `agentModule.ts`'s `notices` field), and the selection is now a single call:
+> `notice(id, { language, style })`, resolved against the axes the pack
+> declares (`languages: ['mi']`, `styles: ['plain']`). The behaviour below —
+> which surface honours which preference, the precedence, the fail-safe reads,
+> the untranslated `CONFIRM`/`CANCEL` tokens — is unchanged and still accurate;
+> only the lookup changed from "import the right constant" to "ask for the
+> right variant". Read a name like `GATED_NOTICE_MI` below as "the `mi`
+> variant of the gated-notice entry".
+
+These three deterministic, non-agent
 notices (issue #300) also honour a standing `'mi'` `language_preference`,
 same as `community_guidelines` (#266): the debounced send reads
 `getLanguagePreference` once per notified window and picks each notice's
@@ -954,13 +1114,13 @@ translation, not the English notice — the mi branch is checked first and, if
 hit, is served instead of the dynamic, admin-naming English builder
 (`buildGatedNotice`/`GATED_NOTICE`, issue #360) below (plus the te reo
 returning-guest wait clause described above, issue #716). The auto-moderation
-warn/block DMs (`Moderator.scan()`, `src/moderation/moderator.ts`) also honour
+warn/block DMs (`Moderator.scan()`, `@swampratnz/agent-base/moderation/moderator.ts`) also honour
 a standing `'mi'` preference (issue #333), same pattern: `getLanguagePreference`
 is read once per flagged message (defensively, degrading to `'auto'` on
 failure so a lookup error can never skip or delay warning/mute enforcement)
 and picks `warnDmTextMi`/`blockedDmTextMi` instead of the English default. The
 manually-triggered counterpart — an admin invoking the `moderate` tool's
-`warn_user` action (`src/agent/tools.ts`) — gets the same treatment (issue
+`warn_user` action (`src/module/agent/tools.ts`) — gets the same treatment (issue
 #618), closing the gap #333 left open for this path: the tool resolves the
 target's (not the issuing admin's) standing preference via the same
 injectable `getLangPref`/degrade-to-`'auto'`-on-failure shape and threads it
@@ -969,7 +1129,7 @@ to pick a fixed `_MI` wrapper constant instead of the English one — the
 admin's own `reason` text is never translated either way. The
 same treatment extends to the four membership/admin-grant and
 suggestion/report-resolution DMs (`notifyMemberApproved`/`notifyAdminApproved`/
-`notifySuggestionResolved`/`notifyReportResolved` in `src/agent/tools.ts`,
+`notifySuggestionResolved`/`notifyReportResolved` in `src/module/agent/tools.ts`,
 issue #331): each now takes the target's `platform`, reads their standing
 preference, and picks the matching `_MI` variant (every status branch, for the
 two resolution DMs), while the member's own echoed suggestion/report text stays
@@ -1098,7 +1258,7 @@ weakening it:
      off unless `WHATSAPP_CLOUD_WELCOME_ENABLED=true`, `WhatsAppCloudAdapter`
      treats a sender's own first-ever inbound message as the "join" moment.
      `onCloudMessage` checks `isKnownConversation('whatsapp', from)`
-     (`src/storage/repository.ts`) after the sender-allowlist gate and before
+     (`@swampratnz/agent-base/storage/repository.ts`) after the sender-allowlist gate and before
      the message reaches the agent handler; if the sender has never been seen
      before, it sends ONE static, non-agent welcome (with guidelines appended
      if set) through the same filtered `sendText` path as every other reply,
@@ -1129,7 +1289,7 @@ weakening it:
    their fiftieth. `recordAccessRequest`'s upsert now also returns
    `firstRequestedAt` off the same `RETURNING` clause (zero new queries), and
    `router.ts` appends a fixed, deterministic wait clause (`appendWaitClause`,
-   `waitDaysSince`, `src/gatedNotice.ts`) to the gated notice — dynamic
+   `waitDaysSince`, `@swampratnz/agent-base/gatedNotice.ts`) to the gated notice — dynamic
    admin-naming notice, `GATED_NOTICE`, and `GATED_NOTICE_PLAIN` alike —
    whenever the guest's `first_requested_at` is at least one whole day in the
    past: *"(You first asked N days ago — your request is on record.)"*.
@@ -1199,10 +1359,10 @@ weakening it:
    elsewhere only under a phone-address form Baileys doesn't reciprocally
    link back to that LID, still can't be matched — the same identity-linking
    limit already documented above for `lidToPhone`.
-4. **Gated notice names an admin** (`src/gatedNotice.ts`, issue #360). The
+4. **Gated notice names an admin** (`@swampratnz/agent-base/gatedNotice.ts`, issue #360). The
    static "ask a community admin" pointer a gated guest gets on every
    addressed message named no one to ask. `listAdminDisplayNames(platform)`
-   (`src/storage/repository.ts`) resolves display names for every
+   (`@swampratnz/agent-base/storage/repository.ts`) resolves display names for every
    `community_users` `role = 'admin'` row on that platform — same
    community_users→server_roster precedence as `resolveDisplayName` — and
    `buildGatedNotice` renders up to `GATED_NOTICE_MAX_ADMIN_NAMES` (3) of
@@ -1214,7 +1374,7 @@ weakening it:
    sentence. Env-sourced super admins are excluded, same rationale as
    `listAdmins()`'s digest recipients: operator-level, not a member's first
    point of contact. Every name is run through `sanitizeName`
-   (`src/agent/systemPrompt.ts`) inside `renderGatedNotice` before
+   (`@swampratnz/agent-base/agent/systemPrompt.ts`) inside `renderGatedNotice` before
    interpolation — same treatment `resolveSanitizedLabel` gives any other
    platform-supplied display name (issue #227) — because this notice is
    auto-sent, unsolicited, to every gated guest, and a `display_name` sourced
@@ -1309,7 +1469,7 @@ weakening it:
 
 ## Offline context builder
 
-`src/context/builder.ts` (issue #51) is the learning step on top of storage:
+`src/module/context/builder.ts` (issue #51) is the learning step on top of storage:
 a ~daily in-process job (timer in `src/index.ts`, mirroring the retention
 purge; off unless `CONTEXT_BUILDER_ENABLED`) that reads across the window's
 inbound interactions, greedily clusters them by embedding similarity (same
@@ -1742,7 +1902,7 @@ serve. That decision used to be made and thrown away in the same request;
 
 On top of the digests sits the **anonymised community-context export**
 (issue #53, `CONTEXT_EXPORT_ENABLED`): after a producing builder run,
-`src/context/export.ts` regenerates its copy at `CONTEXT_EXPORT_PATH` —
+`src/module/context/export.ts` regenerates its copy at `CONTEXT_EXPORT_PATH` —
 aggregate-only (its own k-floor + PII scrub; the egress boundary lives in
 SECURITY.md). That default path is an **untracked** `var/` file (issue
 #108), not the committed `docs/COMMUNITY-CONTEXT.md` — the exporter running
@@ -1757,7 +1917,7 @@ which the research loop then reads (file-only, no DB access).
 Every push summary above (`admin_digest`, `list_context_digests`) is
 admin-only — a member who missed a week's discussion has no way to learn
 what came up without scrolling history or knowing to ask
-`knowledge_search`/`catch_up`. `src/memberDigest.ts` (issue #645) widens the
+`knowledge_search`/`catch_up`. `src/module/memberDigest.ts` (issue #645) widens the
 *audience* of the already admin-visible, aggregate-by-construction data
 above — never the underlying data itself — to a single Discord channel, off
 unless `MEMBER_DIGEST_ENABLED` (default off, zero behaviour change on
@@ -1894,7 +2054,7 @@ Two on-demand surfaces call it directly, mirroring `admin_digest`'s
 (tool, no arguments, no CONFIRM, read-only) shape and the `/kb`/`/projects`/
 `/whois`/`/guidelines` (tool, slash-command) pairing convention (issue #744):
 
-- **`community_digest`** (member-tier chat tool, `src/agent/tools.ts`):
+- **`community_digest`** (member-tier chat tool, `src/module/agent/tools.ts`):
   returns `text(untrusted('Community digest', message))` on the non-null
   case — quarantined because, unlike the weekly channel post, this result
   re-enters the model's context and carries the same model-cluster-
@@ -1904,7 +2064,7 @@ Two on-demand surfaces call it directly, mirroring `admin_digest`'s
   `atLeast(caller.role, 'member')` explicitly in the handler (excluding
   open-mode guests), the same discipline `who_is_into`/`share_project` use,
   since the content includes the same project/topic counts those tools gate.
-- **`/digest`** (Discord slash command, `src/platforms/discord/
+- **`/digest`** (Discord slash command, `src/module/platforms/discord/
   slashCommands.ts`): defers ephemerally first, re-checks the same
   `atLeast(role, 'member')` floor, then calls `buildMemberDigestContent()`
   directly (never through the tool/model) and replies ephemeral with the
@@ -1923,14 +2083,14 @@ read data they can already see individually via `/kb`/`/projects`/`/whois`
 
 ## Anthropic status check
 
-`src/status/anthropicStatus.ts` (issue #206, off unless
+`src/module/status/anthropicStatus.ts` (issue #206, off unless
 `STATUS_CHECK_ENABLED`) answers the most common support question in any
 Claude/API community — "is this me, or is Anthropic having an incident?" —
 with an authoritative source instead of general knowledge. A background
 timer (`startStatusCheck` in `src/index.ts`, same shape as `startDocsIngest`)
 polls Anthropic's official public Statuspage summary endpoint
-(`STATUS_CHECK_API_URL`, defaulting to the real endpoint, override-only,
-`https://`-enforced) every `STATUS_CHECK_POLL_MINUTES` and parses it into a
+(`STATUS_CHECK_API_URL` — deployment config with no framework default,
+required whenever the check is enabled, `https://`-enforced) every `STATUS_CHECK_POLL_MINUTES` and parses it into a
 small in-memory cache — no new DB table, no migration, since the data is
 already public, ephemeral, and re-fetchable.
 
@@ -1947,7 +2107,7 @@ No model is in the fetch/parse loop — deterministic JSON parsing of one
 fixed, official, first-party HTTPS source, the same trust framing docs
 ingest already establishes (see SECURITY.md).
 
-`startStatusCheck` (`src/backgroundJobs.ts`) already DMs super admins when
+`startStatusCheck` (`src/module/backgroundJobs.ts`) already DMs super admins when
 the poll job itself fails repeatedly (the same consecutive-failure alerting
 every background job gets, issue #263/#321). Issue #601 adds a second,
 distinct branch on top of that: after a **successful** poll, it reads the
@@ -2181,7 +2341,7 @@ from a hit's content body rather than the tool-computed citation clause.
 Where `report_content` is a member-initiated pull, auto-moderation is a
 proactive push: when `DISCORD_MODERATION_ENABLED` is on, the Discord adapter
 scans **every** in-scope guild message (not just ones addressing the bot) via
-`src/moderation/`. It is off by default and a privacy-posture change when
+`@swampratnz/agent-base/moderation/`. It is off by default and a privacy-posture change when
 enabled (every message is inspected) — treat it like ambient archiving.
 
 - **Two-stage classifier** (`makeClassifier`): Stage 1 is a zero-cost,
@@ -2334,7 +2494,7 @@ project_recall ──▶ searchProjectNotes ──▶ visibleProjectIds (both ch
 ```
 
 **Two checks, one place.** `visibleProjectIds`
-(`src/storage/repository/projects.ts`) resolves membership *and* surface in a
+(`@swampratnz/agent-base/storage/repository/projects.ts`) resolves membership *and* surface in a
 single statement, and every read and write in the module goes through it:
 
 - *Membership* expands through `persons`: the caller's own identity, plus any
@@ -2444,20 +2604,46 @@ the full security posture and its test references.
 
 ## Discord slash commands (issue #744)
 
-`DISCORD_SLASH_COMMANDS_ENABLED` (off by default) registers four read-only,
+`DISCORD_SLASH_COMMANDS_ENABLED` (off by default) registers five read-only,
 zero-model-call Discord application commands — `/kb <query>`,
-`/whois <query>`, `/projects [query]`, `/guidelines` — the discoverable,
-per-command generalisation of the knowledge shortcut (see "Known cost/latency
-characteristic" below): each answers a common lookup with a deterministic
-repository read instead of a full `query()` turn, and Discord's command picker
-surfaces them where a member would otherwise have to guess a phrase close
-enough to trigger a shortcut or address the bot at all.
+`/whois <query>`, `/projects [query]`, `/guidelines`, `/digest` — the
+discoverable, per-command generalisation of the knowledge shortcut (see "Known
+cost/latency characteristic" below): each answers a common lookup with a
+deterministic repository read instead of a full `query()` turn, and Discord's
+command picker surfaces them where a member would otherwise have to guess a
+phrase close enough to trigger a shortcut or address the bot at all.
 
-**Registration** happens in `src/platforms/discord/slashCommands.ts`
-(`registerSlashCommands`), called fire-and-forget from the existing
-`Events.ClientReady` handler in `adapter.ts` alongside `backfillRoster`/
-`reconcileMutedRole` — a registration failure is logged and never blocks
-message handling. Commands are registered **guild-scoped**
+**The mechanism is the package's; the commands are this module's.** The two
+Discord-client hooks — `registerSlashCommands` and `handleInteraction` — live
+in `@swampratnz/agent-base/platforms/discord/slashDispatch.ts` and are called
+by the package's own `adapter.ts`. Neither drives a hardcoded command list:
+both walk whatever was registered into `commands/registry.ts`, so the adapter
+owns registration and dispatch without importing a single community command.
+This module supplies the content — `src/module/commands.ts` declares the
+registry entries (named in `agentModule.ts`'s `commands` field, registered by
+`createAgent`), and `src/module/platforms/discord/slashCommands.ts` exports
+one function, `bindCommunitySlashCommands()`, which attaches each entry's
+Discord half: its `SlashCommandBuilder` JSON and its handler.
+
+**Binding is called from `createConfiguredAdapters()`** (`platforms/
+factories.ts`), NOT at module scope — and that is load-bearing, not
+stylistic. Binding reads the registered command list, but under `createAgent`
+that list is registered during the singleton phase, which runs when
+`index.ts`'s *body* calls `createAgent` — long after this module was evaluated
+as part of the static import graph. Binding at module load therefore always
+ran first and threw `registeredCommands: no command list registered`, killing
+the process at startup (#961). `createConfiguredAdapters()` is the earliest
+point guaranteed to be after `createAgent`, and it runs before any adapter
+exists to dispatch an interaction. The bind is idempotent (a `bound` latch,
+plus `bindDiscordCommand` rejecting a duplicate name) because tests build
+adapters more than once per process. Under the old side-effect composition
+`index.ts` imported the commands module early and the order happened to work;
+the flip to `createAgent` inverted it.
+
+Registration itself is fire-and-forget from `adapter.ts`'s existing
+`Events.ClientReady` handler, alongside `backfillRoster`/`reconcileMutedRole`
+— a registration failure is logged and never blocks message handling.
+Commands are registered **guild-scoped**
 (`client.application.commands.set(commands, config.discord.guildId)`), never
 globally: this deployment is single-guild, and global registration both
 propagates over up to an hour and exposes the commands to any guild the bot
@@ -2514,7 +2700,8 @@ gaps an adversarial review pass flagged in the underlying proposal:
 - **Every slash-command reply is passed through the adapter's existing
   outbound filter** (`this.filtered()` → `filterOutbound()`: secret redaction
   + code-answers policy), via a small `SlashCommandDeps` interface
-  (`{ filtered }`) so `slashCommands.ts` doesn't need the whole adapter class.
+  (`{ filtered }`, declared in the package's `commands/registry.ts` alongside
+  the mechanism) so `slashCommands.ts` doesn't need the whole adapter class.
   A raw `interaction.reply()` would otherwise be a new, unfiltered outbound
   path — the one thing every other send in `adapter.ts` is explicit about
   never allowing.
@@ -2763,7 +2950,7 @@ admin-notify echo) is never mutated.
 
 **Ack shortcut** (`ACK_SHORTCUT_ENABLED`, off by default): a pure
 acknowledgement reply to the bot ("thanks", "ok", "👍" and a handful of other
-exact matches — see `src/ackClassifier.ts`) skips the agent turn entirely and
+exact matches — see `@swampratnz/agent-base/ackClassifier.ts`) skips the agent turn entirely and
 gets one static reply via `send()` instead, avoiding a wasted `query()` spawn
 for a message with nothing for the model to act on. It runs as a router-level
 classifier (same shape as `classifyConfirmReply`), exact-match only so a
@@ -2942,7 +3129,7 @@ independent budget:**
 `healthcheck()` only catch the process crashing or the DB being unreachable
 at boot — neither catches "process alive, one platform connection silently
 dead" (e.g. a banned WhatsApp number stuck in Baileys' reconnect loop).
-`src/health.ts` covers that steady-state gap:
+`@swampratnz/agent-base/health.ts` covers that steady-state gap:
 
 - **Sustained-disconnect alerting** (always on, no config to disable) — a
   30s periodic check across every registered adapter's `isConnected()`. Past
@@ -2954,7 +3141,7 @@ dead" (e.g. a banned WhatsApp number stuck in Baileys' reconnect loop).
   #534, extended to all three producers by #545) — in a single-platform
   deployment (Discord-only or WhatsApp-only), an alert fired while that
   platform is down finds *zero* connected adapters to DM through, which
-  previously dropped the message silently. `src/pendingAlertQueue.ts` is a
+  previously dropped the message silently. `@swampratnz/agent-base/pendingAlertQueue.ts` is a
   small leaf module (no imports from `health.ts`/`backgroundJobs.ts`/
   `tools.ts`) holding one in-memory queue (capped at 5 combined across all
   producers): `queuePendingAlert(message, priority)` pushes a message onto it.
@@ -3139,7 +3326,9 @@ dead" (e.g. a banned WhatsApp number stuck in Baileys' reconnect loop).
   additional, optional `jobs?: Record<string, {consecutiveFailures: number,
   lastRunAt: string, lastSuccessAt: string | null}>` field — present only once
   at least one background job has run this process. Each value is a fixed
-  `BackgroundJobName` enum key, an integer, or an ISO timestamp only — never
+  registered job-name key (a literal in the job's owning module — see
+  `src/module/jobs/registry.ts` — `BackgroundJobName` is an open string type, never
+  a runtime-derived value), an integer, or an ISO timestamp only — never
   an error message or stack (same "never echo the raw error" convention as
   the DM template). A job whose tracker has crossed its own alert threshold
   (`alerted === true`, a *confirmed* outage) also flips top-level `status` to
@@ -3163,8 +3352,8 @@ dead" (e.g. a banned WhatsApp number stuck in Baileys' reconnect loop).
   self-heals silently instead of both dropping the member's reply and
   falsely tripping the disconnect alert (issue #470).
 
-The debounce/payload logic lives in `src/healthState.ts`, deliberately free
-of config/HTTP/adapter imports so it's unit-tested directly (`src/health.ts`
+The debounce/payload logic lives in `@swampratnz/agent-base/healthState.ts`, deliberately free
+of config/HTTP/adapter imports so it's unit-tested directly (`@swampratnz/agent-base/health.ts`
 is the thin I/O wrapper around it).
 
 Per-request DB failures degrade rather than alert: a memory-recall or
@@ -3178,7 +3367,7 @@ DB outage still fails `healthcheck()` at startup and flips `db: false` on
 covered: every one of #52's safeguards is a `.catch()`, which only ever fires
 on a *rejected* query — a query that never resolves or rejects (a lock wait,
 a stalled network round-trip, slow autovacuum, disk pressure) hangs the
-connection indefinitely instead. With the shared `pool` (`src/storage/db.ts`)
+connection indefinitely instead. With the shared `pool` (`@swampratnz/agent-base/storage/db.ts`)
 capped at `max: 10`, a handful of stuck connections exhausts it, and every
 subsequent turn — including `/healthz`'s own `healthcheck()`, which runs on
 the same pool — queues forever behind them. `pool` is now constructed with
@@ -3207,7 +3396,7 @@ Postgres error text to a member).
 
 The bot authenticates against a Claude **subscription** (see SECURITY.md
 "Subscription-auth caveat"), and that same weekly token pool is shared with
-the automated multi-loop pipeline sessions (see PIPELINE.md). `src/usageAlert.ts`
+the automated multi-loop pipeline sessions (see PIPELINE.md). `@swampratnz/agent-base/usageAlert.ts`
 adds an opt-in proactive check on top of the existing (pull-only, super-admin)
 `usage_stats` tool:
 
@@ -3310,7 +3499,7 @@ adds an opt-in proactive check on top of the existing (pull-only, super-admin)
 `usageAlert.ts` is a **proactive** check on successful outbound reply
 *counts* — it says nothing about a turn actively **failing** because the
 upstream Claude call itself was rejected for hitting a limit or being
-overloaded. `src/agent/upstreamFailure.ts` covers that distinct signal:
+overloaded. `@swampratnz/agent-base/agent/upstreamFailure.ts` covers that distinct signal:
 
 - `execTurn`'s `catch` block (agent/core.ts) classifies a thrown `query()`
   error by matching its message against a small, anchored set of known
@@ -3348,7 +3537,7 @@ overloaded. `src/agent/upstreamFailure.ts` covers that distinct signal:
   that would otherwise land in the classifier above — it doesn't touch
   `isUsageLimitFailure`, the reply text, or the debounce latch themselves.
 
-`src/usageCostDigest.ts` (off unless `USAGE_COST_DIGEST_ENABLED`, issue #578)
+`src/module/usageCostDigest.ts` (off unless `USAGE_COST_DIGEST_ENABLED`, issue #578)
 adds a third, complementary signal: a **weekly $ trend**, rather than a
 reactive volume threshold or an on-demand pull.
 
@@ -3389,7 +3578,7 @@ reactive volume threshold or an on-demand pull.
   it with a corrupt 0%, so the next real comparison isn't corrupted. Same
   no-PII guarantee as the cost line: only a percentage and a pp delta.
 
-`src/backgroundJobCostAlert.ts` (off unless `BACKGROUND_JOB_COST_ALERT_ENABLED`,
+`@swampratnz/agent-base/backgroundJobCostAlert.ts` (off unless `BACKGROUND_JOB_COST_ALERT_ENABLED`,
 issue #610) adds a fourth, same-day signal: a per-job cost **spike** alert,
 rather than a reactive volume threshold, a weekly trend, or an on-demand pull.
 
@@ -3437,7 +3626,7 @@ rather than a reactive volume threshold, a weekly trend, or an on-demand pull.
 
 ## Departed-admin alert
 
-`src/departedAdminAlert.ts` (off unless `DEPARTED_ADMIN_ALERT_ENABLED`, issue
+`src/module/departedAdminAlert.ts` (off unless `DEPARTED_ADMIN_ALERT_ENABLED`, issue
 #472) closes the growth path #428 itself named and deliberately deferred:
 `listAdminRoster()`/`list_admins` already compute and surface `leftServer`
 per admin, but only on pull — a super admin only learns a departed admin
@@ -3468,7 +3657,7 @@ still holds bot-admin privilege via DM if they think to run `list_admins`.
 
 ## Engagement alert
 
-`src/engagementAlert.ts` (off unless `ENGAGEMENT_ALERT_ENABLED`, issue #568)
+`src/module/engagementAlert.ts` (off unless `ENGAGEMENT_ALERT_ENABLED`, issue #568)
 closes the same pull-only gap #472/#480 closed for other super-admin-only
 signals: `engagement_stats` (issue #419) already computes what fraction of
 currently-present roster members have ever posted, but only on pull — a
@@ -3508,7 +3697,7 @@ super admin only sees it if they think to run the tool again.
 
 ## Admin leverage alert
 
-`src/adminLeverageAlert.ts` (off unless `ADMIN_LEVERAGE_ALERT_ENABLED`, issue
+`src/module/adminLeverageAlert.ts` (off unless `ADMIN_LEVERAGE_ALERT_ENABLED`, issue
 #785) closes the same pull-only gap #472/#568 closed for other
 super-admin-only signals, this time for VISION's own named "Admin leverage"
 north star: `adminActivitySummary()` (issue #488) already computes a

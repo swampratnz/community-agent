@@ -1,0 +1,226 @@
+import { atLeast } from '@swampratnz/agent-base/auth/tiers.js';
+import { config } from '@swampratnz/agent-base/config.js';
+import { getCommunityGuidelines, getCommunityGuidelinesMi } from '../../storage/policies.js';
+import { getLanguagePreference } from '@swampratnz/agent-base/storage/repository.js';
+import { formatStatusMessage, getStatusCache } from '../../status/anthropicStatus.js';
+import { formatEventTime } from '@swampratnz/agent-base/util/eventTime.js';
+import { text } from './helpers.js';
+import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
+
+/**
+ * Plain-language rundown of what a member can ask the bot to do, named by
+ * behaviour rather than tool id (issue #92) — every entry in MEMBER_TOOLS
+ * gets a line, most safety-relevant (report_content) first. Kept to a few
+ * short lines deliberately: a wall of text reads worse than the terse blurb
+ * it replaces.
+ */
+const MEMBER_CAPABILITIES_TEXT =
+  'NZ Claude Community — a New Zealand group building with Claude and the Anthropic API. ' +
+  "Here's what you can ask me to do:\n" +
+  '- Flag harassment, spam, or a rule violation to admins ("report this"), or withdraw one filed by mistake\n' +
+  '- Ask admins to review a warning you think was a mistake ("appeal my warning")\n' +
+  '- Ask me for our community guidelines ("what are the rules here?")\n' +
+  '- Answer questions from curated community knowledge — just ask\n' +
+  '- Browse the topics our knowledge base covers, if you\'re not sure what to ask ("what do you know about?")\n' +
+  '- Search back through your own past messages for something said earlier\n' +
+  "- Check what I've stored about you, your active warnings, or your filed suggestions/reports\n" +
+  '- Catch you up on recent activity in this conversation ("what did I miss?")\n' +
+  '- Suggest how the bot or community could be better, or suggest a knowledge-base tip for other members ' +
+  'to find later, or withdraw one before an admin reviews it\n' +
+  '- Rate my last answer helpful or not\n' +
+  '- Ask to talk to a human community admin, if I\'m not getting you anywhere ("can I talk to a ' +
+  'human?")\n' +
+  '- Ask me to explain things more simply, or reply in te reo Māori ("keep it simple")\n' +
+  '- React to a message with an emoji instead of replying\n' +
+  '- Ask if a Claude/API problem is a known Anthropic outage, not your bug\n' +
+  '- Ask what meetups/events are coming up ("what\'s on?")\n' +
+  '- Share a project you\'ve built with the community, or browse what others have shared ("share my ' +
+  'project", "what has everyone built?")\n' +
+  "- Ask to connect with a project owner who's looking for collaborators (\"I'd like to help with that " +
+  'project")\n' +
+  '- Publish your own interests so other members can find you, or find members into a topic ("add me to ' +
+  'who\'s into RAG", "who\'s working on Discord bots?")\n' +
+  '- Ask if someone in the community can help with something you\'re stuck on ("can someone help with ' +
+  'X?"), or opt in/out of being notified for other members\' requests\n' +
+  '- Pull the community digest on demand\n' +
+  "- Record decisions in a project you're part of and search that project's shared memory later, or " +
+  'list your projects\n' +
+  '- Erase all your stored data any time ("forget me")';
+
+/**
+ * Fixed-literal rundown of the WhatsApp `!`-prefixed text-command shortcuts
+ * (issue #859), appended to MEMBER_CAPABILITIES_TEXT only for a WhatsApp
+ * caller when `config.behaviour.whatsappTextCommandsEnabled` is true (issue
+ * #872) — Discord already gets free discovery via its native `/` picker
+ * (`SlashCommandBuilder.setDescription`, `src/platforms/discord/slashCommands.ts`),
+ * which WhatsApp has no client-native equivalent of. No `!kb`: the existing
+ * KNOWLEDGE_SHORTCUT_ENABLED shortcut already covers WhatsApp for that one
+ * (#859's own decision). Never interpolates caller or message data — same
+ * trust level as MEMBER_CAPABILITIES_TEXT.
+ */
+const WHATSAPP_TEXT_COMMANDS_TEXT =
+  "You're on WhatsApp, so you can also use these zero-wait shortcuts:\n" +
+  '- `!whois <topic>` — find members into a topic\n' +
+  '- `!projects [query]` — browse the project showcase\n' +
+  '- `!guidelines` — community guidelines\n' +
+  "- `!digest` — this week's digest";
+
+/**
+ * Plain-language rundown of what an admin can additionally ask the bot to
+ * do, on top of MEMBER_CAPABILITIES_TEXT above (issue #367) — every entry in
+ * ADMIN_TOOLS gets a mention, consolidated into behaviourally-related
+ * bullets rather than 44 one-per-line entries, same discipline
+ * MEMBER_CAPABILITIES_TEXT already uses (issue #311). Safety-relevant tools
+ * (moderate, clear_warnings, archive_thread) come first, mirroring
+ * MEMBER_CAPABILITIES_TEXT's own "most safety-relevant first" convention.
+ * No interpolation of any runtime/tool argument — static text only, same
+ * trust level as MEMBER_CAPABILITIES_TEXT.
+ */
+const ADMIN_CAPABILITIES_TEXT =
+  'As an admin, you also have:\n' +
+  "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread, review the moderation history log, pull one member's full warning history, list everyone who's currently muted, list who's currently blocked on WhatsApp, or review and resolve filed appeals\n" +
+  "- Manage membership: add a new member, remove a member, link a member's cross-platform identity, or unlink a member's cross-platform identity\n" +
+  '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, check which knowledge entries are rated poorly, and review recurring unhelpful-answer themes across all answers\n' +
+  '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
+  '- Curate the knowledge base: save a new knowledge entry, browse knowledge entries, edit a knowledge entry, delete a knowledge entry, or merge two entries together, and check for near-duplicate entries or conflicting entries\n' +
+  "- Review knowledge candidates, accept a candidate or decline a candidate, track knowledge gaps (questions I couldn't answer), recurring question clusters, raw context digests, pull your own admin-digest snapshot on demand, get a review-queue roll-up of all five review queues at once, or check how quickly I've been answering members (response latency)\n" +
+  '- See who is waiting for access, or who has joined or left the server\n' +
+  "- Add a note about a member, review notes on a member, delete a note, or look up a member's history across conversations\n" +
+  '- Set the community guidelines or the welcome message shown to new members\n' +
+  '- Assign a Discord role, remove a Discord role, or list which roles are available to assign\n' +
+  "- Set up team projects: create one, give a member access, take a member's access away, allow or " +
+  'stop it being discussed here, review who has access, or archive a finished project and bring it ' +
+  'back again\n' +
+  '- Generate an image, or check recent changes to the bot and community (the changelog)';
+
+/**
+ * Plain-language rundown of what a super admin can additionally ask the bot
+ * to do, on top of MEMBER_CAPABILITIES_TEXT and ADMIN_CAPABILITIES_TEXT above
+ * (issue #582) — every entry in SUPER_ADMIN_TOOLS gets a mention,
+ * consolidated into behaviourally-related bullets rather than 19 one-per-line
+ * entries, same discipline ADMIN_CAPABILITIES_TEXT already uses (issue #367).
+ * No interpolation of any runtime/tool argument — static text only, same
+ * trust level as its two siblings.
+ */
+const SUPER_ADMIN_CAPABILITIES_TEXT =
+  'As a super admin, you also have:\n' +
+  '- Grant or revoke admin status for a member\n' +
+  '- Pause or resume the bot, view audit logs, review admin activity, list current admins, ' +
+  'or check usage/engagement stats\n' +
+  '- Erase all of a user\'s stored data on request ("purge their data")\n' +
+  '- Change bot-wide policy settings, or trigger a redeploy of the bot\n' +
+  '- See which optional feature flags are currently on or off\n' +
+  '- File a GitHub issue suggesting an improvement\n' +
+  '- Dispatch a remote dev-team job to assess or deliver a change, check its status, fetch its result, ' +
+  "turn a completed assessment into a tracked backlog, list an assessment's findings, or re-check one finding";
+
+/**
+ * Fixed cap on how many upcoming events `list_events` returns (issue #388) —
+ * a small hardcoded constant over a config knob, matching this repo's
+ * existing convention for tool-shape limits (e.g. `GATED_NOTICE_MAX_ADMIN_NAMES`).
+ */
+export const EVENTS_LIST_LIMIT = 10;
+
+export const infoTools = [
+  defineTool({
+    name: 'community_info',
+    description:
+      'Tell the caller, in concrete terms, what they can ask this bot to do. Call this whenever someone ' +
+      'asks "what can you do?", "how do I report someone?", or otherwise wants a capability rundown — ' +
+      'do not answer that from general knowledge alone.',
+    minTier: 'member',
+    readOnlyHint: true,
+    schema: {},
+    handler: async (_args, { caller }) => {
+      const memberSegment =
+        caller.platform === 'whatsapp' &&
+        config.behaviour.whatsappTextCommandsEnabled &&
+        atLeast(caller.role, 'member')
+          ? `${MEMBER_CAPABILITIES_TEXT}\n${WHATSAPP_TEXT_COMMANDS_TEXT}`
+          : MEMBER_CAPABILITIES_TEXT;
+      if (caller.role === 'super_admin') {
+        return text(`${memberSegment}\n${ADMIN_CAPABILITIES_TEXT}\n${SUPER_ADMIN_CAPABILITIES_TEXT}`);
+      }
+      if (caller.role === 'admin') {
+        return text(`${memberSegment}\n${ADMIN_CAPABILITIES_TEXT}`);
+      }
+      return text(memberSegment);
+    },
+  }),
+
+  // Read-only, no arguments; returns the admin-set guidelines text verbatim,
+  // or a clear not-set-yet message (issue #212).
+  defineTool({
+    name: 'community_guidelines',
+    description:
+      "Return this community's guidelines/rules, exactly as an admin set them. Call this whenever someone " +
+      'asks "what are the rules?", "what am I not allowed to do?", or wants to know why they were warned ' +
+      'or muted. Relay the returned text to the caller verbatim — do not summarise, paraphrase, or add to it.',
+    minTier: 'member',
+    readOnlyHint: true,
+    schema: {},
+    handler: async (_args, { caller }) => {
+      const languagePreference = await getLanguagePreference(caller.platform, caller.userId);
+      const guidelines =
+        languagePreference === 'mi'
+          ? ((await getCommunityGuidelinesMi()) ?? (await getCommunityGuidelines()))
+          : await getCommunityGuidelines();
+      return text(guidelines ?? 'No community guidelines have been set yet — ask an admin.');
+    },
+  }),
+
+  // Read-only, no arguments, reveals nothing about this community — only
+  // Anthropic's own public status page (issue #206) — so it's reachable by
+  // guests in open mode too, same tier as community_info/knowledge_search.
+  defineTool({
+    name: 'check_status',
+    description:
+      'Check whether Anthropic has a known service incident right now — call this when a member reports an ' +
+      "error, timeout, or unexpected behaviour from Claude/the API and wants to know if it's a known Anthropic " +
+      "problem rather than something on their end. Read-only, no arguments, sourced from Anthropic's own public " +
+      'status page (a background poll, never a live fetch on this call).',
+    minTier: 'member',
+    readOnlyHint: true,
+    schema: {},
+    handler: async () => text(formatStatusMessage(getStatusCache(), Date.now())),
+  }),
+
+  // Read-only, no arguments, no CONFIRM (issue #388) — the read counterpart
+  // to the admin-tier, CONFIRM-gated create_event (issue #230). Publicly
+  // visible via Discord's own Events tab the moment create_event runs, so
+  // there's no confidentiality boundary to gate at admin tier, same
+  // reasoning as community_guidelines/check_status. Discord-only; other
+  // adapters simply don't implement PlatformAdapter.listUpcomingEvents.
+  defineTool({
+    name: 'list_events',
+    description:
+      'List upcoming Discord scheduled meetups/events (id, name, start/end time, location) — call this when ' +
+      'someone asks "what\'s coming up?", "when\'s the next meetup?", or similar, instead of guessing from ' +
+      'general knowledge or stale knowledge-base entries. Also the only way to discover a valid eventId for ' +
+      'cancel_event. Read-only, no arguments, sourced live from ' +
+      "Discord's own Scheduled Events (the read counterpart to create_event). Discord-only.",
+    minTier: 'member',
+    platforms: ['discord'],
+    requiresCapability: 'list_events',
+    readOnlyHint: true,
+    schema: {},
+    handler: async (_args, { caller, adapter }) => {
+      if (!adapter.listUpcomingEvents) {
+        return text(`Event listings aren't available on ${caller.platform}.`, true);
+      }
+      const events = await adapter.listUpcomingEvents(EVENTS_LIST_LIMIT);
+      if (events.length === 0) return text('No upcoming events.');
+      return text(
+        events
+          .map((e) => {
+            const when = e.scheduledEndAt
+              ? `${formatEventTime(e.scheduledStartAt)} – ${formatEventTime(e.scheduledEndAt)}`
+              : formatEventTime(e.scheduledStartAt);
+            const desc = e.description ? `: ${e.description}` : '';
+            return `- ${e.name} (${when}) @ ${e.location}${desc} [id: ${e.id}]`;
+          })
+          .join('\n'),
+      );
+    },
+  }),
+];

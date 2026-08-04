@@ -1,6 +1,14 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import './support/registerNotices.js';
+import type {
+  IncomingMessage,
+  OutgoingMessage,
+  PlatformAdapter,
+} from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -17,10 +25,15 @@ process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 
-const { pool, closeDb } = await import('../src/storage/db.js');
-const { Router } = await import('../src/router.js');
-const { embed } = await import('../src/storage/embeddings.js');
-const { MAX_TURNS_REPLY, INTERNAL_ERROR_REPLY } = await import('../src/agent/core.js');
+const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
+const { Router } = await import('@swampratnz/agent-base/router.js');
+const { makeRouterDeps } = await import('../src/module/routerWiring.js');
+const { embed } = await import('@swampratnz/agent-base/storage/embeddings.js');
+
+// Notice constants agent-base deleted in the package flip (they named this
+// community's axis values in framework code, and rendered at import time). Same
+// catalogue entries, same values — see tests/support/legacyNotices.ts.
+const { MAX_TURNS_REPLY, INTERNAL_ERROR_REPLY } = await import('./support/legacyNotices.js');
 
 await embed('warmup').catch(() => {});
 
@@ -105,8 +118,14 @@ test(
     const conversationId = `${RUN}-primary`;
     const userId = 'super-1';
     const router = new Router(
-      async () => ({ text: 'the answer, from knowledge_search', ok: true, knowledgeEntryId: 4242 }),
-      20,
+      makeRouterDeps({
+        runTurn: async () => ({
+          text: 'the answer, from knowledge_search',
+          ok: true,
+          turnState: { knowledgeEntryId: 4242 },
+        }),
+        typingRefireMs: 20,
+      }),
     );
     const { adapter, sent, trigger } = makeAdapter();
     router.register(adapter);
@@ -126,8 +145,10 @@ test(
   async () => {
     const conversationId = `${RUN}-no-hit`;
     const router = new Router(
-      async () => ({ text: 'a normal answer, no knowledge_search hit', ok: true }),
-      20,
+      makeRouterDeps({
+        runTurn: async () => ({ text: 'a normal answer, no knowledge_search hit', ok: true }),
+        typingRefireMs: 20,
+      }),
     );
     const { adapter, sent, trigger } = makeAdapter();
     router.register(adapter);
@@ -156,7 +177,12 @@ test(
     // non-success outcome — this test only proves the router doesn't add a
     // SECOND opportunity for staleness by filtering independently.
     const conversationId = `${RUN}-max-turns`;
-    const router = new Router(async () => ({ text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true }), 20);
+    const router = new Router(
+      makeRouterDeps({
+        runTurn: async () => ({ text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true }),
+        typingRefireMs: 20,
+      }),
+    );
     const { adapter, sent, trigger } = makeAdapter();
     router.register(adapter);
 
@@ -178,7 +204,12 @@ test(
   { skip: !hasDb },
   async () => {
     const conversationId = `${RUN}-internal-error`;
-    const router = new Router(async () => ({ text: INTERNAL_ERROR_REPLY, ok: false }), 20);
+    const router = new Router(
+      makeRouterDeps({
+        runTurn: async () => ({ text: INTERNAL_ERROR_REPLY, ok: false }),
+        typingRefireMs: 20,
+      }),
+    );
     const { adapter, sent, trigger } = makeAdapter();
     router.register(adapter);
 

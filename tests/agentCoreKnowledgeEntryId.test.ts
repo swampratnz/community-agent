@@ -1,8 +1,20 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { CallerContext } from '../src/auth/rbac.js';
-import type { OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
-import type { KnowledgeSearchHit } from '../src/storage/repository.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import './support/registerNotices.js';
+import type { CallerContext } from '@swampratnz/agent-base/auth/rbac.js';
+import type { OutgoingMessage, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
+import type { KnowledgeSearchHit } from '@swampratnz/agent-base/storage/repository.js';
+// Community content registrations (prompt sections + persona roster) — the
+// composition-root contract: src/index.ts registers these in production, so
+// tests that assemble prompts register them explicitly here.
+import './support/registerPromptSections.js';
+import './support/registerPersonas.js';
+// Community turn-state registration — the finalizer that surfaces this
+// module's keys on AgentReply.turnState (src/index.ts loads it in production).
+import './support/registerTurnState.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -105,19 +117,19 @@ function mockQuery(params: { options: { mcpServers: Record<string, unknown> } })
 }
 
 // Both query() and searchKnowledge() are static imports inside
-// src/agent/core.ts / src/agent/tools.ts, so once those modules have been
+// src/base/agent/core.ts / src/module/agent/tools.ts, so once those modules have been
 // dynamically imported anywhere in this process the bindings are fixed — a
 // later t.mock.module call can't retarget them (see
 // tests/agentCoreMaxTurns.test.ts for the same trap). Install both mocks
 // once and reuse the cached import; `script` is mutated per-test to vary the
 // simulated knowledge_search call pattern.
-let corePromise: Promise<typeof import('../src/agent/core.js')> | null = null;
+let corePromise: Promise<typeof import('@swampratnz/agent-base/agent/core.js')> | null = null;
 async function core(t: { mock: { module: (specifier: string, opts: unknown) => void } }) {
   if (!corePromise) {
     const realSdk = await import('@anthropic-ai/claude-agent-sdk');
     t.mock.module('@anthropic-ai/claude-agent-sdk', { namedExports: { ...realSdk, query: mockQuery } });
-    const realRepo = await import('../src/storage/repository.js');
-    t.mock.module('../src/storage/repository.js', {
+    const realRepo = await import('@swampratnz/agent-base/storage/repository.js');
+    t.mock.module('@swampratnz/agent-base/storage/repository.js', {
       namedExports: {
         ...realRepo,
         searchKnowledge: async (query: string) => HIT_FIXTURES[query] ?? [],
@@ -126,7 +138,12 @@ async function core(t: { mock: { module: (specifier: string, opts: unknown) => v
         searchKnowledgeLexical: async () => [],
       },
     });
-    corePromise = import('../src/agent/core.js');
+    // Load the tool registry AFTER the repository mock above, so the tool
+    // handlers (and the base kernel's registered parts) bind the mocked
+    // repository exports — the same ordering the pre-split core.js import
+    // graph gave this file.
+    await import('./support/registerToolRegistry.js');
+    corePromise = import('@swampratnz/agent-base/agent/core.js');
   }
   return corePromise;
 }
@@ -168,7 +185,7 @@ test('runAgentTurn: AgentReply.knowledgeEntryId is set to the top-scoring qualif
 
   const reply = await runAgentTurn(makeCaller(), 'hello', makeAdapter().adapter);
 
-  assert.equal(reply.knowledgeEntryId, 101);
+  assert.equal(reply.turnState?.knowledgeEntryId, 101);
   assert.equal(reply.ok, true);
 });
 
@@ -178,7 +195,7 @@ test('runAgentTurn: AgentReply.knowledgeEntryId is absent when the turn makes no
 
   const reply = await runAgentTurn(makeCaller(), 'hello', makeAdapter().adapter);
 
-  assert.equal(reply.knowledgeEntryId, undefined);
+  assert.equal(reply.turnState?.knowledgeEntryId, undefined);
 });
 
 test('runAgentTurn: AgentReply.knowledgeEntryId is absent when the only knowledge_search hit falls below the relevance floor (issue #411, acceptance criterion 2)', async (t) => {
@@ -187,7 +204,7 @@ test('runAgentTurn: AgentReply.knowledgeEntryId is absent when the only knowledg
 
   const reply = await runAgentTurn(makeCaller(), 'hello', makeAdapter().adapter);
 
-  assert.equal(reply.knowledgeEntryId, undefined);
+  assert.equal(reply.turnState?.knowledgeEntryId, undefined);
 });
 
 test('runAgentTurn: a later knowledge_search call whose hits miss the floor does not clear an earlier qualifying id — last QUALIFYING call wins, not last call (issue #411, acceptance criterion 3)', async (t) => {
@@ -196,7 +213,11 @@ test('runAgentTurn: a later knowledge_search call whose hits miss the floor does
 
   const reply = await runAgentTurn(makeCaller(), 'hello', makeAdapter().adapter);
 
-  assert.equal(reply.knowledgeEntryId, 101, 'the below-floor second call must not clobber the first id');
+  assert.equal(
+    reply.turnState?.knowledgeEntryId,
+    101,
+    'the below-floor second call must not clobber the first id',
+  );
 });
 
 test('runAgentTurn: when two calls both qualify, the LAST qualifying call wins (issue #411, acceptance criterion 3)', async (t) => {
@@ -205,7 +226,7 @@ test('runAgentTurn: when two calls both qualify, the LAST qualifying call wins (
 
   const reply = await runAgentTurn(makeCaller(), 'hello', makeAdapter().adapter);
 
-  assert.equal(reply.knowledgeEntryId, 202);
+  assert.equal(reply.turnState?.knowledgeEntryId, 202);
 });
 
 test('SECURITY: runAgentTurn: AgentReply.knowledgeEntryId is absent when the turn ends in a thrown failure, even though a qualifying knowledge_search call happened first — never a stale id on a failed turn (issue #411, acceptance criterion 5)', async (t) => {
@@ -216,7 +237,7 @@ test('SECURITY: runAgentTurn: AgentReply.knowledgeEntryId is absent when the tur
 
   assert.equal(reply.ok, false, 'the simulated thrown failure must surface as a failed turn');
   assert.equal(
-    reply.knowledgeEntryId,
+    reply.turnState?.knowledgeEntryId,
     undefined,
     'a failed turn must never carry a knowledgeEntryId, even if a qualifying hit occurred before the failure',
   );
@@ -231,7 +252,7 @@ test('SECURITY: runAgentTurn: AgentReply.knowledgeEntryId is absent on an error_
   assert.equal(reply.ok, false);
   assert.equal(reply.maxTurnsExceeded, true);
   assert.equal(
-    reply.knowledgeEntryId,
+    reply.turnState?.knowledgeEntryId,
     undefined,
     'a max-turns failure must never carry a knowledgeEntryId, even if a qualifying hit occurred before it',
   );

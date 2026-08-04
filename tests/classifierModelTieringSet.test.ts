@@ -1,5 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import './support/registerNotices.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -40,18 +44,18 @@ function mockQuery(args: { prompt: string; options: Record<string, unknown> }) {
 // import in both moderator.ts and builder.ts, so the mock must be installed
 // before either module is first imported in this process.
 let modulesPromise: Promise<{
-  classifyAbuseWithLlm: typeof import('../src/moderation/moderator.js').classifyAbuseWithLlm;
-  summarizeCluster: typeof import('../src/context/builder.js').summarizeCluster;
-  config: typeof import('../src/config.js').config;
+  classifyAbuseWithLlm: typeof import('@swampratnz/agent-base/moderation/moderator.js').classifyAbuseWithLlm;
+  summarizeCluster: typeof import('../src/module/context/builder.js').summarizeCluster;
+  config: typeof import('@swampratnz/agent-base/config.js').config;
 }> | null = null;
 async function modules(t: { mock: { module: (specifier: string, opts: unknown) => void } }) {
   if (!modulesPromise) {
     const real = await import('@anthropic-ai/claude-agent-sdk');
     t.mock.module('@anthropic-ai/claude-agent-sdk', { namedExports: { ...real, query: mockQuery } });
     modulesPromise = Promise.all([
-      import('../src/moderation/moderator.js'),
-      import('../src/context/builder.js'),
-      import('../src/config.js'),
+      import('@swampratnz/agent-base/moderation/moderator.js'),
+      import('../src/module/context/builder.js'),
+      import('@swampratnz/agent-base/config.js'),
     ]).then(([moderator, builder, cfg]) => ({
       classifyAbuseWithLlm: moderator.classifyAbuseWithLlm,
       summarizeCluster: builder.summarizeCluster,

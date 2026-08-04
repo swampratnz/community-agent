@@ -1,5 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import './support/registerNotices.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -8,6 +12,11 @@ process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
 process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
+
+// The tool registry's module-scope registrations (tool tiers, tool-server
+// parts, feature-flag predicates) — the composition-root contract, matching
+// tests/rbac.test.ts.
+await import('./support/registerToolRegistry.js');
 
 test('SECURITY: AC-5 (extended by issue #706) — the WebSearch dedup check never logs the raw query text OR its embedding vector, at any level, denial or not', async (t) => {
   // Mock BEFORE the first import of core.js — see the same trap noted in
@@ -24,8 +33,8 @@ test('SECURITY: AC-5 (extended by issue #706) — the WebSearch dedup check neve
   // any) would be the real one, not a fixture that could hide a leak.
   const secretQuery = 'unlogged secret admin research query 42';
   const logCalls: unknown[] = [];
-  const realLogger = await import('../src/logger.js');
-  t.mock.module('../src/logger.js', {
+  const realLogger = await import('@swampratnz/agent-base/logger.js');
+  t.mock.module('@swampratnz/agent-base/logger.js', {
     namedExports: {
       ...realLogger,
       logger: {
@@ -38,7 +47,7 @@ test('SECURITY: AC-5 (extended by issue #706) — the WebSearch dedup check neve
     },
   });
 
-  const { buildQueryOptions } = await import('../src/agent/core.js');
+  const { buildQueryOptions } = await import('@swampratnz/agent-base/agent/core.js');
   const opts = buildQueryOptions('admin', 'prompt', {}, null, 'ws-dedup-no-log') as {
     hooks?: {
       PreToolUse?: Array<{
@@ -86,7 +95,7 @@ test('SECURITY: AC-5 (extended by issue #706) — the WebSearch dedup check neve
   // (never mocked in this file) — assert that exact vector never appears in
   // any log call either, pinning issue #706's no-log guarantee for the
   // embedding half of the check, not just the query text half.
-  const { embed } = await import('../src/storage/embeddings.js');
+  const { embed } = await import('@swampratnz/agent-base/storage/embeddings.js');
   const secretEmbedding = JSON.stringify(await embed(secretQuery));
   for (const call of logCalls) {
     assert.ok(

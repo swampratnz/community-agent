@@ -1,7 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { AgentReply } from '../src/agent/core.js';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import './support/registerNotices.js';
+import type { AgentReply } from '@swampratnz/agent-base/agent/core.js';
+import type {
+  IncomingMessage,
+  OutgoingMessage,
+  PlatformAdapter,
+} from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -18,8 +26,9 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 process.env.AUTO_ANSWER_CHANNEL_IDS = 'auto-chan-1';
 
-const { Router } = await import('../src/router.js');
-const { embed } = await import('../src/storage/embeddings.js');
+const { Router } = await import('@swampratnz/agent-base/router.js');
+const { makeRouterDeps } = await import('../src/module/routerWiring.js');
+const { embed } = await import('@swampratnz/agent-base/storage/embeddings.js');
 
 await embed('warmup').catch(() => {});
 
@@ -88,10 +97,15 @@ function makeReply(text: string): AgentReply {
 
 test('SECURITY: gated mode excludes an unregistered guest from auto-answer, exactly like it already excludes one from an addressed reply (issue #477)', async () => {
   let calls = 0;
-  const router = new Router(async () => {
-    calls += 1;
-    return makeReply('should never be sent to a gated guest');
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => {
+        calls += 1;
+        return makeReply('should never be sent to a gated guest');
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, sent, threadCalls, trigger } = makeAdapter();
   router.register(adapter);
 

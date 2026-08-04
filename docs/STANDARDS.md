@@ -25,14 +25,21 @@ git rm --cached -r . && git reset --hard
 
 ## Tests
 
-- `npm run typecheck`, `npm test`, and `npm run build` must all be green
-  before a PR is opened or updated (see root `CLAUDE.md`).
-- If your change touches a gated area — tool gating (`src/auth/`), the
-  CONFIRM flow (`src/agent/pendingActions.ts`), outbound filtering
-  (`src/agent/outbound.ts`), or anything else on the security spine — extend
-  the matching test file under `tests/` (e.g. `rbac.test.ts`,
-  `pendingActions.test.ts`, `outbound.test.ts`) rather than relying on
-  incidental coverage. Don't weaken or delete an existing security assertion
+- The full gate must be green before a PR is opened or updated: `typecheck`,
+  `lint`, `format:check`, `migrate`, `test`, `build`, `test:security`,
+  `context:check`, `imports:check`. The copy-pasteable command block is in
+  `docs/agents/recipes.md` ("Run the full gate"); see root `CLAUDE.md` for what
+  each one is protecting.
+- If your change touches a gated area — tool gating, the CONFIRM flow,
+  outbound filtering, or anything else on the security spine — extend the
+  matching test file under `tests/` rather than relying on incidental
+  coverage: `rbac.test.ts` (tier→tool derivation), `tools.test.ts` (the tool
+  layer itself: allowlist gate, target validation, CONFIRM),
+  `router.test.ts` (the router-side confirm/execute path) and
+  `outbound.test.ts` (secret redaction, code policy). The implementations are
+  in the package now, but the invariants are ours to hold: these tests run
+  against the installed `@swampratnz/agent-base` and fail here if a version
+  bump regresses one. Don't weaken or delete an existing security assertion
   without discussing it in the PR description.
 - DB-touching changes should pass against a real Postgres + pgvector locally
   (`npm run migrate` then `npm test`) in addition to CI's service container.
@@ -84,11 +91,63 @@ same diff — `npm run context:check` (CI's lint job) fails otherwise, and
 authority: read the code before trusting a one-liner, and fix the line if it is
 wrong.
 
+## The framework package, this module, and the composition rules
+
+The framework is not in this tree. `src/` is:
+
+- **`src/module/`** — this deployment's content and wiring: the tool registry
+  and its `ToolDef` domain files, prose, personas, skills, the notice pack,
+  community jobs and digests, the integrations, its schema fragments, and the
+  composition wiring (`routerWiring.ts`, `platforms/factories.ts`,
+  `jobs/registry.ts`, `commands.ts`). `agentModule.ts` is the manifest that
+  names every extension point this deployment fills.
+- **`src/index.ts`** — the composition root: the only file that may call
+  `createAgent`. It hands it the manifest, then wires adapters, the router and
+  the jobs. It carries no side-effect imports; `createAgent` owns the ordering.
+- **`src/migrate.ts`** — `npm run migrate`.
+
+**`@swampratnz/agent-base`** — the community-agnostic framework (agent kernel
+and prompt spine, adapters, storage, router spine, jobs mechanism, RBAC,
+config, the notice mechanism, alert/health infra, leaf utils) — is a
+dependency. You cannot add a file to it from here. A framework-level fix is a
+PR against `swampratnz/agent-base` that reaches this repo as a version bump,
+and the package's own internal discipline (no framework file carrying
+community content) is enforced in that repo, not this one.
+
+Adding an extension point is therefore not a registry-slot-plus-side-effect-
+import exercise any more: export the value from the file that owns the content
+and **name it in `agentModule.ts`**. Do NOT add a module-scope `register*()`
+call, and never render a `notice()` at module scope — the pack is registered by
+`createAgent` after every module has been imported, so an import-time render
+throws before the process can say why. If the package has no slot for what you
+need, that slot is the upstream change.
+
+Three composition rules are gated here, by eslint (fast, on the specifier text,
+scoped to `src/module/**`) and by `scripts/check-import-direction.mjs` (which
+resolves specifiers against the file system and has no config to weaken), both
+run by `npm run imports:check` in CI's lint job:
+
+1. **`src/base/` must not exist.** A local copy of the framework forks it
+   silently: the same file compiling in two places, one of them missing
+   upstream fixes.
+2. **`src/module/` may never import the composition root.** `src/index.ts` sits
+   at the top of the graph; nothing it wires may reach back up to it.
+3. **Only the composition root may compose** — no module may import
+   `createAgent`, `planComposition` or `assertRegistrationsComplete`. A module
+   contributes a manifest; the registration ORDER is exactly what `createAgent`
+   exists to own.
+
+See `docs/ARCHITECTURE.md` → "The framework package, this module, and the
+composition root" for the full picture and `docs/SECURITY.md` → "Where the
+controls live" for why the boundary matters.
+
 ## Commits and PRs
 
 - No model identifiers in commit messages, PR titles/bodies, or code.
-- Never commit secrets: `.env` is git-ignored; `whatsapp-auth/` and
-  `src/auth/` are distinct — the latter is source and stays tracked.
+- Never commit secrets: `.env` is git-ignored, as are the runtime credential
+  directories `/auth/` and `/whatsapp-auth/`. Both patterns are **anchored to
+  the repo root** in `.gitignore`, so an unanchored `auth/` must never be
+  re-added — it would swallow any source directory of that name at any depth.
 - Every PR uses the template (`.github/pull_request_template.md`): Summary,
   Security / privacy impact, How verified. Keep those sections scoped to the
   diff — no secrets, tokens, env values, or hostnames in a PR body.

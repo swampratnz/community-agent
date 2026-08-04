@@ -1,7 +1,19 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { CallerContext } from '../src/auth/rbac.js';
-import type { OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import './support/registerNotices.js';
+import type { CallerContext } from '@swampratnz/agent-base/auth/rbac.js';
+import type { OutgoingMessage, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
+// Community content registrations (prompt sections + persona roster) — the
+// composition-root contract: src/index.ts registers these in production, so
+// tests that assemble prompts register them explicitly here.
+import './support/registerPromptSections.js';
+import './support/registerPersonas.js';
+// Community turn-state registration — the finalizer that surfaces this
+// module's keys on AgentReply.turnState (src/index.ts loads it in production).
+import './support/registerTurnState.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -12,6 +24,11 @@ process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
+
+// The tool registry's module-scope registrations (tool tiers, tool-server
+// parts, feature-flag predicates) — the composition-root contract, matching
+// tests/rbac.test.ts.
+await import('./support/registerToolRegistry.js');
 
 type ToolCallScript =
   | { kind: 'none' }
@@ -62,17 +79,17 @@ function mockQuery(params: { options: { mcpServers: Record<string, unknown> } })
   })();
 }
 
-// query() is a static import inside src/agent/core.ts, so once the module
+// query() is a static import inside src/base/agent/core.ts, so once the module
 // has been dynamically imported anywhere in this process the binding is
 // fixed — a later t.mock.module call can't retarget it (see
 // tests/agentCoreMaxTurns.test.ts for the same trap). Install the mock once
 // and reuse the cached import; `script` is mutated per-test.
-let corePromise: Promise<typeof import('../src/agent/core.js')> | null = null;
+let corePromise: Promise<typeof import('@swampratnz/agent-base/agent/core.js')> | null = null;
 async function core(t: { mock: { module: (specifier: string, opts: unknown) => void } }) {
   if (!corePromise) {
     const realSdk = await import('@anthropic-ai/claude-agent-sdk');
     t.mock.module('@anthropic-ai/claude-agent-sdk', { namedExports: { ...realSdk, query: mockQuery } });
-    corePromise = import('../src/agent/core.js');
+    corePromise = import('@swampratnz/agent-base/agent/core.js');
   }
   return corePromise;
 }
@@ -116,7 +133,7 @@ test('runAgentTurn: AgentReply.humanHelpRequested is true after a genuine reques
   const reply = await runAgentTurn(makeCaller(), 'can I talk to a human', makeAdapter().adapter);
 
   assert.equal(reply.ok, true);
-  assert.equal(reply.humanHelpRequested, true);
+  assert.equal(reply.turnState?.humanHelpRequested, true);
 });
 
 test('runAgentTurn: AgentReply.humanHelpRequested is absent when the turn makes no request_human_help call (issue #808)', async (t) => {
@@ -125,7 +142,7 @@ test('runAgentTurn: AgentReply.humanHelpRequested is absent when the turn makes 
 
   const reply = await runAgentTurn(makeCaller(), 'hello', makeAdapter().adapter);
 
-  assert.equal(reply.humanHelpRequested, undefined);
+  assert.equal(reply.turnState?.humanHelpRequested, undefined);
 });
 
 test('SECURITY: runAgentTurn: AgentReply.humanHelpRequested is absent when the turn ends in a thrown failure, even though a genuine request was recorded first — never a stale flag on a failed turn (issue #808, mirrors #598)', async (t) => {
@@ -136,7 +153,7 @@ test('SECURITY: runAgentTurn: AgentReply.humanHelpRequested is absent when the t
 
   assert.equal(reply.ok, false, 'the simulated thrown failure must surface as a failed turn');
   assert.equal(
-    reply.humanHelpRequested,
+    reply.turnState?.humanHelpRequested,
     undefined,
     'a failed turn must never carry humanHelpRequested, even if a genuine request was recorded before the failure',
   );
@@ -151,7 +168,7 @@ test('SECURITY: runAgentTurn: AgentReply.humanHelpRequested is absent on an erro
   assert.equal(reply.ok, false);
   assert.equal(reply.maxTurnsExceeded, true);
   assert.equal(
-    reply.humanHelpRequested,
+    reply.turnState?.humanHelpRequested,
     undefined,
     'a max-turns failure must never carry humanHelpRequested, even if a genuine request was recorded before it',
   );

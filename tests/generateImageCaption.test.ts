@@ -1,11 +1,11 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { PlatformAdapter } from '../src/platforms/types.js';
+import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
 // convention in tests/tools.test.ts. Image generation must be explicitly
-// enabled (and GROK_BIN must be absolute once it is — see src/config.ts)
+// enabled (and GROK_BIN must be absolute once it is — see src/base/config.ts)
 // for generate_image's handler to reach past its feature-flag gate.
 process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
 process.env.DISCORD_BOT_TOKEN ??= 'test-token';
@@ -14,14 +14,14 @@ process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.IMAGE_GEN_ENABLED ??= 'true';
 process.env.GROK_BIN ??= '/usr/bin/grok';
 
-const { closeDb } = await import('../src/storage/db.js');
+const { closeDb } = await import('@swampratnz/agent-base/storage/db.js');
 
 after(async () => {
   await closeDb();
 });
 
 /**
- * generate_image's handler calls src/media/grokImage.ts's generateImage(),
+ * generate_image's handler calls src/module/media/grokImage.ts's generateImage(),
  * which spawns a real `grok` CLI subprocess — mock it out so this test
  * exercises only the caption plumbing (issue #174), not image generation
  * itself. node:test module mocking requires a TestContext (`t.mock`) and must
@@ -29,10 +29,10 @@ after(async () => {
  * done lazily on first use and the resulting import cached, mirroring the
  * pattern in tests/knowledgeScope.test.ts.
  */
-let toolsPromise: Promise<typeof import('../src/agent/tools.js')> | null = null;
+let toolsPromise: Promise<typeof import('../src/module/agent/tools.js')> | null = null;
 function tools(t: { mock: { module: (specifier: string, opts: unknown) => void } }) {
   if (!toolsPromise) {
-    t.mock.module('../src/media/grokImage.js', {
+    t.mock.module('../src/module/media/grokImage.js', {
       namedExports: {
         generateImage: async () => ({
           data: Buffer.from('fake-image-bytes'),
@@ -41,7 +41,13 @@ function tools(t: { mock: { module: (specifier: string, opts: unknown) => void }
         }),
       },
     });
-    toolsPromise = import('../src/agent/tools.js');
+    // The tool-registry registrations (the manifest's `toolTiers`/
+    // `toolServerParts`/`flaggedToolPredicates` in production) load the whole
+    // registry, so they must come AFTER the mock above — importing the
+    // registry is what caches the real module this test replaces.
+    toolsPromise = import('./support/registerToolRegistry.js').then(
+      () => import('../src/module/agent/tools.js'),
+    );
   }
   return toolsPromise;
 }

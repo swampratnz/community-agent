@@ -1,7 +1,20 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { CallerContext } from '../src/auth/rbac.js';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import './support/registerNotices.js';
+import type { CallerContext } from '@swampratnz/agent-base/auth/rbac.js';
+import type {
+  IncomingMessage,
+  OutgoingMessage,
+  PlatformAdapter,
+} from '@swampratnz/agent-base/platforms/types.js';
+// Community content registrations (prompt sections + persona roster) — the
+// composition-root contract: src/index.ts registers these in production, so
+// tests that assemble prompts register them explicitly here.
+import './support/registerPromptSections.js';
+import './support/registerPersonas.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -15,6 +28,11 @@ process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 process.env.MAX_INCOMING_MESSAGE_CHARS ??= '20';
+
+// The tool registry's module-scope registrations (tool tiers, tool-server
+// parts, feature-flag predicates) — the composition-root contract, matching
+// tests/rbac.test.ts.
+await import('./support/registerToolRegistry.js');
 
 // Captures the exact params passed to query() so tests can assert on the
 // assembled user-turn prompt, mirroring tests/agentCoreRequesterTag.test.ts.
@@ -33,16 +51,16 @@ function mockQuery(params: { prompt: string; options: { systemPrompt: string } }
   })();
 }
 
-// query() is a static import inside src/agent/core.ts, so once core.js has
+// query() is a static import inside src/base/agent/core.ts, so once core.js has
 // been dynamically imported anywhere in this process the binding is fixed —
 // install the mock once and reuse the cached import (see
 // tests/agentCoreMaxTurns.test.ts for the same trap).
-let corePromise: Promise<typeof import('../src/agent/core.js')> | null = null;
+let corePromise: Promise<typeof import('@swampratnz/agent-base/agent/core.js')> | null = null;
 async function core(t: { mock: { module: (specifier: string, opts: unknown) => void } }) {
   if (!corePromise) {
     const real = await import('@anthropic-ai/claude-agent-sdk');
     t.mock.module('@anthropic-ai/claude-agent-sdk', { namedExports: { ...real, query: mockQuery } });
-    corePromise = import('../src/agent/core.js');
+    corePromise = import('@swampratnz/agent-base/agent/core.js');
   }
   return corePromise;
 }
@@ -168,9 +186,10 @@ test("SECURITY: MAX_INCOMING_MESSAGE_CHARS truncation touches only runAgentTurn'
 
 test("SECURITY: the router's own IncomingMessage.text is unaffected by MAX_INCOMING_MESSAGE_CHARS — only the model-bound copy inside runAgentTurn shrinks (acceptance criterion 5, end-to-end)", async (t) => {
   const { runAgentTurn } = await core(t);
-  const { Router } = await import('../src/router.js');
+  const { Router } = await import('@swampratnz/agent-base/router.js');
+  const { makeRouterDeps } = await import('../src/module/routerWiring.js');
 
-  const router = new Router(runAgentTurn);
+  const router = new Router(makeRouterDeps({ runTurn: runAgentTurn }));
   let handler: ((msg: IncomingMessage) => Promise<void> | void) | null = null;
   const { adapter } = makeAdapter({
     onMessage(h) {

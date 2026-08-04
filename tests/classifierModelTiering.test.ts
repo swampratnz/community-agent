@@ -1,5 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import './support/registerNotices.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -39,22 +43,22 @@ function trackingMockQuery(args: { prompt: string; options: Record<string, unkno
   return mockQuery();
 }
 
-// query() is a static import inside both src/moderation/moderator.ts and
-// src/context/builder.ts, so once either module has been imported anywhere in
+// query() is a static import inside both src/base/moderation/moderator.ts and
+// src/module/context/builder.ts, so once either module has been imported anywhere in
 // this process the binding is fixed — a later t.mock.module call can't
 // retarget it (see tests/agentCoreMaxTurns.test.ts for the same trap).
 // Install the mock once and reuse the cached imports.
 let modulesPromise: Promise<{
-  classifyAbuseWithLlm: typeof import('../src/moderation/moderator.js').classifyAbuseWithLlm;
-  summarizeCluster: typeof import('../src/context/builder.js').summarizeCluster;
+  classifyAbuseWithLlm: typeof import('@swampratnz/agent-base/moderation/moderator.js').classifyAbuseWithLlm;
+  summarizeCluster: typeof import('../src/module/context/builder.js').summarizeCluster;
 }> | null = null;
 async function modules(t: { mock: { module: (specifier: string, opts: unknown) => void } }) {
   if (!modulesPromise) {
     const real = await import('@anthropic-ai/claude-agent-sdk');
     t.mock.module('@anthropic-ai/claude-agent-sdk', { namedExports: { ...real, query: trackingMockQuery } });
     modulesPromise = Promise.all([
-      import('../src/moderation/moderator.js'),
-      import('../src/context/builder.js'),
+      import('@swampratnz/agent-base/moderation/moderator.js'),
+      import('../src/module/context/builder.js'),
     ]).then(([moderator, builder]) => ({
       classifyAbuseWithLlm: moderator.classifyAbuseWithLlm,
       summarizeCluster: builder.summarizeCluster,
@@ -64,14 +68,14 @@ async function modules(t: { mock: { module: (specifier: string, opts: unknown) =
 }
 
 test('classifyAbuseWithLlm: AGENT_MODEL_CLASSIFIER unset ⇒ options.model === config.llm.model (issue #394)', async (t) => {
-  const { config } = await import('../src/config.js');
+  const { config } = await import('@swampratnz/agent-base/config.js');
   const { classifyAbuseWithLlm } = await modules(t);
   await classifyAbuseWithLlm('some test message');
   assert.equal(capturedOptions?.model, config.llm.model);
 });
 
 test('summarizeCluster: AGENT_MODEL_CLASSIFIER unset ⇒ options.model === config.llm.model (issue #394)', async (t) => {
-  const { config } = await import('../src/config.js');
+  const { config } = await import('@swampratnz/agent-base/config.js');
   const { summarizeCluster } = await modules(t);
   await summarizeCluster(['a recurring sample message']);
   assert.equal(capturedOptions?.model, config.llm.model);

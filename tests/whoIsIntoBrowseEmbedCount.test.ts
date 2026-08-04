@@ -17,7 +17,7 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 
 test("SECURITY: who_is_into's no-query/no-profile browse fallback never calls embed() (issue #920 AC #9)", async (t) => {
   let embedCalls = 0;
-  t.mock.module('../src/storage/embeddings.js', {
+  t.mock.module('@swampratnz/agent-base/storage/embeddings.js', {
     namedExports: {
       embed: async () => {
         embedCalls += 1;
@@ -26,7 +26,7 @@ test("SECURITY: who_is_into's no-query/no-profile browse fallback never calls em
     },
   });
 
-  const { pool } = await import('../src/storage/db.js');
+  const { pool } = await import('@swampratnz/agent-base/storage/db.js');
   t.mock.method(pool, 'query', (async (sql: string) => {
     // searchMemberInterestsForSelf's self-match query and its existence
     // check both report "no profile" — no rows either way.
@@ -50,7 +50,8 @@ test("SECURITY: who_is_into's no-query/no-profile browse fallback never calls em
     return { rows: [], rowCount: 0 };
   }) as typeof pool.query);
 
-  const { buildToolServer } = await import('../src/agent/tools.js');
+  await import('./support/registerToolRegistry.js');
+  const { buildToolServer } = await import('../src/module/agent/tools.js');
   const { platform, userId, userName, role, conversationId, isDirect } = {
     platform: 'discord' as const,
     userId: 'caller-1',

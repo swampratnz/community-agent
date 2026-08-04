@@ -182,7 +182,13 @@ test('SECURITY: check mode refuses a per-file count LOWERED vs the PR base (a de
     const check = (env: Record<string, string>) =>
       spawnSync('node', [path.join(dir, 'scripts', 'check-security-test-count.mjs')], {
         encoding: 'utf8',
-        env: { ...process.env, ...env },
+        // ALLOW_SECURITY_FLOOR_LOWER is cleared before `env` is applied, not
+        // inherited: CI sets it at JOB level whenever the PR carries the
+        // allow-security-floor-lower label, and inheriting it would switch off
+        // the very guard these cases assert — the "blocked" spawn would sail
+        // past the block and fail on something unrelated. Each case states the
+        // value it wants.
+        env: { ...process.env, ALLOW_SECURITY_FLOOR_LOWER: '', ...env },
       });
 
     const blocked = check({ SECURITY_FLOOR_BASELINE_REF: 'HEAD' });
@@ -233,7 +239,13 @@ test('SECURITY: check mode catches a RENAME-with-drop that slips past the per-fi
     const check = (env: Record<string, string>) =>
       spawnSync('node', [path.join(dir, 'scripts', 'check-security-test-count.mjs')], {
         encoding: 'utf8',
-        env: { ...process.env, ...env },
+        // ALLOW_SECURITY_FLOOR_LOWER is cleared before `env` is applied, not
+        // inherited: CI sets it at JOB level whenever the PR carries the
+        // allow-security-floor-lower label, and inheriting it would switch off
+        // the very guard these cases assert — the "blocked" spawn would sail
+        // past the block and fail on something unrelated. Each case states the
+        // value it wants.
+        env: { ...process.env, ALLOW_SECURITY_FLOOR_LOWER: '', ...env },
       });
 
     const blocked = check({ SECURITY_FLOOR_BASELINE_REF: 'HEAD' });

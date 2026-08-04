@@ -1,7 +1,15 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { AgentReply } from '../src/agent/core.js';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import './support/registerNotices.js';
+import type { AgentReply } from '@swampratnz/agent-base/agent/core.js';
+import type {
+  IncomingMessage,
+  OutgoingMessage,
+  PlatformAdapter,
+} from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -27,19 +35,23 @@ process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 process.env.ACCESS_MODE_DISCORD = 'open';
-const { pool, closeDb } = await import('../src/storage/db.js');
-const { Router } = await import('../src/router.js');
-const { PAUSE_NOTICE_TEXT, PAUSE_NOTICE_TEXT_MI, PAUSE_NOTICE_TEXT_PLAIN } =
-  await import('../src/pauseNotice.js');
-const { RATE_LIMIT_NOTICE_TEXT } = await import('../src/rateLimitNotice.js');
-const { embed } = await import('../src/storage/embeddings.js');
+const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
+const { Router } = await import('@swampratnz/agent-base/router.js');
+const { makeRouterDeps } = await import('../src/module/routerWiring.js');
+const { embed } = await import('@swampratnz/agent-base/storage/embeddings.js');
+
+// Notice constants agent-base deleted in the package flip (they named this
+// community's axis values in framework code, and rendered at import time). Same
+// catalogue entries, same values — see tests/support/legacyNotices.ts.
+const { PAUSE_NOTICE_TEXT, PAUSE_NOTICE_TEXT_MI, PAUSE_NOTICE_TEXT_PLAIN, RATE_LIMIT_NOTICE_TEXT } =
+  await import('./support/legacyNotices.js');
 
 await embed('warmup').catch(() => {});
 
 // Non-gated mode means every trigger() below reaches recordInteraction and is
 // persisted for real (unlike router.test.ts's default gated mode, where a
 // guest's content never lands in `interactions`). The context builder
-// (src/context/builder.ts) clusters inbound interactions by embedding
+// (src/module/context/builder.ts) clusters inbound interactions by embedding
 // similarity across the WHOLE table, unscoped by conversation or test file —
 // an identical message text from >=3 distinct users forms a real cluster. A
 // unique-per-run marker keeps this file's traffic from ever exact-matching
@@ -118,11 +130,13 @@ function makeReply(text: string): AgentReply {
 
 test('router (paused): a member/guest addressing the bot gets exactly one pause notice, not the agent turn', async () => {
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called while paused');
-    },
-    20,
-    async () => true, // paused
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called while paused');
+      },
+      typingRefireMs: 20,
+      checkPaused: async () => true,
+    }), // paused
   );
   const { adapter, sent, typingCalls, trigger } = makeAdapter();
   router.register(adapter);
@@ -136,11 +150,13 @@ test('router (paused): a member/guest addressing the bot gets exactly one pause 
 
 test('router (paused): a second addressed message from the same user inside the debounce window gets no additional notice', async () => {
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called while paused');
-    },
-    20,
-    async () => true, // paused
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called while paused');
+      },
+      typingRefireMs: 20,
+      checkPaused: async () => true,
+    }), // paused
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -153,11 +169,13 @@ test('router (paused): a second addressed message from the same user inside the 
 
 test('router (paused): a different user still gets their own first notice (debounce is per-user)', async () => {
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called while paused');
-    },
-    20,
-    async () => true, // paused
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called while paused');
+      },
+      typingRefireMs: 20,
+      checkPaused: async () => true,
+    }), // paused
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -172,9 +190,11 @@ test('router (paused): a different user still gets their own first notice (debou
 
 test('router (paused): a super admin is unaffected — still gets the full agent turn, not the pause notice', async () => {
   const router = new Router(
-    async () => makeReply('real answer despite pause'),
-    20,
-    async () => true, // paused
+    makeRouterDeps({
+      runTurn: async () => makeReply('real answer despite pause'),
+      typingRefireMs: 20,
+      checkPaused: async () => true,
+    }), // paused
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -187,16 +207,18 @@ test('router (paused): a super admin is unaffected — still gets the full agent
 
 test('router (paused): a user over the rate limit while paused gets exactly the pause notice, never a rate-limit notice too (no double-notify)', async () => {
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called while paused');
-    },
-    20,
-    async () => true, // paused
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called while paused');
+      },
+      typingRefireMs: 20,
+      checkPaused: async () => true,
+    }), // paused
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
 
-  // The paused check runs before the rate-limit check in src/router.ts and
+  // The paused check runs before the rate-limit check in src/base/router.ts and
   // returns first, so userHits is never even populated while paused — a
   // burst well past RATE_LIMIT (8) must still yield only the one debounced
   // pause notice.
@@ -211,9 +233,11 @@ test('router (paused): a user over the rate limit while paused gets exactly the 
 
 test('router (not paused): behaviour is unchanged — normal reply, no pause notice', async () => {
   const router = new Router(
-    async () => makeReply('normal reply'),
-    20,
-    async () => false, // not paused
+    makeRouterDeps({
+      runTurn: async () => makeReply('normal reply'),
+      typingRefireMs: 20,
+      checkPaused: async () => false,
+    }), // not paused
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -228,15 +252,14 @@ test('router (not paused): behaviour is unchanged — normal reply, no pause not
 
 test("router (paused): a caller with a standing 'mi' language preference gets PAUSE_NOTICE_TEXT_MI, not the English default", async () => {
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called while paused');
-    },
-    20,
-    async () => true, // paused
-    undefined,
-    undefined,
-    undefined,
-    async () => 'mi',
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called while paused');
+      },
+      typingRefireMs: 20,
+      checkPaused: async () => true,
+      getLangPref: async () => 'mi',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -249,15 +272,14 @@ test("router (paused): a caller with a standing 'mi' language preference gets PA
 
 test("router (paused): a caller with 'auto' (the default) still gets the English PAUSE_NOTICE_TEXT", async () => {
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called while paused');
-    },
-    20,
-    async () => true, // paused
-    undefined,
-    undefined,
-    undefined,
-    async () => 'auto',
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called while paused');
+      },
+      typingRefireMs: 20,
+      checkPaused: async () => true,
+      getLangPref: async () => 'auto',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -270,17 +292,16 @@ test("router (paused): a caller with 'auto' (the default) still gets the English
 
 test('SECURITY: a getLanguagePreference failure on the pause notice still sends the English default, never throws or drops the notice', async () => {
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called while paused');
-    },
-    20,
-    async () => true, // paused
-    undefined,
-    undefined,
-    undefined,
-    async () => {
-      throw new Error('language_prefs read boom');
-    },
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called while paused');
+      },
+      typingRefireMs: 20,
+      checkPaused: async () => true,
+      getLangPref: async () => {
+        throw new Error('language_prefs read boom');
+      },
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -294,18 +315,17 @@ test('SECURITY: a getLanguagePreference failure on the pause notice still sends 
 test('router (paused): the language-preference lookup runs at most once per debounce window, never once per shed message', async () => {
   let calls = 0;
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called while paused');
-    },
-    20,
-    async () => true, // paused
-    undefined,
-    undefined,
-    undefined,
-    async () => {
-      calls += 1;
-      return 'auto';
-    },
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called while paused');
+      },
+      typingRefireMs: 20,
+      checkPaused: async () => true,
+      getLangPref: async () => {
+        calls += 1;
+        return 'auto';
+      },
+    }),
   );
   const { adapter, trigger } = makeAdapter();
   router.register(adapter);
@@ -325,18 +345,15 @@ test('router (paused): the language-preference lookup runs at most once per debo
 
 test("router (paused): a caller with a standing 'plain' response style (and 'auto' language) gets PAUSE_NOTICE_TEXT_PLAIN", async () => {
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called while paused');
-    },
-    20,
-    async () => true, // paused
-    undefined,
-    undefined,
-    undefined,
-    async () => 'auto',
-    undefined,
-    undefined,
-    async () => 'plain',
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called while paused');
+      },
+      typingRefireMs: 20,
+      checkPaused: async () => true,
+      getLangPref: async () => 'auto',
+      getRespStyle: async () => 'plain',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -349,18 +366,15 @@ test("router (paused): a caller with a standing 'plain' response style (and 'aut
 
 test("router (paused): a caller with 'standard' response style still gets the English PAUSE_NOTICE_TEXT (byte-identical regression)", async () => {
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called while paused');
-    },
-    20,
-    async () => true, // paused
-    undefined,
-    undefined,
-    undefined,
-    async () => 'auto',
-    undefined,
-    undefined,
-    async () => 'standard',
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called while paused');
+      },
+      typingRefireMs: 20,
+      checkPaused: async () => true,
+      getLangPref: async () => 'auto',
+      getRespStyle: async () => 'standard',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -373,18 +387,15 @@ test("router (paused): a caller with 'standard' response style still gets the En
 
 test("router (paused): 'mi' takes precedence over 'plain' when both are set — the caller still gets PAUSE_NOTICE_TEXT_MI", async () => {
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called while paused');
-    },
-    20,
-    async () => true, // paused
-    undefined,
-    undefined,
-    undefined,
-    async () => 'mi',
-    undefined,
-    undefined,
-    async () => 'plain',
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called while paused');
+      },
+      typingRefireMs: 20,
+      checkPaused: async () => true,
+      getLangPref: async () => 'mi',
+      getRespStyle: async () => 'plain',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -398,20 +409,17 @@ test("router (paused): 'mi' takes precedence over 'plain' when both are set — 
 
 test('SECURITY: a getResponseStyle failure on the pause notice still sends the English default, never throws or drops the notice', async () => {
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called while paused');
-    },
-    20,
-    async () => true, // paused
-    undefined,
-    undefined,
-    undefined,
-    async () => 'auto',
-    undefined,
-    undefined,
-    async () => {
-      throw new Error('response_style_prefs read boom');
-    },
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called while paused');
+      },
+      typingRefireMs: 20,
+      checkPaused: async () => true,
+      getLangPref: async () => 'auto',
+      getRespStyle: async () => {
+        throw new Error('response_style_prefs read boom');
+      },
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);

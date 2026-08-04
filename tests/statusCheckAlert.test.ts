@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+import type { OutgoingMessage, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
 // Anthropic status-check consecutive-failure alerting (issue #321). Its own
 // process/file because STATUS_CHECK_ENABLED is pinned ON here (opposite of
@@ -12,6 +12,10 @@ process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
+// The status feed URL has NO default in agent-base — a framework must not ship
+// one vendor's status page — so this deployment sets it explicitly, and so
+// must a test that exercises the poller (see .env.example).
+process.env.STATUS_CHECK_API_URL ??= 'https://status.claude.com/api/v2/summary.json';
 process.env.SUPER_ADMIN_DISCORD_IDS = 'super-1';
 process.env.SUPER_ADMIN_WHATSAPP_NUMBERS ??= 'admin-open,admin-closed';
 process.env.STATUS_CHECK_ENABLED = 'true';
@@ -22,17 +26,17 @@ const {
   statusCheckAlertThreshold,
   stepStatusIncidentTracker,
   initialStatusIncidentTracker,
-} = await import('../src/backgroundJobs.js');
+} = await import('../src/module/backgroundJobs.js');
 const { getJobHealthSnapshot, resetJobHealthRegistryForTests } =
-  await import('../src/backgroundJobHealth.js');
+  await import('@swampratnz/agent-base/backgroundJobHealth.js');
 const {
   pollAnthropicStatus,
   resetStatusCacheForTests,
   formatStatusResolvedAlert,
   formatStatusMessage,
   getStatusCache,
-} = await import('../src/status/anthropicStatus.js');
-const { WindowClosedError } = await import('../src/platforms/whatsapp/cloudAdapter.js');
+} = await import('../src/module/status/anthropicStatus.js');
+const { WindowClosedError } = await import('@swampratnz/agent-base/platforms/whatsapp/cloudAdapter.js');
 
 const POLL_MS = 5 * 60_000;
 const THRESHOLD = statusCheckAlertThreshold(5);
@@ -209,8 +213,8 @@ test("startStatusCheck: records 'anthropic-status-check' in the shared job-healt
     t.mock.timers.tick(POLL_MS);
     await flush(); // 2nd run succeeds
     snap = getJobHealthSnapshot()['anthropic-status-check'];
-    assert.equal(snap!.consecutiveFailures, 0, 'a success resets consecutiveFailures in the registry');
-    assert.ok(snap!.lastSuccessAt !== null, 'a success records a lastSuccessAt in the registry');
+    assert.equal(snap.consecutiveFailures, 0, 'a success resets consecutiveFailures in the registry');
+    assert.ok(snap.lastSuccessAt !== null, 'a success records a lastSuccessAt in the registry');
   } finally {
     clearInterval(timer!);
   }

@@ -1,5 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import './support/registerNotices.js';
+// The bundled-skills manifest (the manifest's `skills` registration).
+import './support/registerSkills.js';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,11 +20,16 @@ process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.AGENT_SKILLS_ENABLED = 'true';
 
-const { buildQueryOptions } = await import('../src/agent/core.js');
+// The tool registry's module-scope registrations (tool tiers, tool-server
+// parts, feature-flag predicates) — the composition-root contract, matching
+// tests/rbac.test.ts.
+await import('./support/registerToolRegistry.js');
+
+const { buildQueryOptions } = await import('@swampratnz/agent-base/agent/core.js');
 
 const SKILL_PATH = join(
   dirname(fileURLToPath(import.meta.url)),
-  '../src/agent/skills/model-and-plan-selection/SKILL.md',
+  '../src/module/agent/skills/model-and-plan-selection/SKILL.md',
 );
 const SKILL_BODY = readFileSync(SKILL_PATH, 'utf8');
 

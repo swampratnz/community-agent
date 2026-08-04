@@ -1,7 +1,15 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { AgentReply } from '../src/agent/core.js';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import './support/registerNotices.js';
+import type { AgentReply } from '@swampratnz/agent-base/agent/core.js';
+import type {
+  IncomingMessage,
+  OutgoingMessage,
+  PlatformAdapter,
+} from '@swampratnz/agent-base/platforms/types.js';
 
 // Router-level counterpart to pauseNotice.router.test.ts/rateLimitNotice.router.test.ts,
 // covering the CONFIRM/CANCEL intercept's own three fixed strings (issue #405,
@@ -20,9 +28,17 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 process.env.ACCESS_MODE_DISCORD = 'open';
 
-const { pool, closeDb } = await import('../src/storage/db.js');
+const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
+const { Router } = await import('@swampratnz/agent-base/router.js');
+const { makeRouterDeps } = await import('../src/module/routerWiring.js');
+const { registerPendingAction, classifyConfirmReply, hasPendingAction } =
+  await import('@swampratnz/agent-base/agent/pendingActions.js');
+const { embed } = await import('@swampratnz/agent-base/storage/embeddings.js');
+
+// Notice constants agent-base deleted in the package flip (they named this
+// community's axis values in framework code, and rendered at import time). Same
+// catalogue entries, same values — see tests/support/legacyNotices.ts.
 const {
-  Router,
   CANCEL_TEXT,
   CANCEL_TEXT_MI,
   PERMISSIONS_CHANGED_TEXT,
@@ -33,10 +49,7 @@ const {
   PENDING_NOTICE_PLAIN,
   FAILED_PREFIX_MI,
   DONE_PREFIX_MI,
-} = await import('../src/router.js');
-const { registerPendingAction, classifyConfirmReply, hasPendingAction } =
-  await import('../src/agent/pendingActions.js');
-const { embed } = await import('../src/storage/embeddings.js');
+} = await import('./support/legacyNotices.js');
 
 await embed('warmup').catch(() => {});
 
@@ -122,15 +135,13 @@ test("router (CANCEL): a caller with a standing 'mi' preference receives CANCEL_
     execute: async () => 'done',
   });
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a CANCEL reply');
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async () => 'mi',
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a CANCEL reply');
+      },
+      typingRefireMs: 20,
+      getLangPref: async () => 'mi',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -157,9 +168,14 @@ test("router (CANCEL): a caller with no (or any other) preference receives CANCE
   // No getLangPref stub: the real getLanguagePreference hits the unreachable
   // DB and rejects, so the router's own `.catch(() => 'auto')` picks the
   // English default — same fail-safe path exercised explicitly below.
-  const router = new Router(async () => {
-    throw new Error('runTurn must not be called for a CANCEL reply');
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a CANCEL reply');
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -185,15 +201,13 @@ test("router (permissions changed): a tier-revoked-mid-TTL CONFIRM for an 'mi' c
     },
   });
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a CONFIRM reply');
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async () => 'mi',
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a CONFIRM reply');
+      },
+      typingRefireMs: 20,
+      getLangPref: async () => 'mi',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -213,9 +227,14 @@ test('router (permissions changed): the same caller with no mi preference gets P
       throw new Error('execute must never run once the tier re-check fails');
     },
   });
-  const router = new Router(async () => {
-    throw new Error('runTurn must not be called for a CONFIRM reply');
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a CONFIRM reply');
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -232,20 +251,18 @@ test("router (pending notice): a newly-registered pending action for an 'mi' cal
   const conversationId = nextConvo();
   const description = `${RUN} delete knowledge entry #5`;
   const router = new Router(
-    async (caller) => {
-      registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
-        description,
-        minTier: 'guest',
-        execute: async () => 'done',
-      });
-      return makeReply('sure, reply CONFIRM to apply');
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async () => 'mi',
+    makeRouterDeps({
+      runTurn: async (caller) => {
+        registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
+          description,
+          minTier: 'guest',
+          execute: async () => 'done',
+        });
+        return makeReply('sure, reply CONFIRM to apply');
+      },
+      typingRefireMs: 20,
+      getLangPref: async () => 'mi',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -262,14 +279,19 @@ test("router (pending notice): a newly-registered pending action for an 'mi' cal
 test('router (pending notice): the same scenario with no mi preference is served in the English PENDING_NOTICE wrapper', async () => {
   const conversationId = nextConvo();
   const description = `${RUN} delete knowledge entry #6`;
-  const router = new Router(async (caller) => {
-    registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
-      description,
-      minTier: 'guest',
-      execute: async () => 'done',
-    });
-    return makeReply('sure, reply CONFIRM to apply');
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async (caller) => {
+        registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
+          description,
+          minTier: 'guest',
+          execute: async () => 'done',
+        });
+        return makeReply('sure, reply CONFIRM to apply');
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -310,15 +332,13 @@ test('SECURITY: a getLanguagePreference failure at each of the three CONFIRM/CAN
     execute: async () => 'done',
   });
   const cancelRouter = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a CANCEL reply');
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    throwingLangPref,
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a CANCEL reply');
+      },
+      typingRefireMs: 20,
+      getLangPref: throwingLangPref,
+    }),
   );
   const { adapter: cancelAdapter, sent: cancelSent, trigger: cancelTrigger } = makeAdapter();
   cancelRouter.register(cancelAdapter);
@@ -336,15 +356,13 @@ test('SECURITY: a getLanguagePreference failure at each of the three CONFIRM/CAN
     },
   });
   const permRouter = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a CONFIRM reply');
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    throwingLangPref,
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a CONFIRM reply');
+      },
+      typingRefireMs: 20,
+      getLangPref: throwingLangPref,
+    }),
   );
   const { adapter: permAdapter, sent: permSent, trigger: permTrigger } = makeAdapter();
   permRouter.register(permAdapter);
@@ -358,20 +376,18 @@ test('SECURITY: a getLanguagePreference failure at each of the three CONFIRM/CAN
   const pendingConvo = nextConvo();
   const description = `${RUN} pending-failsafe`;
   const pendingRouter = new Router(
-    async (caller) => {
-      registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
-        description,
-        minTier: 'guest',
-        execute: async () => 'done',
-      });
-      return makeReply('sure, reply CONFIRM to apply');
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    throwingLangPref,
+    makeRouterDeps({
+      runTurn: async (caller) => {
+        registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
+          description,
+          minTier: 'guest',
+          execute: async () => 'done',
+        });
+        return makeReply('sure, reply CONFIRM to apply');
+      },
+      typingRefireMs: 20,
+      getLangPref: throwingLangPref,
+    }),
   );
   const { adapter: pendingAdapter, sent: pendingSent, trigger: pendingTrigger } = makeAdapter();
   pendingRouter.register(pendingAdapter);
@@ -394,15 +410,13 @@ test("router (CONFIRM): pending.execute()'s own outcome string stays byte-identi
     execute: async () => 'Updated knowledge entry #5.',
   });
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a CONFIRM reply');
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async () => 'mi',
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a CONFIRM reply');
+      },
+      typingRefireMs: 20,
+      getLangPref: async () => 'mi',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -425,15 +439,13 @@ test("router (CONFIRM): a thrown execute()'s 'Failed: ' shell is replaced with F
     },
   });
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a CONFIRM reply');
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async () => 'mi',
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a CONFIRM reply');
+      },
+      typingRefireMs: 20,
+      getLangPref: async () => 'mi',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -457,15 +469,13 @@ test("router (CONFIRM): a thrown execute()'s Failed: ... message stays byte-iden
     },
   });
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a CONFIRM reply');
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async () => 'auto',
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a CONFIRM reply');
+      },
+      typingRefireMs: 20,
+      getLangPref: async () => 'auto',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -486,15 +496,13 @@ test("router (CONFIRM): a successful execute()'s 'Done: ' shell is replaced with
     execute: async () => 'Done: Updated knowledge entry #5',
   });
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a CONFIRM reply');
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async () => 'mi',
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a CONFIRM reply');
+      },
+      typingRefireMs: 20,
+      getLangPref: async () => 'mi',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -519,15 +527,13 @@ test("router (CONFIRM): a successful execute()'s Done: ... message stays byte-id
     execute: async () => 'Done: Updated knowledge entry #5',
   });
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a CONFIRM reply');
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async () => 'auto',
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a CONFIRM reply');
+      },
+      typingRefireMs: 20,
+      getLangPref: async () => 'auto',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -546,15 +552,13 @@ test("router (CONFIRM): the 'Done: ${result}.' trailing-period template (tools.t
     execute: async () => 'Done: Muted user for 10 minutes.',
   });
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a CONFIRM reply');
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async () => 'mi',
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a CONFIRM reply');
+      },
+      typingRefireMs: 20,
+      getLangPref: async () => 'mi',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -606,15 +610,13 @@ test('SECURITY: the CONFIRM flow itself (which action runs, the tier re-check, a
     },
   });
   const execRouter = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a CONFIRM reply');
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async () => 'mi',
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a CONFIRM reply');
+      },
+      typingRefireMs: 20,
+      getLangPref: async () => 'mi',
+    }),
   );
   const { adapter: execAdapter, sent: execSent, trigger: execTrigger } = makeAdapter();
   execRouter.register(execAdapter);
@@ -636,15 +638,13 @@ test('SECURITY: the CONFIRM flow itself (which action runs, the tier re-check, a
     },
   });
   const tierRouter = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a CONFIRM reply');
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async () => 'mi',
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a CONFIRM reply');
+      },
+      typingRefireMs: 20,
+      getLangPref: async () => 'mi',
+    }),
   );
   const { adapter: tierAdapter, sent: tierSent, trigger: tierTrigger } = makeAdapter();
   tierRouter.register(tierAdapter);
@@ -664,15 +664,13 @@ test('SECURITY: the CONFIRM flow itself (which action runs, the tier re-check, a
     },
   });
   const cancelRouter = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a CONFIRM reply');
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async () => 'mi',
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a CONFIRM reply');
+      },
+      typingRefireMs: 20,
+      getLangPref: async () => 'mi',
+    }),
   );
   const { adapter: cancelAdapter, sent: cancelSent, trigger: cancelTrigger } = makeAdapter();
   cancelRouter.register(cancelAdapter);
@@ -696,15 +694,13 @@ test('SECURITY: the CONFIRM flow itself (which action runs, the tier re-check, a
     },
   });
   const doneRouter = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a CONFIRM reply');
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async () => 'mi',
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a CONFIRM reply');
+      },
+      typingRefireMs: 20,
+      getLangPref: async () => 'mi',
+    }),
   );
   const { adapter: doneAdapter, sent: doneSent, trigger: doneTrigger } = makeAdapter();
   doneRouter.register(doneAdapter);
@@ -735,18 +731,14 @@ test("router (permissions changed): a tier-revoked-mid-TTL CONFIRM for a 'plain'
     },
   });
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a CONFIRM reply');
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async () => 'auto',
-    undefined,
-    undefined,
-    async () => 'plain',
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a CONFIRM reply');
+      },
+      typingRefireMs: 20,
+      getLangPref: async () => 'auto',
+      getRespStyle: async () => 'plain',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -767,18 +759,14 @@ test("router (permissions changed): 'mi' takes precedence over 'plain' when both
     },
   });
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a CONFIRM reply');
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async () => 'mi',
-    undefined,
-    undefined,
-    async () => 'plain',
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a CONFIRM reply');
+      },
+      typingRefireMs: 20,
+      getLangPref: async () => 'mi',
+      getRespStyle: async () => 'plain',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -800,20 +788,16 @@ test('SECURITY: a getResponseStyle failure on the permissions-changed reply stil
     },
   });
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a CONFIRM reply');
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async () => 'auto',
-    undefined,
-    undefined,
-    async () => {
-      throw new Error('response_style_prefs read boom');
-    },
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a CONFIRM reply');
+      },
+      typingRefireMs: 20,
+      getLangPref: async () => 'auto',
+      getRespStyle: async () => {
+        throw new Error('response_style_prefs read boom');
+      },
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -827,23 +811,19 @@ test("router (pending notice): a newly-registered pending action for a 'plain' (
   const conversationId = nextConvo();
   const description = `${RUN} delete knowledge entry #7`;
   const router = new Router(
-    async (caller) => {
-      registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
-        description,
-        minTier: 'guest',
-        execute: async () => 'done',
-      });
-      return makeReply('sure, reply CONFIRM to apply');
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async () => 'auto',
-    undefined,
-    undefined,
-    async () => 'plain',
+    makeRouterDeps({
+      runTurn: async (caller) => {
+        registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
+          description,
+          minTier: 'guest',
+          execute: async () => 'done',
+        });
+        return makeReply('sure, reply CONFIRM to apply');
+      },
+      typingRefireMs: 20,
+      getLangPref: async () => 'auto',
+      getRespStyle: async () => 'plain',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -861,23 +841,19 @@ test("router (pending notice): 'mi' takes precedence over 'plain' when both are 
   const conversationId = nextConvo();
   const description = `${RUN} delete knowledge entry #8`;
   const router = new Router(
-    async (caller) => {
-      registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
-        description,
-        minTier: 'guest',
-        execute: async () => 'done',
-      });
-      return makeReply('sure, reply CONFIRM to apply');
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async () => 'mi',
-    undefined,
-    undefined,
-    async () => 'plain',
+    makeRouterDeps({
+      runTurn: async (caller) => {
+        registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
+          description,
+          minTier: 'guest',
+          execute: async () => 'done',
+        });
+        return makeReply('sure, reply CONFIRM to apply');
+      },
+      typingRefireMs: 20,
+      getLangPref: async () => 'mi',
+      getRespStyle: async () => 'plain',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -895,25 +871,21 @@ test('SECURITY: a getResponseStyle failure on the pending notice still sends the
   const conversationId = nextConvo();
   const description = `${RUN} pending-style-failsafe`;
   const router = new Router(
-    async (caller) => {
-      registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
-        description,
-        minTier: 'guest',
-        execute: async () => 'done',
-      });
-      return makeReply('sure, reply CONFIRM to apply');
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async () => 'auto',
-    undefined,
-    undefined,
-    async () => {
-      throw new Error('response_style_prefs read boom');
-    },
+    makeRouterDeps({
+      runTurn: async (caller) => {
+        registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
+          description,
+          minTier: 'guest',
+          execute: async () => 'done',
+        });
+        return makeReply('sure, reply CONFIRM to apply');
+      },
+      typingRefireMs: 20,
+      getLangPref: async () => 'auto',
+      getRespStyle: async () => {
+        throw new Error('response_style_prefs read boom');
+      },
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -941,7 +913,7 @@ test('SECURITY: PENDING_NOTICE_PLAIN interpolates ONLY the pending.description p
 });
 
 test('router (CANCEL): CANCEL_TEXT is deliberately left without a _PLAIN counterpart — no such export exists on the router module', async () => {
-  const routerModule = await import('../src/router.js');
+  const routerModule = await import('@swampratnz/agent-base/router.js');
   assert.equal(
     'CANCEL_TEXT_PLAIN' in routerModule,
     false,

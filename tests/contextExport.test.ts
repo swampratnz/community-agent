@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { ContextDigest } from '../src/storage/repository.js';
+import type { ContextDigest } from '@swampratnz/agent-base/storage/repository.js';
 
 // The renderer is pure (digests in, markdown out), so the issue #53 egress
 // invariants are pinned here without a database or network.
@@ -10,7 +10,7 @@ process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 
-const { renderCommunityContextExport, scrubPII } = await import('../src/context/export.js');
+const { renderCommunityContextExport, scrubPII } = await import('../src/module/context/export.js');
 
 function digest(overrides: Partial<ContextDigest>): ContextDigest {
   return {

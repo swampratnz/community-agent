@@ -1,7 +1,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
-import type { BackgroundJobName } from '../src/backgroundJobHealth.js';
+import type { OutgoingMessage, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
+import type { BackgroundJobName } from '@swampratnz/agent-base/backgroundJobHealth.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -35,6 +35,9 @@ process.env.SUPER_ADMIN_WHATSAPP_NUMBERS ??= 'admin-open,admin-closed';
 process.env.CONTEXT_BUILDER_ENABLED = 'true';
 process.env.KNOWLEDGE_REFRESH_ENABLED = 'true';
 process.env.DOCS_INGEST_ENABLED = 'true';
+// agent-base ships no default docs-index URL, and requires one whenever the
+// ingest is enabled (see .env.example).
+process.env.DOCS_INGEST_INDEX_URL ??= 'https://platform.claude.com/llms.txt';
 process.env.KNOWLEDGE_LINK_CHECK_ENABLED = 'true';
 process.env.INTERACTION_RETENTION_DAYS = '7';
 process.env.ROSTER_DEPARTED_RETENTION_DAYS = '30';
@@ -56,25 +59,25 @@ const {
   defaultKnowledgeRefreshRun,
   defaultContextBuilderRun,
   defaultKnowledgeLinkCheckRun,
-} = await import('../src/backgroundJobs.js');
-const { startRetentionPurge } = await import('../src/interactionRetention.js');
-const { startRosterRetentionPurge } = await import('../src/rosterRetention.js');
-const { startAdminDigest } = await import('../src/adminDigest.js');
-const { startDepartedAdminAlert } = await import('../src/departedAdminAlert.js');
-const { startUsageCostDigest } = await import('../src/usageCostDigest.js');
-const { startEngagementAlert } = await import('../src/engagementAlert.js');
-const { startAdminLeverageAlert } = await import('../src/adminLeverageAlert.js');
-const { startMemberDigest } = await import('../src/memberDigest.js');
-const { startBackgroundJobCostAlert } = await import('../src/backgroundJobCostAlert.js');
-const { REFRESH_TOPICS, REFRESH_TITLES } = await import('../src/context/knowledgeRefresh.js');
-const { pool, closeDb } = await import('../src/storage/db.js');
-const { config } = await import('../src/config.js');
+} = await import('../src/module/backgroundJobs.js');
+const { startRetentionPurge } = await import('@swampratnz/agent-base/retention.js');
+const { startRosterRetentionPurge } = await import('@swampratnz/agent-base/retention.js');
+const { startAdminDigest } = await import('../src/module/adminDigest.js');
+const { startDepartedAdminAlert } = await import('../src/module/departedAdminAlert.js');
+const { startUsageCostDigest } = await import('../src/module/usageCostDigest.js');
+const { startEngagementAlert } = await import('../src/module/engagementAlert.js');
+const { startAdminLeverageAlert } = await import('../src/module/adminLeverageAlert.js');
+const { startMemberDigest } = await import('../src/module/memberDigest.js');
+const { startBackgroundJobCostAlert } = await import('@swampratnz/agent-base/backgroundJobCostAlert.js');
+const { REFRESH_TOPICS, REFRESH_TITLES } = await import('../src/module/context/knowledgeRefresh.js');
+const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
+const { config } = await import('@swampratnz/agent-base/config.js');
 const pgvector = (await import('pgvector/pg')).default;
 const { getJobHealthSnapshot, resetJobHealthRegistryForTests } =
-  await import('../src/backgroundJobHealth.js');
+  await import('@swampratnz/agent-base/backgroundJobHealth.js');
 const { getPendingAlertsForTests, getPendingAlertEntriesForTests, resetPendingAlertsForTests } =
-  await import('../src/pendingAlertQueue.js');
-const { WindowClosedError } = await import('../src/platforms/whatsapp/cloudAdapter.js');
+  await import('@swampratnz/agent-base/pendingAlertQueue.js');
+const { WindowClosedError } = await import('@swampratnz/agent-base/platforms/whatsapp/cloudAdapter.js');
 
 // Pin the docs-ingest dead-URL feature OFF by default here (issue #611): the
 // pre-existing docs-ingest tests in this file drive real page-fetch failures
@@ -286,7 +289,7 @@ test("SECURITY: a job's registry entry after a failed run() never contains the c
   const timer = startDocsIngest([adapter], runOnce);
   try {
     await flush();
-    const snap = getJobHealthSnapshot()['docs-ingest']!;
+    const snap = getJobHealthSnapshot()['docs-ingest'];
     assert.deepEqual(
       new Set(Object.keys(snap)),
       new Set(['consecutiveFailures', 'alerted', 'lastRunAt', 'lastSuccessAt']),

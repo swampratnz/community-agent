@@ -1,7 +1,19 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
+// The default bad-word list is community content registered at its own module
+// scope (src/index.ts imports it in production); the moderation wordlist fails
+// closed until then, and constructing a Discord adapter builds a Moderator.
+import './support/registerBadWords.js';
+// The adapters take their community text pack as a required constructor
+// parameter now (agent-base plan item 6) — production hands it over in
+// src/module/platforms/factories.ts, so these constructions pass the same pack.
+import { BAILEYS_TEXT_PACK, DISCORD_TEXT_PACK } from '../src/module/platforms/textPacks.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import './support/registerNotices.js';
 import { Events } from 'discord.js';
-import type { IncomingMessage } from '../src/platforms/types.js';
+import type { IncomingMessage } from '@swampratnz/agent-base/platforms/types.js';
 
 // Issue #575's auto-retraction feature, flag OFF (AUTO_RETRACT_REPLY_ENABLED
 // deliberately left unset — config.ts's default `false`). Lives in its own
@@ -25,11 +37,12 @@ process.env.WHATSAPP_PROVIDER ??= 'baileys';
 process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-575-off-discord';
 process.env.SUPER_ADMIN_WHATSAPP_NUMBERS ??= '64277000001';
 
-const { config } = await import('../src/config.js');
-const { Router } = await import('../src/router.js');
-const { DiscordAdapter } = await import('../src/platforms/discord/adapter.js');
-const { BaileysAdapter } = await import('../src/platforms/whatsapp/baileysAdapter.js');
-const { pool, closeDb } = await import('../src/storage/db.js');
+const { config } = await import('@swampratnz/agent-base/config.js');
+const { Router } = await import('@swampratnz/agent-base/router.js');
+const { makeRouterDeps } = await import('../src/module/routerWiring.js');
+const { DiscordAdapter } = await import('@swampratnz/agent-base/platforms/discord/adapter.js');
+const { BaileysAdapter } = await import('@swampratnz/agent-base/platforms/whatsapp/baileysAdapter.js');
+const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
 
 const RUN = `retract-off-${Date.now()}`;
 
@@ -138,8 +151,13 @@ function fireWhatsappRevoke(
 
 test('SECURITY: with AUTO_RETRACT_REPLY_ENABLED unset, deleting/revoking a message the bot replied to leaves the reply untouched and invokes deleteOwnMessage on NEITHER Discord NOR WhatsApp Baileys (acceptance criteria 1 + 5)', async (t) => {
   // --- Discord ---
-  const discordRouter = new Router(async () => ({ text: 'here is your answer', ok: true }), 1_000_000);
-  const discordAdapter = new DiscordAdapter();
+  const discordRouter = new Router(
+    makeRouterDeps({
+      runTurn: async () => ({ text: 'here is your answer', ok: true }),
+      typingRefireMs: 1_000_000,
+    }),
+  );
+  const discordAdapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { sentMessages } = stubDiscordChannel(discordAdapter);
   discordRouter.register(discordAdapter);
   const discordHandler = getHandler(discordAdapter);
@@ -176,8 +194,13 @@ test('SECURITY: with AUTO_RETRACT_REPLY_ENABLED unset, deleting/revoking a messa
   assert.equal(sentMessages.get(replyId)?.deleted, false, "the bot's reply remains untouched");
 
   // --- WhatsApp Baileys ---
-  const waRouter = new Router(async () => ({ text: 'here is your answer', ok: true }), 1_000_000);
-  const waAdapter = new BaileysAdapter();
+  const waRouter = new Router(
+    makeRouterDeps({
+      runTurn: async () => ({ text: 'here is your answer', ok: true }),
+      typingRefireMs: 1_000_000,
+    }),
+  );
+  const waAdapter = new BaileysAdapter(BAILEYS_TEXT_PACK);
   const { deleteCalls } = stubBaileysSocket(waAdapter);
   waRouter.register(waAdapter);
   const waHandler = getHandler(waAdapter);
@@ -215,8 +238,13 @@ test(
     'never calls deleteOwnMessage, even though DISCORD_ARCHIVE_ALL_MESSAGES is on for this file (so the ' +
     'listener IS registered and its archive-scoped branch DOES fire) — acceptance criteria 1 + 5 (issue #595)',
   async (t) => {
-    const router = new Router(async () => ({ text: 'here is your answer', ok: true }), 1_000_000);
-    const adapter = new DiscordAdapter();
+    const router = new Router(
+      makeRouterDeps({
+        runTurn: async () => ({ text: 'here is your answer', ok: true }),
+        typingRefireMs: 1_000_000,
+      }),
+    );
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const { sentMessages } = stubDiscordChannel(adapter);
     router.register(adapter);
     const handler = getHandler(adapter);

@@ -1,8 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import './support/registerNotices.js';
 import { readFileSync } from 'node:fs';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
-import type { Platform } from '../src/platforms/types.js';
+import type {
+  IncomingMessage,
+  OutgoingMessage,
+  PlatformAdapter,
+} from '@swampratnz/agent-base/platforms/types.js';
+import type { Platform } from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -21,8 +29,9 @@ process.env.SUPER_ADMIN_WHATSAPP_NUMBERS ??= 'super-1';
 process.env.ACCESS_MODE_DISCORD = 'open';
 process.env.ESCALATION_TO_ADMIN_ENABLED = 'true';
 
-const { config } = await import('../src/config.js');
-const { Router, ESCALATION_RATE_LIMIT_PER_HOUR } = await import('../src/router.js');
+const { config } = await import('@swampratnz/agent-base/config.js');
+const { Router, ESCALATION_RATE_LIMIT_PER_HOUR } = await import('@swampratnz/agent-base/router.js');
+const { makeRouterDeps } = await import('../src/module/routerWiring.js');
 
 const RUN = `unhelpful-escalation-router-${Date.now()}`;
 
@@ -90,26 +99,17 @@ function makeMessage(overrides: Partial<IncomingMessage> = {}): IncomingMessage 
 function makeRouterWithNotifySpy(runTurn: Parameters<typeof Router>[0]) {
   const notifyCalls: { message: string; excludeUserId: string }[] = [];
   const router = new Router(
-    runTurn,
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async (
-      _adapterFor: (platform: Platform) => PlatformAdapter | undefined,
-      message: string,
-      excludeUserId: string,
-    ) => {
-      notifyCalls.push({ message, excludeUserId });
-    },
+    makeRouterDeps({
+      runTurn: runTurn,
+      typingRefireMs: 20,
+      notifyAdminsFn: async (
+        _adapterFor: (platform: Platform) => PlatformAdapter | undefined,
+        message: string,
+        excludeUserId: string,
+      ) => {
+        notifyCalls.push({ message, excludeUserId });
+      },
+    }),
   );
   return { router, notifyCalls };
 }
@@ -125,7 +125,7 @@ test('router (unhelpful-answer escalation, flag off): a genuine thumbs-down repl
     const { router, notifyCalls } = makeRouterWithNotifySpy(async () => ({
       text: 'Thanks for the feedback, noted.',
       ok: true,
-      unhelpfulAnswerRated: true,
+      turnState: { unhelpfulAnswerRated: true },
     }));
     const { adapter, sent, trigger } = makeAdapter();
     router.register(adapter);
@@ -144,7 +144,7 @@ test('router (unhelpful-answer escalation, flag on): a genuine thumbs-down reply
   const { router, notifyCalls } = makeRouterWithNotifySpy(async () => ({
     text: 'Thanks for the feedback, noted.',
     ok: true,
-    unhelpfulAnswerRated: true,
+    turnState: { unhelpfulAnswerRated: true },
   }));
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -197,7 +197,7 @@ test('SECURITY: router (unhelpful-answer escalation): the producer shares — ne
     // recognisable conversation-scoped prompt; every earlier trigger in this
     // test is the max-turns producer's own failing ask.
     if (prompt === `${RUN} over-cap thumbs-down`) {
-      return { text: 'Thanks for the feedback, noted.', ok: true, unhelpfulAnswerRated: true };
+      return { text: 'Thanks for the feedback, noted.', ok: true, turnState: { unhelpfulAnswerRated: true } };
     }
     return {
       text: 'Sorry — that took more steps than I allow per message.',
@@ -249,20 +249,23 @@ test('SECURITY: router (unhelpful-answer escalation): the producer shares — ne
 });
 
 test('SECURITY: rate_answer tool handler never calls notifyAdmins directly — the notification fires only from router.ts reading the turn-scoped flag post-turn (issue #598 acceptance criterion 5)', () => {
-  const source = readFileSync(new URL('../src/agent/tools.ts', import.meta.url), 'utf8');
+  // The handler moved from the tools.ts closure into the feedback ToolDef
+  // domain (docs/TOOL-REGISTRY-DESIGN.md §3); same body, new home.
+  const source = readFileSync(new URL('../src/module/agent/tools/feedback.ts', import.meta.url), 'utf8');
   const defStart = source.indexOf("'rate_answer',");
   assert.notEqual(defStart, -1, 'rate_answer tool definition not found');
-  // The handler body runs from its `async (args) => {` opener through to the
-  // closing `},\n  );` that ends the `tool(...)` call — mirrors the
-  // feature_flags handler-body extraction in tests/tools.test.ts.
+  // The handler body runs from its `handler: async (args, {…}) => {` opener
+  // through to the closing `},\n  }),` that ends the `defineTool({...})`
+  // entry — mirrors the feature_flags handler-body extraction in
+  // tests/tools.test.ts.
   // Bound the region at the NEXT tool definition rather than a fixed byte
   // window: a fixed window silently went stale each time the handler grew
   // (issue #726, then the #730 review fixes), turning handler growth into a
   // spurious gate failure.
-  const nextToolDef = source.slice(defStart + 1).search(/tool\(\s*'[a-z_]+'/);
+  const nextToolDef = source.slice(defStart + 1).search(/defineTool\(\{\s*name: '[a-z_]+'/);
   const regionEnd = nextToolDef === -1 ? source.length : defStart + 1 + nextToolDef;
   const region = source.slice(defStart, regionEnd);
-  const handlerMatch = region.match(/async \(args\) => \{([\s\S]*?)\n {4}\},\n {2}\);/);
+  const handlerMatch = region.match(/handler: async \(args, \{[^)]*\}\) => \{([\s\S]*?)\n {4}\},\n {2}\}\),/);
   assert.ok(handlerMatch, 'rate_answer handler body not found');
   const body = handlerMatch[1];
   assert.doesNotMatch(

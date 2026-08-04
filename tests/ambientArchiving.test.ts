@@ -1,7 +1,15 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { AgentReply } from '../src/agent/core.js';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import './support/registerNotices.js';
+import type { AgentReply } from '@swampratnz/agent-base/agent/core.js';
+import type {
+  IncomingMessage,
+  OutgoingMessage,
+  PlatformAdapter,
+} from '@swampratnz/agent-base/platforms/types.js';
 
 // Ambient archiving ON (issue #48). config.ts parses env once at import, so
 // the flag-on behaviour lives in this file and the default-off behaviour in
@@ -22,11 +30,12 @@ const skip = hasDb
   ? false
   : 'DATABASE_URL not set — skipping DB-integration tests (CLAUDE.md: exercise against a local Postgres 16 + pgvector)';
 
-const { Router } = await import('../src/router.js');
-const { pool, closeDb } = await import('../src/storage/db.js');
-const { config } = await import('../src/config.js');
+const { Router } = await import('@swampratnz/agent-base/router.js');
+const { makeRouterDeps } = await import('../src/module/routerWiring.js');
+const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
+const { config } = await import('@swampratnz/agent-base/config.js');
 const pgvector = (await import('pgvector/pg')).default;
-const { embed } = await import('../src/storage/embeddings.js');
+const { embed } = await import('@swampratnz/agent-base/storage/embeddings.js');
 const {
   purgeUserData,
   purgeOldInteractions,
@@ -34,7 +43,7 @@ const {
   deleteInteractionByMessageId,
   updateInteractionByMessageId,
   searchMemory,
-} = await import('../src/storage/repository.js');
+} = await import('@swampratnz/agent-base/storage/repository.js');
 
 // Pre-warm the (lazily loaded) embedding pipeline outside any timed wait.
 if (hasDb) await embed('warmup').catch(() => {});
@@ -117,10 +126,15 @@ test(
   { skip },
   async () => {
     let turnCalls = 0;
-    const router = new Router(async (): Promise<AgentReply> => {
-      turnCalls += 1;
-      return { text: 'should never happen' };
-    }, 1_000_000);
+    const router = new Router(
+      makeRouterDeps({
+        runTurn: async (): Promise<AgentReply> => {
+          turnCalls += 1;
+          return { text: 'should never happen' };
+        },
+        typingRefireMs: 1_000_000,
+      }),
+    );
     const { adapter, sent, trigger } = makeAdapter();
     router.register(adapter);
 
@@ -141,7 +155,12 @@ test(
   'SECURITY: archiving on — a guest DM to the bot is still never stored (the gated-DM guarantee survives)',
   { skip },
   async () => {
-    const router = new Router(async (): Promise<AgentReply> => ({ text: 'nope' }), 1_000_000);
+    const router = new Router(
+      makeRouterDeps({
+        runTurn: async (): Promise<AgentReply> => ({ text: 'nope' }),
+        typingRefireMs: 1_000_000,
+      }),
+    );
     const { adapter, trigger } = makeAdapter();
     router.register(adapter);
 
@@ -170,10 +189,15 @@ test(
   { skip },
   async () => {
     let turnCalls = 0;
-    const router = new Router(async (): Promise<AgentReply> => {
-      turnCalls += 1;
-      return { text: 'should never happen' };
-    }, 1_000_000);
+    const router = new Router(
+      makeRouterDeps({
+        runTurn: async (): Promise<AgentReply> => {
+          turnCalls += 1;
+          return { text: 'should never happen' };
+        },
+        typingRefireMs: 1_000_000,
+      }),
+    );
     const { adapter, sent, trigger } = makeAdapter();
     router.register(adapter);
 

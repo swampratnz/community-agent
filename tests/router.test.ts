@@ -1,7 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { AgentReply } from '../src/agent/core.js';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import './support/registerNotices.js';
+import type { AgentReply } from '@swampratnz/agent-base/agent/core.js';
+import type {
+  IncomingMessage,
+  OutgoingMessage,
+  PlatformAdapter,
+} from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it. DATABASE_URL
@@ -15,17 +23,23 @@ process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 // This user bypasses the paused/daily-budget DB reads entirely (see
-// src/router.ts), so the "happy path" tests below never depend on
+// src/base/router.ts), so the "happy path" tests below never depend on
 // `community_users` state — only the (unreachable, harmlessly-caught) DB.
 process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 
-const { config } = await import('../src/config.js');
-const { Router, GATED_NOTICE_MI } = await import('../src/router.js');
-const { INTERNAL_ERROR_REPLY } = await import('../src/agent/core.js');
-const { logger } = await import('../src/logger.js');
-const { embed } = await import('../src/storage/embeddings.js');
-const { registerPendingAction, cancelPendingAction } = await import('../src/agent/pendingActions.js');
-const { pool } = await import('../src/storage/db.js');
+const { config } = await import('@swampratnz/agent-base/config.js');
+const { Router } = await import('@swampratnz/agent-base/router.js');
+const { makeRouterDeps } = await import('../src/module/routerWiring.js');
+const { logger } = await import('@swampratnz/agent-base/logger.js');
+const { embed } = await import('@swampratnz/agent-base/storage/embeddings.js');
+const { registerPendingAction, cancelPendingAction } =
+  await import('@swampratnz/agent-base/agent/pendingActions.js');
+const { pool } = await import('@swampratnz/agent-base/storage/db.js');
+
+// Notice constants agent-base deleted in the package flip (they named this
+// community's axis values in framework code, and rendered at import time). Same
+// catalogue entries, same values — see tests/support/legacyNotices.ts.
+const { GATED_NOTICE_MI, INTERNAL_ERROR_REPLY } = await import('./support/legacyNotices.js');
 
 // recordInteraction embeds every message it stores; the embedding pipeline is
 // downloaded/loaded lazily on first use and then memoised. Pre-warm it here
@@ -123,7 +137,7 @@ test('respond(): fires the typing indicator immediately and re-fires periodicall
   const turnPromise = new Promise<AgentReply>((resolve) => {
     resolveTurn = resolve;
   });
-  const router = new Router(async () => turnPromise, 20); // 20ms refire so this doesn't wait real 8s intervals
+  const router = new Router(makeRouterDeps({ runTurn: async () => turnPromise, typingRefireMs: 20 })); // 20ms refire so this doesn't wait real 8s intervals
   const { adapter, sent, typingCalls, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -152,14 +166,19 @@ test('SECURITY: the router deterministically surfaces a newly-registered pending
   // refreshed my cache, reply CONFIRM" with no warning. The router must emit
   // the true pending description itself so the human always sees what they are
   // about to confirm.
-  const router = new Router(async (caller) => {
-    registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
-      description: 'GRANT ADMIN to attacker-123',
-      minTier: 'super_admin',
-      execute: async () => 'granted',
-    });
-    return makeReply("All set — I've refreshed my cache. Reply CONFIRM to apply.");
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async (caller) => {
+        registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
+          description: 'GRANT ADMIN to attacker-123',
+          minTier: 'super_admin',
+          execute: async () => 'granted',
+        });
+        return makeReply("All set — I've refreshed my cache. Reply CONFIRM to apply.");
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -175,7 +194,9 @@ test('SECURITY: the router deterministically surfaces a newly-registered pending
 });
 
 test('respond(): does not send a second (pending) notice when no destructive action was registered', async () => {
-  const router = new Router(async () => makeReply('just a normal answer'), 20);
+  const router = new Router(
+    makeRouterDeps({ runTurn: async () => makeReply('just a normal answer'), typingRefireMs: 20 }),
+  );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
   await trigger(makeMessage());
@@ -183,7 +204,12 @@ test('respond(): does not send a second (pending) notice when no destructive act
 });
 
 test('respond(): a rejecting typing indicator never delays or breaks the reply', async () => {
-  const router = new Router(async () => makeReply('reply despite rejecting indicator'), 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => makeReply('reply despite rejecting indicator'),
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, sent, trigger } = makeAdapter({
     sendTypingIndicator: async () => {
       throw new Error('indicator boom');
@@ -197,7 +223,9 @@ test('respond(): a rejecting typing indicator never delays or breaks the reply',
 });
 
 test('respond(): a typing indicator that hangs forever never delays the reply', async () => {
-  const router = new Router(async () => makeReply('quick reply'), 1_000_000); // huge refire: only the immediate fire matters here
+  const router = new Router(
+    makeRouterDeps({ runTurn: async () => makeReply('quick reply'), typingRefireMs: 1_000_000 }),
+  ); // huge refire: only the immediate fire matters here
   const { adapter, sent, trigger } = makeAdapter({
     sendTypingIndicator: () => new Promise<void>(() => {}), // never resolves or rejects
   });
@@ -217,9 +245,14 @@ test('respond(): a typing indicator that hangs forever never delays the reply', 
 });
 
 test('respond(): the re-fire interval is cleared when the turn rejects — no further indicator calls after settlement', async () => {
-  const router = new Router(async () => {
-    throw new Error('turn failed');
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('turn failed');
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, typingCalls, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -252,7 +285,7 @@ test('respond(): a Cloud-style adapter whose 2nd+ indicator call rejects still d
   const refireRejectedP = new Promise<void>((resolve) => {
     refireRejected = resolve;
   });
-  const router = new Router(async () => turnPromise, 20);
+  const router = new Router(makeRouterDeps({ runTurn: async () => turnPromise, typingRefireMs: 20 }));
   const { adapter, sent, trigger } = makeAdapter({
     sendTypingIndicator: async () => {
       calls += 1;
@@ -282,9 +315,14 @@ test('respond(): a Cloud-style adapter whose 2nd+ indicator call rejects still d
 
 test('respond(): a thrown turn sends the internal-error fallback instead of silence (issue #52)', async (t) => {
   const errorLog = t.mock.method(logger, 'error');
-  const router = new Router(async () => {
-    throw new Error('DB blew up mid-turn');
-  }, 1_000_000);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('DB blew up mid-turn');
+      },
+      typingRefireMs: 1_000_000,
+    }),
+  );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -300,7 +338,9 @@ test('respond(): a thrown turn sends the internal-error fallback instead of sile
 
 test('respond(): a failure during the send itself is never retried — at most one outbound reply (issue #52)', async () => {
   let sendAttempts = 0;
-  const router = new Router(async () => makeReply('a perfectly good reply'), 1_000_000);
+  const router = new Router(
+    makeRouterDeps({ runTurn: async () => makeReply('a perfectly good reply'), typingRefireMs: 1_000_000 }),
+  );
   const { adapter, trigger } = makeAdapter({
     sendMessage: async () => {
       sendAttempts += 1;
@@ -318,9 +358,14 @@ test('respond(): a failure during the send itself is never retried — at most o
 });
 
 test('router: a gated-out guest never reaches respond() — zero typing indicator calls', async () => {
-  const router = new Router(async () => {
-    throw new Error('runTurn must not be called for a gated-out guest');
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a gated-out guest');
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, sent, typingCalls, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -337,17 +382,19 @@ test('router: a gated-out guest never reaches respond() — zero typing indicato
 
 test('router: a gated-out guest is unaffected by pause — still gets the gated notice, never the pause notice (issue #128)', async () => {
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a gated-out guest');
-    },
-    20,
-    async () => true, // paused
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a gated-out guest');
+      },
+      typingRefireMs: 20,
+      checkPaused: async () => true,
+    }), // paused
   );
   const { adapter, sent, typingCalls, trigger } = makeAdapter();
   router.register(adapter);
 
   // Gated-mode guest branch returns before the paused check is ever reached
-  // (src/router.ts), so pause state must have no effect on this path.
+  // (src/base/router.ts), so pause state must have no effect on this path.
   await trigger(makeMessage({ userId: 'unknown-guest-1', isDirect: false, addressedToBot: true }));
 
   assert.equal(typingCalls.length, 0);
@@ -363,15 +410,13 @@ test('router: a gated-out guest is unaffected by pause — still gets the gated 
 
 test("router (gated guest): a caller with a standing 'mi' language preference gets GATED_NOTICE_MI, not the English default (issue #363)", async () => {
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a gated-out guest');
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async () => 'mi',
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a gated-out guest');
+      },
+      typingRefireMs: 20,
+      getLangPref: async () => 'mi',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -384,15 +429,13 @@ test("router (gated guest): a caller with a standing 'mi' language preference ge
 
 test("router (gated guest): a caller with 'auto' (the default) still gets the English GATED_NOTICE, byte-identical to before (issue #363)", async () => {
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a gated-out guest');
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async () => 'auto',
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a gated-out guest');
+      },
+      typingRefireMs: 20,
+      getLangPref: async () => 'auto',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -407,18 +450,16 @@ test("router (gated guest): a caller with 'auto' (the default) still gets the En
 test('router (gated guest): the language-preference lookup fires only for messages that produce a gated notice, never for a rate-limited (silent) message (issue #363)', async () => {
   let calls = 0;
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a gated-out guest');
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async () => {
-      calls += 1;
-      return 'auto';
-    },
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a gated-out guest');
+      },
+      typingRefireMs: 20,
+      getLangPref: async () => {
+        calls += 1;
+        return 'auto';
+      },
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -442,15 +483,13 @@ test("SECURITY: router (gated guest): the gated-notice language is driven solely
   // guest's own text contains Māori/'mi' strings — so a guest can't steer the
   // notice language by crafting message content.
   const englishRouter = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a gated-out guest');
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async () => 'auto',
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a gated-out guest');
+      },
+      typingRefireMs: 20,
+      getLangPref: async () => 'auto',
+    }),
   );
   const { adapter: englishAdapter, sent: englishSent, trigger: englishTrigger } = makeAdapter();
   englishRouter.register(englishAdapter);
@@ -472,15 +511,13 @@ test("SECURITY: router (gated guest): the gated-notice language is driven solely
   // Stub returns 'mi' regardless of message content, even plain English text
   // with no Māori indicator — selection reads only the stored preference.
   const miRouter = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a gated-out guest');
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async () => 'mi',
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a gated-out guest');
+      },
+      typingRefireMs: 20,
+      getLangPref: async () => 'mi',
+    }),
   );
   const { adapter: miAdapter, sent: miSent, trigger: miTrigger } = makeAdapter();
   miRouter.register(miAdapter);
@@ -502,17 +539,15 @@ test("SECURITY: router (gated guest): the gated-notice language is driven solely
 
 test('SECURITY: router (gated guest): a getLanguagePreference failure on the gated notice still sends the English default, never throws or drops the reply (issue #363)', async () => {
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a gated-out guest');
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async () => {
-      throw new Error('language_prefs read boom');
-    },
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a gated-out guest');
+      },
+      typingRefireMs: 20,
+      getLangPref: async () => {
+        throw new Error('language_prefs read boom');
+      },
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -536,23 +571,17 @@ test(
     "fires notifyAccessRequest — recordAccessRequest's new return value is computed but never acted on (issue #480)",
   async () => {
     const router = new Router(
-      async () => {
-        throw new Error('runTurn must not be called for a gated-out guest');
-      },
-      20,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      async () => ({ inserted: true, firstRequestedAt: new Date() }), // recordAccessRequestFn: reports a fresh insert
-      async () => {
-        throw new Error('notifyAccessRequest must never fire while ACCESS_REQUEST_ALERT_ENABLED is off');
-      },
+      makeRouterDeps({
+        runTurn: async () => {
+          throw new Error('runTurn must not be called for a gated-out guest');
+        },
+        typingRefireMs: 20,
+        recordAccessRequestFn: async () => ({ inserted: true, firstRequestedAt: new Date() }),
+        // recordAccessRequestFn: reports a fresh insert
+        notifyAccessRequestFn: async () => {
+          throw new Error('notifyAccessRequest must never fire while ACCESS_REQUEST_ALERT_ENABLED is off');
+        },
+      }),
     );
     const { adapter, sent, trigger } = makeAdapter();
     router.register(adapter);
@@ -571,7 +600,9 @@ test('config: ACK_SHORTCUT_ENABLED defaults to false when unset', () => {
 });
 
 test('router: ACK_SHORTCUT_ENABLED default (off) — an exact ack message still runs the full agent turn, byte-for-byte unchanged', async () => {
-  const router = new Router(async () => makeReply('real answer'), 20);
+  const router = new Router(
+    makeRouterDeps({ runTurn: async () => makeReply('real answer'), typingRefireMs: 20 }),
+  );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -587,15 +618,16 @@ test('config: KNOWLEDGE_SHORTCUT_ENABLED defaults to false when unset', () => {
 
 test('router: KNOWLEDGE_SHORTCUT_ENABLED default (off) — a near-exact knowledge match still runs the full agent turn (issue #162)', async () => {
   const router = new Router(
-    async () => makeReply('real answer'),
-    20,
-    undefined,
-    async () => {
-      throw new Error('knowledge shortcut lookup must never run while the flag is off');
-    },
-    async () => {
-      throw new Error('retrieval must never be recorded while the flag is off');
-    },
+    makeRouterDeps({
+      runTurn: async () => makeReply('real answer'),
+      typingRefireMs: 20,
+      searchKnowledgeForShortcut: async () => {
+        throw new Error('knowledge shortcut lookup must never run while the flag is off');
+      },
+      recordShortcutRetrieval: async () => {
+        throw new Error('retrieval must never be recorded while the flag is off');
+      },
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -612,10 +644,15 @@ test('config: AUTO_ANSWER_CHANNEL_IDS defaults to empty when unset', () => {
 
 test('SECURITY: router: AUTO_ANSWER_CHANNEL_IDS unset means byte-identical behaviour — a top-level, non-addressed post produces zero agent invocation and zero send (issue #477)', async () => {
   let calls = 0;
-  const router = new Router(async () => {
-    calls += 1;
-    return makeReply('should never be sent');
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => {
+        calls += 1;
+        return makeReply('should never be sent');
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -636,7 +673,7 @@ test('config: SHUTDOWN_DRAIN_TIMEOUT_MS defaults to 20000ms when unset', () => {
 });
 
 test('drain(): resolves immediately when there are no in-flight chains — no regression to the fast shutdown path (issue #210)', async () => {
-  const router = new Router();
+  const router = new Router(makeRouterDeps());
   const start = Date.now();
   await router.drain(20_000);
   assert.ok(
@@ -660,10 +697,15 @@ test('drain(): waits for an in-flight turn to settle — including its send — 
   const started = new Promise<void>((resolve) => {
     turnStarted = resolve;
   });
-  const router = new Router(async () => {
-    turnStarted();
-    return turnPromise;
-  }, 1_000_000);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => {
+        turnStarted();
+        return turnPromise;
+      },
+      typingRefireMs: 1_000_000,
+    }),
+  );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -697,10 +739,15 @@ test('drain(): resolves at the timeout boundary if a chain never settles — nev
   const started = new Promise<void>((resolve) => {
     turnStarted = resolve;
   });
-  const router = new Router(async () => {
-    turnStarted();
-    return new Promise<AgentReply>(() => {}); // turn hangs forever
-  }, 1_000_000);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => {
+        turnStarted();
+        return new Promise<AgentReply>(() => {}); // turn hangs forever
+      },
+      typingRefireMs: 1_000_000,
+    }),
+  );
   const { adapter, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -723,7 +770,9 @@ test('drain(): resolves at the timeout boundary if a chain never settles — nev
 });
 
 test('drain(): a settled chain is cleared from the map — a later drain() call does not wait on it again (issue #210)', async () => {
-  const router = new Router(async () => makeReply('quick'), 1_000_000);
+  const router = new Router(
+    makeRouterDeps({ runTurn: async () => makeReply('quick'), typingRefireMs: 1_000_000 }),
+  );
   const { adapter, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -750,14 +799,19 @@ test('drain(): a message arriving mid-drain starts a new chain that drain() does
   const started = new Promise<void>((resolve) => {
     turn1Started = resolve;
   });
-  const router = new Router(async () => {
-    turnCalls += 1;
-    if (turnCalls === 1) {
-      turn1Started();
-      return turn1;
-    }
-    return new Promise<AgentReply>(() => {}); // message 2's turn hangs forever
-  }, 1_000_000);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => {
+        turnCalls += 1;
+        if (turnCalls === 1) {
+          turn1Started();
+          return turn1;
+        }
+        return new Promise<AgentReply>(() => {}); // message 2's turn hangs forever
+      },
+      typingRefireMs: 1_000_000,
+    }),
+  );
   const { adapter, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -799,10 +853,15 @@ test('router (repeat-question shortcut default off): REPEAT_QUESTION_SHORTCUT_EN
     'this file leaves REPEAT_QUESTION_SHORTCUT_ENABLED unset — see tests/repeatQuestionShortcutRouter.test.ts for the flag-on path',
   );
   let calls = 0;
-  const router = new Router(async () => {
-    calls++;
-    return makeReply(`answer #${calls}`);
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => {
+        calls++;
+        return makeReply(`answer #${calls}`);
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -823,7 +882,12 @@ test('router (repeat-question shortcut default off): REPEAT_QUESTION_SHORTCUT_EN
 });
 
 test("router: the main reply send threads reply.languagePreference === 'mi' into adapter.sendMessage's language field (issue #339)", async () => {
-  const router = new Router(async () => ({ text: 'kia ora', ok: true, languagePreference: 'mi' }), 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => ({ text: 'kia ora', ok: true, languagePreference: 'mi' }),
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -834,19 +898,36 @@ test("router: the main reply send threads reply.languagePreference === 'mi' into
   assert.equal(sent[0].language, 'mi');
 });
 
-test("SECURITY: router: a turn with no ('auto') language preference sends language: undefined, never 'mi' (issue #339)", async () => {
-  const router = new Router(async () => ({ text: 'hi there', ok: true, languagePreference: 'auto' }), 20);
+test("SECURITY: router: a turn with no ('auto') language preference never sends a REGISTERED language variant hint (issue #339)", async () => {
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => ({ text: 'hi there', ok: true, languagePreference: 'auto' }),
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
 
   await trigger(makeMessage());
 
   assert.equal(sent.length, 1);
-  assert.equal(sent[0].language, undefined);
+  // The router passes the caller's standing preference through RAW now: base
+  // names no locale, and the notice catalogue's REGISTERED axis values are what
+  // decide whether a variant is selected. 'auto' is deliberately not a
+  // registered value, so it renders exactly what `undefined` did — the property
+  // this test exists for. Pre-flip the router pre-resolved it to
+  // `=== 'mi' ? 'mi' : undefined`.
+  assert.notEqual(sent[0].language, 'mi');
+  assert.ok(
+    sent[0].language === undefined || sent[0].language === 'auto',
+    `an unregistered pass-through value only: got ${String(sent[0].language)}`,
+  );
 });
 
 test('router: a turn with languagePreference left entirely unset (existing AgentReply literals) sends language: undefined — no regression (issue #339)', async () => {
-  const router = new Router(async () => makeReply('plain reply'), 20);
+  const router = new Router(
+    makeRouterDeps({ runTurn: async () => makeReply('plain reply'), typingRefireMs: 20 }),
+  );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -857,7 +938,12 @@ test('router: a turn with languagePreference left entirely unset (existing Agent
 });
 
 test("router: the main reply send threads reply.responseStyle === 'plain' into adapter.sendMessage's style field (issue #657)", async () => {
-  const router = new Router(async () => ({ text: 'hi there', ok: true, responseStyle: 'plain' }), 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => ({ text: 'hi there', ok: true, responseStyle: 'plain' }),
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -868,19 +954,32 @@ test("router: the main reply send threads reply.responseStyle === 'plain' into a
   assert.equal(sent[0].style, 'plain');
 });
 
-test("SECURITY: router: a turn with 'standard' response style sends style: undefined, never 'plain' (issue #657)", async () => {
-  const router = new Router(async () => ({ text: 'hi there', ok: true, responseStyle: 'standard' }), 20);
+test("SECURITY: router: a turn with 'standard' response style never sends a REGISTERED style variant hint (issue #657)", async () => {
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => ({ text: 'hi there', ok: true, responseStyle: 'standard' }),
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
 
   await trigger(makeMessage());
 
   assert.equal(sent.length, 1);
-  assert.equal(sent[0].style, undefined);
+  // Raw pass-through, same as the language hint above: 'standard' is not a
+  // registered style axis value, so it renders exactly what `undefined` did.
+  assert.notEqual(sent[0].style, 'plain');
+  assert.ok(
+    sent[0].style === undefined || sent[0].style === 'standard',
+    `an unregistered pass-through value only: got ${String(sent[0].style)}`,
+  );
 });
 
 test('router: a turn with responseStyle left entirely unset (existing AgentReply literals) sends style: undefined — no regression (issue #657)', async () => {
-  const router = new Router(async () => makeReply('plain reply'), 20);
+  const router = new Router(
+    makeRouterDeps({ runTurn: async () => makeReply('plain reply'), typingRefireMs: 20 }),
+  );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -892,8 +991,10 @@ test('router: a turn with responseStyle left entirely unset (existing AgentReply
 
 test("SECURITY: router: 'mi' languagePreference still takes precedence when responseStyle is also 'plain' — both language: 'mi' and style: 'plain' are threaded through, and filterOutbound resolves the te reo variant (issue #657)", async () => {
   const router = new Router(
-    async () => ({ text: 'kia ora', ok: true, languagePreference: 'mi', responseStyle: 'plain' }),
-    20,
+    makeRouterDeps({
+      runTurn: async () => ({ text: 'kia ora', ok: true, languagePreference: 'mi', responseStyle: 'plain' }),
+      typingRefireMs: 20,
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -907,10 +1008,15 @@ test("SECURITY: router: 'mi' languagePreference still takes precedence when resp
 
 test("router: an IncomingMessage's `image` attachment is passed through to runTurn as its fifth argument (issue #783)", async () => {
   let seenImage: unknown;
-  const router = new Router(async (_caller, _text, _adapter, _getAdapter, image) => {
-    seenImage = image;
-    return makeReply('grounded in the screenshot');
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async (_caller, _text, _adapter, _getAdapter, image) => {
+        seenImage = image;
+        return makeReply('grounded in the screenshot');
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -929,7 +1035,9 @@ test('SECURITY: no image bytes are persisted — the recorded interaction for an
     }
     return { rows: [], rowCount: 0 };
   });
-  const router = new Router(async () => makeReply('grounded in the screenshot'), 20);
+  const router = new Router(
+    makeRouterDeps({ runTurn: async () => makeReply('grounded in the screenshot'), typingRefireMs: 20 }),
+  );
   const { adapter, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -957,10 +1065,15 @@ test('router (repeat-max-turns shortcut default off): REPEAT_MAX_TURNS_SHORTCUT_
     'this file leaves REPEAT_MAX_TURNS_SHORTCUT_ENABLED unset — see tests/repeatMaxTurnsShortcutRouter.test.ts for the flag-on path',
   );
   let calls = 0;
-  const router = new Router(async () => {
-    calls++;
-    return { text: 'too many steps', ok: false, maxTurnsExceeded: true };
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => {
+        calls++;
+        return { text: 'too many steps', ok: false, maxTurnsExceeded: true };
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
 

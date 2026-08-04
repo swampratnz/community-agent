@@ -1,36 +1,33 @@
-import { config } from './config.js';
-import { logger } from './logger.js';
-import { installCrashHandlers } from './crashHandlers.js';
-import { configureSubscriptionAuth } from './agent/auth.js';
-import { Router } from './router.js';
-import { closeDb, healthcheck } from './storage/db.js';
-import { verifyEmbeddingDim } from './storage/repository.js';
-import { startRetentionPurge } from './interactionRetention.js';
-import { startRosterRetentionPurge } from './rosterRetention.js';
-import { startAccessRequestRetentionPurge } from './accessRequestRetention.js';
-import {
-  startContextBuilder,
-  startKnowledgeRefresh,
-  startDocsIngest,
-  startKnowledgeLinkCheck,
-  startStatusCheck,
-  startEmbeddingHealthCheckJob,
-  startDevTeamWatchPoller,
-} from './backgroundJobs.js';
-import { startDisconnectAlerts, startHealthServer } from './health.js';
-import { startUsageAlert } from './usageAlert.js';
-import { startUsageCostDigest } from './usageCostDigest.js';
-import { startBackgroundJobCostAlert } from './backgroundJobCostAlert.js';
-import { startAdminDigest } from './adminDigest.js';
-import { startMemberDigest } from './memberDigest.js';
-import { startDepartedAdminAlert } from './departedAdminAlert.js';
-import { startEngagementAlert } from './engagementAlert.js';
-import { startAdminLeverageAlert } from './adminLeverageAlert.js';
-import type { PlatformAdapter } from './platforms/types.js';
-import { DiscordAdapter } from './platforms/discord/adapter.js';
-import { BaileysAdapter } from './platforms/whatsapp/baileysAdapter.js';
-import { WhatsAppCloudAdapter } from './platforms/whatsapp/cloudAdapter.js';
+import { createAgent } from '@swampratnz/agent-base';
+import { config } from '@swampratnz/agent-base/config.js';
+import { logger } from '@swampratnz/agent-base/logger.js';
+import { installCrashHandlers } from '@swampratnz/agent-base/crashHandlers.js';
+import { configureSubscriptionAuth } from '@swampratnz/agent-base/agent/auth.js';
+import { Router } from '@swampratnz/agent-base/router.js';
+import { closeDb, healthcheck } from '@swampratnz/agent-base/storage/db.js';
+import { verifyEmbeddingDim } from '@swampratnz/agent-base/storage/repository.js';
+import { startRegisteredJobs, stopRegisteredJobs } from '@swampratnz/agent-base/jobs/runner.js';
+import { startHealthServer } from '@swampratnz/agent-base/health.js';
+import { assertToolAvailabilityConsistent } from '@swampratnz/agent-base/platforms/registry.js';
+import { nzCommunityModule } from './module/agentModule.js';
+import { makeRouterDeps } from './module/routerWiring.js';
+import { JOB_REGISTRY } from './module/jobs/registry.js';
+import { ADAPTER_FACTORIES, createConfiguredAdapters } from './module/platforms/factories.js';
+import { TOOL_REGISTRY } from './module/agent/tools/index.js';
 
+/**
+ * Process entry point and composition root.
+ *
+ * The community content is composed through ONE manifest
+ * (`src/module/agentModule.ts`) handed to agent-base's `createAgent`, which
+ * owns the ordering: a pure plan pass (every once-per-process registry has
+ * exactly one claimant, every required one has a claimant), then each module's
+ * `init()`, then the singleton registrations, then the additive ones, then a
+ * readiness probe of the real accessors — all before `start()` migrates and
+ * brings the runtime up. That replaces the load-bearing side-effect import
+ * list this file used to carry, where the order was enforced by nothing and a
+ * forgotten line surfaced as a blank notice in front of a member.
+ */
 async function main(): Promise<void> {
   logger.info('Starting Community Agent');
 
@@ -42,126 +39,76 @@ async function main(): Promise<void> {
   // 1. Auth: force subscription-based Claude auth.
   configureSubscriptionAuth();
 
-  // 2. Database must be reachable and the vector schema must match config
+  // 2. Compose. Every registration (notice pack, tool tiers, tool-server
+  //    parts, flag predicates, skills, prompt sections, commands, bad words,
+  //    personas, turn-state finalizer, policy keys) happens here, and
+  //    createAgent refuses to hand back an agent at all if the surface is
+  //    incomplete — with the process untouched if the plan pass rejects.
+  const agent = await createAgent({ modules: [nzCommunityModule] });
+
+  // 3. Database must be reachable and the vector schema must match config
   //    before we accept traffic.
   await healthcheck();
   await verifyEmbeddingDim(config.db.embeddingDim);
   logger.info('Database reachable, embedding dimension verified');
 
-  // 3. Build platform adapters from config.
-  const router = new Router();
-  const adapters: PlatformAdapter[] = [];
+  // 4. Build platform adapters via the factory registry (agent-base plan
+  //    item 9) — construction order and the WhatsApp provider switch are
+  //    unchanged, they just live in src/module/platforms/factories.ts now. First,
+  //    the capability invariant: every tool's platform restriction must be
+  //    consistent with what the registered adapters declare they can do, so
+  //    a drifted restriction fails the deploy loudly instead of silently
+  //    offering (or hiding) a tool somewhere wrong.
+  assertToolAvailabilityConsistent(TOOL_REGISTRY, ADAPTER_FACTORIES);
 
-  adapters.push(new DiscordAdapter());
-
-  if (config.whatsapp.provider === 'baileys') {
-    adapters.push(new BaileysAdapter());
-  } else if (config.whatsapp.provider === 'cloud') {
-    adapters.push(new WhatsAppCloudAdapter());
-  } else {
-    logger.warn('WhatsApp provider disabled');
-  }
+  const router = new Router(makeRouterDeps());
+  const adapters = createConfiguredAdapters();
 
   for (const adapter of adapters) {
     router.register(adapter);
   }
 
-  // 4. Start all adapters.
-  await Promise.all(adapters.map((a) => a.start()));
-  logger.info({ platforms: adapters.map((a) => a.platform) }, 'Community Agent running');
+  // 5. Migrate (base fragments first, then this module's, as ONE query) and
+  //    start. Everything below runs inside `start()`'s callback, so nothing
+  //    accepts traffic before the schema is in place.
+  let jobs: ReturnType<typeof startRegisteredJobs> = [];
+  let healthServer: Awaited<ReturnType<typeof startHealthServer>>;
 
-  // 4b. Optional age-based retention purges (each independently disabled
-  //     unless configured — neither's disabled state suppresses the other).
-  //     Routed through startTrackedJob for consecutive-failure alerting
-  //     (issue #291), hence the `adapters` argument.
-  const retentionTimer = startRetentionPurge(adapters);
-  const rosterRetentionTimer = startRosterRetentionPurge(adapters);
-  const accessRequestRetentionTimer = startAccessRequestRetentionPurge(adapters);
+  await agent.start(async () => {
+    // 5a. Start all adapters.
+    await Promise.all(adapters.map((a) => a.start()));
+    logger.info({ platforms: adapters.map((a) => a.platform) }, 'Community Agent running');
 
-  // 4c. Sustained-disconnect super-admin alerting (always on; no user-facing
-  //     surface to disable) and the optional /healthz endpoint.
-  const disconnectAlertTimer = startDisconnectAlerts(adapters);
-  const healthServer = await startHealthServer(adapters);
+    // 5b. Background jobs — every periodic timer in the process, started in
+    //     the registry's pinned order (src/module/jobs/registry.ts, which preserves
+    //     the old hand-wired startX() sequence exactly). Each spec keeps its
+    //     own enable gate, cadence mechanism and failure-tracker wiring; a
+    //     disabled job contributes a null timer that the shutdown sweep skips.
+    jobs = startRegisteredJobs(JOB_REGISTRY, adapters);
 
-  // 4c-bis. Embedding-model health check (always on — zero-cost local
-  //         self-test, no enabled flag, same convention as
-  //         startDisconnectAlerts; issue #376).
-  const embeddingHealthTimer = startEmbeddingHealthCheckJob(adapters);
+    // 5c. The optional /healthz endpoint. Deliberately NOT a registry job: it
+    //     is an HTTP server, not a timer — no cadence, no failure tracker, and
+    //     its close belongs AFTER the drain below so health probes keep
+    //     answering while in-flight turns finish. (Pre-registry it started
+    //     between disconnect-alerts and the embedding health check; starting
+    //     it after the sweep instead is behaviour-neutral — nothing couples
+    //     the passive server to job start timing.)
+    healthServer = await startHealthServer(adapters);
+  });
 
-  // 4d. Optional proactive usage alert (disabled unless configured).
-  const usageAlertTimer = startUsageAlert(adapters);
-
-  // 4d-bis. Optional weekly super-admin cost-trend DM (disabled unless configured).
-  const usageCostDigestTimer = startUsageCostDigest(adapters);
-
-  // 4d-ter. Optional proactive per-job background cost spike alert (disabled unless configured).
-  const backgroundJobCostAlertTimer = startBackgroundJobCostAlert(adapters);
-
-  // 4e. Optional offline context builder (disabled unless configured).
-  const contextBuilderTimer = startContextBuilder(adapters);
-
-  // 4e-bis. Optional daily knowledge refresh (disabled unless configured).
-  const knowledgeRefreshTimer = startKnowledgeRefresh(adapters);
-
-  // 4e-ter. Optional weekly docs ingest (disabled unless configured).
-  const docsIngestTimer = startDocsIngest(adapters);
-
-  // 4e-ter-bis. Optional weekly knowledge link-rot check (disabled unless configured).
-  const knowledgeLinkCheckTimer = startKnowledgeLinkCheck(adapters);
-
-  // 4e-quater. Optional Anthropic status check poll (disabled unless
-  //            configured). Routed through backgroundJobs.ts's startStatusCheck
-  //            for consecutive-failure alerting (issue #321), hence the
-  //            `adapters` argument.
-  const statusCheckTimer = startStatusCheck(adapters);
-
-  // 4f. Optional weekly admin recurring-questions digest (disabled unless configured).
-  const adminDigestTimer = startAdminDigest(adapters);
-
-  // 4f-bis. Optional departed-admin visibility alert (disabled unless configured).
-  const departedAdminAlertTimer = startDepartedAdminAlert(adapters);
-
-  // 4f-ter. Optional weekly engagement-percentage alert (disabled unless configured).
-  const engagementAlertTimer = startEngagementAlert(adapters);
-
-  // 4f-ter-bis. Optional weekly admin-leverage alert (disabled unless configured).
-  const adminLeverageAlertTimer = startAdminLeverageAlert(adapters);
-
-  // 4f-quater. Optional weekly member-facing digest channel post (disabled unless configured).
-  const memberDigestTimer = startMemberDigest(adapters);
-
-  // 4g. Optional dev-team completion-DM poller (disabled unless DEV_TEAM_ENABLED):
-  //     DMs the requester when a dispatched ~20-min job finishes.
-  const devTeamWatchTimer = startDevTeamWatchPoller(adapters);
-
-  // 5. Graceful shutdown.
+  // 6. Graceful shutdown.
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutting down');
-    if (retentionTimer) clearInterval(retentionTimer);
-    if (rosterRetentionTimer) clearInterval(rosterRetentionTimer);
-    if (accessRequestRetentionTimer) clearInterval(accessRequestRetentionTimer);
-    clearInterval(disconnectAlertTimer);
-    if (embeddingHealthTimer) clearInterval(embeddingHealthTimer);
-    if (usageAlertTimer) clearInterval(usageAlertTimer);
-    if (usageCostDigestTimer) clearInterval(usageCostDigestTimer);
-    if (backgroundJobCostAlertTimer) clearInterval(backgroundJobCostAlertTimer);
-    if (contextBuilderTimer) clearInterval(contextBuilderTimer);
-    if (knowledgeRefreshTimer) clearInterval(knowledgeRefreshTimer);
-    if (docsIngestTimer) clearInterval(docsIngestTimer);
-    if (knowledgeLinkCheckTimer) clearInterval(knowledgeLinkCheckTimer);
-    if (statusCheckTimer) clearInterval(statusCheckTimer);
-    if (adminDigestTimer) clearInterval(adminDigestTimer);
-    if (memberDigestTimer) clearInterval(memberDigestTimer);
-    if (departedAdminAlertTimer) clearInterval(departedAdminAlertTimer);
-    if (engagementAlertTimer) clearInterval(engagementAlertTimer);
-    if (adminLeverageAlertTimer) clearInterval(adminLeverageAlertTimer);
-    if (devTeamWatchTimer) clearInterval(devTeamWatchTimer);
+    // ONE sweep over the same registry the timers came from — the old
+    // hand-mirrored one-clearInterval-per-job list (which had to be kept in
+    // sync with the start list by eye) is gone.
+    stopRegisteredJobs(jobs);
     // Drain in-flight per-conversation turns BEFORE stopping any adapter, so
     // a reply generated during the drain window can still be sent on a live
     // connection (issue #210). Bounded by SHUTDOWN_DRAIN_TIMEOUT_MS so a
     // stuck turn can't hang shutdown past systemd's TimeoutStopSec.
     await router.drain(config.behaviour.shutdownDrainTimeoutMs);
-    if (healthServer) await new Promise<void>((resolve) => healthServer.close(() => resolve()));
+    if (healthServer) await new Promise<void>((resolve) => healthServer!.close(() => resolve()));
     await Promise.allSettled(adapters.map((a) => a.stop()));
     await closeDb();
     process.exit(0);

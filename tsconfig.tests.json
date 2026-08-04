@@ -26,10 +26,21 @@
   },
   "include": [
     "src/**/*.ts",
+    "tests/agentModule.test.ts",
     "tests/backgroundJobCostAlert.test.ts",
+    "tests/displayTime.test.ts",
+    "tests/importDirection.test.ts",
+    "tests/jobsRegistry.test.ts",
     "tests/memberDigest.test.ts",
+    "tests/noticeDebounce.test.ts",
+    "tests/platformRegistry.test.ts",
     "tests/projectScope.test.ts",
+    "tests/routerInterceptChain.test.ts",
     "tests/schemaConstraintIdempotency.test.ts",
+    "tests/stringsCatalogue.test.ts",
+    "tests/systemPromptByteStability.test.ts",
+    "tests/systemPromptSlots.test.ts",
+    "tests/toolRegistry.test.ts",
     "tests/usageCostDigest.test.ts",
     "tests/whoIsIntoBrowseEmbedCount.test.ts"
   ]

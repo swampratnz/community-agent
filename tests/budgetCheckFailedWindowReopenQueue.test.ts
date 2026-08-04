@@ -1,6 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { IncomingMessage, PlatformAdapter } from '../src/platforms/types.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import './support/registerNotices.js';
+import type { IncomingMessage, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment before
 // importing router.ts, matching tests/router.test.ts's convention.
@@ -17,8 +21,9 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.ACCESS_MODE_WHATSAPP = 'open';
 process.env.SUPER_ADMIN_WHATSAPP_NUMBERS = 'super-1,super-2';
 
-const { Router } = await import('../src/router.js');
-const { WindowClosedError } = await import('../src/platforms/whatsapp/cloudAdapter.js');
+const { Router } = await import('@swampratnz/agent-base/router.js');
+const { makeRouterDeps } = await import('../src/module/routerWiring.js');
+const { WindowClosedError } = await import('@swampratnz/agent-base/platforms/whatsapp/cloudAdapter.js');
 
 /**
  * A fake Cloud-like adapter (same shape as
@@ -103,14 +108,15 @@ test(
       'super-2': new WindowClosedError('super-2'),
     });
     const router = new Router(
-      async () => ({ text: 'ok' }), // runTurn
-      20, // typingRefireMs
-      undefined, // checkPaused
-      undefined, // searchKnowledgeForShortcut
-      undefined, // recordShortcutRetrieval
-      async () => {
-        throw new Error('daily reply budget check: DB unreachable');
-      }, // countReplies — forces the budget-check-failed path
+      makeRouterDeps({
+        runTurn: async () => ({ text: 'ok' }),
+        // runTurn
+        typingRefireMs: 20,
+        // recordShortcutRetrieval
+        countReplies: async () => {
+          throw new Error('daily reply budget check: DB unreachable');
+        },
+      }), // countReplies — forces the budget-check-failed path
     );
     router.register(adapter);
 
@@ -138,14 +144,13 @@ test(
       'super-2': new Error('502 from Graph API'),
     });
     const router = new Router(
-      async () => ({ text: 'ok' }),
-      20,
-      undefined,
-      undefined,
-      undefined,
-      async () => {
-        throw new Error('daily reply budget check: DB unreachable');
-      },
+      makeRouterDeps({
+        runTurn: async () => ({ text: 'ok' }),
+        typingRefireMs: 20,
+        countReplies: async () => {
+          throw new Error('daily reply budget check: DB unreachable');
+        },
+      }),
     );
     router.register(adapter);
 

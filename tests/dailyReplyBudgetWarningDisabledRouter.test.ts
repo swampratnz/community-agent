@@ -1,7 +1,15 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { AgentReply } from '../src/agent/core.js';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import './support/registerNotices.js';
+import type { AgentReply } from '@swampratnz/agent-base/agent/core.js';
+import type {
+  IncomingMessage,
+  OutgoingMessage,
+  PlatformAdapter,
+} from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -19,10 +27,11 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 process.env.ACCESS_MODE_DISCORD = 'open';
 
-const { pool, closeDb } = await import('../src/storage/db.js');
-const { Router } = await import('../src/router.js');
-const { config } = await import('../src/config.js');
-const { embed } = await import('../src/storage/embeddings.js');
+const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
+const { Router } = await import('@swampratnz/agent-base/router.js');
+const { makeRouterDeps } = await import('../src/module/routerWiring.js');
+const { config } = await import('@swampratnz/agent-base/config.js');
+const { embed } = await import('@swampratnz/agent-base/storage/embeddings.js');
 
 await embed('warmup').catch(() => {});
 
@@ -104,12 +113,12 @@ test('config: DAILY_REPLY_BUDGET_WARN_ENABLED is off in this file (sanity check 
 
 test('SECURITY: DAILY_REPLY_BUDGET_WARN_ENABLED off — reply is byte-identical for a caller at exactly used = limit - 1 (deep inside what would be the warning window)', async () => {
   const router = new Router(
-    async () => makeReply(`${RUN} unmodified reply`),
-    20,
-    async () => false,
-    undefined,
-    undefined,
-    countRepliesReturning(LIMIT - 1), // remaining would be 0 — well inside any warning window if the flag were on
+    makeRouterDeps({
+      runTurn: async () => makeReply(`${RUN} unmodified reply`),
+      typingRefireMs: 20,
+      checkPaused: async () => false,
+      countReplies: countRepliesReturning(LIMIT - 1),
+    }), // remaining would be 0 — well inside any warning window if the flag were on
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -127,12 +136,12 @@ test('SECURITY: DAILY_REPLY_BUDGET_WARN_ENABLED off — reply is byte-identical 
 test('SECURITY: DAILY_REPLY_BUDGET_WARN_ENABLED off — byte-identical across the full range from just-started to just-under-the-cutoff', async () => {
   for (const used of [0, 1, 25, 44, 45, 46, 47, 48, 49]) {
     const router = new Router(
-      async () => makeReply(`${RUN} reply for used=${used}`),
-      20,
-      async () => false,
-      undefined,
-      undefined,
-      countRepliesReturning(used),
+      makeRouterDeps({
+        runTurn: async () => makeReply(`${RUN} reply for used=${used}`),
+        typingRefireMs: 20,
+        checkPaused: async () => false,
+        countReplies: countRepliesReturning(used),
+      }),
     );
     const { adapter, sent, trigger } = makeAdapter();
     router.register(adapter);
@@ -150,12 +159,12 @@ test('SECURITY: DAILY_REPLY_BUDGET_WARN_ENABLED off — byte-identical across th
 
 test('router (daily budget warning disabled): the existing used >= limit hard-stop notice is unaffected', async () => {
   const router = new Router(
-    async () => makeReply('should not be reached — over budget'),
-    20,
-    async () => false,
-    undefined,
-    undefined,
-    countRepliesReturning(LIMIT),
+    makeRouterDeps({
+      runTurn: async () => makeReply('should not be reached — over budget'),
+      typingRefireMs: 20,
+      checkPaused: async () => false,
+      countReplies: countRepliesReturning(LIMIT),
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);

@@ -1,7 +1,15 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { AgentReply } from '../src/agent/core.js';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import './support/registerNotices.js';
+import type { AgentReply } from '@swampratnz/agent-base/agent/core.js';
+import type {
+  IncomingMessage,
+  OutgoingMessage,
+  PlatformAdapter,
+} from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -26,9 +34,10 @@ const AUTO_CHAN = `${RUN}-chan`;
 process.env.AUTO_ANSWER_CHANNEL_IDS = AUTO_CHAN;
 process.env.AUTO_ANSWER_RATE_LIMIT_PER_HOUR = '5';
 
-const { pool, closeDb } = await import('../src/storage/db.js');
-const { Router } = await import('../src/router.js');
-const { embed } = await import('../src/storage/embeddings.js');
+const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
+const { Router } = await import('@swampratnz/agent-base/router.js');
+const { makeRouterDeps } = await import('../src/module/routerWiring.js');
+const { embed } = await import('@swampratnz/agent-base/storage/embeddings.js');
 
 await embed('warmup').catch(() => {});
 
@@ -120,7 +129,9 @@ test(
   'router: an origin-post auto-answer reply records meta.autoAnswer === true (issue #552, acceptance criterion 1)',
   { skip: !hasDb },
   async () => {
-    const router = new Router(async () => makeReply('here is your answer'), 20);
+    const router = new Router(
+      makeRouterDeps({ runTurn: async () => makeReply('here is your answer'), typingRefireMs: 20 }),
+    );
     const { adapter, sent, threadCalls, trigger } = makeAdapter();
     router.register(adapter);
 
@@ -137,7 +148,9 @@ test(
   'router: an in-thread auto-answer follow-up also records meta.autoAnswer === true (issue #552, acceptance criterion 1)',
   { skip: !hasDb },
   async () => {
-    const router = new Router(async () => makeReply('answer'), 20);
+    const router = new Router(
+      makeRouterDeps({ runTurn: async () => makeReply('answer'), typingRefireMs: 20 }),
+    );
     const { adapter, sent, threadCalls, trigger } = makeAdapter();
     router.register(adapter);
 
@@ -164,7 +177,9 @@ test(
   'router: a normal @mention reply (replyConversationId undefined) records NO autoAnswer key at all (issue #552, acceptance criterion 2)',
   { skip: !hasDb },
   async () => {
-    const router = new Router(async () => makeReply('a normal answer'), 20);
+    const router = new Router(
+      makeRouterDeps({ runTurn: async () => makeReply('a normal answer'), typingRefireMs: 20 }),
+    );
     const { adapter, sent, trigger } = makeAdapter();
     router.register(adapter);
 
@@ -188,7 +203,9 @@ test(
   'SECURITY: an addressed reply INSIDE the auto-answer-allowlisted channel whose text mimics the flag still records NO autoAnswer key — only unspoofable internal router state (replyConversationId) can set it, never message content (issue #552, acceptance criterion 6)',
   { skip: !hasDb },
   async () => {
-    const router = new Router(async () => makeReply('a normal answer'), 20);
+    const router = new Router(
+      makeRouterDeps({ runTurn: async () => makeReply('a normal answer'), typingRefireMs: 20 }),
+    );
     const { adapter, sent, threadCalls, trigger } = makeAdapter();
     router.register(adapter);
 

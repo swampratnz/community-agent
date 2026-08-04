@@ -1,6 +1,6 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { PlatformAdapter } from '../src/platforms/types.js';
+import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment before
 // importing anything that (transitively) loads it, matching
@@ -22,12 +22,18 @@ const skip = hasDb
   ? false
   : 'DATABASE_URL not set — skipping DB-integration tests (CLAUDE.md: exercise against a local Postgres 16 + pgvector)';
 
-const { config } = await import('../src/config.js');
-const { buildToolServer, KNOWLEDGE_LOW_RATED_CAVEAT_TEXT } = await import('../src/agent/tools.js');
+const { config } = await import('@swampratnz/agent-base/config.js');
+await import('./support/registerToolRegistry.js');
+const { buildToolServer } = await import('../src/module/agent/tools.js');
+// Was an exported constant in src/module/agent/tools/helpers.ts until the
+// agent-base package flip removed every module-scope `notice()` render.
+await import('./support/registerNotices.js');
+const { notice } = await import('../src/module/strings/notices.js');
+const KNOWLEDGE_LOW_RATED_CAVEAT_TEXT = notice('knowledgeLowRatedCaveat');
 const { saveKnowledge, recordInteraction, createAnswerFeedback } =
-  await import('../src/storage/repository.js');
-const { pool, closeDb } = await import('../src/storage/db.js');
-const { embed } = await import('../src/storage/embeddings.js');
+  await import('@swampratnz/agent-base/storage/repository.js');
+const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
+const { embed } = await import('@swampratnz/agent-base/storage/embeddings.js');
 const pgvector = (await import('pgvector/pg')).default;
 
 await embed('warmup').catch(() => {});

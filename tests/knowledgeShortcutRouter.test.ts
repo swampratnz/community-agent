@@ -1,7 +1,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
-import type { hasKnowledgeConflictForId, searchKnowledge } from '../src/storage/repository.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import './support/registerNotices.js';
+import type {
+  IncomingMessage,
+  OutgoingMessage,
+  PlatformAdapter,
+} from '@swampratnz/agent-base/platforms/types.js';
+import type {
+  hasKnowledgeConflictForId,
+  searchKnowledge,
+} from '@swampratnz/agent-base/storage/repository.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -17,10 +28,12 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 process.env.KNOWLEDGE_SHORTCUT_ENABLED = 'true';
 
-const { config } = await import('../src/config.js');
-const { Router } = await import('../src/router.js');
-const { KNOWLEDGE_CONFLICT_CAVEAT_TEXT } = await import('../src/agent/tools.js');
-const { embed } = await import('../src/storage/embeddings.js');
+const { config } = await import('@swampratnz/agent-base/config.js');
+const { Router } = await import('@swampratnz/agent-base/router.js');
+const { makeRouterDeps } = await import('../src/module/routerWiring.js');
+await import('./support/registerToolRegistry.js');
+const { KNOWLEDGE_CONFLICT_CAVEAT_TEXT } = await import('../src/module/agent/tools.js');
+const { embed } = await import('@swampratnz/agent-base/storage/embeddings.js');
 
 await embed('warmup').catch(() => {});
 
@@ -115,15 +128,16 @@ test('config: KNOWLEDGE_SHORTCUT_THRESHOLD defaults to a strict 0.9', () => {
 test('router (knowledge shortcut): a near-exact match (>= threshold) skips runTurn and returns the KB content', async () => {
   const recorded: number[][] = [];
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a near-exact knowledge-shortcut match');
-    },
-    20,
-    undefined,
-    fixedHitSearch(0.95),
-    async (ids) => {
-      recorded.push(ids);
-    },
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a near-exact knowledge-shortcut match');
+      },
+      typingRefireMs: 20,
+      searchKnowledgeForShortcut: fixedHitSearch(0.95),
+      recordShortcutRetrieval: async (ids) => {
+        recorded.push(ids);
+      },
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -139,21 +153,17 @@ test('router (knowledge shortcut): a near-exact match (>= threshold) skips runTu
 test('router (knowledge shortcut): a hit records a shortcut_hits row of kind "knowledge" (issue #440)', async () => {
   const calls: string[] = [];
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a near-exact knowledge-shortcut match');
-    },
-    20,
-    undefined,
-    fixedHitSearch(0.95),
-    async () => {},
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async (kind) => {
-      calls.push(kind);
-    },
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a near-exact knowledge-shortcut match');
+      },
+      typingRefireMs: 20,
+      searchKnowledgeForShortcut: fixedHitSearch(0.95),
+      recordShortcutRetrieval: async () => {},
+      recordShortcutHit: async (kind) => {
+        calls.push(kind);
+      },
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -183,14 +193,15 @@ test('SECURITY: router (knowledge shortcut): an auto-researched near-exact match
     },
   ];
   const router = new Router(
-    async () => {
-      ranTurn = true;
-      return { text: 'real answer' };
-    },
-    20,
-    undefined,
-    autoHitSearch,
-    async () => {},
+    makeRouterDeps({
+      runTurn: async () => {
+        ranTurn = true;
+        return { text: 'real answer' };
+      },
+      typingRefireMs: 20,
+      searchKnowledgeForShortcut: autoHitSearch,
+      recordShortcutRetrieval: async () => {},
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -207,11 +218,13 @@ test('SECURITY: router (knowledge shortcut): an auto-researched near-exact match
 
 test('router (knowledge shortcut): a middling match below threshold falls through to a normal agent turn', async () => {
   const router = new Router(
-    async () => ({ text: 'real answer' }),
-    20,
-    undefined,
-    fixedHitSearch(0.5), // above knowledge_search's 0.35 floor, below the 0.9 shortcut floor
-    async () => {},
+    makeRouterDeps({
+      runTurn: async () => ({ text: 'real answer' }),
+      typingRefireMs: 20,
+      searchKnowledgeForShortcut: fixedHitSearch(0.5),
+      // above knowledge_search's 0.35 floor, below the 0.9 shortcut floor
+      recordShortcutRetrieval: async () => {},
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -224,11 +237,12 @@ test('router (knowledge shortcut): a middling match below threshold falls throug
 
 test('router (knowledge shortcut): no knowledge hits falls through to a normal agent turn', async () => {
   const router = new Router(
-    async () => ({ text: 'real answer' }),
-    20,
-    undefined,
-    async () => [],
-    async () => {},
+    makeRouterDeps({
+      runTurn: async () => ({ text: 'real answer' }),
+      typingRefireMs: 20,
+      searchKnowledgeForShortcut: async () => [],
+      recordShortcutRetrieval: async () => {},
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -241,13 +255,14 @@ test('router (knowledge shortcut): no knowledge hits falls through to a normal a
 
 test('router (knowledge shortcut): a lookup failure falls through to a normal agent turn rather than dropping the message', async () => {
   const router = new Router(
-    async () => ({ text: 'real answer' }),
-    20,
-    undefined,
-    async () => {
-      throw new Error('DB unreachable');
-    },
-    async () => {},
+    makeRouterDeps({
+      runTurn: async () => ({ text: 'real answer' }),
+      typingRefireMs: 20,
+      searchKnowledgeForShortcut: async () => {
+        throw new Error('DB unreachable');
+      },
+      recordShortcutRetrieval: async () => {},
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -265,17 +280,18 @@ test('router (knowledge shortcut): a lookup failure falls through to a normal ag
 
 test('router (knowledge shortcut): a trusted hit with a source_url renders the deterministic citation line (issue #214)', async () => {
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a near-exact knowledge-shortcut match');
-    },
-    20,
-    undefined,
-    fixedHitSearch(0.95, {
-      sourceUrl: 'https://docs.anthropic.com/en/api/messages',
-      sourceTitle: 'docs: api/messages',
-      verifiedAt: new Date(),
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a near-exact knowledge-shortcut match');
+      },
+      typingRefireMs: 20,
+      searchKnowledgeForShortcut: fixedHitSearch(0.95, {
+        sourceUrl: 'https://docs.anthropic.com/en/api/messages',
+        sourceTitle: 'docs: api/messages',
+        verifiedAt: new Date(),
+      }),
+      recordShortcutRetrieval: async () => {},
     }),
-    async () => {},
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -292,19 +308,20 @@ test('router (knowledge shortcut): a trusted hit with a source_url renders the d
 
 test('router (knowledge shortcut): a hit flagged source_unreachable=true renders the "⚠️ link appears dead" caveat instead of "last verified" (issue #465)', async () => {
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a near-exact knowledge-shortcut match');
-    },
-    20,
-    undefined,
-    fixedHitSearch(0.95, {
-      sourceUrl: 'https://docs.anthropic.com/en/api/messages',
-      sourceTitle: 'docs: api/messages',
-      verifiedAt: new Date(),
-      sourceUnreachable: true,
-      sourceCheckedAt: new Date(),
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a near-exact knowledge-shortcut match');
+      },
+      typingRefireMs: 20,
+      searchKnowledgeForShortcut: fixedHitSearch(0.95, {
+        sourceUrl: 'https://docs.anthropic.com/en/api/messages',
+        sourceTitle: 'docs: api/messages',
+        verifiedAt: new Date(),
+        sourceUnreachable: true,
+        sourceCheckedAt: new Date(),
+      }),
+      recordShortcutRetrieval: async () => {},
     }),
-    async () => {},
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -318,13 +335,14 @@ test('router (knowledge shortcut): a hit flagged source_unreachable=true renders
 
 test('router (knowledge shortcut): a hit with no source_url renders no citation line', async () => {
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a near-exact knowledge-shortcut match');
-    },
-    20,
-    undefined,
-    fixedHitSearch(0.95),
-    async () => {},
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a near-exact knowledge-shortcut match');
+      },
+      typingRefireMs: 20,
+      searchKnowledgeForShortcut: fixedHitSearch(0.95),
+      recordShortcutRetrieval: async () => {},
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -339,13 +357,14 @@ test('router (knowledge shortcut): the freshness note is a no-op when KNOWLEDGE_
   assert.equal(config.adminDigest.knowledgeStaleDays, 0, 'this test file leaves KNOWLEDGE_STALE_DAYS unset');
   const ancient = new Date(Date.now() - 365 * 86_400_000);
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a near-exact knowledge-shortcut match');
-    },
-    20,
-    undefined,
-    fixedHitSearch(0.95, { updatedAt: ancient }),
-    async () => {},
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a near-exact knowledge-shortcut match');
+      },
+      typingRefireMs: 20,
+      searchKnowledgeForShortcut: fixedHitSearch(0.95, { updatedAt: ancient }),
+      recordShortcutRetrieval: async () => {},
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -358,15 +377,16 @@ test('router (knowledge shortcut): the freshness note is a no-op when KNOWLEDGE_
 
 test('router (knowledge shortcut): the shortcut path still respects the gated-guest gate ahead of it', async () => {
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called');
-    },
-    20,
-    undefined,
-    fixedHitSearch(0.99),
-    async () => {
-      throw new Error('retrieval must not be recorded for a gated-out guest');
-    },
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called');
+      },
+      typingRefireMs: 20,
+      searchKnowledgeForShortcut: fixedHitSearch(0.99),
+      recordShortcutRetrieval: async () => {
+        throw new Error('retrieval must not be recorded for a gated-out guest');
+      },
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -385,15 +405,15 @@ test('router (knowledge shortcut): the shortcut path still respects the gated-gu
 
 test("router (knowledge shortcut): a caller with a standing 'mi' language preference gets the reply suffixed with KNOWLEDGE_SHORTCUT_SUFFIX_MI", async () => {
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a near-exact knowledge-shortcut match');
-    },
-    20,
-    undefined,
-    fixedHitSearch(0.95),
-    async () => {},
-    undefined,
-    async () => 'mi',
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a near-exact knowledge-shortcut match');
+      },
+      typingRefireMs: 20,
+      searchKnowledgeForShortcut: fixedHitSearch(0.95),
+      recordShortcutRetrieval: async () => {},
+      getLangPref: async () => 'mi',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -414,15 +434,15 @@ test("router (knowledge shortcut): a caller with a standing 'mi' language prefer
 
 test("router (knowledge shortcut): a caller with 'auto' (the default) still gets today's English suffix, byte-identical", async () => {
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a near-exact knowledge-shortcut match');
-    },
-    20,
-    undefined,
-    fixedHitSearch(0.95),
-    async () => {},
-    undefined,
-    async () => 'auto',
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a near-exact knowledge-shortcut match');
+      },
+      typingRefireMs: 20,
+      searchKnowledgeForShortcut: fixedHitSearch(0.95),
+      recordShortcutRetrieval: async () => {},
+      getLangPref: async () => 'auto',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -438,17 +458,17 @@ test("router (knowledge shortcut): a caller with 'auto' (the default) still gets
 
 test('SECURITY: a getLanguagePreference failure on the knowledge shortcut still sends the English default, never throws or drops the reply', async () => {
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a near-exact knowledge-shortcut match');
-    },
-    20,
-    undefined,
-    fixedHitSearch(0.95),
-    async () => {},
-    undefined,
-    async () => {
-      throw new Error('language_prefs read boom');
-    },
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a near-exact knowledge-shortcut match');
+      },
+      typingRefireMs: 20,
+      searchKnowledgeForShortcut: fixedHitSearch(0.95),
+      recordShortcutRetrieval: async () => {},
+      getLangPref: async () => {
+        throw new Error('language_prefs read boom');
+      },
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -461,15 +481,17 @@ test('SECURITY: a getLanguagePreference failure on the knowledge shortcut still 
 
 test('SECURITY: KNOWLEDGE_SHORTCUT_SUFFIX_MI is a fixed, non-interpolated string — byte-identical regardless of the served KB entry or caller', async () => {
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a near-exact knowledge-shortcut match');
-    },
-    20,
-    undefined,
-    fixedHitSearch(0.95, { content: 'A completely different knowledge entry.' }),
-    async () => {},
-    undefined,
-    async () => 'mi',
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a near-exact knowledge-shortcut match');
+      },
+      typingRefireMs: 20,
+      searchKnowledgeForShortcut: fixedHitSearch(0.95, {
+        content: 'A completely different knowledge entry.',
+      }),
+      recordShortcutRetrieval: async () => {},
+      getLangPref: async () => 'mi',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -495,20 +517,19 @@ test('config: KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL is disabled (default 0) i
 
 test('router (knowledge shortcut): with the low-rated caveat left at its default-disabled setting, the extra lookup is never issued and the reply is byte-identical to the pre-#337 shortcut reply', async () => {
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a near-exact knowledge-shortcut match');
-    },
-    20,
-    undefined,
-    fixedHitSearch(0.95),
-    async () => {},
-    undefined,
-    undefined,
-    async () => {
-      throw new Error(
-        'the low-rated lookup must never fire when KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL is 0',
-      );
-    },
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a near-exact knowledge-shortcut match');
+      },
+      typingRefireMs: 20,
+      searchKnowledgeForShortcut: fixedHitSearch(0.95),
+      recordShortcutRetrieval: async () => {},
+      checkLowRatedKnowledge: async () => {
+        throw new Error(
+          'the low-rated lookup must never fire when KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL is 0',
+        );
+      },
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -542,35 +563,19 @@ function makeRouterForConflictCaveat(opts: {
   checkKnowledgeConflict: CheckConflictFn;
 }): InstanceType<typeof Router> {
   return new Router(
-    opts.runTurn ??
-      (async () => {
-        throw new Error('runTurn must not be called for a near-exact knowledge-shortcut match');
-      }),
-    20,
-    undefined, // checkPaused
-    opts.searchKnowledgeForShortcut,
-    opts.recordShortcutRetrieval ?? (async () => {}),
-    undefined, // countReplies
-    undefined, // getLangPref
-    undefined, // checkLowRatedKnowledge
-    undefined, // getGatedNotice
-    undefined, // getRespStyle
-    undefined, // recordShortcutHit
-    undefined, // recordAccessRequestFn
-    undefined, // notifyAccessRequestFn
-    undefined, // notifyAdminsFn
-    undefined, // recordEscalatedGapFn
-    undefined, // markKnowledgeGapsAlertedFn
-    undefined, // markStaleKnowledgeAlertedFn
-    undefined, // getCommunityGuidelinesFn
-    undefined, // getCommunityGuidelinesMiFn
-    undefined, // searchMemberInterestsFn
-    undefined, // searchProjectsFn
-    undefined, // listRecentProjectsFn
-    undefined, // buildMemberDigestContentFn
-    undefined, // recentQuestionClustersFn
-    undefined, // searchMemberInterestsForSelfFn
-    opts.checkKnowledgeConflict,
+    makeRouterDeps({
+      runTurn:
+        opts.runTurn ??
+        (async () => {
+          throw new Error('runTurn must not be called for a near-exact knowledge-shortcut match');
+        }),
+      typingRefireMs: 20,
+      // checkPaused
+      searchKnowledgeForShortcut: opts.searchKnowledgeForShortcut,
+      recordShortcutRetrieval: opts.recordShortcutRetrieval ?? (async () => {}),
+      // searchMemberInterestsForSelfFn
+      checkKnowledgeConflict: opts.checkKnowledgeConflict,
+    }),
   );
 }
 

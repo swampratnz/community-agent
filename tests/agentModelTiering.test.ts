@@ -1,5 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import './support/registerNotices.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -13,9 +17,14 @@ process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.AGENT_MODEL_MEMBER = 'claude-haiku-4-5-20251001';
 
-const { config } = await import('../src/config.js');
-const { buildQueryOptions } = await import('../src/agent/core.js');
-const { toolsForRole } = await import('../src/auth/rbac.js');
+// The tool registry's module-scope registrations (tool tiers, tool-server
+// parts, feature-flag predicates) — the composition-root contract, matching
+// tests/rbac.test.ts.
+await import('./support/registerToolRegistry.js');
+
+const { config } = await import('@swampratnz/agent-base/config.js');
+const { buildQueryOptions } = await import('@swampratnz/agent-base/agent/core.js');
+const { toolsForRole } = await import('@swampratnz/agent-base/auth/rbac.js');
 
 // Same feature-flagged set as tests/agentOptions.test.ts — this process also
 // leaves IMAGE_GEN_ENABLED/GITHUB_ISSUE_ENABLED/DEV_TEAM_ENABLED/

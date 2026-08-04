@@ -1,7 +1,15 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { AgentReply } from '../src/agent/core.js';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import './support/registerNotices.js';
+import type { AgentReply } from '@swampratnz/agent-base/agent/core.js';
+import type {
+  IncomingMessage,
+  OutgoingMessage,
+  PlatformAdapter,
+} from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -42,14 +50,21 @@ const AUTO_CHAN = `${RUN}-chan`;
 process.env.AUTO_ANSWER_CHANNEL_IDS = AUTO_CHAN;
 process.env.AUTO_ANSWER_RATE_LIMIT_PER_HOUR = '2';
 
-const { pool, closeDb } = await import('../src/storage/db.js');
-const { config } = await import('../src/config.js');
-const { Router } = await import('../src/router.js');
-const { ADMIN_TOOLS, MEMBER_TOOLS, SUPER_ADMIN_TOOLS, toolsForRole } = await import('../src/auth/rbac.js');
-const { resolveRole } = await import('../src/auth/roles.js');
+const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
+const { config } = await import('@swampratnz/agent-base/config.js');
+const { Router } = await import('@swampratnz/agent-base/router.js');
+const { makeRouterDeps } = await import('../src/module/routerWiring.js');
+await import('./support/registerToolRegistry.js');
+const { ADMIN_TOOLS, MEMBER_TOOLS, SUPER_ADMIN_TOOLS, toolsForRole } =
+  await import('@swampratnz/agent-base/auth/rbac.js');
+const { resolveRole } = await import('@swampratnz/agent-base/auth/roles.js');
 type Tier = Parameters<typeof toolsForRole>[0];
-const { DAILY_BUDGET_NOTICE_TEXT } = await import('../src/dailyBudgetNotice.js');
-const { embed } = await import('../src/storage/embeddings.js');
+const { embed } = await import('@swampratnz/agent-base/storage/embeddings.js');
+
+// Notice constants agent-base deleted in the package flip (they named this
+// community's axis values in framework code, and rendered at import time). Same
+// catalogue entries, same values — see tests/support/legacyNotices.ts.
+const { DAILY_BUDGET_NOTICE_TEXT } = await import('./support/legacyNotices.js');
 
 await embed('warmup').catch(() => {});
 
@@ -135,10 +150,15 @@ test('config: AUTO_ANSWER_CHANNEL_IDS / AUTO_ANSWER_RATE_LIMIT_PER_HOUR are pars
 
 test('auto-answer: a top-level non-addressed post in an allowlisted channel triggers exactly one turn and threads the reply on the origin post (issue #477)', async () => {
   let calls = 0;
-  const router = new Router(async () => {
-    calls += 1;
-    return makeReply('here is your answer');
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => {
+        calls += 1;
+        return makeReply('here is your answer');
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, sent, threadCalls, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -159,10 +179,15 @@ test('auto-answer: a top-level non-addressed post in an allowlisted channel trig
 
 test('auto-answer: a channel NOT on the allowlist still requires addressedToBot/isDirect (scoping is per-channel)', async () => {
   let calls = 0;
-  const router = new Router(async () => {
-    calls += 1;
-    return makeReply('should never be sent');
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => {
+        calls += 1;
+        return makeReply('should never be sent');
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -173,7 +198,9 @@ test('auto-answer: a channel NOT on the allowlist still requires addressedToBot/
 });
 
 test('auto-answer: falls back to a plain channel reply when thread creation fails, rather than dropping the answer', async () => {
-  const router = new Router(async () => makeReply('answer despite thread failure'), 20);
+  const router = new Router(
+    makeRouterDeps({ runTurn: async () => makeReply('answer despite thread failure'), typingRefireMs: 20 }),
+  );
   const { adapter, sent, trigger } = makeAdapter({
     startAutoAnswerThread: async () => {
       throw new Error('discord API boom');
@@ -190,10 +217,15 @@ test('auto-answer: falls back to a plain channel reply when thread creation fail
 
 test("SECURITY: an auto-answer turn resolves the caller's true tier and is granted exactly the member/guest tool surface — never elevated (issue #477)", async () => {
   let seenRole: Tier | undefined;
-  const router = new Router(async (caller) => {
-    seenRole = caller.role;
-    return makeReply('answer');
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async (caller) => {
+        seenRole = caller.role;
+        return makeReply('answer');
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -223,10 +255,15 @@ test("SECURITY: an auto-answer turn resolves the caller's true tier and is grant
 
 test('SECURITY: a bot/webhook-authored post in an allowlisted channel never triggers an auto-answer (loop prevention, issue #477)', async () => {
   let calls = 0;
-  const router = new Router(async () => {
-    calls += 1;
-    return makeReply('should never be sent');
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => {
+        calls += 1;
+        return makeReply('should never be sent');
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -238,10 +275,15 @@ test('SECURITY: a bot/webhook-authored post in an allowlisted channel never trig
 
 test('per-channel rolling-hour cap bounds auto-answers; once exhausted, further posts in the window are skipped (issue #477, AUTO_ANSWER_RATE_LIMIT_PER_HOUR=2)', async () => {
   let calls = 0;
-  const router = new Router(async () => {
-    calls += 1;
-    return makeReply('answer');
-  }, 20);
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async () => {
+        calls += 1;
+        return makeReply('answer');
+      },
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -262,15 +304,14 @@ test('per-channel rolling-hour cap bounds auto-answers; once exhausted, further 
 test('SECURITY: an auto-answer turn is still subject to the daily reply budget — no bypass (issue #477)', async () => {
   let calls = 0;
   const router = new Router(
-    async () => {
-      calls += 1;
-      return makeReply('answer');
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    async () => 999, // always over budget
+    makeRouterDeps({
+      runTurn: async () => {
+        calls += 1;
+        return makeReply('answer');
+      },
+      typingRefireMs: 20,
+      countReplies: async () => 999,
+    }), // always over budget
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -294,15 +335,14 @@ test('SECURITY: an over-budget post never burns a per-channel auto-answer cap sl
   // budget checks — so an over-budget member hammering the channel must not
   // consume any of the shared allowance and lock everyone else out.
   const router = new Router(
-    async () => {
-      calls += 1;
-      return makeReply('answer');
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    async (_platform, userId) => (userId === spammer ? 999 : 0),
+    makeRouterDeps({
+      runTurn: async () => {
+        calls += 1;
+        return makeReply('answer');
+      },
+      typingRefireMs: 20,
+      countReplies: async (_platform, userId) => (userId === spammer ? 999 : 0),
+    }),
   );
   const { adapter, trigger } = makeAdapter();
   router.register(adapter);

@@ -8,6 +8,10 @@ process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
+// The status feed URL has NO default in agent-base — a framework must not ship
+// one vendor's status page — so this deployment sets it explicitly, and so
+// must a test that exercises the poller (see .env.example).
+process.env.STATUS_CHECK_API_URL ??= 'https://status.claude.com/api/v2/summary.json';
 
 const {
   parseStatusSummary,
@@ -17,7 +21,7 @@ const {
   formatStatusResolvedAlert,
   getStatusCache,
   resetStatusCacheForTests,
-} = await import('../src/status/anthropicStatus.js');
+} = await import('../src/module/status/anthropicStatus.js');
 
 const ALL_OPERATIONAL_BODY = JSON.stringify({
   page: { id: 'abc' },

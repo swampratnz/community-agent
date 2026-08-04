@@ -18,10 +18,11 @@ const skip = hasDb
   ? false
   : 'DATABASE_URL not set — skipping DB-integration tests (CLAUDE.md: exercise against a local Postgres 16 + pgvector)';
 
-const { pool, closeDb } = await import('../src/storage/db.js');
+const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
 const { saveKnowledge, searchKnowledge, searchKnowledgeLexical } =
-  await import('../src/storage/repository.js');
-const { KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD } = await import('../src/agent/tools.js');
+  await import('@swampratnz/agent-base/storage/repository.js');
+await import('./support/registerToolRegistry.js');
+const { KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD } = await import('../src/module/agent/tools.js');
 
 // Unique per test-run tag so fixtures never collide across runs and can be
 // cleaned up precisely, mirroring the RUN-tag convention in
@@ -178,7 +179,7 @@ test(
       overThreshold.length,
       0,
       `negative quer${overThreshold.length === 1 ? 'y' : 'ies'} scored at/above KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD ` +
-        `(${KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD}) against this fixture's entries — the threshold in src/agent/tools.ts ` +
+        `(${KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD}) against this fixture's entries — the threshold in src/module/agent/tools.ts ` +
         `needs re-deriving (embedding model drift?): ${JSON.stringify(overThreshold)}`,
     );
   },

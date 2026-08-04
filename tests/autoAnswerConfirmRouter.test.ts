@@ -1,7 +1,15 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { AgentReply } from '../src/agent/core.js';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import './support/registerNotices.js';
+import type { AgentReply } from '@swampratnz/agent-base/agent/core.js';
+import type {
+  IncomingMessage,
+  OutgoingMessage,
+  PlatformAdapter,
+} from '@swampratnz/agent-base/platforms/types.js';
 
 // Regression cover for the CONFIRM-in-thread hazard the automated review on
 // #482 named: an auto-answer reply is contained in a NEW Discord thread, but a
@@ -32,10 +40,17 @@ const RUN = `autoanswer-confirm-router-${Date.now()}`;
 const AUTO_CHAN = `${RUN}-chan`;
 process.env.AUTO_ANSWER_CHANNEL_IDS = AUTO_CHAN;
 
-const { pool, closeDb } = await import('../src/storage/db.js');
-const { Router, CANCEL_TEXT } = await import('../src/router.js');
-const { registerPendingAction, hasPendingAction } = await import('../src/agent/pendingActions.js');
-const { embed } = await import('../src/storage/embeddings.js');
+const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
+const { Router } = await import('@swampratnz/agent-base/router.js');
+const { makeRouterDeps } = await import('../src/module/routerWiring.js');
+const { registerPendingAction, hasPendingAction } =
+  await import('@swampratnz/agent-base/agent/pendingActions.js');
+const { embed } = await import('@swampratnz/agent-base/storage/embeddings.js');
+
+// Notice constants agent-base deleted in the package flip (they named this
+// community's axis values in framework code, and rendered at import time). Same
+// catalogue entries, same values — see tests/support/legacyNotices.ts.
+const { CANCEL_TEXT } = await import('./support/legacyNotices.js');
 
 await embed('warmup').catch(() => {});
 
@@ -118,17 +133,22 @@ test('SECURITY: a CONFIRM typed inside the auto-answer thread executes the pendi
   const userId = `${RUN}-member-confirm-1`;
   // The agent turn registers a destructive pending action against the PARENT
   // channel (caller.conversationId), exactly as a real `forget_me` would.
-  const router = new Router(async (caller) => {
-    registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
-      description: `${RUN} delete your data`,
-      minTier: 'guest',
-      execute: async () => {
-        executed = true;
-        return 'Deleted.';
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async (caller) => {
+        registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
+          description: `${RUN} delete your data`,
+          minTier: 'guest',
+          execute: async () => {
+            executed = true;
+            return 'Deleted.';
+          },
+        });
+        return makeReply('Are you sure?');
       },
-    });
-    return makeReply('Are you sure?');
-  }, 20);
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, threadCalls, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -158,17 +178,22 @@ test('SECURITY: a CONFIRM typed inside the auto-answer thread executes the pendi
 test('SECURITY: a CANCEL typed inside the auto-answer thread aborts the parent-scoped pending action without executing it (issue #477)', async () => {
   let executed = false;
   const userId = `${RUN}-member-cancel-1`;
-  const router = new Router(async (caller) => {
-    registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
-      description: `${RUN} delete your data`,
-      minTier: 'guest',
-      execute: async () => {
-        executed = true;
-        return 'Deleted.';
+  const router = new Router(
+    makeRouterDeps({
+      runTurn: async (caller) => {
+        registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
+          description: `${RUN} delete your data`,
+          minTier: 'guest',
+          execute: async () => {
+            executed = true;
+            return 'Deleted.';
+          },
+        });
+        return makeReply('Are you sure?');
       },
-    });
-    return makeReply('Are you sure?');
-  }, 20);
+      typingRefireMs: 20,
+    }),
+  );
   const { adapter, sent, threadCalls, trigger } = makeAdapter();
   router.register(adapter);
 

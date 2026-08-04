@@ -1,7 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
-import type { Platform } from '../src/platforms/types.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import './support/registerNotices.js';
+import type {
+  IncomingMessage,
+  OutgoingMessage,
+  PlatformAdapter,
+} from '@swampratnz/agent-base/platforms/types.js';
+import type { Platform } from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -30,10 +38,15 @@ process.env.ACCESS_MODE_DISCORD = 'open';
 process.env.ESCALATION_TO_ADMIN_ENABLED = 'true';
 process.env.REPEAT_MAX_TURNS_SHORTCUT_ENABLED = 'true';
 
-const { config } = await import('../src/config.js');
-const { Router, ESCALATION_RATE_LIMIT_PER_HOUR } = await import('../src/router.js');
-const { embed } = await import('../src/storage/embeddings.js');
-const { MAX_TURNS_REPLY, MAX_TURNS_REPLY_MI } = await import('../src/agent/core.js');
+const { config } = await import('@swampratnz/agent-base/config.js');
+const { Router, ESCALATION_RATE_LIMIT_PER_HOUR } = await import('@swampratnz/agent-base/router.js');
+const { makeRouterDeps } = await import('../src/module/routerWiring.js');
+const { embed } = await import('@swampratnz/agent-base/storage/embeddings.js');
+
+// Notice constants agent-base deleted in the package flip (they named this
+// community's axis values in framework code, and rendered at import time). Same
+// catalogue entries, same values — see tests/support/legacyNotices.ts.
+const { MAX_TURNS_REPLY, MAX_TURNS_REPLY_MI } = await import('./support/legacyNotices.js');
 
 await embed('warmup').catch(() => {});
 
@@ -121,30 +134,27 @@ function makeRouterWithNotifySpy(
   const notifyCalls: { message: string; excludeUserId: string }[] = [];
   const gapCalls: { platform: string; conversationId: string; userId: string; query: string }[] = [];
   const router = new Router(
-    runTurn,
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    getLangPref,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async (
-      _adapterFor: (platform: Platform) => PlatformAdapter | undefined,
-      message: string,
-      excludeUserId: string,
-    ) => {
-      notifyCalls.push({ message, excludeUserId });
-    },
-    async (platform: Platform, conversationId: string, userId: string, query: string) => {
-      gapCalls.push({ platform, conversationId, userId, query });
-      return { id: gapCalls.length };
-    },
+    makeRouterDeps({
+      runTurn: runTurn,
+      typingRefireMs: 20,
+      getLangPref: getLangPref,
+      notifyAdminsFn: async (
+        _adapterFor: (platform: Platform) => PlatformAdapter | undefined,
+        message: string,
+        excludeUserId: string,
+      ) => {
+        notifyCalls.push({ message, excludeUserId });
+      },
+      recordEscalatedGapFn: async (
+        platform: Platform,
+        conversationId: string,
+        userId: string,
+        query: string,
+      ) => {
+        gapCalls.push({ platform, conversationId, userId, query });
+        return { id: gapCalls.length };
+      },
+    }),
   );
   return { router, notifyCalls, gapCalls };
 }

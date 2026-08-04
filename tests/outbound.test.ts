@@ -1,5 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import './support/registerNotices.js';
 import {
   applyCodePolicy,
   convertMarkdownForWhatsApp,
@@ -7,7 +11,7 @@ import {
   redactSecrets,
   stripEmDashes,
   stripEmDashesOutsideCode,
-} from '../src/agent/outbound.js';
+} from '@swampratnz/agent-base/agent/outbound.js';
 
 test('SECURITY: known secret values are always redacted', () => {
   const secret = 'super-secret-oauth-token-value-123';
@@ -76,7 +80,7 @@ test('SECURITY: applyCodePolicy/filterOutbound with no language argument (or any
   assert.equal(applyCodePolicy(off, 'off'), applyCodePolicy(off, 'off', undefined));
   assert.equal(applyCodePolicy(long, 'snippets'), applyCodePolicy(long, 'snippets', undefined));
   // Any non-'mi' value must never accidentally pick the Māori variant either.
-  assert.equal(applyCodePolicy(off, 'off'), applyCodePolicy(off, 'off', 'en' as unknown as 'mi'));
+  assert.equal(applyCodePolicy(off, 'off'), applyCodePolicy(off, 'off', 'en'));
   assert.equal(filterOutbound(off, 'off'), filterOutbound(off, 'off', [], 'discord', undefined));
 });
 
@@ -297,10 +301,7 @@ test('SECURITY: applyCodePolicy/filterOutbound degrade to the standard English n
   assert.equal(applyCodePolicy(off, 'off'), applyCodePolicy(off, 'off', undefined, undefined));
   assert.equal(applyCodePolicy(long, 'snippets'), applyCodePolicy(long, 'snippets', undefined, undefined));
   // Any non-'plain' value (e.g. a coerced 'standard') must never accidentally pick the plain variant.
-  assert.equal(
-    applyCodePolicy(off, 'off'),
-    applyCodePolicy(off, 'off', undefined, 'standard' as unknown as 'plain'),
-  );
+  assert.equal(applyCodePolicy(off, 'off'), applyCodePolicy(off, 'off', undefined, 'standard'));
   assert.equal(filterOutbound(off, 'off'), filterOutbound(off, 'off', [], 'discord', undefined, undefined));
 });
 

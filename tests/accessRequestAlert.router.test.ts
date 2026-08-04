@@ -1,6 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import './support/registerNotices.js';
+import type {
+  IncomingMessage,
+  OutgoingMessage,
+  PlatformAdapter,
+} from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment before
 // importing anything that (transitively) loads it, matching router.test.ts.
@@ -18,8 +26,9 @@ process.env.ACCESS_REQUEST_ALERT_ENABLED = 'true';
 // Small cap so the rate-cap test below doesn't need to fire dozens of calls.
 process.env.ACCESS_REQUEST_ALERT_RATE_LIMIT_PER_HOUR = '3';
 
-const { config } = await import('../src/config.js');
-const { Router } = await import('../src/router.js');
+const { config } = await import('@swampratnz/agent-base/config.js');
+const { Router } = await import('@swampratnz/agent-base/router.js');
+const { makeRouterDeps } = await import('../src/module/routerWiring.js');
 
 function makeAdapter(): {
   adapter: PlatformAdapter;
@@ -84,21 +93,14 @@ function makeGatedRouter(opts: {
   notifyAccessRequestFn: (...args: unknown[]) => Promise<void>;
 }) {
   return new Router(
-    async () => {
-      throw new Error('runTurn must not be called for a gated-out guest');
-    },
-    20,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    opts.recordAccessRequestFn,
-    opts.notifyAccessRequestFn,
+    makeRouterDeps({
+      runTurn: async () => {
+        throw new Error('runTurn must not be called for a gated-out guest');
+      },
+      typingRefireMs: 20,
+      recordAccessRequestFn: opts.recordAccessRequestFn,
+      notifyAccessRequestFn: opts.notifyAccessRequestFn,
+    }),
   );
 }
 

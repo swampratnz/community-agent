@@ -1,5 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import './support/registerNotices.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -9,6 +13,11 @@ process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 
+// The tool registry's module-scope registrations (tool tiers, tool-server
+// parts, feature-flag predicates) — the composition-root contract, matching
+// tests/rbac.test.ts.
+await import('./support/registerToolRegistry.js');
+
 test('SECURITY: AC-5 — a thrown error inside the WebSearch rate-limit check fails closed (denies), never lets the call through unbounded', async (t) => {
   // Mock BEFORE the first import of core.js — a later t.mock.module call
   // can't retarget an already-imported module (see the same trap noted in
@@ -16,8 +25,8 @@ test('SECURITY: AC-5 — a thrown error inside the WebSearch rate-limit check fa
   // reserveWebSearchSlot, which is replaced with one that always throws, so
   // this exercises buildQueryOptions's own fail-closed try/catch rather than
   // any unverifiable SDK default behaviour on a hook exception.
-  const real = await import('../src/agent/tools.js');
-  t.mock.module('../src/agent/tools.js', {
+  const real = await import('@swampratnz/agent-base/agent/webSearchGuard.js');
+  t.mock.module('@swampratnz/agent-base/agent/webSearchGuard.js', {
     namedExports: {
       ...real,
       reserveWebSearchSlot: () => {
@@ -26,7 +35,7 @@ test('SECURITY: AC-5 — a thrown error inside the WebSearch rate-limit check fa
     },
   });
 
-  const { buildQueryOptions } = await import('../src/agent/core.js');
+  const { buildQueryOptions } = await import('@swampratnz/agent-base/agent/core.js');
   const opts = buildQueryOptions('admin', 'prompt', {}, null, 'ws-cap-fail-closed') as {
     hooks?: {
       PreToolUse?: Array<{

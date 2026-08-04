@@ -1,5 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// The default bad-word list is community content registered at its own module
+// scope (src/index.ts imports it in production); the moderation wordlist —
+// which makeClassifier builds — fails closed until then.
+import './support/registerBadWords.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import './support/registerNotices.js';
 
 // Issue #720: classifyAbuseWithLlm used to parse the model's raw text with
 // /^\s*ABUSE:\s*(.+)$/im and silently return null (== "clean") on ANY
@@ -42,14 +50,14 @@ function mockQuery() {
 // tests/classifierModelTiering.test.ts) — install the mock once and reuse the
 // cached import across every test in this file.
 let modulesPromise: Promise<{
-  classifyAbuseWithLlm: typeof import('../src/moderation/moderator.js').classifyAbuseWithLlm;
-  makeClassifier: typeof import('../src/moderation/moderator.js').makeClassifier;
+  classifyAbuseWithLlm: typeof import('@swampratnz/agent-base/moderation/moderator.js').classifyAbuseWithLlm;
+  makeClassifier: typeof import('@swampratnz/agent-base/moderation/moderator.js').makeClassifier;
 }> | null = null;
 async function modules(t: { mock: { module: (specifier: string, opts: unknown) => void } }) {
   if (!modulesPromise) {
     const real = await import('@anthropic-ai/claude-agent-sdk');
     t.mock.module('@anthropic-ai/claude-agent-sdk', { namedExports: { ...real, query: mockQuery } });
-    modulesPromise = import('../src/moderation/moderator.js').then((moderator) => ({
+    modulesPromise = import('@swampratnz/agent-base/moderation/moderator.js').then((moderator) => ({
       classifyAbuseWithLlm: moderator.classifyAbuseWithLlm,
       makeClassifier: moderator.makeClassifier,
     }));

@@ -1,7 +1,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { PlatformAdapter } from '../src/platforms/types.js';
-import type { JobResult, JobStatus } from '../src/devTeam/client.js';
+import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
+import type { JobResult, JobStatus } from '../src/module/devTeam/client.js';
 
 // config.ts validates env at import time. This process leaves DEV_TEAM_ENABLED
 // UNSET (disabled), which lets the startDevTeamWatchPoller "returns null when
@@ -24,11 +24,11 @@ const {
   startDevTeamWatchPoller,
   formatDevTeamCompletionDm,
   formatDevTeamVerifyCompletionDm,
-} = await import('../src/backgroundJobs.js');
+} = await import('../src/module/backgroundJobs.js');
 const { insertDevTeamWatch, listUnnotifiedDevTeamWatches, markDevTeamWatchNotified } =
-  await import('../src/storage/repository.js');
-const { pool, closeDb } = await import('../src/storage/db.js');
-const { config } = await import('../src/config.js');
+  await import('@swampratnz/agent-base/storage/repository.js');
+const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
+const { config } = await import('@swampratnz/agent-base/config.js');
 
 after(async () => {
   await closeDb();

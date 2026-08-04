@@ -1,7 +1,15 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { AgentReply } from '../src/agent/core.js';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+// Community notice-pack registration — the composition-root contract:
+// src/index.ts registers the pack in production, so a test whose import
+// graph evaluates a notice consumer registers it explicitly here, first.
+import './support/registerNotices.js';
+import type { AgentReply } from '@swampratnz/agent-base/agent/core.js';
+import type {
+  IncomingMessage,
+  OutgoingMessage,
+  PlatformAdapter,
+} from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -19,23 +27,28 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 process.env.ACCESS_MODE_DISCORD = 'open';
 
-const { pool, closeDb } = await import('../src/storage/db.js');
-const { Router } = await import('../src/router.js');
+const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
+const { Router } = await import('@swampratnz/agent-base/router.js');
+const { makeRouterDeps } = await import('../src/module/routerWiring.js');
+const { embed } = await import('@swampratnz/agent-base/storage/embeddings.js');
+
+// Notice constants agent-base deleted in the package flip (they named this
+// community's axis values in framework code, and rendered at import time). Same
+// catalogue entries, same values — see tests/support/legacyNotices.ts.
 const { DAILY_BUDGET_NOTICE_TEXT, DAILY_BUDGET_NOTICE_TEXT_MI, DAILY_BUDGET_NOTICE_TEXT_PLAIN } =
-  await import('../src/dailyBudgetNotice.js');
-const { embed } = await import('../src/storage/embeddings.js');
+  await import('./support/legacyNotices.js');
 const {
   getPendingAlertsForTests,
   getPendingAlertEntriesForTests,
   resetPendingAlertsForTests,
   queuePendingAlert,
   PENDING_ALERT_QUEUE_CAP,
-} = await import('../src/pendingAlertQueue.js');
+} = await import('@swampratnz/agent-base/pendingAlertQueue.js');
 
 await embed('warmup').catch(() => {});
 
 // Open mode means every trigger() below reaches recordInteraction and is
-// persisted for real. The context builder (src/context/builder.ts) clusters
+// persisted for real. The context builder (src/module/context/builder.ts) clusters
 // inbound interactions by embedding similarity across the WHOLE table,
 // unscoped by conversation or test file — an identical message text from
 // >=3 distinct users forms a real cluster (this bit contextBuilder.test.ts
@@ -120,12 +133,12 @@ function failingCountReplies(): Promise<number> {
 
 test('router (budget check failure): a countRepliesToUser rejection still lets the member reply through (fail-open unchanged, issue #52)', async () => {
   const router = new Router(
-    async () => makeReply('reply despite budget-check failure'),
-    20,
-    async () => false, // not paused
-    undefined,
-    undefined,
-    failingCountReplies,
+    makeRouterDeps({
+      runTurn: async () => makeReply('reply despite budget-check failure'),
+      typingRefireMs: 20,
+      checkPaused: async () => false,
+      countReplies: failingCountReplies,
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -138,12 +151,12 @@ test('router (budget check failure): a countRepliesToUser rejection still lets t
 
 test('router (budget check failure): exactly one super-admin DM fires on failure; a second failure inside the debounce window fires no more', async () => {
   const router = new Router(
-    async () => makeReply('ok'),
-    20,
-    async () => false,
-    undefined,
-    undefined,
-    failingCountReplies,
+    makeRouterDeps({
+      runTurn: async () => makeReply('ok'),
+      typingRefireMs: 20,
+      checkPaused: async () => false,
+      countReplies: failingCountReplies,
+    }),
   );
   const { adapter, dms, trigger } = makeAdapter();
   router.register(adapter);
@@ -163,12 +176,12 @@ test('router (budget check failure): exactly one super-admin DM fires on failure
 
 test('router (budget check failure): no DM at all when countRepliesToUser succeeds (regression: only a real failure alerts)', async () => {
   const router = new Router(
-    async () => makeReply('ok'),
-    20,
-    async () => false,
-    undefined,
-    undefined,
-    async () => 0,
+    makeRouterDeps({
+      runTurn: async () => makeReply('ok'),
+      typingRefireMs: 20,
+      checkPaused: async () => false,
+      countReplies: async () => 0,
+    }),
   );
   const { adapter, dms, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -184,12 +197,12 @@ test('router (budget check failure): no DM at all when countRepliesToUser succee
 test('router (budget check failure): with the only registered adapter disconnected, the alert is queued exactly once instead of dropped (issue #593)', async () => {
   resetPendingAlertsForTests();
   const router = new Router(
-    async () => makeReply('reply despite budget-check failure'),
-    20,
-    async () => false,
-    undefined,
-    undefined,
-    failingCountReplies,
+    makeRouterDeps({
+      runTurn: async () => makeReply('reply despite budget-check failure'),
+      typingRefireMs: 20,
+      checkPaused: async () => false,
+      countReplies: failingCountReplies,
+    }),
   );
   const { adapter, dms, trigger } = makeAdapter({ isConnected: () => false });
   router.register(adapter);
@@ -209,12 +222,12 @@ test('router (budget check failure): with the only registered adapter disconnect
 test("SECURITY: router.ts's budget-check-failure alert queues an entry with no `recipients` field — issue #625 only added an opt-in recipient set for notifyAdmins; this producer is unaffected and still flushes to superAdminIds()", async () => {
   resetPendingAlertsForTests();
   const router = new Router(
-    async () => makeReply('reply despite budget-check failure'),
-    20,
-    async () => false,
-    undefined,
-    undefined,
-    failingCountReplies,
+    makeRouterDeps({
+      runTurn: async () => makeReply('reply despite budget-check failure'),
+      typingRefireMs: 20,
+      checkPaused: async () => false,
+      countReplies: failingCountReplies,
+    }),
   );
   const { adapter, trigger } = makeAdapter({ isConnected: () => false });
   router.register(adapter);
@@ -231,12 +244,12 @@ test('SECURITY: the budget-check-failure alert queues the message byte-identical
   resetPendingAlertsForTests();
 
   const liveRouter = new Router(
-    async () => makeReply('ok'),
-    20,
-    async () => false,
-    undefined,
-    undefined,
-    failingCountReplies,
+    makeRouterDeps({
+      runTurn: async () => makeReply('ok'),
+      typingRefireMs: 20,
+      checkPaused: async () => false,
+      countReplies: failingCountReplies,
+    }),
   );
   const { adapter: liveAdapter, dms: liveDms, trigger: liveTrigger } = makeAdapter();
   liveRouter.register(liveAdapter);
@@ -246,12 +259,12 @@ test('SECURITY: the budget-check-failure alert queues the message byte-identical
   resetPendingAlertsForTests();
 
   const downRouter = new Router(
-    async () => makeReply('ok'),
-    20,
-    async () => false,
-    undefined,
-    undefined,
-    failingCountReplies,
+    makeRouterDeps({
+      runTurn: async () => makeReply('ok'),
+      typingRefireMs: 20,
+      checkPaused: async () => false,
+      countReplies: failingCountReplies,
+    }),
   );
   const { adapter: downAdapter, trigger: downTrigger } = makeAdapter({ isConnected: () => false });
   downRouter.register(downAdapter);
@@ -277,16 +290,16 @@ test('router (budget check failure): does not cross-talk with the unrelated budg
   // the earlier over-limit notice must not have been suppressed or altered.
   let calls = 0;
   const router = new Router(
-    async () => makeReply('should not be reached while over budget'),
-    20,
-    async () => false,
-    undefined,
-    undefined,
-    async () => {
-      calls += 1;
-      if (calls === 1) return 999; // first user: over budget, real success
-      return Promise.reject(new Error('boom')); // second user: real failure
-    },
+    makeRouterDeps({
+      runTurn: async () => makeReply('should not be reached while over budget'),
+      typingRefireMs: 20,
+      checkPaused: async () => false,
+      countReplies: async () => {
+        calls += 1;
+        if (calls === 1) return 999; // first user: over budget, real success
+        return Promise.reject(new Error('boom')); // second user: real failure
+      },
+    }),
   );
   const { adapter, dms, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -303,13 +316,14 @@ test('router (budget check failure): does not cross-talk with the unrelated budg
 
 test("router (budget exceeded): a caller with a standing 'mi' language preference gets DAILY_BUDGET_NOTICE_TEXT_MI, not the English default", async () => {
   const router = new Router(
-    async () => makeReply('should not be reached while over budget'),
-    20,
-    async () => false,
-    undefined,
-    undefined,
-    async () => 999, // over the daily limit
-    async () => 'mi',
+    makeRouterDeps({
+      runTurn: async () => makeReply('should not be reached while over budget'),
+      typingRefireMs: 20,
+      checkPaused: async () => false,
+      countReplies: async () => 999,
+      // over the daily limit
+      getLangPref: async () => 'mi',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -322,13 +336,13 @@ test("router (budget exceeded): a caller with a standing 'mi' language preferenc
 
 test("router (budget exceeded): a caller with 'auto' (the default) still gets the English DAILY_BUDGET_NOTICE_TEXT", async () => {
   const router = new Router(
-    async () => makeReply('should not be reached while over budget'),
-    20,
-    async () => false,
-    undefined,
-    undefined,
-    async () => 999,
-    async () => 'auto',
+    makeRouterDeps({
+      runTurn: async () => makeReply('should not be reached while over budget'),
+      typingRefireMs: 20,
+      checkPaused: async () => false,
+      countReplies: async () => 999,
+      getLangPref: async () => 'auto',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -341,15 +355,15 @@ test("router (budget exceeded): a caller with 'auto' (the default) still gets th
 
 test('SECURITY: a getLanguagePreference failure on the daily-budget notice still sends the English default, never throws or drops the notice', async () => {
   const router = new Router(
-    async () => makeReply('should not be reached while over budget'),
-    20,
-    async () => false,
-    undefined,
-    undefined,
-    async () => 999,
-    async () => {
-      throw new Error('language_prefs read boom');
-    },
+    makeRouterDeps({
+      runTurn: async () => makeReply('should not be reached while over budget'),
+      typingRefireMs: 20,
+      checkPaused: async () => false,
+      countReplies: async () => 999,
+      getLangPref: async () => {
+        throw new Error('language_prefs read boom');
+      },
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -363,16 +377,16 @@ test('SECURITY: a getLanguagePreference failure on the daily-budget notice still
 test('router (budget exceeded): the language-preference lookup runs at most once per debounce window, never once per shed message', async () => {
   let calls = 0;
   const router = new Router(
-    async () => makeReply('should not be reached while over budget'),
-    20,
-    async () => false,
-    undefined,
-    undefined,
-    async () => 999,
-    async () => {
-      calls += 1;
-      return 'auto';
-    },
+    makeRouterDeps({
+      runTurn: async () => makeReply('should not be reached while over budget'),
+      typingRefireMs: 20,
+      checkPaused: async () => false,
+      countReplies: async () => 999,
+      getLangPref: async () => {
+        calls += 1;
+        return 'auto';
+      },
+    }),
   );
   const { adapter, trigger } = makeAdapter();
   router.register(adapter);
@@ -392,16 +406,15 @@ test('router (budget exceeded): the language-preference lookup runs at most once
 
 test("router (budget exceeded): a caller with a standing 'plain' response style (and 'auto' language) gets DAILY_BUDGET_NOTICE_TEXT_PLAIN", async () => {
   const router = new Router(
-    async () => makeReply('should not be reached while over budget'),
-    20,
-    async () => false,
-    undefined,
-    undefined,
-    async () => 999, // over the daily limit
-    async () => 'auto',
-    undefined,
-    undefined,
-    async () => 'plain',
+    makeRouterDeps({
+      runTurn: async () => makeReply('should not be reached while over budget'),
+      typingRefireMs: 20,
+      checkPaused: async () => false,
+      countReplies: async () => 999,
+      // over the daily limit
+      getLangPref: async () => 'auto',
+      getRespStyle: async () => 'plain',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -414,16 +427,14 @@ test("router (budget exceeded): a caller with a standing 'plain' response style 
 
 test("router (budget exceeded): a caller with 'standard' response style still gets the English DAILY_BUDGET_NOTICE_TEXT (byte-identical regression)", async () => {
   const router = new Router(
-    async () => makeReply('should not be reached while over budget'),
-    20,
-    async () => false,
-    undefined,
-    undefined,
-    async () => 999,
-    async () => 'auto',
-    undefined,
-    undefined,
-    async () => 'standard',
+    makeRouterDeps({
+      runTurn: async () => makeReply('should not be reached while over budget'),
+      typingRefireMs: 20,
+      checkPaused: async () => false,
+      countReplies: async () => 999,
+      getLangPref: async () => 'auto',
+      getRespStyle: async () => 'standard',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -436,16 +447,14 @@ test("router (budget exceeded): a caller with 'standard' response style still ge
 
 test("router (budget exceeded): 'mi' takes precedence over 'plain' when both are set", async () => {
   const router = new Router(
-    async () => makeReply('should not be reached while over budget'),
-    20,
-    async () => false,
-    undefined,
-    undefined,
-    async () => 999,
-    async () => 'mi',
-    undefined,
-    undefined,
-    async () => 'plain',
+    makeRouterDeps({
+      runTurn: async () => makeReply('should not be reached while over budget'),
+      typingRefireMs: 20,
+      checkPaused: async () => false,
+      countReplies: async () => 999,
+      getLangPref: async () => 'mi',
+      getRespStyle: async () => 'plain',
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -459,18 +468,16 @@ test("router (budget exceeded): 'mi' takes precedence over 'plain' when both are
 
 test('SECURITY: a getResponseStyle failure on the daily-budget notice still sends the English default, never throws or drops the notice', async () => {
   const router = new Router(
-    async () => makeReply('should not be reached while over budget'),
-    20,
-    async () => false,
-    undefined,
-    undefined,
-    async () => 999,
-    async () => 'auto',
-    undefined,
-    undefined,
-    async () => {
-      throw new Error('response_style_prefs read boom');
-    },
+    makeRouterDeps({
+      runTurn: async () => makeReply('should not be reached while over budget'),
+      typingRefireMs: 20,
+      checkPaused: async () => false,
+      countReplies: async () => 999,
+      getLangPref: async () => 'auto',
+      getRespStyle: async () => {
+        throw new Error('response_style_prefs read boom');
+      },
+    }),
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);

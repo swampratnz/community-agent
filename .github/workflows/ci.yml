@@ -56,6 +56,11 @@ jobs:
       DISCORD_BOT_TOKEN: ci-dummy-token
       DISCORD_GUILD_ID: ci-dummy-guild
       WHATSAPP_PROVIDER: disabled
+      # This deployment renders member-facing times in NZ local time; the
+      # framework package defaults them to UTC/en-GB and the module manifest's
+      # init() refuses to boot on anything else (see .env.example).
+      DISPLAY_TIMEZONE: Pacific/Auckland
+      DISPLAY_LOCALE: en-NZ
       # Pinned explicitly (matches the config.ts default) so the embedding-model
       # cache key below derives from it — see the cache step.
       EMBEDDING_MODEL: Xenova/all-MiniLM-L6-v2
@@ -107,6 +112,12 @@ jobs:
       # moved. Lives in the lint job because it is a pure static check: no DB,
       # no model, milliseconds.
       - run: npm run context:check
+      # The one-way import rule between src/base/ and src/module/ (agent-base
+      # plan §Phase-2). eslint above catches the same edge from the specifier
+      # text; this resolves every specifier against the file system, so it sees
+      # through any depth of `../` and has no config of its own to weaken.
+      # Same rationale for living here: pure static check, no DB, milliseconds.
+      - run: npm run imports:check
 
   security-invariants:
     # No postgres service here, deliberately: this job pins the security
@@ -124,6 +135,11 @@ jobs:
       DISCORD_BOT_TOKEN: ci-dummy-token
       DISCORD_GUILD_ID: ci-dummy-guild
       WHATSAPP_PROVIDER: disabled
+      # This deployment renders member-facing times in NZ local time; the
+      # framework package defaults them to UTC/en-GB and the module manifest's
+      # init() refuses to boot on anything else (see .env.example).
+      DISPLAY_TIMEZONE: Pacific/Auckland
+      DISPLAY_LOCALE: en-NZ
       # Pinned explicitly (matches the config.ts default) so the embedding-model
       # cache key below derives from it — see the cache step.
       EMBEDDING_MODEL: Xenova/all-MiniLM-L6-v2
