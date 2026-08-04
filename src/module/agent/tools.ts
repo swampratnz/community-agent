@@ -1,9 +1,11 @@
 import { KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD } from '@swampratnz/agent-base/storage/repository.js';
-// The registry import is load-bearing beyond the re-exports below: importing
-// this barrel is what runs tools/index.ts's module-scope registrations (tool
-// tiers, tool-server parts, feature-flag predicates), so `buildToolServer`
-// and `toolsForRole` work anywhere this file is imported — the pre-split
-// behaviour every existing import site (tests especially) relies on.
+// Kept for import-graph continuity only — this is NO LONGER load-bearing.
+// tools/index.ts used to call registerToolTiers/registerToolServerParts/
+// registerFlaggedToolPredicates at its own module scope, so importing this
+// barrel was what made `buildToolServer`/`toolsForRole` work. It now only
+// EXPORTS those three values (COMMUNITY_TOOL_TIERS, COMMUNITY_TOOL_SERVER_PARTS,
+// COMMUNITY_FLAGGED_TOOL_PREDICATES); `agentModule.ts` names them and
+// `createAgent` performs every registration, after all modules are imported.
 import './tools/index.js';
 
 // This file is the BARREL for the tool registry split (docs/

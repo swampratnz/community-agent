@@ -36,7 +36,13 @@ What is here:
   composition wiring (`routerWiring.ts`, `platforms/factories.ts`,
   `jobs/registry.ts`, `commands.ts`).
 - **`src/module/agentModule.ts`** — THE manifest. Every extension point this
-  deployment fills, named once, as data.
+  deployment fills, named once, as data. Its `init()` is also boot-fatal on two
+  env vars: `DISPLAY_TIMEZONE=Pacific/Auckland` and `DISPLAY_LOCALE=en-NZ`.
+  agent-base defaults them to `UTC`/`en-GB` — it cannot know a deployment's
+  timezone — so the manifest asserts them rather than let every member-facing
+  event time silently re-render an hour out. It throws from `init()`, so the
+  failure is a plain `Error` with those two names in it, NOT config's zod
+  `Invalid environment configuration` exit. Set both in `.env`.
 - **`src/index.ts`** — the composition root: it hands that manifest to
   `createAgent`, then wires adapters, the router and the jobs, and owns
   startup/shutdown ordering. The only file that may compose.
@@ -54,8 +60,13 @@ pure pass that rejects an incomplete or double-claimed composition with the
 process untouched) → each module's `init()` → singleton registrations →
 additive registrations → readiness probe → migrations → start.
 
-One gap to expect, real today and an upstream fix: `AgentModule` has no
-`configSchema` field, so a new env var is an agent-base change. (Subpath
+One gap to expect, real today and an upstream fix: the manifest type has no
+`configSchema` field, so a new env var is an agent-base change. Mind which
+type you are reading — the package exports TWO things called `AgentModule`:
+the live one from `createAgent.d.ts`, re-exported as `AgentModuleManifest`
+(what `src/module/agentModule.ts` imports, and the one with no
+`configSchema`), and an older `module-api/module.d.ts` one that has the field
+but is not what `createAgent` takes. (Subpath
 exports were the other one; `@swampratnz/agent-base@0.1.1` ships them, so
 `@swampratnz/agent-base/<module>.js` resolves straight from the package and the
 postinstall shim that used to add them is gone.)
@@ -134,7 +145,10 @@ postinstall shim that used to add them is gone.)
 - `npm run build` — tsc + copies this module's `src/module/storage/schema/`
   fragments into `dist/`, then smoke-checks that `dist/module/storage/schema/`
   matches the module manifest (`scripts/check-dist-schema.mjs`). The base
-  fragments ship inside the installed package.
+  fragments ship inside the installed package. It also copies two things tsc
+  never emits, both load-bearing at runtime: `CHANGELOG.md` (the `whats_new`
+  tool reads it) and `src/module/agent/skills/` (no copy, no skills). Adding a
+  non-`.ts` runtime asset means adding a copy step here.
 - DB-touching changes: CI runs the suite against a real
   `pgvector/pgvector:pg16` service container (see `.github/workflows/ci.yml`),
   so this is enforced, not just a manual reminder. (The base repository suite
@@ -143,14 +157,21 @@ postinstall shim that used to add them is gone.)
   with `DATABASE_URL` set, then `npm test` — DB-touching tests skip cleanly
   (not fail) when `DATABASE_URL` is unset, so a contributor without local
   Postgres isn't blocked.
-- Run all three (typecheck, test, build) green before opening/updating a PR.
+- Run the FULL gate green before opening/updating a PR — CI runs the identical
+  set, so a red PR only makes rework. The copy-pasteable command block lives in
+  `docs/agents/recipes.md` ("Run the full gate"); it is
+  `typecheck`, `lint`, `format:check`, `migrate`, `test`, `build`,
+  `test:security`, `context:check`, `imports:check`.
 
 ## Security posture (do not regress)
 
 This bot processes untrusted public chat. Preserve these invariants:
 
-- Built-in Claude Code tools are disabled per turn (`tools: []`); only admin+
-  turns additionally get `WebSearch`. `WebFetch` is disallowed for everyone.
+- Built-in Claude Code tools are disabled per turn (`tools: []`), with two
+  exceptions: admin+ turns additionally get `WebSearch`, and every tier gets
+  `Skill` when `AGENT_SKILLS_ENABLED` is on (off by default; the loadable set
+  is the hand-written `ENABLED_SKILLS` allowlist, never `'all'`). `WebFetch` is
+  disallowed for everyone. See docs/SECURITY.md §1.
 - Roles come from env (super admins) + the `community_users` table — **never**
   from message content. Tool surface is tier-derived; privileged tools also
   re-assert the tier.

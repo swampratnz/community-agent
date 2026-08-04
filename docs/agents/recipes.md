@@ -75,7 +75,7 @@ The single most common change, and the one with the most gates.
 | File | Why |
 |---|---|
 | `src/module/agent/tools/<domain>.ts` | The `defineTool` entry: description, input schema, **`minTier`**, optional `platforms`/`featureFlag`/`confirm`/`audit`, and the handler. Find the right domain file by tool name first (`moderation.ts`, `knowledgeAdmin.ts`, `social.ts`, …); a brand-new domain file also needs a `docs/agents/module-map.md` entry. |
-| `src/module/agent/tools/index.ts` | Spread the domain array into `TOOL_REGISTRY`. Nothing else: the tier lists (`registerToolTiers`), the tool server's inventory (`registerToolServerParts`) and the feature-flag filter (`registerFlaggedToolPredicates`) are all **derived** from the registry at this file's module scope. Do not hand-add the name to a tier array — there isn't one to add it to any more. |
+| `src/module/agent/tools/index.ts` | Spread the domain array into `TOOL_REGISTRY`. Nothing else: the tier lists, the tool server's inventory and the feature-flag filter are all **derived** from the registry and exported as `COMMUNITY_TOOL_TIERS`/`COMMUNITY_TOOL_SERVER_PARTS`/`COMMUNITY_FLAGGED_TOOL_PREDICATES`, which `agentModule.ts` names and `createAgent` registers. Do not hand-add the name to a tier array — there isn't one to add it to any more — and do not add a `register*()` call here. |
 | `@swampratnz/agent-base/agent/core.ts` | Only if the tool needs a genuinely new *kind* of gating rule. Tier and flag filtering already flow from the registry. |
 | `@swampratnz/agent-base/agent/pendingActions.ts` | **If the tool is destructive.** It must register a pending action for the router to execute after an explicit confirmation, never act directly. |
 | `src/module/agent/communityPromptSections.ts` | Only if members need to be told the capability exists (the community prose sections; `systemPrompt.ts`/`promptSpine.ts` own assembly and the security spine). Any prompt-text change must regenerate `tests/fixtures/systemPromptByteStability.json` in the same diff. |
@@ -118,19 +118,16 @@ unset is a silent breaking change for the running deployment.
 |---|---|
 | `src/module/storage/schema/<NN>-<domain>.sql` | This deployment's schema changes go in a MODULE fragment (the 80+ band), listed in `src/module/storage/schema/manifest.ts` and contributed through `AgentModule.migrations` — `migrate` concatenates base's fragments first, then these, and replays the result as ONE query. **Every statement must be `IF NOT EXISTS`**, and a CHECK needs its own DROP/ADD pair. Never re-declare a fragment the package ships, and never DROP or reshape a constraint it owns — `tests/schemaConstraintIdempotency.test.ts` fails on both. Changing a BASE table's shape is ⚠️ **upstream**. |
 | `@swampratnz/agent-base/storage/repository/<domain>.ts` | ⚠️ **UPSTREAM.** Queries over the BASE tables live in the package's domain modules (`preferences`, `memberNotes`, …), re-exported from `repository.js`. Admin-facing reads are **conversation-scoped in SQL**, not by the caller — keep it that way upstream too. |
-| `tests/repository.test.ts` | DB tests skip cleanly without `DATABASE_URL` and run in CI against a real `pgvector/pgvector:pg16` service. |
+| `tests/` (DB-backed suites) | DB tests skip cleanly without `DATABASE_URL` and run in CI against a real `pgvector/pgvector:pg16` service. The repository's own suite is the package's now (agent-base `tests/repository.test.ts`, 117 `SECURITY:` cases); what lives here are the suites over this module's behaviour. |
 
 Run `npm run migrate` before `npm test` locally, or the DB tests fail with
 `relation does not exist` rather than skipping.
 
-**Fragments live in base even when the table is community.** The numbering
-carries the distinction instead: `00`–`27` base, `50`–`54` community, `70`
-adapter, with deliberate gaps for insertion. Per-module migration contribution
-is Phase 3 work (`docs/AGENT-BASE-PLAN.md`) — until then, add a community table
-to a `5x` fragment and list it in `manifest.ts`. If the erasure promise has to
-reach it, call `registerPurgeContributor` (`@swampratnz/agent-base/storage/lifecycle.ts`) from
+If the erasure promise has to reach a new table, call
+`registerPurgeContributor` (`@swampratnz/agent-base/storage/lifecycle.ts`) from
 the repository domain module that owns the table, the way every existing
-domain does, rather than adding another delete to a central purge query.
+domain does, rather than adding another delete to a central purge query — ⚠️
+upstream, for a base table.
 
 **Widening an enum `CHECK` (a new `kind`, `status`, …):** edit the existing
 `DROP CONSTRAINT IF EXISTS` / `ADD CONSTRAINT` pair's value list **in place**.
@@ -202,13 +199,14 @@ path**, which is where outbound filtering (`@swampratnz/agent-base/agent/outboun
 chunking (`@swampratnz/agent-base/platforms/textChunk.ts`) apply. A new send path that bypasses
 the filter is a security bug, not a style issue.
 
-Keep pure wire helpers in their own files (`whatsapp/wire.ts`,
-`whatsapp/cloudWire.ts`) so they stay testable without a socket.
-
-Adapters themselves are the package's (⚠️ a change to one is upstream); what
-lives here is the wiring. Platforms are registered, not typed: adding one means
-a descriptor in `@swampratnz/agent-base/platforms/registry.ts` (⚠️ upstream:
-id + `memberIdRules.ts`), a factory in
+Adapters themselves are the package's (⚠️ a change to one is upstream), as are
+the pure wire helpers that keep them testable without a socket
+(`whatsapp/wire.ts`, `whatsapp/cloudWire.ts` — keep that separation upstream
+too). What lives here is the wiring. Platforms are registered, not typed:
+adding one means a descriptor in
+`@swampratnz/agent-base/platforms/registry.ts` (⚠️ upstream: id, plus the
+platform's own `platforms/<name>/memberIdRules.ts` — the rules are per-platform,
+there is no shared one), a factory in
 `src/module/platforms/factories.ts` (constructor + declared tool-capability set),
 and — if any tool should be restricted to it — a `requiresCapability` on the
 ToolDef, which `assertToolAvailabilityConsistent` and

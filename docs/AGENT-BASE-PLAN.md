@@ -343,6 +343,16 @@ agent needs as the seam-quality metric.
 
 ## 6. Known residue after Phase 2 (inherited by Phase 3)
 
+> **SUPERSEDED BY PHASE 3 — historical.** Everything below was written while
+> `src/base/` still existed in this tree, and every `src/base/…` path in it now
+> refers to a file inside the `@swampratnz/agent-base` package. The residue it
+> lists is resolved: see the Phase 3 note in §4 for the specifics
+> (`DISPLAY_TIMEZONE`/`DISPLAY_LOCALE`, `DOCS_INGEST_INDEX_URL` and
+> `STATUS_CHECK_API_URL` became env; the gated-notice sentence and the
+> `Community guidelines:` header became notice-pack entries; the locale
+> literals became `isRegisteredLanguage()`/`isRegisteredStyle()` probes). Kept
+> as the record of what was decided, not as an open list.
+
 Phase 2's contract was **no import edge from `src/base/` to `src/module/`**,
 and that holds — `npm run imports:check` proves it on every CI run. It is a
 weaker property than "`src/base/` contains nothing community-specific", and

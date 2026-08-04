@@ -1,7 +1,7 @@
 # CAPABILITY IDEAS — candidate directions for expanding what the bot can do
 
 A human-curated backlog of *capability-level* ideas, written after a review of
-the current tool surface (`src/base/auth/rbac.ts`), the schema, the background jobs,
+the current tool surface (`@swampratnz/agent-base/auth/rbac.ts`), the schema, the background jobs,
 and the shipped/rejected issue history. It is deliberately a different altitude
 from the research worker's output: that loop is very good at finding the next
 small increment on an existing mechanism, and most of what follows is a **new
@@ -26,7 +26,7 @@ Grouped by axis, roughly highest-value first within each group.
 
 ## A. New senses — things the bot currently cannot perceive
 
-The single biggest structural gap. `IncomingMessage` (`src/base/platforms/types.ts`)
+The single biggest structural gap. `IncomingMessage` (`@swampratnz/agent-base/platforms/types.ts`)
 carries `text: string` and nothing else; the Discord adapter builds it from
 `message.content` alone (`adapter.ts:390`/`:406`) and drops attachments on the
 floor. An image-only message arrives as empty text.
@@ -71,15 +71,15 @@ admin-side triage of reported image content.
 
 ### A2. Discord voice-message transcription *(medium impact, low effort)*
 
-**Status:** Shipped (#735). `DISCORD_VOICE_ENABLED` (`src/base/config.ts`, off by
-default), wired into `src/base/platforms/discord/adapter.ts` via
+**Status:** Shipped (#735). `DISCORD_VOICE_ENABLED` (`@swampratnz/agent-base/config.ts`, off by
+default), wired into `@swampratnz/agent-base/platforms/discord/adapter.ts` via
 `transcribeVoiceNote`, matches the smallest-version spec: Discord-prefixed
 caps (`DISCORD_VOICE_MAX_SECONDS`, `DISCORD_VOICE_MIN_ROLE`,
 `DISCORD_VOICE_RATE_LIMIT_PER_HOUR`) shaped like the WhatsApp knobs, and it
 reuses `voiceLanguageCaveatNotice.ts` unchanged.
 
 **Why:** the machinery already exists and is used on exactly one platform.
-`src/base/media/voiceTranscribe.ts` + the `WHATSAPP_VOICE_*` knobs transcribe
+`@swampratnz/agent-base/media/voiceTranscribe.ts` + the `WHATSAPP_VOICE_*` knobs transcribe
 WhatsApp voice notes locally via transformers.js. A Discord voice message is
 just an audio attachment on a normal message, so the same local pipeline —
 same model, same cap, same rate limit, same min-role — applies with no new
@@ -98,7 +98,7 @@ why it is cheap.
 
 ## B. Agent SDK capabilities the deployment doesn't use yet
 
-`buildQueryOptions` (`src/base/agent/core.ts`) sets `tools: []`, `settingSources:
+`buildQueryOptions` (`@swampratnz/agent-base/agent/core.ts`) sets `tools: []`, `settingSources:
 []`, and a tier-derived `allowedTools`. That is the right security posture, and
 it also means several SDK features are simply switched off. Three of them are
 worth switching on deliberately.
@@ -108,7 +108,7 @@ worth switching on deliberately.
 **Status:** Shipped (#741/#742). `AGENT_SKILLS_ENABLED` (off by default),
 `src/module/agent/skills/` holds repo-bundled skill directories
 (`prompt-review`, `agent-architecture-review`, `claude-code-setup`,
-`project-showcase`, `model-and-plan-selection`), and `src/base/agent/core.ts`
+`project-showcase`, `model-and-plan-selection`), and `@swampratnz/agent-base/agent/core.ts`
 wires `plugins`/`skills` exactly as designed (repo path only, no
 `settingSources` change). `prompt-review` is the `#635` checklist migration
 this idea specifically proposed.
@@ -152,7 +152,7 @@ skill-invocation counts vs. `rate_answer` helpful-rate on those threads.
 
 **Status:** Shipped for all three targets — the abuse classifier (#720), the
 knowledge refresh researcher (#835), and the context builder's cluster
-summariser (#831). `classifyAbuseWithLlm` in `src/base/moderation/moderator.ts`,
+summariser (#831). `classifyAbuseWithLlm` in `@swampratnz/agent-base/moderation/moderator.ts`,
 `researchTopic` in `src/module/context/knowledgeRefresh.ts`, and `summarizeCluster`
 in `src/module/context/builder.ts` all now set
 `outputFormat: { type: 'json_schema', schema: ... }` and read
@@ -164,7 +164,7 @@ site's boundary shape (`Detection | null`, `string | null`, and
 `ClusterSummarizer`'s `{ topic, summary, candidate }`) is unchanged, so no
 caller needed touching.
 
-**Why:** `classifyAbuseWithLlm` (`src/base/moderation/moderator.ts:402`) asks for
+**Why:** `classifyAbuseWithLlm` (`@swampratnz/agent-base/moderation/moderator.ts:402`) asks for
 `"CLEAN"` or `"ABUSE: <reason>"` as free text and then regex-parses it
 (`/^\s*ABUSE:\s*(.+)$/im`). Anything the model emits that doesn't match — a
 refusal, a preamble, a reformat — silently becomes *clean*, which fails open on
@@ -184,8 +184,8 @@ the same `outputFormat` + narrow-or-throw discipline from the start.
 
 ### B3. `fallbackModel` for graceful degradation *(low effort)*
 
-**Status:** Shipped (#738). `AGENT_MODEL_FALLBACK` (`src/base/config.ts`) is wired
-into `buildQueryOptions`'s `fallbackModel` option in `src/base/agent/core.ts`,
+**Status:** Shipped (#738). `AGENT_MODEL_FALLBACK` (`@swampratnz/agent-base/config.ts`) is wired
+into `buildQueryOptions`'s `fallbackModel` option in `@swampratnz/agent-base/agent/core.ts`,
 applied uniformly across roles as proposed; unset is byte-identical to
 before. The config comment cites this section by name.
 
@@ -235,7 +235,7 @@ read-only shortcuts rather than privileged actions.
 ### C2. A "what needs me today" admin roll-up *(medium impact, low effort)*
 
 **Status:** Shipped (#745). `review_queue` (`src/module/agent/tools.ts`, admin-only
-via `src/base/auth/rbac.ts`) composes all five queues into one read-only,
+via `@swampratnz/agent-base/auth/rbac.ts`) composes all five queues into one read-only,
 argument-less call, with oldest-item age for access requests, suggestions,
 and reports; knowledge candidates and appeals show count only, a named gap
 the tool's own description states rather than hides.
@@ -265,8 +265,8 @@ next rungs.
 ### D1. Opt-in "can someone help with X" handoff *(high impact, medium effort)*
 
 **Status:** Shipped (#729). `set_helper_availability` and `find_helper`
-(`src/module/agent/tools.ts`, `src/base/storage/repository.ts`, RBAC entries in
-`src/base/auth/rbac.ts`) implement the opt-in flag, per-helper rate cap, and
+(`src/module/agent/tools.ts`, `@swampratnz/agent-base/storage/repository.ts`, RBAC entries in
+`@swampratnz/agent-base/auth/rbac.ts`) implement the opt-in flag, per-helper rate cap, and
 matching restricted to self-declared interests, as proposed.
 
 **Why:** `who_is_into` returns a *list* — the member still has to cold-DM a
@@ -288,7 +288,7 @@ polish, they are the feature.
 ### D2. Close the answered-question → knowledge-base loop *(medium impact, low effort)*
 
 **Status:** Shipped (#726). `KNOWLEDGE_ANSWER_CANDIDATE_ENABLED` (off by
-default, `src/base/config.ts`) drafts a candidate from the `rate_answer` handler
+default, `@swampratnz/agent-base/config.ts`) drafts a candidate from the `rate_answer` handler
 in `src/module/agent/tools.ts` when a rating is `helpful: true` on an ungrounded
 answer, reusing `suggest_knowledge`'s (#633) dedup+write path exactly as
 proposed. Excludes 1:1 DMs from the guild-wide candidate queue (a #730
@@ -327,7 +327,7 @@ to a retrieval system that is currently uniform.
 
 ### E1. Anthropic release / deprecation watcher *(high impact, medium effort)*
 
-**Status:** Shipped (#739). `RELEASE_WATCH_ENABLED` (`src/base/config.ts`, off by
+**Status:** Shipped (#739). `RELEASE_WATCH_ENABLED` (`@swampratnz/agent-base/config.ts`, off by
 default) diffs a fixed official source and lands new items as KB entries
 with `auto` provenance, rolling up into `MEMBER_DIGEST_ENABLED` rather than
 a new posting path, as proposed.

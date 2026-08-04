@@ -6,22 +6,23 @@
 # The list is derived from the 🔒 markers in docs/agents/module-map.md: every
 # path marked there is covered here, and a subsystem marked 🔒 is covered by
 # its directory entry rather than by one line per file inside it (which is
-# why agent/, platforms/ and storage/ appear whole). Keep the two in sync —
-# a new 🔒 marker without a line here silently drops the review routing.
+# why agent/skills/, github/ and storage/schema/ appear whole). Keep the two
+# in sync — a new 🔒 marker without a line here silently drops the review
+# routing. A path that does not exist is silently IGNORED by GitHub, so an
+# entry left behind by a move routes nothing at all.
+#
+# The framework half of the spine (agent kernel, RBAC, adapters, router,
+# storage, the leaf utils) is no longer in this repo: it ships from
+# @swampratnz/agent-base and is reviewed there. Nothing written here can
+# route review for a file inside the package.
 
 /.github/                            @swampratnz
 /scripts/                            @swampratnz
-/src/base/agent/                     @swampratnz
-/src/base/auth/                      @swampratnz
-/src/base/platforms/                 @swampratnz
-/src/base/router.ts                  @swampratnz
-/src/base/routerIntercepts.ts        @swampratnz
-/src/base/storage/                   @swampratnz
-/src/base/util/rateReservation.ts    @swampratnz
-/src/base/util/sanitizeName.ts       @swampratnz
 /src/module/agent/skills/            @swampratnz
 /src/module/agent/tools/context.ts   @swampratnz
 /src/module/agent/tools/index.ts     @swampratnz
+/src/module/agentModule.ts           @swampratnz
 /src/module/github/                  @swampratnz
+/src/module/storage/schema/          @swampratnz
 /tests/security-floor.json           @swampratnz
 /docs/SECURITY.md                    @swampratnz
