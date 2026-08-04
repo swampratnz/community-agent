@@ -132,7 +132,7 @@
   "systemPrompt.test.ts": 21,
   "systemPromptSlots.test.ts": 5,
   "toolRegistry.test.ts": 4,
-  "tools.test.ts": 296,
+  "tools.test.ts": 302,
   "unhelpfulAnswerEscalationRouter.test.ts": 2,
   "usageAlertPendingQueue.test.ts": 3,
   "usageCostDigest.test.ts": 4,

@@ -33,12 +33,13 @@ after(async () => {
 
 const prefixed = (name: string) => `mcp__community__${name}`;
 
-test('registry names are unique, exactly 117 defs, and every def is registered on a built server', () => {
+test('registry names are unique, exactly 118 defs, and every def is registered on a built server', () => {
   const names = TOOL_REGISTRY.map((def) => def.name);
   assert.equal(new Set(names).size, names.length, 'duplicate tool name in TOOL_REGISTRY');
-  // The full inventory at the flip. A change here must be a conscious tool
-  // addition/removal, never a domain file falling out of the registry.
-  assert.equal(names.length, 117);
+  // The full inventory at the flip, +1 for issue #944's team_setup. A change
+  // here must be a conscious tool addition/removal, never a domain file
+  // falling out of the registry.
+  assert.equal(names.length, 118);
 
   const adapter = {
     platform: 'discord',

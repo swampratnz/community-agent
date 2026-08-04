@@ -64,6 +64,7 @@ export { HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER } from './tools/feedback.js';
 export { ALLOWED_REACTION_EMOJI, REACTION_RATE_LIMIT_PER_DAY } from './tools/reactions.js';
 export { LIST_PROJECTS_DEFAULT_LIMIT } from './tools/social.js';
 export { WARN_USER_RATE_LIMIT_PER_HOUR } from './tools/moderation.js';
+export { TEAM_SETUP_MEMBER_CAP } from './tools/teamSetup.js';
 export {
   ANNOUNCE_RATE_LIMIT_PER_HOUR,
   POLL_MIN_OPTIONS,

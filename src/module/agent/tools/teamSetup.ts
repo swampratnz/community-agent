@@ -85,7 +85,7 @@ export const teamSetupTools = [
         .max(TEAM_SETUP_MEMBER_CAP)
         .describe(
           `Platform user ids or Discord mentions of the team's members (1-${TEAM_SETUP_MEMBER_CAP}). ` +
-            "Anyone not already a community member is registered at member tier, exactly like add_member.",
+            'Anyone not already a community member is registered at member tier, exactly like add_member.',
         ),
     },
     handler: async (args, { caller, audited, requireConfirm, resolveMemberTarget }) => {
@@ -158,9 +158,13 @@ export const teamSetupTools = [
                   createdBy: caller.userId,
                 });
                 project = created ?? (await getProjectBySlug(args.slug));
-                steps.push(`project "${args.slug}": ${created ? 'created' : project ? 'already existed' : 'failed'}`);
+                steps.push(
+                  `project "${args.slug}": ${created ? 'created' : project ? 'already existed' : 'failed'}`,
+                );
               } catch (err) {
-                steps.push(`project "${args.slug}": failed (${err instanceof Error ? err.message : String(err)})`);
+                steps.push(
+                  `project "${args.slug}": failed (${err instanceof Error ? err.message : String(err)})`,
+                );
               }
 
               if (!project) {
@@ -179,7 +183,12 @@ export const teamSetupTools = [
                         role: 'member',
                         addedBy: caller.userId,
                       })}`;
-                  const added = await addProjectMember(project.id, target.platform, target.userId, caller.userId);
+                  const added = await addProjectMember(
+                    project.id,
+                    target.platform,
+                    target.userId,
+                    caller.userId,
+                  );
                   steps.push(
                     `${target.platform}:${target.userId}: registration ${registerNote}; project ${
                       added ? 'added' : 'already existed'
@@ -194,7 +203,12 @@ export const teamSetupTools = [
               for (const raw of invalid) steps.push(`${sanitizeForConfirm(raw)}: failed (invalid id)`);
 
               try {
-                const bound = await bindProjectSurface(project.id, caller.platform, caller.conversationId, caller.userId);
+                const bound = await bindProjectSurface(
+                  project.id,
+                  caller.platform,
+                  caller.conversationId,
+                  caller.userId,
+                );
                 steps.push(`conversation: ${bound ? 'bound' : 'already bound'}`);
               } catch (err) {
                 steps.push(`conversation: failed (${err instanceof Error ? err.message : String(err)})`);
