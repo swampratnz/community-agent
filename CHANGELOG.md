@@ -25,6 +25,22 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 -->
 
 
+## 2026-08-04
+
+### Added
+- **`team_setup`: one admin call to stand up a whole team project** (#944) —
+  create the project, register anyone in the roster who isn't yet a community
+  member, add everyone to the project, and bind the current channel, in a
+  single CONFIRM-gated call instead of ~25 separate ones. Built for event
+  setup (10 teams of 5 for an Impact Lab is otherwise ~120 sequential
+  commands), and reruns safely: the confirmation echoes the full plan before
+  anything happens, and every sub-action reports back created / already
+  existed / failed, so a partial failure is visible and re-running the same
+  call is a no-op for whatever already landed. Same rules as calling the
+  individual tools by hand: registration grants member tier only, and project
+  membership stays data-scope-only and never a tier — never admin, and never
+  through this shortcut.
+
 ## 2026-08-03
 
 ### Changed
