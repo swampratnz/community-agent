@@ -41,6 +41,14 @@ reviews, and builds its own features.
   messages so spoken questions get answered too.
 - **Auto-answer mode** (Discord, opt-in): recognises repeat questions in
   allowed channels and offers the KB answer without being addressed.
+- **Agent Skills** (opt-in, `AGENT_SKILLS_ENABLED`): six bundled skills the
+  model loads only when a turn needs one — reviewing a member's prompt or tool
+  schema, critiquing an agent/pipeline design, walking through Claude Code
+  setup, choosing a model or plan, sequencing a learning path, and handling
+  project showcases. Enabling it also moves the prompt-review checklist out of
+  the always-on system prompt and into a skill loaded only when needed, so the
+  per-turn cached prefix shrinks for the majority of turns that never invoke
+  it.
 
 **Community & members**
 - **Discord slash commands** (opt-in): `/kb`, `/whois`, `/projects`,
@@ -191,6 +199,14 @@ human merge**, and branch protection on `main` is the backstop. See
 - [Personas](docs/PERSONAS.md) — the bot's voice ("Dave")
 - [Community context](docs/COMMUNITY-CONTEXT.md) — auto-generated, anonymised
   export of what the community discusses (aggregate-only, opt-in)
+- [Agent-base plan](docs/AGENT-BASE-PLAN.md) — the plan the framework
+  extraction followed: what split base from module, the module API, and what
+  the extraction still owes. Kept as the record of what was decided, with
+  per-phase status notes, not as a description of the tree
+- [Tool registry design](docs/TOOL-REGISTRY-DESIGN.md) — the pre-work design
+  sketch for the declarative tool registry that replaced the hand-maintained
+  tier arrays. Shipped; likewise a record rather than current documentation —
+  for how it works now, read `docs/agents/module-map.md` and the code
 - [Standards](docs/STANDARDS.md) · [Red-team](docs/RED-TEAM.md)
-- [Slide deck](docs/SLIDE-DECK.md) — presentable 11-slide overview of the repo,
+- [Slide deck](docs/SLIDE-DECK.md) — presentable 12-slide overview of the repo,
   the pipeline, and how the design maps to agentic best practice
