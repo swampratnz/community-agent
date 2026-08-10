@@ -147,9 +147,10 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   a bespoke tool acceptable where `WebFetch` is not:
   1. **The host allowlist is enforced before the request**, in
      `agent-base`'s `util/safeFetch.ts`, on the initial URL *and every redirect
-     hop*. `FETCH_PAGE_ALLOWED_HOSTS` has no "any host" value and enabling the
-     tool without it is a boot error. A URL the model was talked into composing
-     cannot leave for an unlisted host.
+     hop*. `FETCH_PAGE_ALLOWED_HOSTS` has no "any host" value, and it IS the
+     switch — there is no separate enable flag, so "on with nothing listed"
+     cannot be written down rather than merely being rejected. A URL the model
+     was talked into composing cannot leave for an unlisted host.
   2. **CONFIRM shows a human the exact resolved URL, query string included** —
      the one control that still works when the model itself has been taken in.
      The prompt points at the query string explicitly.
