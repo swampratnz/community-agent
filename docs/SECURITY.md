@@ -140,6 +140,27 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   string to an attacker's server, and fetched pages are a rich injection
   vector. WebSearch snippets are a much smaller surface; they are still
   untrusted content and the system prompt says so.
+- **`fetch_page` (admin, opt-in) is the deliberate exception, and it is not a
+  relaxation of the line above.** The ban is not about trust level — raising
+  the tier makes the exfiltration risk *worse*, since an admin's conversation
+  carries more and admins are the ones worth socially engineering. What makes
+  a bespoke tool acceptable where `WebFetch` is not:
+  1. **The host allowlist is enforced before the request**, in
+     `agent-base`'s `util/safeFetch.ts`, on the initial URL *and every redirect
+     hop*. `FETCH_PAGE_ALLOWED_HOSTS` has no "any host" value and enabling the
+     tool without it is a boot error. A URL the model was talked into composing
+     cannot leave for an unlisted host.
+  2. **CONFIRM shows a human the exact resolved URL, query string included** —
+     the one control that still works when the model itself has been taken in.
+     The prompt points at the query string explicitly.
+  3. **Every call is audited with the full URL**, so an attempt is visible
+     afterwards rather than inferred.
+  Plus what the base enforces for any caller-driven fetch: https only, a
+  denylist covering loopback/private/CGNAT/link-local/cloud-metadata and the
+  v4-in-v6 forms, DNS pinned per hop against rebinding, a streamed byte cap,
+  and a content-type allowlist. The returned body is wrapped by `untrusted()`
+  — the same quarantine as recalled chat content, newline flattening included,
+  because a fetched page is the most attacker-shaped input this bot accepts.
 - **Structural RBAC (three tiers)**: `allowedTools` is computed from the
   *sender's* resolved tier (super_admin > admin > member > guest), not from
   anything in the message. A lower tier's turn never has higher-tier tools
