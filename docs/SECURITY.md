@@ -151,11 +151,23 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
      switch — there is no separate enable flag, so "on with nothing listed"
      cannot be written down rather than merely being rejected. A URL the model
      was talked into composing cannot leave for an unlisted host.
-  2. **CONFIRM shows a human the exact resolved URL, query string included** —
-     the one control that still works when the model itself has been taken in.
-     The prompt points at the query string explicitly.
+  2. **A per-caller daily quota bounds the volume**, reserved immediately
+     before the request goes out so only a real attempt spends a slot.
+     There is deliberately **no CONFIRM step**, and that is a real reduction
+     worth stating plainly rather than glossing: no human reads the resolved
+     query string before the request leaves. An earlier draft did gate this on
+     CONFIRM, and it could not work — the router executes a confirmed action
+     itself and sends the returned string to the conversation, ending the turn,
+     so the model never receives the page and the summary the caller asked for
+     is impossible. What carries the weight instead is item 1: an injected URL
+     can only ever reach a host the operator already chose to trust, whatever
+     the query string carries. **Do not re-add CONFIRM here without also
+     changing what the tool returns** — it would silently break the tool rather
+     than harden it.
   3. **Every call is audited with the full URL**, so an attempt is visible
-     afterwards rather than inferred.
+     afterwards rather than inferred. A refused or failed fetch is audited as a
+     failure, not a success, so a blocked-by-allowlist egress attempt reads as
+     the security event it is.
   Plus what the base enforces for any caller-driven fetch: https only, a
   denylist covering loopback/private/CGNAT/link-local/cloud-metadata and the
   v4-in-v6 forms, DNS pinned per hop against rebinding, a streamed byte cap,
