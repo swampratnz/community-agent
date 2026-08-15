@@ -1,10 +1,18 @@
 # Multi-loop development pipeline
 
 A supervised, multi-session Claude Code pipeline that extends this repo
-autonomously while keeping a human as the merge gate. Five concurrent Claude
-Code sessions, each running a recurring `/loop`, coordinate **through GitHub
-issues + labels** (there is no direct session-to-session channel — the repo is
-the bus).
+autonomously while keeping a human as the merge gate. Everything coordinates
+**through GitHub issues + labels** (there is no direct session-to-session
+channel — the repo is the bus).
+
+It started as five concurrent Claude Code sessions each running a recurring
+`/loop`, and the prompts below still describe them that way. Most have since
+moved to GitHub Actions, which is why this document talks about both: the
+**discovery** loops (research, adversarial, the optional orchestrator) are
+Routines running as sessions, while the **code** loops (build, pr-review, and
+the PR-repair loops behind them) are event-driven Actions. See
+[Recommended mapping](#recommended-mapping) for the full current inventory and
+what switches each one on.
 
 ## Flow
 
@@ -47,9 +55,13 @@ Create them once: **Actions → "Setup pipeline labels" → Run workflow**, or
 
 ## Ownership rules (enforced by every loop; also in CLAUDE.md)
 
-- **Only the build loop** writes code / opens PRs. PR-review comments only;
-  research & adversarial touch issues only (no files ⇒ no git conflicts). One
-  exception: the **autofix loop** (`pipeline-pr-autofix.yml`) may push fixes to
+- **Only the build loop** writes code / opens PRs **for pipeline work**. PR-review
+  comments only; research & adversarial touch issues only (no files ⇒ no git
+  conflicts). Exactly one loop outside the pipeline also opens a PR — the
+  **changelog-autofill loop** (`changelog-autofill.yml`), covered in its own
+  bullet below — and it is not a pipeline lane: it never touches issues, labels,
+  or `src/`. One exception within the pipeline: the **autofix loop**
+  (`pipeline-pr-autofix.yml`) may push fixes to
   an existing build-worker PR branch when its CI fails — same-repo bot PRs
   with a `Closes #` body only (the build worker's contract; unrelated bot PRs
   like Dependabot bumps are ignored, as are PRs already labelled
@@ -194,6 +206,31 @@ Create them once: **Actions → "Setup pipeline labels" → Run workflow**, or
   it retains the un-pinned relabel capability the audit N4 scoped to the Action
   lane. Only the deterministic auto-merge loop merges, and only its
   own gated build-worker PRs.
+- The **changelog-autofill loop** (`changelog-autofill.yml`, daily 19:47 UTC, 30
+  min after `changelog-coverage.yml`) is the **only agent outside the pipeline
+  that writes to this repo**, and the only one besides the build worker that
+  opens a PR. It drafts the missing `CHANGELOG.md` entries the coverage check
+  found, on the fixed branch `chore/changelog-autofill`, and opens ONE PR for a
+  human to review-and-merge. It is called out here — despite not being a
+  pipeline lane — precisely because this section is where a reader looks to
+  learn what can write to the repo, and an unlisted `contents: write` agent
+  makes that answer wrong.
+  It never touches issues, labels, `src/`, or any other branch. Its blast radius
+  is pinned rather than merely instructed: `--allowedTools` grants the single
+  exact push form `git push origin HEAD` (no `:*`), `gh pr create` is pinned to
+  the literal `--base main --head chore/changelog-autofill` prefix, and
+  `git checkout`/`switch` are withheld so HEAD cannot leave the autofill branch.
+  If an autofill PR is already open it skips rather than stacking a second.
+  Like every other loop here it **never merges** — a human does.
+- The **build-retry loop** (`pipeline-build-retry.yml`) re-runs a build worker
+  run that *failed* (`gh run rerun`), bounded by `run_attempt < 3` — at most two
+  automatic reruns, three attempts total. It holds `actions: write` only, touches
+  no code and no labels. It exists because transient infrastructure failures (npm
+  registry, runner, DB container) shouldn't burn a human's attention, and it is
+  why the build worker escalates `needs-human` only on its *final* attempt.
+  Note the gap it cannot cover: a build that hits its `timeout-minutes` reports
+  `cancelled`, not `failure`, so this loop never sees it — that case is the
+  groundskeeper's (below).
 - **WIP caps:** ≤5 open `status:draft` (raised from 3 on the Max 20x pool — the
   cap protects review quality, not compute). Builds run **per-issue** (each issue its
   own `concurrency` group — distinct issues in parallel, no cross-eviction; a
@@ -335,11 +372,26 @@ prompt-cache TTL, so it is a separate change with its own measurement.
 ## Rollout & cost
 
 All sessions share **one** Max usage pool (5-hour rolling + weekly cap) across
-Claude Code, chat, everything. Don't launch all five at once:
+Claude Code, chat, everything — and the GitHub Actions loops draw on that same
+pool, since they authenticate with the same `CLAUDE_CODE_OAUTH_TOKEN`.
 
-1. Start **pr-review + build**, watch `/usage` for a day to learn burn rate.
-2. Add **research + adversarial**.
+**This ordering is now mostly historical.** The two code loops it tells you to
+start first — pr-review and build — are GitHub Actions today, not sessions:
+they cost nothing idle, need no live session, and are enabled by the presence of
+the secret rather than by launching anything. What remains session-shaped is the
+discovery half (research, adversarial, the optional orchestrator/fallback-build
+Routines), so read this as *"bring the Routines up one at a time"*:
+
+1. Confirm the Actions loops are behaving (build + pr-review fire on their
+   labels/events; watch `/usage` for a day to learn the burn rate they add).
+2. Add **research + adversarial** Routines.
 3. Add **orchestrator** last.
+
+Note the asymmetry when you enable the build lane: unlike the auto-merge loop,
+which is inert until `AUTOMERGE_MODE` is set and offers a `dry-run` step, the
+build worker has **no dry-run**. The moment the secret is present and an issue
+gets `status:approved`, it builds and opens a PR for real. Roll it out by
+labelling one issue and watching, not by a config setting.
 
 `/loop` tasks and cron jobs are **session-scoped and auto-expire after 7 days**
 — re-arm weekly. For truly unattended automation, port the heavier loops to
@@ -347,20 +399,40 @@ GitHub Actions triggered by these same labels.
 
 ## Model selection per loop
 
-All five sessions share one Max usage pool, so match the model to each loop's
-cognitive demand × frequency. Set it per session with `/model` (or `--model`
-at launch).
+All loops share one Max usage pool, so match the model to each loop's cognitive
+demand × frequency. **Where you set it depends on how the loop runs**, and this
+is the part that most often trips people up:
 
-| Loop | Model | Rationale |
-|---|---|---|
-| Adversarial review | **Opus 4.8** | Highest-leverage judgement (a rejected weak proposal saves a whole build+review cycle); runs infrequently, so Opus cost is bounded. |
-| PR review | **Sonnet 5** | Strong security-diff reasoning, fires often, human merges behind it. Bump to Opus for a deep security pass. |
-| Build | **Sonnet 5** | Heaviest token user (many agentic turns); Sonnet 5 is tool-optimised and far cheaper per unit work. |
-| Research | **Sonnet 5** | Idea generation + web research; runs slowly. Opus only if proposal quality disappoints. |
-| Orchestrator | **Haiku 4.5** | Pure bookkeeping (labels, digests); cheapest and fast, ticks every 60 min. |
+- **The Actions loops** (build, pr-review, autofix, conflict-resolver, revise,
+  changelog-autofill) carry `--model` in the workflow file itself. Changing a
+  session's `/model` does nothing for them — edit the workflow, in a PR, like
+  any other change. All of them currently run on Sonnet.
+- **The Routine loops** (research, adversarial, the optional orchestrator and
+  fallback build) are sessions, so `/model` (or `--model` at launch) applies.
+- **The deterministic loops** run no model at all and cost only Actions minutes:
+  auto-merge, groundskeeper, build-retry, ci-retry, outcomes, branch-janitor.
+
+| Loop | Runs as | Model | Rationale |
+|---|---|---|---|
+| Adversarial review | Routine | **Opus** | Highest-leverage judgement (a rejected weak proposal saves a whole build+review cycle); runs infrequently, so Opus cost is bounded. |
+| PR review | Action | **Sonnet** | Strong security-diff reasoning, fires often, human merges behind it. Bump to Opus for a deep security pass. |
+| Build | Action | **Sonnet** | Heaviest token user (many agentic turns); tool-optimised and far cheaper per unit work. |
+| Autofix / conflict / revise | Action | **Sonnet** | Bounded, mechanical repair work on an existing PR branch. |
+| Changelog autofill | Action | **Sonnet** | Drafts prose from a computed gap list; bounded blast radius. |
+| Research | Routine | **Sonnet** | Idea generation + web research; runs slowly. Opus only if proposal quality disappoints. |
+| Orchestrator | Routine | **Haiku** | Pure bookkeeping (labels, digests) — see the note below on what the groundskeeper took over. |
+| Auto-merge, groundskeeper, build-retry, ci-retry, outcomes | Action | — | Deterministic shell; no model, no pool cost. |
 
 Principle: **Opus where a wrong call is expensive and rare, Haiku where it's
-mechanical, Sonnet 5 for high-volume agentic work.**
+mechanical, Sonnet for high-volume agentic work — and no model at all wherever
+the decision can be expressed as a shell condition.**
+
+The **orchestrator Routine predates `pipeline-groundskeeper.yml`**, which now
+does the zombie-state reconciliation hourly with no model. If you run the
+orchestrator at all, run it for the bookkeeping the groundskeeper deliberately
+does not do (digests, human-facing summaries) — not to reap stale
+`status:building` issues, which is the groundskeeper's job and is cheaper done
+deterministically.
 
 ## The five loop prompts
 
@@ -527,14 +599,33 @@ and exits. Consequences to respect:
 
 ### Recommended mapping
 
-| Loop | Mechanism | Cadence | Model |
-|---|---|---|---|
-| research | Routine (fresh session) | every ~3h | Sonnet 5 |
-| adversarial | Routine (fresh session) | every ~2h | Opus 4.8 |
-| orchestrator | Routine (fresh session) | every ~6h | Haiku 4.5 |
-| build | **GitHub Action** on `issues.labeled == status:approved` (Routine hourly as fallback) | event | Sonnet 5 |
-| pr-review | **GitHub Action** on `pull_request` events (Routine hourly as fallback) | event | Sonnet 5 |
-| auto-merge | **GitHub Action** on a 15-min schedule + CI/review completion | event | — (deterministic, no model) |
+The full inventory, so this table can be used to answer "what is running, and
+what turns it on" without cross-checking `.github/workflows/`:
+
+| Loop | Mechanism | Cadence | Model | Enabled by |
+|---|---|---|---|---|
+| research | Routine (fresh session) | every ~3h | Opus/Sonnet | creating the Routine |
+| adversarial | Routine (fresh session) | every ~2h | Opus | creating the Routine |
+| orchestrator | Routine (fresh session) | every ~6h | Haiku | creating the Routine (optional — see the groundskeeper note above) |
+| build | **Action** on `issues.labeled == status:approved` (Routine hourly as fallback) | event | Sonnet | the `CLAUDE_CODE_OAUTH_TOKEN` secret — **no dry-run** |
+| pr-review | **Action** on `pull_request` opened/synchronize/reopened/ready_for_review | event | Sonnet | the secret |
+| autofix | **Action** on CI failure, `run_attempt` ≥ 2 | event | Sonnet | the secret |
+| conflict-resolver | **Action** on push-to-main / PR opened / hourly sweep | event + hourly | Sonnet | the secret |
+| revise | **Action**, dispatched by the review worker on "Changes requested" | event | Sonnet | the secret |
+| changelog-autofill | **Action**, daily 19:47 UTC | daily | Sonnet | the secret |
+| auto-merge | **Action** on a 15-min schedule + CI/review completion | 15 min | — | `AUTOMERGE_MODE` = `dry-run` \| `live` (unset ⇒ inert) |
+| groundskeeper | **Action**, hourly | hourly | — | always on (no model, no secret) |
+| build-retry | **Action** on a failed build run, `run_attempt` < 3 | event | — | always on |
+| ci-retry | **Action** on a failed CI run, `run_attempt` < 2 | event | — | always on |
+| outcomes | **Action**, weekly Monday | weekly | — | always on |
+| changelog-coverage | **Action**, daily 19:17 UTC | daily | — | always on |
+| branch-janitor | **Action**, weekly Monday | weekly | — | always on |
+
+Two things that table makes visible and prose kept hiding: **every LLM loop
+shares one on/off switch** (the `CLAUDE_CODE_OAUTH_TOKEN` secret — remove it and
+all of them go inert, which is the emergency stop), and **only auto-merge has a
+per-loop gate**. There is no way to enable the build lane while leaving, say,
+changelog-autofill off, short of disabling that workflow in the Actions UI.
 
 The **build "Routine hourly as fallback"** is a live `/loop` session, NOT the
 `pipeline-build.yml` Action — so it is not bound by that workflow's
