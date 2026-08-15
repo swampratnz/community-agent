@@ -152,16 +152,21 @@ export const fetchPageTools = [
               // `private-address` or `scheme-not-https` would be wrong, and in
               // the first case actively harmful.
               //
-              // The COUNT, never the hostnames: an admin-reachable tool that
-              // echoed the list would turn a refusal into an
-              // internal-infrastructure oracle. Even super admins only get a
-              // count from `feature_flags`, so naming hosts here would be a
-              // new disclosure, not parity.
+              // Deliberately discloses NOTHING about the allowlist itself —
+              // not its contents, and not its size. An earlier draft added the
+              // host COUNT, on the reasoning that it tells an admin whether the
+              // tool is misconfigured or working as intended. It doesn't: the
+              // tool is only in the caller's surface when the list is non-empty
+              // (the list IS the enable switch), so "at least one host is
+              // configured" is already implied by being able to call this at
+              // all, and the exact number adds nothing actionable. It would
+              // have cost a real tier boundary for that nothing — only
+              // `super_admin` sees the count today, via `feature_flags`. The
+              // whole actionable payload is the knob's name.
               if (outcome.reason !== 'host-not-allowed') throw new Error(base);
-              const listed = config.fetchPage.allowedHosts.length;
               throw new Error(
-                `${base} — this deployment allowlists ${listed} host${listed === 1 ? '' : 's'}, and that one is not among them. ` +
-                  `An operator can add it to FETCH_PAGE_ALLOWED_HOSTS; it is not editable from chat.`,
+                `${base} — that host is not on this deployment's allowlist. An operator can add it to ` +
+                  `FETCH_PAGE_ALLOWED_HOSTS; it is not editable from chat.`,
               );
             }
           }

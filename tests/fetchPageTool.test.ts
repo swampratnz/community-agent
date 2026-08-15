@@ -197,12 +197,13 @@ test('SECURITY: a blocked, unreachable or errored fetch is audited as a FAILURE,
   }
 });
 
-test('SECURITY: a host-not-allowed refusal names the env var and a COUNT of allowlisted hosts, never the hostnames', async () => {
-  // The refusal has to be actionable — an admin who is told only "refused by
-  // policy (host-not-allowed)" cannot tell whether the tool is misconfigured or
-  // working as intended. But echoing the list would turn a refusal into an
-  // internal-infrastructure oracle: even super admins get only a count from
-  // feature_flags, so naming hosts here would be a NEW disclosure.
+test('SECURITY: a host-not-allowed refusal names the env var and discloses nothing about the allowlist — not its contents, not its size', async () => {
+  // The refusal has to be actionable, and the whole actionable payload is the
+  // knob's name. It must leak nothing else: echoing the list would turn a
+  // refusal into an internal-infrastructure oracle, and even the host COUNT is
+  // super_admin-only today (via feature_flags), so surfacing it to an admin
+  // here would cross a tier boundary to say something the caller can already
+  // infer — the tool is only in their surface when the list is non-empty.
   // FETCH_PAGE_ALLOWED_HOSTS is 'docs.example.test' in this process.
   const cap = fresh();
   behavior = { kind: 'blocked', reason: 'host-not-allowed' };
@@ -210,11 +211,15 @@ test('SECURITY: a host-not-allowed refusal names the env var and a COUNT of allo
   const shown = `${res.content[0].text} ${cap.auditResult ?? ''}`;
 
   assert.match(shown, /FETCH_PAGE_ALLOWED_HOSTS/, 'the caller must learn which knob fixes this');
-  assert.match(shown, /allowlists 1 host\b/, 'and how many hosts are listed');
   assert.doesNotMatch(
     shown,
     /docs\.example\.test/,
     'SECURITY: an allowlisted hostname must never appear in a refusal',
+  );
+  assert.doesNotMatch(
+    shown,
+    /\b\d+ hosts?\b/,
+    'SECURITY: nor may the size of the allowlist, which is super_admin-only via feature_flags',
   );
 });
 
