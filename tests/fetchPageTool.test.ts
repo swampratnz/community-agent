@@ -219,22 +219,33 @@ test('SECURITY: a host-not-allowed refusal names the env var and discloses nothi
   // here would cross a tier boundary to say something the caller can already
   // infer — the tool is only in their surface when the list is non-empty.
   // FETCH_PAGE_ALLOWED_HOSTS is 'docs.example.test' in this process.
-  const cap = fresh();
-  behavior = { kind: 'blocked', reason: 'host-not-allowed' };
-  const res = await tool.handler({ url: 'https://elsewhere.example.test/x' }, ctxFor('admin', cap));
-  const shown = `${textOf(res)} ${cap.auditResult ?? ''}`;
+  //
+  // Both `detail` shapes safeFetch can attach to this reason are covered, since
+  // the handler interpolates `detail` into the message. In agent-base 0.4.0
+  // those are the literal 'empty allowlist' and, on a redirect hop, the
+  // REDIRECT TARGET's hostname (`url.hostname`) — never the allowlist itself.
+  // The undefined case is the plain initial-URL rejection. If a future version
+  // ever put list contents in `detail`, this is what catches it.
+  const details: Array<string | undefined> = [undefined, 'empty allowlist', 'elsewhere.example.test'];
 
-  assert.match(shown, /FETCH_PAGE_ALLOWED_HOSTS/, 'the caller must learn which knob fixes this');
-  assert.doesNotMatch(
-    shown,
-    /docs\.example\.test/,
-    'SECURITY: an allowlisted hostname must never appear in a refusal',
-  );
-  assert.doesNotMatch(
-    shown,
-    /\b\d+ hosts?\b/,
-    'SECURITY: nor may the size of the allowlist, which is super_admin-only via feature_flags',
-  );
+  for (const detail of details) {
+    const cap = fresh();
+    behavior = { kind: 'blocked', reason: 'host-not-allowed', ...(detail ? { detail } : {}) };
+    const res = await tool.handler({ url: 'https://elsewhere.example.test/x' }, ctxFor('admin', cap));
+    const shown = `${textOf(res)} ${cap.auditResult ?? ''}`;
+
+    assert.match(shown, /FETCH_PAGE_ALLOWED_HOSTS/, 'the caller must learn which knob fixes this');
+    assert.doesNotMatch(
+      shown,
+      /docs\.example\.test/,
+      `SECURITY: an allowlisted hostname must never appear in a refusal (detail=${detail})`,
+    );
+    assert.doesNotMatch(
+      shown,
+      /\b\d+ hosts?\b/,
+      `SECURITY: nor the size of the allowlist, which is super_admin-only via feature_flags (detail=${detail})`,
+    );
+  }
 });
 
 test('a blocked reason other than host-not-allowed gets no "add it to the allowlist" advice', async () => {
