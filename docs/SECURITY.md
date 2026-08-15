@@ -164,10 +164,15 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
      the query string carries. **Do not re-add CONFIRM here without also
      changing what the tool returns** — it would silently break the tool rather
      than harden it.
-  3. **Every call is audited with the full URL**, so an attempt is visible
-     afterwards rather than inferred. A refused or failed fetch is audited as a
-     failure, not a success, so a blocked-by-allowlist egress attempt reads as
-     the security event it is.
+  3. **Every call is audited with both URLs** — the audit params carry the URL
+     that was *asked for*, verbatim and query string intact, and on success the
+     audit result carries the one finally *reached* after redirects. Recording
+     both is what makes an exfiltration attempt visible afterwards rather than
+     inferred: the asked-for URL is where smuggled conversation text would sit,
+     and the reached URL is where it actually went. A refused or failed fetch is
+     audited as a failure, not a success, so a blocked-by-allowlist egress
+     attempt reads as the security event it is (a blocked or unreachable
+     outcome never had a reached URL to record).
   Plus what the base enforces for any caller-driven fetch: https only, a
   denylist covering loopback/private/CGNAT/link-local/cloud-metadata and the
   v4-in-v6 forms, DNS pinned per hop against rebinding, a streamed byte cap,
