@@ -277,6 +277,17 @@ ownership rules:
   engages — transient npm-registry/runner failures recover for zero agent
   cost. It holds `actions: write` only, touches no code, and hands off to
   autofix from attempt 2.
+- The **changelog-autofill loop** (`changelog-autofill.yml`, daily) is the one
+  agent OUTSIDE this pipeline that writes to the repo, and the only one besides
+  the build worker that opens a PR — worth knowing here precisely because the
+  ownership rules above are otherwise read as "only the build loop opens PRs".
+  It drafts the `CHANGELOG.md` entries `changelog-coverage.yml` found missing,
+  on the fixed branch `chore/changelog-autofill`, and opens ONE PR for a human.
+  It never touches issues, labels or `src/`, skips when an autofill PR is
+  already open, and its grant is pinned rather than merely instructed: the exact
+  push form `git push origin HEAD`, `gh pr create` pinned to the literal
+  `--base main --head chore/changelog-autofill` prefix, and no
+  `git checkout`/`switch` so HEAD cannot leave that branch. It never merges.
 - The build worker runs the **full CI gate** (typecheck, lint, format:check,
   migrate, test against a real pgvector Postgres, build, test:security) BEFORE
   opening a PR, so "green locally" matches CI. Keep it that way when editing
