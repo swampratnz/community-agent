@@ -28,22 +28,28 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-08-15
 
 ### Added
-- **Admins can now ask the bot to read a specific web page** (#977):
-  `fetch_page` fetches ONE named https URL and hands the text back for the bot
-  to summarise, quote or extract from. It is the guarded alternative to the
-  Claude Code `WebFetch` tool, which stays disallowed for every tier — the
-  difference is that the operator decides which hosts are reachable at all.
-  Reachable hosts come from `FETCH_PAGE_ALLOWED_HOSTS`, enforced by the
-  framework on the first URL *and every redirect hop*, so a page cannot bounce
-  the bot somewhere unlisted; an empty list means the tool simply isn't there,
-  which is the off switch. Responses are size-, time- and redirect-capped,
-  each admin gets a daily quota, and every call is audited with the full
-  resolved URL so an attempt to smuggle conversation text out through a query
-  string is visible afterwards rather than inferred. Page content reaches the
-  bot quarantined — clearly marked as untrusted data, never as instructions —
-  the same treatment recalled chat content and web-search results already get.
-  `feature_flags` now reports how many hosts are allowlisted (a count only,
-  never the hostnames).
+- **Once an operator allowlists a host, admins can ask the bot to read a page
+  on it** (#977): `fetch_page` fetches ONE named https URL and hands the text
+  back for the bot to summarise, quote or extract from.
+  **This is off until someone configures it**, and that is not a separate
+  switch to flip — the allowlist IS the switch. With `FETCH_PAGE_ALLOWED_HOSTS`
+  empty (the default) the tool isn't offered at all, so if you ask about a page
+  and are told the tool isn't available, that is the expected answer rather than
+  a fault. The list lives in deployment config and deliberately cannot be edited
+  from chat: it is the one control on what the bot may reach, so letting the bot
+  widen it would defeat the point.
+  It is the guarded alternative to the Claude Code `WebFetch` tool, which stays
+  disallowed for every tier — the difference is that the operator decides which
+  hosts are reachable at all. The allowlist is enforced by the framework on the
+  first URL *and every redirect hop*, so a page cannot bounce the bot somewhere
+  unlisted. Responses are size-, time- and redirect-capped, each admin gets a
+  daily quota, and every call is audited with both the URL that was asked for
+  and the one finally reached, so an attempt to smuggle conversation text out
+  through a query string is visible afterwards rather than inferred. Page
+  content reaches the bot quarantined — clearly marked as untrusted data, never
+  as instructions — the same treatment recalled chat content and web-search
+  results already get. `feature_flags` reports how many hosts are allowlisted
+  (a count only, never the hostnames).
 
 ## 2026-08-04
 

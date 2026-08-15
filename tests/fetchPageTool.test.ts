@@ -197,6 +197,43 @@ test('SECURITY: a blocked, unreachable or errored fetch is audited as a FAILURE,
   }
 });
 
+test('SECURITY: a host-not-allowed refusal names the env var and a COUNT of allowlisted hosts, never the hostnames', async () => {
+  // The refusal has to be actionable — an admin who is told only "refused by
+  // policy (host-not-allowed)" cannot tell whether the tool is misconfigured or
+  // working as intended. But echoing the list would turn a refusal into an
+  // internal-infrastructure oracle: even super admins get only a count from
+  // feature_flags, so naming hosts here would be a NEW disclosure.
+  // FETCH_PAGE_ALLOWED_HOSTS is 'docs.example.test' in this process.
+  const cap = fresh();
+  behavior = { kind: 'blocked', reason: 'host-not-allowed' };
+  const res = await tool.handler({ url: 'https://elsewhere.example.test/x' }, ctxFor('admin', cap));
+  const shown = `${res.content[0].text} ${cap.auditResult ?? ''}`;
+
+  assert.match(shown, /FETCH_PAGE_ALLOWED_HOSTS/, 'the caller must learn which knob fixes this');
+  assert.match(shown, /allowlists 1 host\b/, 'and how many hosts are listed');
+  assert.doesNotMatch(
+    shown,
+    /docs\.example\.test/,
+    'SECURITY: an allowlisted hostname must never appear in a refusal',
+  );
+});
+
+test('a blocked reason other than host-not-allowed gets no "add it to the allowlist" advice', async () => {
+  // Telling someone to allowlist their way past private-address would be
+  // actively harmful; past scheme-not-https, merely wrong.
+  for (const reason of ['private-address', 'content-type', 'too-large'] as const) {
+    const cap = fresh();
+    behavior = { kind: 'blocked', reason };
+    const res = await tool.handler({ url: 'https://docs.example.test/x' }, ctxFor('admin', cap));
+    assert.match(res.content[0].text, new RegExp(reason));
+    assert.doesNotMatch(
+      res.content[0].text,
+      /FETCH_PAGE_ALLOWED_HOSTS/,
+      `${reason} must not suggest the allowlist`,
+    );
+  }
+});
+
 test('SECURITY: a non-https URL is refused outright, with no request issued', async () => {
   const cap = fresh();
   const before = fetchCalls;

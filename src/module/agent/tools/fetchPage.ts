@@ -141,13 +141,29 @@ export const fetchPageTools = [
               throw new Error(`the site answered ${outcome.status} for ${outcome.finalUrl}`);
             case 'unreachable':
               throw new Error(`could not reach it (${outcome.reason})`);
-            case 'blocked':
+            case 'blocked': {
               // Name the reason: refusals here are policy decisions the
               // admin can act on (ask the operator to allowlist a host),
               // not failures to paper over.
+              const base = `refused by policy (${outcome.reason}${outcome.detail ? `: ${outcome.detail}` : ''})`;
+              // `host-not-allowed` is the ONLY reason an operator fixes by
+              // editing the allowlist, so it is the only one that gets that
+              // advice — telling someone to allowlist their way past
+              // `private-address` or `scheme-not-https` would be wrong, and in
+              // the first case actively harmful.
+              //
+              // The COUNT, never the hostnames: an admin-reachable tool that
+              // echoed the list would turn a refusal into an
+              // internal-infrastructure oracle. Even super admins only get a
+              // count from `feature_flags`, so naming hosts here would be a
+              // new disclosure, not parity.
+              if (outcome.reason !== 'host-not-allowed') throw new Error(base);
+              const listed = config.fetchPage.allowedHosts.length;
               throw new Error(
-                `refused by policy (${outcome.reason}${outcome.detail ? `: ${outcome.detail}` : ''})`,
+                `${base} — this deployment allowlists ${listed} host${listed === 1 ? '' : 's'}, and that one is not among them. ` +
+                  `An operator can add it to FETCH_PAGE_ALLOWED_HOSTS; it is not editable from chat.`,
               );
+            }
           }
         },
       });
