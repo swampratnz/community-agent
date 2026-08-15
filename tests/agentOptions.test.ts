@@ -99,6 +99,7 @@ test('SECURITY: AC1 — AGENT_SKILLS_ENABLED unset (default): buildQueryOptions 
 // exclusion pin) can't silently disagree about which tools are
 // feature-flagged.
 const FEATURE_FLAGGED_TOOLS = [
+  'mcp__community__fetch_page',
   'mcp__community__generate_image',
   'mcp__community__suggest_issue',
   'mcp__community__dev_team_dispatch',

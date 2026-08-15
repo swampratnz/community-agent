@@ -1047,11 +1047,20 @@ export interface OtherConfiguredKnobEntry {
 }
 
 /**
- * Fixed, hand-maintained allowlist of the 5 non-boolean config knobs named by
- * issue #616's adversarial verdict. Deliberately NOT derived by walking
- * `config` — a missing entry here only under-reports a knob, and can never
- * over-expose a non-allowlisted field (a token, URL, or id list) just by that
- * field existing on `config`.
+ * Fixed, hand-maintained allowlist of non-boolean config knobs: the 5 named by
+ * issue #616's adversarial verdict, plus `FETCH_PAGE_ALLOWED_HOSTS`.
+ * Deliberately NOT derived by walking `config` — a missing entry here only
+ * under-reports a knob, and can never over-expose a non-allowlisted field (a
+ * token, URL, or id list) just by that field existing on `config`.
+ *
+ * The fetch-page entry is added on purpose against #616's anti-scope-creep
+ * pin, because that allowlist is not an ordinary tuning knob: it is the ONLY
+ * switch on the bot's only caller-driven egress (the base dropped a separate
+ * `FETCH_PAGE_ENABLED` precisely so listing a host IS the enable), and an
+ * operator asking "what is this bot configured to do" should not have that
+ * answered by silence. It is `count`, so the renderer can only ever emit the
+ * number of allowlisted hosts — never a hostname, which would turn an
+ * admin-visible tool into an internal-infrastructure oracle.
  */
 export const OTHER_CONFIGURED_KNOBS: readonly OtherConfiguredKnobEntry[] = [
   {
@@ -1083,6 +1092,12 @@ export const OTHER_CONFIGURED_KNOBS: readonly OtherConfiguredKnobEntry[] = [
     configPath: 'adminDigest.knowledgeStaleDays',
     label: 'Knowledge stale threshold (days)',
     kind: 'value',
+  },
+  {
+    envVar: 'FETCH_PAGE_ALLOWED_HOSTS',
+    configPath: 'fetchPage.allowedHosts',
+    label: 'Page-fetch allowlisted hosts',
+    kind: 'count',
   },
 ] as const;
 

@@ -88,6 +88,7 @@ const EXPECTED: Record<string, readonly string[]> = {
     'delete_knowledge',
     'delete_member_note',
     'end_poll',
+    'fetch_page',
     'generate_image',
     'link_member',
     'list_access_requests',

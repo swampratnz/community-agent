@@ -52,6 +52,7 @@ test('issue #535 acceptance criterion 2 — DEV_TEAM_ENABLED=true (others defaul
   const expected = [...toolsForRole('super_admin', 'discord'), 'WebSearch'].filter(
     (t) =>
       ![
+        'mcp__community__fetch_page',
         'mcp__community__generate_image',
         'mcp__community__suggest_issue',
         'mcp__community__set_helper_availability',

@@ -31,6 +31,7 @@ const { toolsForRole } = await import('@swampratnz/agent-base/auth/rbac.js');
 // FIND_HELPER_ENABLED unset (default off), so buildQueryOptions drops these
 // from allowedTools too (issue #535, extended by issue #729).
 const FEATURE_FLAGGED_TOOLS = [
+  'mcp__community__fetch_page',
   'mcp__community__generate_image',
   'mcp__community__suggest_issue',
   'mcp__community__dev_team_dispatch',

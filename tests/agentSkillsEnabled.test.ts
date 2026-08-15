@@ -179,6 +179,7 @@ test('PROMPT_REVIEW_CLAUSE is byte-identical to the prompt-review SKILL.md body 
 // regardless of AGENT_SKILLS_ENABLED — unrelated to this issue, just the
 // pre-existing #535 feature-flag filter this test must account for too.
 const FEATURE_FLAGGED_TOOLS = [
+  'mcp__community__fetch_page',
   'mcp__community__generate_image',
   'mcp__community__suggest_issue',
   'mcp__community__dev_team_dispatch',
