@@ -959,10 +959,11 @@ this list — unlike the others it's implemented on both WhatsApp adapters
 | `link_member` / `unlink_member` (cross-platform identity linking) | ❌ | ❌ | ✅, confirm-gated, tier never propagates | ✅ |
 | `assign_community_role` / `remove_community_role` / `list_assignable_roles` (cosmetic Discord roles, strictly orthogonal to tiers — see docs/SECURITY.md §10) | ❌ | ❌ | ✅, confirm-gated (list read-only), Discord only | ✅ |
 | Web search & summarise (`WebSearch`; `WebFetch` never) | ❌ | ❌ | ✅ | ✅ |
+| `fetch_page` (read ONE named https page over agent-base's `safeFetch` — the guarded-egress alternative to `WebFetch`, which stays disallowed for every tier. Reachable hosts are an operator allowlist (`FETCH_PAGE_ALLOWED_HOSTS`), enforced in the base on the initial URL and every redirect hop, and an empty list is the off switch — there is no separate `*_ENABLED`. Size/time/redirect-capped, per-caller daily quota, every call audited with the full resolved URL. Deliberately NOT confirm-gated: the router executes a confirmed action itself and sends the result to the channel, so a CONFIRM'd retrieval would never reach the model. The page returns quarantined via `untrusted()`, same discipline as `WebSearch` results) | ❌ | ❌ | ✅ | ✅ |
 | `grant_admin` / `revoke_admin`, `purge_user_data`, `audit_view`, `usage_stats`, `pause_bot`, `set_policy` | ❌ | ❌ | ❌ | ✅ |
 | `list_admins` (current admin-tier roster, read-only, no arguments — flags an admin whose `server_roster` row shows they've left the server/group; issue #428) | ❌ | ❌ | ❌ | ✅ |
 | `admin_activity` (per-admin `admin_audit` action-volume rollup over a trailing window — days-windowed, read-only, unscoped; the aggregated complement to `audit_view`'s flat log; issue #488) | ❌ | ❌ | ❌ | ✅ |
-| `feature_flags` (grouped On/Off listing of the ~28 boolean `*_ENABLED` config flags plus a small "Other configured knobs" section of 5 non-boolean knobs, both from fixed allowlists; no arguments, read-only, no CONFIRM; issues #559, #616) | ❌ | ❌ | ❌ | ✅ |
+| `feature_flags` (grouped On/Off listing of the ~28 boolean `*_ENABLED` config flags plus a small "Other configured knobs" section of 6 non-boolean knobs, both from fixed allowlists; no arguments, read-only, no CONFIRM; issues #559, #616) | ❌ | ❌ | ❌ | ✅ |
 | `redeploy_bot` (trigger an immediate redeploy from `origin/main`; no arguments, confirm-gated) | ❌ | ❌ | ❌ | ✅ |
 
 ### Peer help handoff (`set_helper_availability` / `find_helper`, issue #729)

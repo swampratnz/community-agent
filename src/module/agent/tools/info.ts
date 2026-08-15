@@ -91,7 +91,8 @@ const ADMIN_CAPABILITIES_TEXT =
   "- Set up team projects: create one, give a member access, take a member's access away, allow or " +
   'stop it being discussed here, review who has access, or archive a finished project and bring it ' +
   'back again, or batch-create a whole team (project, roster, and this channel) in one confirmed call\n' +
-  '- Generate an image, or check recent changes to the bot and community (the changelog)';
+  '- Generate an image, read a web page from an allowlisted host, or check recent changes to the ' +
+  'bot and community (the changelog)';
 
 /**
  * Plain-language rundown of what a super admin can additionally ask the bot

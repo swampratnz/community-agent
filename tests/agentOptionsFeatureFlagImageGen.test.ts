@@ -42,6 +42,7 @@ test('issue #535 acceptance criterion 2 — IMAGE_GEN_ENABLED=true (others defau
     const expected = [...toolsForRole(role, 'discord'), 'WebSearch'].filter(
       (t) =>
         ![
+          'mcp__community__fetch_page',
           'mcp__community__suggest_issue',
           'mcp__community__dev_team_dispatch',
           'mcp__community__dev_team_status',

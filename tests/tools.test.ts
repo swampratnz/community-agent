@@ -2745,7 +2745,8 @@ test('community_info: admin-tier reply stays byte-identical, never gains SUPER_A
     "- Set up team projects: create one, give a member access, take a member's access away, allow or " +
     'stop it being discussed here, review who has access, or archive a finished project and bring it ' +
     'back again, or batch-create a whole team (project, roster, and this channel) in one confirmed call\n' +
-    '- Generate an image, or check recent changes to the bot and community (the changelog)';
+    '- Generate an image, read a web page from an allowlisted host, or check recent changes to the ' +
+    'bot and community (the changelog)';
 
   const memberReply = (await communityInfoHandler('member')).content[0]?.text ?? '';
   assert.equal(
@@ -2915,6 +2916,7 @@ const ADMIN_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__team_setup', /batch-create a whole team/i],
   ['mcp__community__whats_new', /the changelog/i],
   ['mcp__community__generate_image', /generate an image/i],
+  ['mcp__community__fetch_page', /read a web page from an allowlisted host/i],
   ['mcp__community__user_history', /history across conversations/i],
   ['mcp__community__moderate', /warn, mute, kick/i],
   ['mcp__community__clear_warnings', /clear a member's warnings/i],
@@ -9158,6 +9160,7 @@ test('feature_flags: "Other configured knobs" renders exact lines against a defa
     discord: { autoAnswerChannelIds: [], autoAnswerRateLimitPerHour: 10 },
     whatsapp: { voice: { minRole: 'super_admin', rateLimitPerHour: 0 } },
     adminDigest: { knowledgeStaleDays: 0 },
+    fetchPage: { allowedHosts: [] },
   };
 
   const rendered = formatOtherConfiguredKnobs(fixture);
@@ -9171,6 +9174,7 @@ test('feature_flags: "Other configured knobs" renders exact lines against a defa
       '- WhatsApp voice rate limit/hour: 0',
       '- Auto-answer rate limit/hour: 10',
       '- Knowledge stale threshold (days): 0',
+      '- Page-fetch allowlisted hosts: Off',
     ].join('\n'),
   );
 });
@@ -9180,6 +9184,7 @@ test('feature_flags: "Other configured knobs" renders exact lines against a valu
     discord: { autoAnswerChannelIds: ['chan-1', 'chan-2', 'chan-3'], autoAnswerRateLimitPerHour: 25 },
     whatsapp: { voice: { minRole: 'admin', rateLimitPerHour: 5 } },
     adminDigest: { knowledgeStaleDays: 60 },
+    fetchPage: { allowedHosts: ['docs.example.test', 'api.example.test'] },
   };
 
   const rendered = formatOtherConfiguredKnobs(fixture);
@@ -9193,6 +9198,7 @@ test('feature_flags: "Other configured knobs" renders exact lines against a valu
       '- WhatsApp voice rate limit/hour: 5',
       '- Auto-answer rate limit/hour: 25',
       '- Knowledge stale threshold (days): 60',
+      '- Page-fetch allowlisted hosts: 2 configured',
     ].join('\n'),
   );
 });
@@ -9239,20 +9245,26 @@ test('SECURITY: feature_flags "Other configured knobs" allowlist purity — a pl
   assert.doesNotMatch(rendered, new RegExp(plantedSecret.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')));
 });
 
-test('feature_flags: OTHER_CONFIGURED_KNOBS has exactly the 5 knobs named by the #616 adversarial verdict (anti-scope-creep pin)', () => {
-  assert.equal(OTHER_CONFIGURED_KNOBS.length, 5);
+test('feature_flags: OTHER_CONFIGURED_KNOBS is the #616 five plus the page-fetch allowlist (anti-scope-creep pin)', () => {
+  // Still a pin, deliberately: the list may only grow by a reviewed decision,
+  // never by someone adding whatever config they happen to want surfaced.
+  // FETCH_PAGE_ALLOWED_HOSTS earns its place because it is the sole switch on
+  // the bot's only caller-driven egress, and it is `count` so no hostname can
+  // ever be rendered.
+  assert.equal(OTHER_CONFIGURED_KNOBS.length, 6);
   assert.deepEqual(OTHER_CONFIGURED_KNOBS.map((e) => e.envVar).sort(), [
     'AUTO_ANSWER_CHANNEL_IDS',
     'AUTO_ANSWER_RATE_LIMIT_PER_HOUR',
+    'FETCH_PAGE_ALLOWED_HOSTS',
     'KNOWLEDGE_STALE_DAYS',
     'WHATSAPP_VOICE_MIN_ROLE',
     'WHATSAPP_VOICE_RATE_LIMIT_PER_HOUR',
   ]);
   const countKindEntries = OTHER_CONFIGURED_KNOBS.filter((e) => e.kind === 'count');
   assert.deepEqual(
-    countKindEntries.map((e) => e.envVar),
-    ['AUTO_ANSWER_CHANNEL_IDS'],
-    'exactly one knob is list-shaped and must render only via getConfigArrayLength',
+    countKindEntries.map((e) => e.envVar).sort(),
+    ['AUTO_ANSWER_CHANNEL_IDS', 'FETCH_PAGE_ALLOWED_HOSTS'],
+    'both list-shaped knobs must render only via getConfigArrayLength',
   );
 });
 

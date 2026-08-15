@@ -36,6 +36,7 @@ test('issue #535 acceptance criterion 2 — GITHUB_ISSUE_ENABLED=true (others de
   const expected = [...toolsForRole('super_admin', 'discord'), 'WebSearch'].filter(
     (t) =>
       ![
+        'mcp__community__fetch_page',
         'mcp__community__generate_image',
         'mcp__community__dev_team_dispatch',
         'mcp__community__dev_team_status',
