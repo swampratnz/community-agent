@@ -59,6 +59,7 @@
   "createThreadModerationGuard.test.ts": 2,
   "dailyReplyBudgetWarningDisabledRouter.test.ts": 2,
   "dailyReplyBudgetWarningRouter.test.ts": 1,
+  "dbCoverageCheck.test.ts": 1,
   "dbTimeoutDegradation.test.ts": 3,
   "departedAdminAlert.test.ts": 5,
   "devTeamClient.test.ts": 8,
