@@ -141,13 +141,34 @@ export const fetchPageTools = [
               throw new Error(`the site answered ${outcome.status} for ${outcome.finalUrl}`);
             case 'unreachable':
               throw new Error(`could not reach it (${outcome.reason})`);
-            case 'blocked':
+            case 'blocked': {
               // Name the reason: refusals here are policy decisions the
               // admin can act on (ask the operator to allowlist a host),
               // not failures to paper over.
+              const base = `refused by policy (${outcome.reason}${outcome.detail ? `: ${outcome.detail}` : ''})`;
+              // `host-not-allowed` is the ONLY reason an operator fixes by
+              // editing the allowlist, so it is the only one that gets that
+              // advice — telling someone to allowlist their way past
+              // `private-address` or `scheme-not-https` would be wrong, and in
+              // the first case actively harmful.
+              //
+              // Deliberately discloses NOTHING about the allowlist itself —
+              // not its contents, and not its size. An earlier draft added the
+              // host COUNT, on the reasoning that it tells an admin whether the
+              // tool is misconfigured or working as intended. It doesn't: the
+              // tool is only in the caller's surface when the list is non-empty
+              // (the list IS the enable switch), so "at least one host is
+              // configured" is already implied by being able to call this at
+              // all, and the exact number adds nothing actionable. It would
+              // have cost a real tier boundary for that nothing — only
+              // `super_admin` sees the count today, via `feature_flags`. The
+              // whole actionable payload is the knob's name.
+              if (outcome.reason !== 'host-not-allowed') throw new Error(base);
               throw new Error(
-                `refused by policy (${outcome.reason}${outcome.detail ? `: ${outcome.detail}` : ''})`,
+                `${base} — that host is not on this deployment's allowlist. An operator can add it to ` +
+                  `FETCH_PAGE_ALLOWED_HOSTS; it is not editable from chat.`,
               );
+            }
           }
         },
       });
