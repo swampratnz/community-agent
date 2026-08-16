@@ -43,6 +43,11 @@ git rm --cached -r . && git reset --hard
   without discussing it in the PR description.
 - DB-touching changes should pass against a real Postgres + pgvector locally
   (`npm run migrate` then `npm test`) in addition to CI's service container.
+  If you don't have one, **get one** — see "Get a local Postgres + pgvector" in
+  `docs/agents/recipes.md`; it needs no Docker daemon and takes about two
+  minutes. Without `DATABASE_URL` roughly a fifth of the suite SKIPS while the
+  run still prints `fail 0`, so "the full suite passed" is false in a way
+  nobody chose. `npm test` prints a banner saying so.
 
 ### Injected deps must be all-or-nothing
 
