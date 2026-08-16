@@ -20,6 +20,7 @@
     "dev": "tsx watch src/index.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit && npm run typecheck:tests",
     "typecheck:tests": "tsc -p tsconfig.tests.json",
+    "pretest": "node scripts/check-db-coverage.mjs",
     "test": "tsx --experimental-test-module-mocks --test tests/*.test.ts",
     "test:security": "LOG_LEVEL=${LOG_LEVEL:-silent} node scripts/check-security-test-count.mjs",
     "test:security:fix": "node scripts/check-security-test-count.mjs --write",

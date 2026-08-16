@@ -123,6 +123,42 @@ unset is a silent breaking change for the running deployment.
 Run `npm run migrate` before `npm test` locally, or the DB tests fail with
 `relation does not exist` rather than skipping.
 
+### Get a local Postgres + pgvector
+
+Worth two minutes, because **without `DATABASE_URL` roughly a fifth of the
+suite skips and the run still prints `fail 0`.** That is not a neutral gap: it
+has repeatedly produced confident-but-wrong conclusions — a "full gate green"
+report from a run that never executed the SQL under review, and a diagnosis of
+"shared-database test isolation" built on intermittent failures from a run in
+which every database test was skipping and so could not have been involved.
+`npm test` now prints a banner saying so; this is how you make it unnecessary.
+
+No Docker daemon required — the distro packages are enough:
+
+```bash
+apt-get install -y postgresql-16 postgresql-16-pgvector
+
+PGDATA=/var/lib/postgresql/testdata           # must be postgres-owned and traversable
+mkdir -p "$PGDATA" && chown postgres:postgres "$PGDATA" && chmod 700 "$PGDATA"
+su postgres -c "/usr/lib/postgresql/16/bin/initdb -D $PGDATA -A trust"
+su postgres -c "/usr/lib/postgresql/16/bin/pg_ctl -D $PGDATA -l $PGDATA/server.log -o '-p 5432 -k /tmp' start"
+
+psql -h /tmp -U postgres -c 'CREATE DATABASE community_test'
+psql -h /tmp -U postgres -d community_test -c 'CREATE EXTENSION IF NOT EXISTS vector'
+
+export DATABASE_URL="postgres://postgres@/community_test?host=/tmp&port=5432"
+npm run migrate && npm test        # expect 0 skipped
+```
+
+A socket path (`host=/tmp`) rather than TCP avoids needing `listen_addresses`
+or auth setup at all. Put `$PGDATA` somewhere the `postgres` user can actually
+traverse — a data directory under a root-only parent fails with a bare
+`Permission denied` from `pg_ctl` that names the directory, not the parent.
+
+Set `REQUIRE_DATABASE_URL=1` to turn the banner into a hard failure, so a
+misconfigured CI job that quietly stopped running the DB half is caught instead
+of passing green.
+
 If the erasure promise has to reach a new table, call
 `registerPurgeContributor` (`@swampratnz/agent-base/storage/lifecycle.ts`) from
 the repository domain module that owns the table, the way every existing
