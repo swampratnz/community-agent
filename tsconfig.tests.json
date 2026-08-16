@@ -28,6 +28,7 @@
     "src/**/*.ts",
     "tests/agentModule.test.ts",
     "tests/backgroundJobCostAlert.test.ts",
+    "tests/dbCoverageCheck.test.ts",
     "tests/displayTime.test.ts",
     "tests/fetchPageTool.test.ts",
     "tests/importDirection.test.ts",
