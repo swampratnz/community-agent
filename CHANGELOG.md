@@ -21,14 +21,14 @@ shows it to members. Append numbers; never remove them.
 Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #775 #784 #804 #807 #809 #810 #812 #814 #816 #817 #818 #819 #821 #824 #825
 #868 #896 #899 #904 #949 #950 #951 #952 #953 #954 #955 #956 #957 #958 #961
-#963 #964 #965 #968 #971 #983
+#963 #964 #965 #968 #971 #983 #988 #989
 -->
 
 
 ## 2026-08-17
 
 ### Changed
-- **Fewer knowledge tips get turned away as "already covered."** When you
+- **Fewer knowledge tips get turned away as "already covered."** (#986) When you
   offer something with `suggest_knowledge` (or when the offline builder drafts
   a candidate), the bot checks whether an existing entry already covers the
   topic and declines if one does. That check was far too eager: it borrowed
