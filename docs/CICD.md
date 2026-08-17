@@ -81,8 +81,8 @@ pool.
 | `pipeline-build-retry.yml` | `workflow_run` [build] completed | — | `actions:write` | 5 min | always |
 | **`pipeline-pr-review.yml`** ⚡ | `pull_request` opened/synchronize/reopened/ready_for_review | per-PR, **cancel-in-progress** | `contents:read`, `pull-requests:write`, `actions:write`, `id-token:write` | 20 min | the secret |
 | `pipeline-pr-autofix.yml` ⚡ | `workflow_run` [CI] completed | per head branch | `contents`,`issues`,`pull-requests`:write, `id-token:write` | 45 min | the secret |
-| `pipeline-pr-revise.yml` ⚡ | `workflow_dispatch` (`pr_number`) | per-PR | as autofix | — | the secret |
-| `pipeline-pr-conflict.yml` ⚡ | push `main`, PR opened/ready, hourly, `workflow_dispatch` (`resolve_matrix`) | per-run / per-PR | discover: read; resolve: write set | — | the secret |
+| `pipeline-pr-revise.yml` ⚡ | `workflow_dispatch` (`pr_number`) | per-PR | as autofix | 45 min | the secret |
+| `pipeline-pr-conflict.yml` ⚡ | push `main`, PR opened/ready, hourly, `workflow_dispatch` (`resolve_matrix`) | per-run / per-PR | discover: read; resolve: write set | 10 min (discover) / 45 min (resolve) | the secret |
 | `pipeline-pr-automerge.yml` | `*/15 * * * *`, `workflow_run` [CI, PR review], dispatch | single group | `contents`,`pull-requests`:write | 10 min | secret **and** `vars.AUTOMERGE_MODE` |
 | `pipeline-groundskeeper.yml` | `17 * * * *`, dispatch | single group | `issues:write`, `pull-requests:read` | 10 min | always |
 | `pipeline-outcomes.yml` | `23 20 * * 1`, dispatch (`window_days`) | single, cancel | `contents:read`, `issues:write`, `pull-requests:read` | 10 min | always |
