@@ -9,8 +9,9 @@
   },
   "overrides": {
     "adm-zip": "^0.6.0",
-    "undici": "^6.27.0",
-    "brace-expansion": "^5.0.8",
+    "undici": "^6.28.0",
+    "brace-expansion": "^5.0.9",
+    "@hono/node-server": "^1.19.15",
     "protobufjs": "^7.6.5",
     "sharp": "^0.35.3"
   },
@@ -51,7 +52,7 @@
     "pino": "^10.3.1",
     "pino-pretty": "^13.0.0",
     "qrcode-terminal": "^0.12.0",
-    "undici": "^6.27.0",
+    "undici": "^6.28.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
