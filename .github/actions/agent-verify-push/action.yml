@@ -1,0 +1,149 @@
+name: Agent verify push
+description: >-
+  Assert deterministically that an agent actually pushed something to a PR
+  branch; if it did not, label the PR for a human, explain why on the PR, and
+  FAIL the job loudly. Shared by the three PR-repair loops.
+
+# ---------------------------------------------------------------------------
+# WHY THIS EXISTS (see docs/CICD.md §4.1 M8)
+#
+# An agent that narrates work it did not do must not produce a green run. The
+# build worker learned this the expensive way: a run finished
+# conclusion=success with twelve permission denials, no branch, no PR and no
+# relabel — it described the work instead of doing it, and nothing failed. Every
+# agent loop therefore ends with a deterministic assertion on the OUTCOME
+# (did the branch tip move?), not on the agent's self-report.
+#
+# It is separate from agent-checkpoint deliberately, even though the two always
+# run together: the checkpoint may legitimately publish work AND the verify may
+# still escalate, because checkpointed work never cleared the agent's own gate.
+# Merging them would make "recovered" and "succeeded" the same outcome, which
+# is precisely the distinction pipeline-outcomes.yml reports on.
+#
+# The build worker does NOT use this action. Its verify step asserts a PR
+# exists rather than a commit landing, and additionally owns lane labels, the
+# resume pointer and the recovery-PR path — a different contract that happens
+# to share a name.
+#
+# WHY CALLERS MUST PIN THIS TO THE DEFAULT BRANCH, NOT `./` — see the long
+# note in ../agent-checkpoint/action.yml. It matters more here: this is the
+# step that decides whether a run escalates, so PR-head content must never be
+# able to define it.
+# ---------------------------------------------------------------------------
+
+inputs:
+  github-token:
+    description: 'Token for the `gh` calls (the job GITHUB_TOKEN).'
+    required: true
+  repository:
+    description: 'owner/repo the PR belongs to.'
+    required: false
+    default: ${{ github.repository }}
+  pr-number:
+    description: 'PR whose head is being checked.'
+    required: true
+  head-before:
+    description: 'Head sha recorded before the agent ran. An unchanged tip means the agent pushed nothing.'
+    required: true
+  success-message:
+    description: 'Logged when the tip moved.'
+    required: false
+    default: 'Agent pushed a change; CI will re-run on the new commit.'
+  error-message:
+    description: 'Emitted as a ::error:: annotation when the tip did not move.'
+    required: false
+    default: 'Agent produced no new commit.'
+  escalation-label:
+    description: 'Label added to the PR on failure.'
+    required: false
+    default: 'needs-human'
+  escalate-marker:
+    description: 'Marker HTML comment, emitted as line 1 so pipeline-outcomes.mjs can count the escalation.'
+    required: true
+  escalation-body:
+    description: 'Loop-specific prose explaining the escalation. Emitted verbatim under the marker.'
+    required: true
+  summary-title:
+    description: "<details> summary for the agent's captured final message."
+    required: false
+    default: "Agent's final summary (what it says blocked it)"
+  no-summary-note:
+    description: >-
+      Printed when no agent summary could be captured. Leave empty to print
+      nothing at all (a silent stop is itself the tell).
+    required: false
+    default: ''
+  execution-file:
+    description: "Path to the agent step's execution log, for extracting its final message."
+    required: false
+    default: ''
+  fallback-execution-file:
+    description: 'Second execution log to try when the first is empty (the conflict resolver has two agent paths).'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      # Inputs reach the script through env, never ${{ }}-interpolated into the
+      # body — see ../agent-checkpoint/action.yml for why.
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPOSITORY: ${{ inputs.repository }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        HEAD_BEFORE: ${{ inputs.head-before }}
+        SUCCESS_MESSAGE: ${{ inputs.success-message }}
+        ERROR_MESSAGE: ${{ inputs.error-message }}
+        ESCALATION_LABEL: ${{ inputs.escalation-label }}
+        ESCALATE_MARKER: ${{ inputs.escalate-marker }}
+        ESCALATION_BODY: ${{ inputs.escalation-body }}
+        SUMMARY_TITLE: ${{ inputs.summary-title }}
+        NO_SUMMARY_NOTE: ${{ inputs.no-summary-note }}
+        EXECUTION_FILE: ${{ inputs.execution-file }}
+        FALLBACK_EXECUTION_FILE: ${{ inputs.fallback-execution-file }}
+      run: |
+        set -euo pipefail
+
+        # Read the branch's current remote tip via the API rather than
+        # `git fetch`: every caller checks out with persist-credentials:false,
+        # so there is no git credential in .git/config for a fetch, and this
+        # avoids reintroducing one. head-before was captured from the local
+        # checkout (`git rev-parse HEAD` needs no credential).
+        after="$(gh pr view "${PR_NUMBER}" --repo "${REPOSITORY}" --json headRefOid --jq '.headRefOid')"
+        if [ "${after}" != "${HEAD_BEFORE}" ]; then
+          echo "${SUCCESS_MESSAGE}"
+          exit 0
+        fi
+
+        echo "::error::${ERROR_MESSAGE}"
+        gh pr edit "${PR_NUMBER}" --repo "${REPOSITORY}" --add-label "${ESCALATION_LABEL}" || true
+
+        # Surface the agent's OWN final message (best-effort) so a maintainer
+        # sees the blocker instead of reverse-engineering it from run logs —
+        # the transparency the build worker got in #251. A silent stop leaves
+        # no summary, which is itself diagnostic: it usually means a gate the
+        # agent could not make green, or a change it is not allowed to push.
+        summary=""
+        exec_file="${EXECUTION_FILE}"
+        if [ -z "${exec_file}" ]; then exec_file="${FALLBACK_EXECUTION_FILE}"; fi
+        if [ -n "${exec_file}" ] && [ -f "${exec_file}" ]; then
+          summary="$(jq -r '[.. | objects | select(.type? == "result") | .result?] | map(select(. != null)) | last // empty' "${exec_file}" 2>/dev/null | head -c 1500 || true)"
+        fi
+
+        # printf '%s' throughout: the body and the captured summary are data,
+        # never format strings (the summary is agent-authored text that can
+        # contain % sequences).
+        {
+          printf '%s\n' "${ESCALATE_MARKER}"
+          printf '%s\n' "${ESCALATION_BODY}"
+          if [ -n "${summary}" ]; then
+            printf '\n<details><summary>%s</summary>\n\n' "${SUMMARY_TITLE}"
+            printf '%s\n' "${summary}"
+            printf '\n</details>\n'
+          elif [ -n "${NO_SUMMARY_NOTE}" ]; then
+            printf '\n%s\n' "${NO_SUMMARY_NOTE}"
+          fi
+        } | gh pr comment "${PR_NUMBER}" --repo "${REPOSITORY}" --body-file - || true
+
+        exit 1

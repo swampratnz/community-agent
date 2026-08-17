@@ -285,13 +285,25 @@ only ever **fast-forwards**; a diverged remote parks the work on a
 `-ckpt-<run_id>` ref rather than rewriting someone else's push. This exists
 because prompt-only compliance provably fails — agents have finished whole
 builds, and whole conflict resolutions, and then ended their turn without
-pushing. Present in build, autofix, revise and conflict.
+pushing. Present in build, autofix, revise and conflict — as ONE implementation
+since the extraction: [`.github/actions/agent-checkpoint`](../.github/actions/agent-checkpoint/action.yml)
+(see [§8.3](#83-proposed-shape-of-the-reusable-solution)).
 
 **M8 · Verify-else-escalate.** The step after the checkpoint asserts the
 *outcome* deterministically — is there an open PR closing this issue? was a
 commit pushed? — and if not, labels `needs-human`, comments, and **fails the job
 loudly**. An agent that narrates work it did not do must not produce a green
-run.
+run. The three PR loops share one implementation,
+[`.github/actions/agent-verify-push`](../.github/actions/agent-verify-push/action.yml);
+the build worker keeps its own, because its version asserts a *PR exists* rather
+than a commit landing and additionally owns the lane labels, the resume pointer
+and the recovery-PR path — a different contract that merely shares a name.
+
+Note that M7 and M8 stay **separate steps** even though they always run
+together: a checkpoint may legitimately publish work *and* the verify still
+escalate, because checkpointed work never cleared the agent's own gate. Folding
+them into one action would collapse "recovered" and "succeeded" into the same
+outcome, which is exactly the distinction `pipeline-outcomes.yml` reports on.
 
 **M9 · Deterministic lane ownership.** The workflow, not the agent, owns every
 label transition: a Claim step sets `status:building` before the agent runs; the
@@ -573,19 +585,42 @@ literals.
 
 Three artifacts, in the order they pay off:
 
-**1 · A composite action for the agent-run triad.** M7 (checkpoint), M8
-(verify-else-escalate) and the cost/job-summary steps are near-identical in
-build, autofix, revise and conflict, and their bugs have historically been
-*fixed in one copy and not the others*. Extract:
+**1 · A composite action for the agent-run triad — DONE.** M7 (checkpoint) and
+M8 (verify-else-escalate) were near-identical in build, autofix, revise and
+conflict, and their bugs had historically been *fixed in one copy and not the
+others*. They now live in two composite actions:
 
 ```
-actions/agent-run/action.yml
-  inputs: prompt-file, allowed-tools, max-turns, model,
-          push-target (branch | pinned HEAD), marker-prefix,
-          verify-command, escalation-label
+.github/actions/agent-checkpoint/action.yml    ← build, autofix, revise, conflict
+.github/actions/agent-verify-push/action.yml   ← autofix, revise, conflict
 ```
 
-This alone removes the highest-risk duplication in the repo.
+Three things that extraction settled, and that any port of this pattern has to
+settle too:
+
+- **The reference must be pinned to the default branch, never `./`.** A local
+  `uses: ./.github/actions/…` resolves from the *workspace* when the step runs,
+  and the three PR loops check out the pull request's head branch — so `./`
+  would let PR-controlled content define the step that publishes an agent's work
+  and the step that decides whether the run escalates. The repo-qualified
+  `swampratnz/community-agent/.github/actions/…@main` form is fetched from the
+  default branch, which is the property these workflow *files* already have
+  (their triggers only ever run `main`'s copy). `tests/agentRunActions.test.ts`
+  pins it as a `SECURITY:` test. There is no bootstrap gap: workflow and action
+  land on `main` in the same merge.
+- **Composite actions ignore unknown `with:` keys silently.** A renamed input
+  degrades to its default with no error anywhere — for the checkpoint that means
+  no recovery comment; for the verify step it means the escalation loses the
+  marker `pipeline-outcomes.yml` counts. The same test cross-checks every passed
+  key against the action's declared inputs.
+- **One implementation means taking the union of the drift.** At extraction the
+  three PR loops had two hardenings the build worker never received (the 40-hex
+  guard on the `gh api` lookup; the `merge-base --is-ancestor` pre-check), while
+  the build worker had a push-failure fallback to the side ref that the other
+  three lacked. The shared action keeps all three.
+
+The cost/job-summary step was left alone: it appears in only two workflows
+(build and review) and they format different things.
 
 **2 · Reusable workflows (`workflow_call`) for Tiers A and B.** The
 deterministic loops carry no prompts and no project gate, so they parameterise
@@ -648,8 +683,7 @@ a consumer weaken them has extracted the shape and lost the substance:
 
 ### 8.5 Suggested extraction order
 
-1. The composite action (§8.3.1) — in-repo, no consumer needed, immediately
-   removes four-way duplication.
+1. ~~The composite action (§8.3.1)~~ — **done**; see above.
 2. Tier A workflows — trivially portable, prove the packaging.
 3. Tier B, starting with the groundskeeper and outcomes loops (read-mostly, low
    blast radius) and ending with auto-merge (highest stakes).

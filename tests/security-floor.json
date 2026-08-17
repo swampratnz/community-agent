@@ -23,6 +23,7 @@
   "agentModelTiering.test.ts": 1,
   "agentModule.test.ts": 1,
   "agentOptions.test.ts": 13,
+  "agentRunActions.test.ts": 3,
   "agentSkillsEnabled.test.ts": 7,
   "agentWebSearchDedup.test.ts": 3,
   "agentWebSearchDedupEmbedFailClosed.test.ts": 1,

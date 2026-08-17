@@ -332,92 +332,43 @@ jobs:
       # sufficient, so this is the deterministic backstop, mirroring the build
       # worker's own checkpoint for the identical failure (#633/#682).
       #
-      # Safe by construction: it runs only AFTER the agent has exited (no
-      # process left to influence it or read the token), uses the job's
-      # GITHUB_TOKEN (valid for the whole job, unlike the agent's ~1h App
-      # token), and only ever FAST-FORWARDS the PR branch — if the remote moved
-      # under us the work is parked on a side ref rather than rewriting
-      # someone else's push. Placed BEFORE the verify step on purpose, so a
-      # successful recovery is seen as the new commit it is.
+      # Placed BEFORE the verify step so a successful recovery is seen as the
+      # new commit it is.
+      #
+      # Deterministic recovery + assertion — shared, and pinned to @main rather
+      # than `./` for the reason spelled out in
+      # .github/actions/agent-checkpoint/action.yml: this job checks out the
+      # PR's head branch, so a local action reference would let PR content
+      # define the steps that publish work and decide escalation.
       - name: Checkpoint unpushed work (deterministic)
         if: always() && steps.mark.outcome == 'success'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          BRANCH: ${{ steps.precheck.outputs.branch }}
-          HEAD_BEFORE: ${{ steps.mark.outputs.head_before }}
-        run: |
-          set -euo pipefail
-          head_sha="$(git rev-parse HEAD 2>/dev/null || true)"
-          if [ -z "${head_sha}" ] || [ "${head_sha}" = "${HEAD_BEFORE}" ]; then
-            echo "Agent committed nothing — nothing to checkpoint."; exit 0
-          fi
-          remote_sha="$(gh api "repos/${{ github.repository }}/git/ref/heads/${BRANCH}" --jq '.object.sha' 2>/dev/null || true)"
-          # A failed/404 gh api call can leave a NON-sha in remote_sha (an error
-          # body passed straight through --jq, e.g. the literal "null") — the
-          # same trap pipeline-build.yml had to harden after a real incident.
-          # Treat anything that is not a 40-hex sha as "remote tip unknown":
-          # blanking it skips the divergence pre-check and attempts the ordinary
-          # NON-FORCE push, which the server rejects unless it is a
-          # fast-forward. Without this a bogus value fails the ancestor test and
-          # diverts a perfectly fast-forwardable recovery onto a side ref.
-          if ! printf '%s' "${remote_sha}" | grep -qE '^[0-9a-f]{40}$'; then remote_sha=""; fi
-          if [ -n "${remote_sha}" ] && [ "${head_sha}" = "${remote_sha}" ]; then
-            echo "Agent already pushed ${head_sha} — nothing to checkpoint."; exit 0
-          fi
-          target="${BRANCH}"
-          if [ -n "${remote_sha}" ] && ! git merge-base --is-ancestor "${remote_sha}" HEAD 2>/dev/null; then
-            target="${BRANCH}-ckpt-${{ github.run_id }}"
-            echo "Remote ${BRANCH} moved to ${remote_sha}; parking on ${target} rather than rewriting it."
-          fi
-          push_url="https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
-          if ! git push "${push_url}" "HEAD:refs/heads/${target}"; then
-            echo "::warning::Checkpoint push failed — the agent's committed work dies with this runner."
-            exit 0
-          fi
-          echo "Checkpointed ${head_sha} to ${target}."
-          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" --body "${CHECKPOINT_MARKER}
-          🤖 Recovered work the revise agent committed but never pushed — it ended its turn without pushing. Checkpointed \`${head_sha}\` to \`${target}\`.
-
-          ⚠️ This was **not verified by the agent** (it stopped before finishing the gate). CI on this push is the adjudicator, and the automated review still has to pass before anything can merge." || true
+        uses: swampratnz/community-agent/.github/actions/agent-checkpoint@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          branch: ${{ steps.precheck.outputs.branch }}
+          head-before: ${{ steps.mark.outputs.head_before }}
+          pr-number: ${{ env.PR_NUMBER }}
+          checkpoint-marker: ${{ env.CHECKPOINT_MARKER }}
+          loop-name: revise agent
 
       - name: Verify a revision was pushed (else escalate loudly)
         if: always() && steps.mark.outcome == 'success'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          # Read the branch's current remote tip via the API (gh/GH_TOKEN)
-          # rather than `git fetch` — with persist-credentials:false there is
-          # no git credential in .git/config for a fetch (see autofix).
-          after="$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json headRefOid --jq '.headRefOid')"
-          if [ "$after" != "${{ steps.mark.outputs.head_before }}" ]; then
-            echo "Revise worker pushed a change; CI and the review worker will re-run on the new commit."
-            exit 0
-          fi
-          echo "::error::Revise worker produced no new commit on PR #${PR_NUMBER}."
-          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --add-label needs-human || true
-
-          # Surface WHY (mirrors pipeline-build.yml's #251 escalation): pull the
-          # revise agent's own final summary from its execution log, so the
-          # escalation says what actually stopped it — a principled refusal, a
-          # `.github/workflows/` change it can't push, a gate it couldn't make
-          # green, or a run that flaked — instead of the three-way guess this
-          # comment used to make (which a maintainer then had to reverse-engineer
-          # from the run log). Best-effort: a silent no-op leaves no summary,
-          # which is itself the tell.
-          summary=""
-          exec_file="${{ steps.fix.outputs.execution_file }}"
-          if [ -n "${exec_file}" ] && [ -f "${exec_file}" ]; then
-            summary="$(jq -r '[.. | objects | select(.type? == "result") | .result?] | map(select(. != null)) | last // empty' "${exec_file}" 2>/dev/null | head -c 1500 || true)"
-          fi
-          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          {
-            printf '%s\n🤖 Revise attempt %s pushed no revision — labelled `needs-human` for a maintainer. Run: %s\n' \
-              "${ESCALATE_MARKER}" "${{ steps.precheck.outputs.attempt }}" "${run_url}"
-            if [ -n "${summary}" ]; then
-              printf '\n<details><summary>Revise worker'\''s final summary (what it says stopped it)</summary>\n\n%s\n\n</details>\n' "${summary}"
-            else
-              printf '\n_No agent summary was captured — it ended without pushing **and** without a `gh pr comment`. That usually means a gate it could not make green, a `.github/workflows/` change it cannot push, or a disagreement with the review it did not voice. Check the run log above._\n'
-            fi
-          } | gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" --body-file - || true
-          exit 1
+        uses: swampratnz/community-agent/.github/actions/agent-verify-push@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pr-number: ${{ env.PR_NUMBER }}
+          head-before: ${{ steps.mark.outputs.head_before }}
+          execution-file: ${{ steps.fix.outputs.execution_file }}
+          escalate-marker: ${{ env.ESCALATE_MARKER }}
+          success-message: Revise worker pushed a change; CI and the review worker will re-run on the new commit.
+          error-message: Revise worker produced no new commit on PR #${{ env.PR_NUMBER }}.
+          escalation-body: >-
+            🤖 Revise attempt ${{ steps.precheck.outputs.attempt }} pushed no revision — labelled
+            `needs-human` for a maintainer. Run:
+            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          summary-title: Revise worker's final summary (what it says stopped it)
+          no-summary-note: >-
+            _No agent summary was captured — it ended without pushing **and** without a
+            `gh pr comment`. That usually means a gate it could not make green, a
+            `.github/workflows/` change it cannot push, or a disagreement with the review it did not
+            voice. Check the run log above._

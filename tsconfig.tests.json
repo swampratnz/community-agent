@@ -27,6 +27,7 @@
   "include": [
     "src/**/*.ts",
     "tests/agentModule.test.ts",
+    "tests/agentRunActions.test.ts",
     "tests/backgroundJobCostAlert.test.ts",
     "tests/dbCoverageCheck.test.ts",
     "tests/displayTime.test.ts",

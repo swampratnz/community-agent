@@ -1,0 +1,246 @@
+name: Agent checkpoint
+description: >-
+  Push work an agent COMMITTED but never PUSHED, after the agent step has
+  exited. Fast-forward only; a diverged remote is parked on a side ref rather
+  than rewritten. Shared by the build worker and the three PR-repair loops.
+
+# ---------------------------------------------------------------------------
+# WHY THIS EXISTS (see docs/CICD.md §4.1 M7, docs/PIPELINE.md)
+#
+# Prompt-only compliance is unreliable. Agents have finished whole builds and
+# whole conflict resolutions and then ended their turn without pushing — PR
+# #606 ("I'll wait for the monitor notification before continuing…"), PR #609,
+# and issue #633's third attempt (implementation done, gates green, zero
+# pushes). Everything died with the runner. This step runs AFTER the agent
+# process is gone and publishes whatever it committed.
+#
+# WHY IT IS SHARED
+#
+# Four workflows carried near-identical copies of this logic and they DRIFTED.
+# At extraction time the three PR loops had two hardenings the build worker
+# never received:
+#
+#   * the 40-hex guard on the `gh api` result — a failed/404 lookup passes an
+#     error body straight through `--jq` (the literal "null"), and an unguarded
+#     value diverts a perfectly fast-forwardable recovery onto a side ref;
+#   * the `merge-base --is-ancestor` pre-check, which decides divergence
+#     BEFORE attempting the push instead of inferring it from a push failure.
+#
+# Conversely the build worker had a fallback the other three lacked: if the
+# push to the work branch fails at all, try the side ref. This action keeps
+# BOTH — the pre-check and the fallback — so every caller now gets the union,
+# which is the entire point of having one copy.
+#
+# WHY CALLERS MUST PIN THIS TO THE DEFAULT BRANCH, NOT `./`
+#
+# A local `uses: ./.github/actions/...` is resolved from the WORKSPACE at the
+# moment the step runs. The three PR loops check out the pull request's head
+# branch, and the agent then edits that tree — so `./` would let PR-head
+# content define the step that decides whether the agent's work is published
+# and whether the run escalates. That inverts the trust model: today these
+# workflow FILES always come from the default branch (their triggers are
+# issues / workflow_run / workflow_dispatch), and this action must inherit
+# that property. Callers therefore use the repo-qualified form:
+#
+#   uses: swampratnz/community-agent/.github/actions/agent-checkpoint@main
+#
+# which the runner fetches from `main` independently of the workspace.
+# tests/agentRunActions.test.ts pins that (a SECURITY: test) — a caller that
+# regresses to `./` fails the suite.
+#
+# TOKEN NOTE: this pushes with the CALLER'S GITHUB_TOKEN, deliberately. It is
+# valid for the whole job (the agent's App token expires after ~1h against a
+# 180-min build budget), and a GITHUB_TOKEN push starts no workflow run — which
+# is what makes checkpointing a branch free of side effects.
+# ---------------------------------------------------------------------------
+
+inputs:
+  github-token:
+    description: 'Token used for the push and the `gh` calls (the job GITHUB_TOKEN).'
+    required: true
+  repository:
+    description: 'owner/repo to push to.'
+    required: false
+    default: ${{ github.repository }}
+  branch:
+    description: >-
+      Work branch to checkpoint. Leave empty to detect it from HEAD (the build
+      worker's case — the agent creates the branch at run time).
+    required: false
+    default: ''
+  head-before:
+    description: >-
+      HEAD sha recorded before the agent ran. When set, "the agent committed
+      nothing" is decided by comparing against it. Leave empty to decide by
+      "is HEAD ahead of the default branch" instead (the build worker's case,
+      where there is no pre-agent commit to compare with).
+    required: false
+    default: ''
+  default-branch:
+    description: 'Trunk name, used for the ahead-of-trunk test and as a refusal guard.'
+    required: false
+    default: 'main'
+  pr-number:
+    description: >-
+      PR to comment on when work is recovered. Leave empty to skip the comment
+      (the build worker has no PR yet at checkpoint time).
+    required: false
+    default: ''
+  checkpoint-marker:
+    description: 'Marker HTML comment, emitted as line 1 so pipeline-outcomes.mjs can count it.'
+    required: false
+    default: ''
+  loop-name:
+    description: 'How the loop refers to itself in the recovery comment, e.g. "autofix agent".'
+    required: false
+    default: 'agent'
+  subject:
+    description: 'Subject of the "… was not verified by the agent" sentence.'
+    required: false
+    default: 'This'
+
+outputs:
+  ref:
+    description: 'Branch or side ref the work now lives on (empty if nothing was checkpointed).'
+    value: ${{ steps.checkpoint.outputs.ref }}
+  sha:
+    description: 'Commit sha that ref points at (empty if nothing was checkpointed).'
+    value: ${{ steps.checkpoint.outputs.sha }}
+  checkpointed:
+    description: "'true' only when this step actually pushed something."
+    value: ${{ steps.checkpoint.outputs.checkpointed }}
+
+runs:
+  using: composite
+  steps:
+    - id: checkpoint
+      shell: bash
+      # Every input reaches the script through env, never ${{ }}-interpolated
+      # into the body: a git ref name may legally contain shell metacharacters,
+      # and template interpolation splices them in (with the token live) before
+      # the shell parses the line — the classic Actions injection.
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPOSITORY: ${{ inputs.repository }}
+        BRANCH: ${{ inputs.branch }}
+        HEAD_BEFORE: ${{ inputs.head-before }}
+        DEFAULT_BRANCH: ${{ inputs.default-branch }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        CHECKPOINT_MARKER: ${{ inputs.checkpoint-marker }}
+        LOOP_NAME: ${{ inputs.loop-name }}
+        SUBJECT: ${{ inputs.subject }}
+        RUN_ID: ${{ github.run_id }}
+      run: |
+        set -euo pipefail
+
+        # Every exit path goes through finish(), so each output key is written
+        # EXACTLY once. Writing defaults up-front and overwriting them later
+        # would leave duplicate keys in $GITHUB_OUTPUT and lean on last-wins
+        # parsing, which is not a contract worth betting a recovery path on.
+        finish() { # ref sha checkpointed
+          {
+            echo "ref=$1"
+            echo "sha=$2"
+            echo "checkpointed=$3"
+          } >> "$GITHUB_OUTPUT"
+          exit 0
+        }
+
+        branch="${BRANCH}"
+        if [ -z "${branch}" ]; then
+          branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+        fi
+        # Refuse to treat trunk (or a detached HEAD) as a work branch: the
+        # build worker reaches this step even when its agent never created a
+        # branch, and pushing HEAD to `main` from here is exactly the thing
+        # branch protection exists to stop.
+        if [ -z "${branch}" ] || [ "${branch}" = "HEAD" ] || [ "${branch}" = "${DEFAULT_BRANCH}" ]; then
+          echo "No work branch in the workspace — nothing to checkpoint."
+          finish "" "" false
+        fi
+
+        head_sha="$(git rev-parse HEAD 2>/dev/null || true)"
+        if [ -z "${head_sha}" ]; then
+          echo "No HEAD in the workspace — nothing to checkpoint."
+          finish "" "" false
+        fi
+
+        if [ -n "${HEAD_BEFORE}" ]; then
+          if [ "${head_sha}" = "${HEAD_BEFORE}" ]; then
+            echo "Agent committed nothing — nothing to checkpoint."
+            finish "" "" false
+          fi
+        else
+          ahead="$(git rev-list --count "origin/${DEFAULT_BRANCH}..HEAD" 2>/dev/null || echo 0)"
+          if [ "${ahead}" -eq 0 ]; then
+            echo "No commits beyond origin/${DEFAULT_BRANCH} — nothing to checkpoint."
+            finish "" "" false
+          fi
+        fi
+
+        remote_sha="$(gh api "repos/${REPOSITORY}/git/ref/heads/${branch}" --jq '.object.sha' 2>/dev/null || true)"
+        # A failed/404 `gh api` call can leave a NON-sha here (an error body
+        # passed straight through --jq, e.g. the literal "null"). Treat anything
+        # that is not a 40-hex sha as "remote tip unknown": blanking it skips
+        # the divergence pre-check and attempts the ordinary NON-FORCE push,
+        # which the server rejects unless it is a fast-forward.
+        if ! printf '%s' "${remote_sha}" | grep -qE '^[0-9a-f]{40}$'; then remote_sha=""; fi
+
+        if [ -n "${remote_sha}" ] && [ "${head_sha}" = "${remote_sha}" ]; then
+          echo "Agent already pushed ${head_sha} to ${branch} — nothing to checkpoint."
+          # Still report the ref: a caller's verify step uses it to find the
+          # surviving branch (the build worker's resume/recovery path).
+          finish "${branch}" "${head_sha}" false
+        fi
+
+        target="${branch}"
+        if [ -n "${remote_sha}" ] && ! git merge-base --is-ancestor "${remote_sha}" HEAD 2>/dev/null; then
+          target="${branch}-ckpt-${RUN_ID}"
+          echo "Remote ${branch} moved to ${remote_sha}; parking on ${target} rather than rewriting it."
+        fi
+
+        push_url="https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+        if ! git push "${push_url}" "HEAD:refs/heads/${target}" 2>/dev/null; then
+          if [ "${target}" = "${branch}" ]; then
+            # The pre-check said fast-forward but the server disagreed (a race,
+            # or a tip the API had not caught up with). Fall back to the side
+            # ref rather than losing the work — the build worker's original
+            # behaviour, kept for every caller.
+            target="${branch}-ckpt-${RUN_ID}"
+            echo "Push to ${branch} was rejected; falling back to ${target}."
+            if ! git push "${push_url}" "HEAD:refs/heads/${target}"; then
+              echo "::warning::Checkpoint push failed — the agent's committed work dies with this runner."
+              finish "" "" false
+            fi
+          else
+            echo "::warning::Checkpoint push failed — the agent's committed work dies with this runner."
+            finish "" "" false
+          fi
+        fi
+
+        echo "Checkpointed ${head_sha} to ${target}."
+        # Written inline rather than via finish(): the recovery comment below
+        # still has to run. Nothing has written these keys on this path.
+        {
+          echo "ref=${target}"
+          echo "sha=${head_sha}"
+          echo "checkpointed=true"
+        } >> "$GITHUB_OUTPUT"
+
+        if [ -z "${PR_NUMBER}" ] || [ -z "${CHECKPOINT_MARKER}" ]; then
+          exit 0
+        fi
+
+        # Built with printf rather than an indented YAML string: the inline
+        # `--body "…"` form the four workflows used carried its own YAML block
+        # indentation into the comment, so every line after the marker arrived
+        # with ten leading spaces and GitHub rendered the explanation as a code
+        # block. The marker must stay on line 1 (handoff/outcome consumers match
+        # position, not just text).
+        {
+          printf '%s\n' "${CHECKPOINT_MARKER}"
+          printf '🤖 Recovered work the %s committed but never pushed — it ended its turn without pushing. Checkpointed `%s` to `%s`.\n\n' \
+            "${LOOP_NAME}" "${head_sha}" "${target}"
+          printf '⚠️ %s was **not verified by the agent** (it stopped before finishing the gate). CI on this push is the adjudicator, and the automated review still has to pass before anything can merge.\n' \
+            "${SUBJECT}"
+        } | gh pr comment "${PR_NUMBER}" --repo "${REPOSITORY}" --body-file - || true
