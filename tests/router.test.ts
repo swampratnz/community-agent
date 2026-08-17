@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
@@ -20,6 +20,10 @@ import type {
 process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
 process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
+// Capture whether a REAL Postgres was provided BEFORE the dummy default below
+// — that default exists only to satisfy config.ts's import-time validation and
+// is not a reachable DB, so the cleanup at the bottom must not attempt it.
+const hasDb = Boolean(process.env.DATABASE_URL);
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 // This user bypasses the paused/daily-budget DB reads entirely (see
@@ -46,6 +50,43 @@ const { GATED_NOTICE_MI, INTERNAL_ERROR_REPLY } = await import('./support/legacy
 // (outside any timing-sensitive assertion) so later tests aren't thrown off
 // by a one-off multi-second load cost hiding inside `respond()`'s first call.
 await embed('warmup').catch(() => {});
+
+// Gated-guest identities, unique per run.
+//
+// The gated-guest path records an `access_requests` row (keyed on platform +
+// user_id) on every gated reply, and nothing ever deletes it. Once that row is
+// 24h old — `waitDaysSince()` is a floor over 86_400_000 ms, so this is a
+// rolling 24 hours, not a calendar-day boundary — the gated notice grows a
+// trailing "you first asked N days ago, your request is still pending" clause.
+//
+// Most assertions here are `assert.match(/member-only/i)` and tolerate that,
+// but two compare against GATED_NOTICE_MI byte-for-byte. With a FIXED id those
+// two were correct only against a database less than a day old: green in CI
+// purely because its pgvector service container is recreated per run, and red
+// for anyone keeping a local Postgres — which docs/STANDARDS.md explicitly
+// tells contributors to do — as soon as they run the suite on two consecutive
+// days. The failure reads as a mismatched notice string, which points nowhere
+// near a stale row from yesterday.
+//
+// A per-run id reproduces the fresh-container semantics on ANY database: the
+// run's first gated reply inserts the row, so every assertion in this file
+// sees a wait of 0 days. Same structural defence as
+// repeatQuestionShortcutRouter.test.ts's BUDGET_USER_ID, and preferred over an
+// `after()` delete alone — cleanup that a killed run skips leaves exactly the
+// poisoned row this is meant to prevent.
+const RUN = `${process.pid}-${Date.now()}`;
+const GUEST_1 = `unknown-guest-1-${RUN}`;
+const GUEST_2 = `unknown-guest-2-${RUN}`;
+
+// Housekeeping only, and best-effort: the ids above already make each run
+// correct on their own, so a failure here can never fail a test — it just
+// leaves a row behind on a long-lived local database.
+after(async () => {
+  if (!hasDb) return;
+  await pool
+    .query(`DELETE FROM access_requests WHERE user_id LIKE $1`, [`unknown-guest-%-${RUN}`])
+    .catch(() => {});
+});
 
 function makeAdapter(overrides: Partial<PlatformAdapter> = {}): {
   adapter: PlatformAdapter;
@@ -373,7 +414,7 @@ test('router: a gated-out guest never reaches respond() — zero typing indicato
   // (DB unreachable in this test) — resolves to 'guest'. Default
   // ACCESS_MODE_DISCORD is 'gated' (see config.ts), so this hits the
   // gated-guest branch, which returns before respond() is ever called.
-  await trigger(makeMessage({ userId: 'unknown-guest-1', isDirect: false, addressedToBot: true }));
+  await trigger(makeMessage({ userId: GUEST_1, isDirect: false, addressedToBot: true }));
 
   assert.equal(typingCalls.length, 0, 'a gated-out guest must never trigger the typing indicator');
   assert.equal(sent.length, 1, 'the guest still gets the gated notice');
@@ -395,7 +436,7 @@ test('router: a gated-out guest is unaffected by pause — still gets the gated 
 
   // Gated-mode guest branch returns before the paused check is ever reached
   // (src/base/router.ts), so pause state must have no effect on this path.
-  await trigger(makeMessage({ userId: 'unknown-guest-1', isDirect: false, addressedToBot: true }));
+  await trigger(makeMessage({ userId: GUEST_1, isDirect: false, addressedToBot: true }));
 
   assert.equal(typingCalls.length, 0);
   assert.equal(sent.length, 1);
@@ -421,7 +462,7 @@ test("router (gated guest): a caller with a standing 'mi' language preference ge
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
 
-  await trigger(makeMessage({ userId: 'unknown-guest-1', isDirect: false, addressedToBot: true }));
+  await trigger(makeMessage({ userId: GUEST_1, isDirect: false, addressedToBot: true }));
 
   assert.equal(sent.length, 1);
   assert.equal(sent[0].text, GATED_NOTICE_MI);
@@ -440,7 +481,7 @@ test("router (gated guest): a caller with 'auto' (the default) still gets the En
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
 
-  await trigger(makeMessage({ userId: 'unknown-guest-1', isDirect: false, addressedToBot: true }));
+  await trigger(makeMessage({ userId: GUEST_1, isDirect: false, addressedToBot: true }));
 
   assert.equal(sent.length, 1);
   assert.match(sent[0].text, /member-only/i);
@@ -465,9 +506,7 @@ test('router (gated guest): the language-preference lookup fires only for messag
   router.register(adapter);
 
   for (let i = 0; i < 10; i += 1) {
-    await trigger(
-      makeMessage({ userId: 'unknown-guest-1', isDirect: false, addressedToBot: true, text: `msg ${i}` }),
-    );
+    await trigger(makeMessage({ userId: GUEST_1, isDirect: false, addressedToBot: true, text: `msg ${i}` }));
   }
 
   assert.equal(sent.length, 8, 'RATE_LIMIT (8) messages produce a notice before the guest is rate-limited');
@@ -495,7 +534,7 @@ test("SECURITY: router (gated guest): the gated-notice language is driven solely
   englishRouter.register(englishAdapter);
   await englishTrigger(
     makeMessage({
-      userId: 'unknown-guest-1',
+      userId: GUEST_1,
       isDirect: false,
       addressedToBot: true,
       text: 'kia ora mi te reo Māori tēnā koe',
@@ -523,7 +562,7 @@ test("SECURITY: router (gated guest): the gated-notice language is driven solely
   miRouter.register(miAdapter);
   await miTrigger(
     makeMessage({
-      userId: 'unknown-guest-2',
+      userId: GUEST_2,
       isDirect: false,
       addressedToBot: true,
       text: 'hello please help me',
@@ -553,7 +592,7 @@ test('SECURITY: router (gated guest): a getLanguagePreference failure on the gat
   router.register(adapter);
 
   await assert.doesNotReject(
-    trigger(makeMessage({ userId: 'unknown-guest-1', isDirect: false, addressedToBot: true })),
+    trigger(makeMessage({ userId: GUEST_1, isDirect: false, addressedToBot: true })),
   );
 
   assert.equal(sent.length, 1);
@@ -587,7 +626,7 @@ test(
     router.register(adapter);
 
     await assert.doesNotReject(
-      trigger(makeMessage({ userId: 'unknown-guest-1', isDirect: false, addressedToBot: true })),
+      trigger(makeMessage({ userId: GUEST_1, isDirect: false, addressedToBot: true })),
     );
 
     assert.equal(sent.length, 1, 'the guest still gets the gated notice, byte-identical to before #480');
