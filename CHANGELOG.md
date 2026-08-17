@@ -25,6 +25,25 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 -->
 
 
+## 2026-08-17
+
+### Changed
+- **Fewer knowledge tips get turned away as "already covered."** When you
+  offer something with `suggest_knowledge` (or when the offline builder drafts
+  a candidate), the bot checks whether an existing entry already covers the
+  topic and declines if one does. That check was far too eager: it borrowed
+  the threshold used for *search* — which asks the much looser question "is
+  this worth showing to someone who asked?" — so an entry merely about the
+  same product as your tip could be enough to refuse it. Measured against a
+  real corpus, two entries on the same product but on genuinely different
+  topics score about 0.38, comfortably above the old 0.35 bar, so that was
+  not an edge case. The coverage check now has its own threshold, defaulting
+  to 0.6 and tunable per deployment via
+  `KNOWLEDGE_COVERAGE_SIMILARITY_THRESHOLD`. Near-duplicates are still
+  refused; contributions that only *look* adjacent now get through. If a tip
+  of yours was declined in the past and you still think it's not covered, it
+  is worth offering again.
+
 ## 2026-08-15
 
 ### Added

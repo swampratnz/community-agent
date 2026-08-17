@@ -1576,7 +1576,10 @@ and review flow above, rather than a separate table or a privileged surface:
 - **Same dedup guard, reused verbatim**: `candidateTopicAlreadyReviewed`
   (exact + semantic match against already-queued/reviewed topics) and
   `findKnowledgeCoveringTopic` (an existing `knowledge` entry that already
-  covers it, above `KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD`) both run BEFORE
+  covers it, above `KNOWLEDGE_COVERAGE_SIMILARITY_THRESHOLD` — its own knob
+  since agent-base 0.5.x, default 0.6; it used to borrow the much looser
+  retrieval floor `KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD`, which refused
+  same-product/different-topic tips as duplicates) both run BEFORE
   insert; a blocked tip is never queued and the reply tells the member why
   (naming the covering entry's title when that's the reason).
   `findKnowledgeCoveringTopic` is a thin wrapper `knowledgeCoversTopic` (the
