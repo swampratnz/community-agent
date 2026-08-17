@@ -183,7 +183,10 @@ This bot processes untrusted public chat. Preserve these invariants:
 ## Multi-loop pipeline
 
 This repo is developed by a supervised multi-session pipeline — see
-`docs/PIPELINE.md`. If you are running as one of those loops, obey the
+`docs/PIPELINE.md` for why each loop exists, and `docs/CICD.md` for the
+mechanical reference (every workflow's trigger/permissions/timeout, the CI gate
+and its check scripts, the mechanisms shared across loops, and what is portable
+to another repo). If you are running as one of those loops, obey the
 ownership rules:
 
 - **Only the build loop** writes code or opens PRs. PR-review comments only;
