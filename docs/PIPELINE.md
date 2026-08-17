@@ -5,6 +5,12 @@ autonomously while keeping a human as the merge gate. Everything coordinates
 **through GitHub issues + labels** (there is no direct session-to-session
 channel — the repo is the bus).
 
+> This document is the **why**: what each loop is for, the ownership rules, and
+> the incidents that shaped them. For the **what** — every workflow's trigger,
+> permissions, concurrency and timeout in one table, the CI gate and its check
+> scripts, the mechanisms shared across loops, and which parts are portable to
+> another repo — see [`docs/CICD.md`](CICD.md).
+
 It started as five concurrent Claude Code sessions each running a recurring
 `/loop`, and the prompts below still describe them that way. Most have since
 moved to GitHub Actions, which is why this document talks about both: the

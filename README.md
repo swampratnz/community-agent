@@ -196,6 +196,9 @@ human merge**, and branch protection on `main` is the backstop. See
 - [Capability ideas](docs/CAPABILITY-IDEAS.md) — curated backlog of candidate
   directions (not commitments)
 - [Pipeline](docs/PIPELINE.md) — the self-improving research/review/build loops
+- [CI/CD](docs/CICD.md) — mechanical reference for every workflow, the CI gate
+  and its check scripts, the mechanisms shared across the loops, and what is
+  portable to another repo
 - [Personas](docs/PERSONAS.md) — the bot's voice ("Dave")
 - [Community context](docs/COMMUNITY-CONTEXT.md) — auto-generated, anonymised
   export of what the community discusses (aggregate-only, opt-in)
