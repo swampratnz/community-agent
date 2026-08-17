@@ -170,8 +170,6 @@ function makeMessage(overrides: Partial<IncomingMessage> = {}): IncomingMessage 
   };
 }
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
 test('config: REPEAT_QUESTION_SHORTCUT_ENABLED=true is reflected in config.behaviour.repeatQuestionShortcutEnabled', () => {
   assert.equal(config.behaviour.repeatQuestionShortcutEnabled, true);
 });
@@ -505,6 +503,16 @@ test('ordering: a repeat-question shortcut reply is enqueued behind an in-flight
   const secondEnteredP = new Promise<void>((resolve) => {
     secondEntered = resolve;
   });
+  // Resolved the instant the REPEAT message reaches the repeat-question
+  // intercept — see the long comment at the assertion below for why this
+  // replaced a wall-clock sleep. `recordShortcutHit` is fired by that
+  // intercept immediately after it reads the reply cache and immediately
+  // before it enqueues, which is exactly the moment the ordering under test
+  // is decided.
+  let repeatIntercepted!: () => void;
+  const repeatInterceptedP = new Promise<void>((resolve) => {
+    repeatIntercepted = resolve;
+  });
   let calls = 0;
   const router = new Router(
     makeRouterDeps({
@@ -515,6 +523,9 @@ test('ordering: a repeat-question shortcut reply is enqueued behind an in-flight
         return secondTurn;
       },
       typingRefireMs: 20,
+      recordShortcutHit: async (kind) => {
+        if (kind === 'repeat_question') repeatIntercepted();
+      },
     }),
   );
   const { adapter, sent, trigger } = makeAdapter();
@@ -533,31 +544,39 @@ test('ordering: a repeat-question shortcut reply is enqueued behind an in-flight
   // ...then, without waiting, resend the FIRST (now-cached) text.
   const repeatDone = trigger(makeMessage({ text: cachedText, conversationId }));
 
-  // Investigated for #781 rather than converted like the signal above: this
-  // is a NEGATIVE assertion ("nothing landed yet"), and there is no event to
-  // await for something that must NOT have happened — the same-shaped fix
-  // (await a promise the stub resolves) has no analogue here.
+  // This was `await sleep(30)`, whose comment argued the residual risk was
+  // only a WEAKER check ("the guard might not have been exercised yet"), never
+  // a wrong one. That was incorrect, and the failure it missed is a real one:
   //
-  // The property itself is NOT actually timing-dependent: `enqueue()` chains
-  // strictly on a Promise per conversation key (`prev.then(task)`, see
-  // router.ts), so the repeat's queued task structurally cannot settle
-  // before `secondTurn` — still unresolved at this point — does, no matter
-  // how much (or little) wall-clock time passes before we check. So this
-  // `sleep` is not what makes the assertion true, and raising or lowering it
-  // cannot introduce or fix a false failure the way the router.test.ts sleep
-  // above could.
+  // `lastReply` is a SINGLE-SLOT in-memory cache per caller, and `respond()`
+  // overwrites it on every successful turn. So when the repeat's pre-enqueue
+  // work overran the 30ms — which it does under parallel load with no
+  // DATABASE_URL, where each spine step (`isUserBlocked`, `recordInteraction`
+  // and its no-vector retry, role resolution) is a full TCP connect-and-refuse
+  // to the unreachable dummy host set at the top of this file — the sequence
+  // became: sleep expires, assertion below passes vacuously, `resolveSecond()`
+  // lets the second turn's `respond()` overwrite `lastReply` with the DIFFERENT
+  // question's text, and only THEN does the repeat reach the intercept. Its
+  // `cached.normalizedText === normalize(msg.text)` check now compares against
+  // the wrong question, misses, and the repeat falls through to a real turn —
+  // which returns the already-resolved `secondTurn` and sends `second answer`
+  // with no notice prefix at all. That is the observed failure: not a
+  // late-arriving repeat, a repeat that stopped being a repeat.
   //
-  // What the sleep DOES do is give the repeat message's own pre-enqueue work
-  // — a real `isUserBlocked` Postgres round-trip in `handle()`, since this
-  // file runs against a live DB — a realistic window to run before we assert,
-  // so the check exercises the actual bypass-guard path rather than firing
-  // before that path has even started. Residual risk is therefore not a
-  // flaky failure but the opposite: under extreme DB latency the repeat's
-  // pre-enqueue work might still be in flight at the 30ms mark, so the
-  // assertion would pass without having exercised the guard it's meant to
-  // exercise that run — a weaker check, not a wrong one, and not the failure
-  // class this issue is about.
-  await sleep(30);
+  // So the ordering claim in the old comment was sound but insufficient: the
+  // enqueue chain does guarantee the repeat cannot OVERTAKE the in-flight
+  // turn, and it never did. What was unguarded is that the cache the repeat
+  // depends on must still hold the FIRST answer when the intercept reads it,
+  // and that is a race the enqueue chain says nothing about.
+  //
+  // Waiting on the intercept itself closes both. `recordShortcutHit` fires
+  // after the cache read and before `enqueue`, and `enqueue` reads the
+  // conversation's chain SYNCHRONOUSLY in that same block — before any
+  // microtask, so before this await can resume. By the time we assert, the
+  // repeat is therefore already chained behind the still-pending second turn:
+  // the negative assertion below is now structurally true rather than true
+  // within a timing budget, and no wall-clock value remains to tune.
+  await repeatInterceptedP;
   assert.equal(sent.length, 1, 'the repeat reply must not land while the earlier real turn is still pending');
 
   resolveSecond({ text: `${RUN} second answer`, ok: true });
