@@ -19,9 +19,10 @@ import {
   recentKnowledgeGapClusters,
   recentUnhelpfulFeedbackClusters,
   saveKnowledge,
+  searchKnowledge,
   updateKnowledge,
 } from '@swampratnz/agent-base/storage/repository.js';
-import { resolveSanitizedLabel, text, untrusted } from './helpers.js';
+import { formatFoundKnowledge, resolveSanitizedLabel, text, untrusted } from './helpers.js';
 import { notifyKnowledgeTipResolved } from './notify.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
@@ -135,6 +136,45 @@ export const knowledgeAdminTools = [
             .join('\n'),
         ),
       );
+    },
+  }),
+
+  // The id-returning counterpart to knowledge_search (issue #1008): the only
+  // tool that returns ids (list_knowledge) can't search, and the only tool
+  // that searches (knowledge_search) hides ids behind its member-facing
+  // formatter. Reuses the exact same framework searchKnowledge() call
+  // knowledge_search already makes — no new repository function, no SQL —
+  // but renders admin-line-shaped output (leading `#id`) and, unlike
+  // knowledge_search, omits KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD so a
+  // loosely-remembered query still surfaces its id, just with a low match %.
+  // Scoped exactly like knowledge_search (caller's platform/conversation plus
+  // 'global'), which is narrower than list_knowledge's guild-wide browse —
+  // a deliberate, conservative trade-off documented at the call site below.
+  defineTool({
+    name: 'find_knowledge',
+    description:
+      "Semantically search the knowledge base for entries matching a query, returning each result's " +
+      'id so you can act on it with update_knowledge/delete_knowledge/merge_knowledge — the id-returning ' +
+      'counterpart to knowledge_search, for when you know what an entry says but not which id it is. ' +
+      'Unlike knowledge_search, includes weak matches below the relevance floor (each line shows its match ' +
+      '%) so a loosely-remembered entry is still reachable. Scoped like knowledge_search (your platform/' +
+      "conversation plus global entries) — narrower than list_knowledge's unrestricted browse, so an " +
+      'entry scoped to a different conversation will not appear here even though it would in list_knowledge. ' +
+      'Admin only.',
+    minTier: 'admin',
+    readOnlyHint: true,
+    schema: {
+      query: z.string().describe('What to search for, semantically'),
+      limit: z.number().optional().describe('Max results (default 10)'),
+    },
+    handler: async (args, { caller }) => {
+      assertAtLeast(caller.role, 'admin', 'find_knowledge');
+      const hits = await searchKnowledge(
+        args.query,
+        { platform: caller.platform, conversationId: caller.conversationId },
+        args.limit ?? 10,
+      );
+      return text(formatFoundKnowledge(hits));
     },
   }),
 
