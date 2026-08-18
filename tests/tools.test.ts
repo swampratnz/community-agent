@@ -3263,7 +3263,8 @@ test('SECURITY: community_info for a WhatsApp caller with whatsappTextCommandsEn
         '- `!whois <topic>` — find members into a topic\n' +
         '- `!projects [query]` — browse the project showcase\n' +
         '- `!guidelines` — community guidelines\n' +
-        "- `!digest` — this week's digest",
+        "- `!digest` — this week's digest\n" +
+        '- `!status` — check for a known Anthropic outage',
       'the appended block must be exactly the fixed literal, never caller- or model-composed text',
     );
   } finally {

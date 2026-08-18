@@ -21,6 +21,9 @@ process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
 process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= 'guild-1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
+// /status reads the same background-polled cache as check_status (issue
+// #995) — pollAnthropicStatus below needs this set to actually populate it.
+process.env.STATUS_CHECK_API_URL ??= 'https://status.claude.com/api/v2/summary.json';
 
 const { DiscordAdapter } = await import('@swampratnz/agent-base/platforms/discord/adapter.js');
 const { config } = await import('@swampratnz/agent-base/config.js');
@@ -58,6 +61,8 @@ const KNOWLEDGE_LOW_RATED_CAVEAT_TEXT = notice('knowledgeLowRatedCaveat');
 // So the caveat as actually delivered is this rewritten form, not the raw
 // exported constant.
 const { stripEmDashes } = await import('@swampratnz/agent-base/agent/outbound.js');
+const { formatStatusMessage, getStatusCache, pollAnthropicStatus, resetStatusCacheForTests } =
+  await import('../src/module/status/anthropicStatus.js');
 
 type Adapter = InstanceType<typeof DiscordAdapter>;
 
@@ -298,7 +303,7 @@ test('with DISCORD_SLASH_COMMANDS_ENABLED=true, the four commands are registered
     'SECURITY: registration must never be global (a call with no guild arg)',
   );
   const names = (commands as Array<{ name: string }>).map((c) => c.name).sort();
-  assert.deepEqual(names, ['digest', 'guidelines', 'kb', 'projects', 'whois']);
+  assert.deepEqual(names, ['digest', 'guidelines', 'kb', 'projects', 'status', 'whois']);
 });
 
 test("a slash-command registration failure is caught and logged, never thrown, matching backfillRoster/reconcileMutedRole's fire-and-forget shape", async (t) => {
@@ -316,10 +321,10 @@ test("a slash-command registration failure is caught and logged, never thrown, m
   assert.ok(warnLog.mock.calls.length >= 1, 'a registration failure must be logged, not swallowed silently');
 });
 
-test('buildSlashCommands defines exactly the five approved read-only commands, each with its expected required-ness', () => {
+test('buildSlashCommands defines exactly the six approved read-only commands, each with its expected required-ness', () => {
   const commands = buildSlashCommands();
   const byName = new Map(commands.map((c) => [c.name, c]));
-  assert.deepEqual([...byName.keys()].sort(), ['digest', 'guidelines', 'kb', 'projects', 'whois']);
+  assert.deepEqual([...byName.keys()].sort(), ['digest', 'guidelines', 'kb', 'projects', 'status', 'whois']);
   const requiredness = (name: string) =>
     (byName.get(name) as { options?: Array<{ name: string; required?: boolean }> }).options?.find(
       (o) => o.name === 'query',
@@ -350,6 +355,11 @@ test('buildSlashCommands defines exactly the five approved read-only commands, e
     (byName.get('digest') as { options?: unknown[] }).options ?? [],
     [],
     '/digest takes no options — always the current on-demand snapshot, never a windowed query',
+  );
+  assert.deepEqual(
+    (byName.get('status') as { options?: unknown[] }).options ?? [],
+    [],
+    '/status takes no options — a single deterministic cache read',
   );
 });
 
@@ -703,6 +713,95 @@ test('SECURITY: /guidelines also routes through the outbound filter (every slash
   assert.ok(!replies[0].content.includes('sk-ant-'));
   assert.ok(replies[0].content.includes('[redacted]'));
 });
+
+// --- Issue #995: /status --------------------------------------------------
+
+test('/status returns the same content check_status returns for the same cache state (issue #995 acceptance criterion 1)', async (t) => {
+  resetStatusCacheForTests();
+  t.after(() => resetStatusCacheForTests());
+  await pollAnthropicStatus(async () =>
+    JSON.stringify({
+      page: { id: 'abc' },
+      status: { indicator: 'none', description: 'All Systems Operational' },
+      incidents: [],
+    }),
+  );
+  mockPool(t, { memberRole: null });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({ commandName: 'status', userId: 'guest-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  // Every reply routes through deps.filtered() (stripEmDashes among others),
+  // same as the KNOWLEDGE_CONFLICT_CAVEAT_TEXT comparison above — the em dash
+  // in formatStatusMessage's own text is rewritten before Discord ever sees it.
+  const expected = stripEmDashes(formatStatusMessage(getStatusCache(), Date.now()));
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].content, expected);
+  assert.equal(replies[0].ephemeral, true);
+});
+
+test('/status has no tier gate — served even for a guest caller (issue #995 acceptance criterion 3)', async (t) => {
+  resetStatusCacheForTests();
+  t.after(() => resetStatusCacheForTests());
+  mockPool(t, { memberRole: null }); // no community_users row -> guest
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({ commandName: 'status', userId: 'guest-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies.length, 1);
+  assert.ok(!replies[0].content.includes("don't have access"), 'a guest must not be rejected');
+});
+
+test("a successful /status invocation calls recordShortcutHit('slash_command') exactly once (issue #995 acceptance criterion 5)", async (t) => {
+  resetStatusCacheForTests();
+  t.after(() => resetStatusCacheForTests());
+  const calls = mockPool(t, { memberRole: null });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction } = fakeInteraction({ commandName: 'status', userId: 'guest-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(shortcutHitCalls(calls).length, 1, '/status must record exactly one slash_command hit');
+});
+
+test(
+  'SECURITY: /status interpolates no caller-identifying or per-caller data — byte-identical for two ' +
+    'different callers given the same cache state (issue #995 acceptance criterion 6)',
+  async (t) => {
+    resetStatusCacheForTests();
+    t.after(() => resetStatusCacheForTests());
+    await pollAnthropicStatus(async () =>
+      JSON.stringify({
+        page: { id: 'abc' },
+        status: { indicator: 'major', description: 'Major System Outage' },
+        incidents: [
+          {
+            name: 'Elevated errors on the Messages API',
+            impact: 'major',
+            status: 'investigating',
+            updated_at: '2026-07-07T00:00:00.000Z',
+          },
+        ],
+      }),
+    );
+    mockPool(t, { memberRole: null });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+
+    const first = fakeInteraction({ commandName: 'status', userId: 'guest-1' });
+    await handleInteraction(first.interaction as never, adapterDeps(adapter));
+    const second = fakeInteraction({ commandName: 'status', userId: 'member-42' });
+    await handleInteraction(second.interaction as never, adapterDeps(adapter));
+
+    assert.equal(first.replies[0].content, second.replies[0].content);
+    assert.equal(
+      first.replies[0].content,
+      stripEmDashes(formatStatusMessage(getStatusCache(), Date.now())),
+      'must carry exactly formatStatusMessage output (post outbound-filter), no added fields',
+    );
+  },
+);
 
 // --- Criterion 7 / SECURITY criterion 14: /kb excludes auto-provenance -------
 
