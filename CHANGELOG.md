@@ -44,6 +44,13 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   to the underlying tool — no extra tier floor, matching `/kb`. Discord-only,
   with no `!events` WhatsApp equivalent, since the underlying event data
   itself only exists on Discord.
+- **`find_knowledge` (admin) — semantic knowledge search that returns entry
+  ids** (#1008): closes the gap where `list_knowledge` returns ids but can't
+  search, and `knowledge_search` searches but hides ids. Reuses the same
+  semantic search `knowledge_search` already calls, renders each hit's `#id`
+  alongside its match %, and — unlike `knowledge_search` — includes weak
+  matches so a loosely-remembered entry is still reachable, ready to pass
+  straight to `update_knowledge`/`delete_knowledge`/`merge_knowledge`.
 
 ## 2026-08-18
 

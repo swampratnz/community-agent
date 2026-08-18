@@ -469,7 +469,12 @@ memory**:
    verbatim), and an optional `provenance` filter narrows the browse to just
    one of those (issue #294) — the same trust signal `knowledge_search`
    already uses to decide quarantine, now visible to the one tool built for
-   browsing it. `merge_knowledge` (issue #886) is the consolidation step
+   browsing it. `find_knowledge` (issue #1008) is the semantic, id-returning
+   admin counterpart: it calls the same `searchKnowledge` `knowledge_search`
+   does (so it shares that tool's caller-scoped visibility, narrower than
+   `list_knowledge`'s unrestricted browse) but renders each hit's `#id` and
+   omits the relevance floor, closing the gap where the only id-returning
+   tool couldn't search and the only searching tool hid the id. `merge_knowledge` (issue #886) is the consolidation step
    `list_duplicate_knowledge`/`list_knowledge_conflicts` (#316/#330) both
    describe in their own tool text ("merge (`update_knowledge`) or retire
    (`delete_knowledge`)") but that this codebase never implemented until now:

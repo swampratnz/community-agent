@@ -22,6 +22,7 @@ export {
   formatKnowledgeCitationNote,
   KNOWLEDGE_TIE_MARGIN,
   formatKnowledgeSearchResults,
+  formatFoundKnowledge,
   formatKnowledgeTopics,
   formatInterestResults,
   formatProjectResults,
