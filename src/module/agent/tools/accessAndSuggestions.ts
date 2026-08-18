@@ -3,11 +3,12 @@ import type { Platform } from '@swampratnz/agent-base/platforms/types.js';
 import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
 import { sanitizeName } from '@swampratnz/agent-base/util/sanitizeName.js';
 import {
+  clearAccessRequest,
   listAccessRequests,
   listSuggestions,
   resolveSuggestion,
 } from '@swampratnz/agent-base/storage/repository.js';
-import { text, untrusted } from './helpers.js';
+import { platformArg, text, untrusted } from './helpers.js';
 import { notifySuggestionResolved } from './notify.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
@@ -15,7 +16,9 @@ export const accessAndSuggestionsTools = [
   defineTool({
     name: 'list_access_requests',
     description:
-      'List gated guests who have asked the bot for access — identity and request count only, never message content. Admin only.',
+      'List gated guests who have asked the bot for access — identity and request count only, never ' +
+      'message content. Resolve a row with add_member (grants access) or decline_access_request (clears ' +
+      'it without granting anything). Admin only.',
     minTier: 'admin',
     readOnlyHint: true,
     schema: { limit: z.number().optional().describe('Max entries (default 50)') },
@@ -41,6 +44,40 @@ export const accessAndSuggestionsTools = [
             })
             .join('\n'),
         ),
+      );
+    },
+  }),
+
+  defineTool({
+    name: 'decline_access_request',
+    description:
+      'Clear a pending access request without granting membership — the resolution path for a request an ' +
+      'admin does not want to approve (spam, a throwaway, no longer relevant). Confers no tier and no data ' +
+      'access; the requester loses nothing they had. Non-destructive (no CONFIRM needed) and instantly ' +
+      'reversible in the practical sense: a fresh request from the same identity simply re-queues. Audited. ' +
+      'Admin only.',
+    minTier: 'admin',
+    readOnlyHint: false,
+    schema: {
+      userId: z.string().min(1).describe('Platform user id of the pending requester'),
+      platform: platformArg,
+    },
+    handler: async (args, { caller, audited, resolveMemberTarget }) => {
+      assertAtLeast(caller.role, 'admin', 'decline_access_request');
+      const { platform, userId } = await resolveMemberTarget(args.userId, args.platform);
+      const { success, result } = await audited({
+        actionKind: 'decline_access_request',
+        targetUserId: userId,
+        params: { platform },
+        run: async () => {
+          const cleared = await clearAccessRequest(platform, userId);
+          if (!cleared) throw new Error(`No pending access request from ${userId} on ${platform}.`);
+          return 'declined';
+        },
+      });
+      return text(
+        success ? `Declined the access request from ${userId} on ${platform}.` : `Failed: ${result}`,
+        !success,
       );
     },
   }),

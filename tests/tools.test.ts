@@ -2948,7 +2948,8 @@ test('community_info: admin-tier reply stays byte-identical, never gains SUPER_A
     '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
     "- Curate the knowledge base: save a new knowledge entry, browse knowledge entries, semantically find a knowledge entry's id by what it says, edit a knowledge entry, delete a knowledge entry, or merge two entries together, and check for near-duplicate entries or conflicting entries\n" +
     "- Review knowledge candidates, accept a candidate or decline a candidate, track knowledge gaps (questions I couldn't answer), recurring question clusters, raw context digests, pull your own admin-digest snapshot on demand, get a review-queue roll-up of all five review queues at once, or check how quickly I've been answering members (response latency)\n" +
-    '- See who is waiting for access, or who has joined or left the server\n' +
+    '- See who is waiting for access, decline a pending access request without granting it, or see who ' +
+    'has joined or left the server\n' +
     "- Add a note about a member, review notes on a member, delete a note, or look up a member's history across conversations\n" +
     '- Set the community guidelines or the welcome message shown to new members\n' +
     '- Assign a Discord role, remove a Discord role, or list which roles are available to assign\n' +
@@ -3154,6 +3155,7 @@ const ADMIN_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__list_duplicate_knowledge', /near-duplicate entries/i],
   ['mcp__community__list_knowledge_conflicts', /conflicting entries/i],
   ['mcp__community__list_access_requests', /waiting for access/i],
+  ['mcp__community__decline_access_request', /decline a pending access request/i],
   ['mcp__community__add_member_note', /add a note about a member/i],
   ['mcp__community__list_member_notes', /review notes on a member/i],
   ['mcp__community__delete_member_note', /delete a note/i],
@@ -3254,10 +3256,12 @@ test('community_info: admin reply stays under a hard char cap, not a wall of tex
   // review added project_remove_member/project_unbind_here/project_archive
   // to the same admin line, and once more for that review's project_unarchive
   // clause (same line again, not a new bullet), and once more for issue
-  // #944's team_setup clause (same project line again, not a new bullet);
-  // bumped once more for issue #1008's find_knowledge clause (consolidated
-  // into the existing knowledge-base curation bullet, not a new bullet).
-  assert.ok(adminReply.length < 4410, `admin reply should stay short; was ${adminReply.length} chars`);
+  // #944's team_setup clause (same project line again, not a new bullet), and
+  // once more for issue #1006's decline_access_request clause (same
+  // access-request line again, not a new bullet); bumped once more for issue
+  // #1008's find_knowledge clause (consolidated into the existing
+  // knowledge-base curation bullet, not a new bullet).
+  assert.ok(adminReply.length < 4470, `admin reply should stay short; was ${adminReply.length} chars`);
 });
 
 test('SECURITY: community_info member-tier and guest-tier replies never name an admin/super_admin-only tool or contain any ADMIN_CAPABILITIES_TEXT-unique line (issue #367, issue #311)', async () => {
@@ -3395,10 +3399,11 @@ test('community_info: super_admin reply stays under a hard char cap, not a wall 
   // again for #927's project_remove_member/project_unbind_here/
   // project_archive clauses added in PR review, and once more for that
   // review's project_unarchive clause, and once more alongside the admin cap
-  // for issue #944's team_setup clause; bumped once more alongside the admin
-  // cap for issue #1008's find_knowledge clause.
+  // for issue #944's team_setup clause, and once more alongside the admin cap
+  // for issue #1006's decline_access_request clause; bumped once more
+  // alongside the admin cap for issue #1008's find_knowledge clause.
   assert.ok(
-    superAdminReply.length < 5060,
+    superAdminReply.length < 5120,
     `super_admin reply should stay short; was ${superAdminReply.length} chars`,
   );
 });
@@ -12593,6 +12598,144 @@ test(
     );
 
     await clearAccessRequest('discord', guest);
+  },
+);
+
+// decline_access_request (issue #1006): the missing resolution counterpart to
+// list_access_requests for a pending row an admin does NOT want to approve —
+// clears it via clearAccessRequest, never upsertMember, so the requester
+// gains no tier and no data-scope change. Same shape (userId + platform) as
+// add_member/remove_member, so it goes through resolveMemberTarget, which is
+// why the target id below is a digit-only Discord-snowflake-shaped string
+// rather than a `${RUN}-...` label (normalizeMemberId rejects the latter).
+function declineAccessRequestHandler(role: 'member' | 'admin' = 'admin', userId = 'admin-decline-access') {
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId,
+      userName: 'Admin',
+      role,
+      conversationId: 'convo-decline-access',
+    },
+    stubAdapter(async () => {}),
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: { userId: string; platform?: 'discord' | 'whatsapp' }) => Promise<{
+            content: Array<{ type: string; text: string }>;
+            isError?: boolean;
+          }>;
+        }
+      >;
+    }
+  )._registeredTools['decline_access_request'];
+}
+
+test(
+  'decline_access_request clears the pending row, writes exactly one admin_audit row with actionKind decline_access_request, and a fresh request from the same identity re-queues (issue #1006 acceptance criteria #1-3)',
+  { skip },
+  async () => {
+    const admin = `${RUN}-decline-access-admin`;
+    const guest = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    await clearAccessRequest('discord', guest);
+    await recordAccessRequest({ platform: 'discord', userId: guest, userName: 'tester' });
+
+    const result = await declineAccessRequestHandler('admin', admin).handler({
+      userId: guest,
+      platform: 'discord',
+    });
+    assert.equal(result.isError, false);
+    assert.match(result.content[0]?.text ?? '', /Declined/);
+
+    const rowsAfter = await listAccessRequests(200);
+    assert.ok(
+      !rowsAfter.some((r) => r.userId === guest),
+      'the declined identity must no longer appear in list_access_requests',
+    );
+
+    const { rows: auditRows } = await pool.query(
+      `SELECT count(*)::int AS n FROM admin_audit
+        WHERE action_kind = 'decline_access_request' AND actor_user_id = $1 AND params->>'platform' = 'discord'`,
+      [admin],
+    );
+    assert.equal(Number(auditRows[0].n), 1, 'exactly one admin_audit row is written for this decline');
+
+    // Decline is not a persistent block — a fresh request from the same
+    // identity simply re-queues, unchanged clearAccessRequest semantics.
+    await recordAccessRequest({ platform: 'discord', userId: guest, userName: 'tester' });
+    const rowsRequeued = await listAccessRequests(200);
+    assert.ok(
+      rowsRequeued.some((r) => r.userId === guest),
+      'a fresh request from the same identity must re-insert a new row',
+    );
+
+    await clearAccessRequest('discord', guest);
+    await pool.query(
+      `DELETE FROM admin_audit WHERE action_kind = 'decline_access_request' AND actor_user_id = $1`,
+      [admin],
+    );
+  },
+);
+
+test('decline_access_request reports failure for an identity with no pending request', { skip }, async () => {
+  const admin = `${RUN}-decline-access-unknown-admin`;
+  const guest = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+  await clearAccessRequest('discord', guest);
+
+  const result = await declineAccessRequestHandler('admin', admin).handler({
+    userId: guest,
+    platform: 'discord',
+  });
+  assert.equal(result.isError, true);
+  assert.match(result.content[0]?.text ?? '', /^Failed/);
+});
+
+test(
+  'SECURITY: decline_access_request rejects a caller below admin tier before any DB read/write, and a successful admin decline confers no role (issue #1006 acceptance criterion #5)',
+  { skip },
+  async () => {
+    const admin = `${RUN}-decline-access-tier-admin`;
+    const guest = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    await clearAccessRequest('discord', guest);
+    await recordAccessRequest({ platform: 'discord', userId: guest, userName: 'tester' });
+
+    const memberTool = declineAccessRequestHandler('member', `${RUN}-decline-access-tier-member`);
+    await assert.rejects(
+      () => memberTool.handler({ userId: guest, platform: 'discord' }),
+      /Permission denied/,
+    );
+
+    const stillPending = await listAccessRequests(200);
+    assert.ok(
+      stillPending.some((r) => r.userId === guest),
+      'a below-tier caller must not have mutated the access request row',
+    );
+    assert.equal(
+      await getMemberRole('discord', guest),
+      null,
+      'a below-tier caller must not have granted any role either',
+    );
+
+    const result = await declineAccessRequestHandler('admin', admin).handler({
+      userId: guest,
+      platform: 'discord',
+    });
+    assert.equal(result.isError, false);
+
+    assert.equal(
+      await getMemberRole('discord', guest),
+      null,
+      'a successful decline_access_request must confer no tier — it must never call upsertMember',
+    );
+
+    await clearAccessRequest('discord', guest);
+    await pool.query(
+      `DELETE FROM admin_audit WHERE action_kind = 'decline_access_request' AND actor_user_id = $1`,
+      [admin],
+    );
   },
 );
 

@@ -28,6 +28,15 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-08-19
 
 ### Added
+- **`decline_access_request` — admins can now close out an unwanted access
+  request without granting it** (#1006): previously the only resolution path
+  for a pending gated-access request was `add_member`, so a spam signup, an
+  obvious throwaway, or a request an admin simply judged not worth granting
+  had no way to stop nagging the weekly digest short of granting membership
+  to someone the admin didn't want to admit. `decline_access_request` clears
+  the request (same underlying effect `add_member` already had as a side
+  effect) without conferring any tier or data access — a fresh request from
+  the same person simply re-queues later if they ask again.
 - **`/events` (Discord) — a zero-wait shortcut listing upcoming Discord
   scheduled meetups/events** (#1004): the same deterministic answer the
   `list_events` chat tool gives (id, name, start/end time, location,

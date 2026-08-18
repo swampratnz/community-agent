@@ -3870,20 +3870,29 @@ often.
   `access_requests` holds the display name and platform user id of anyone who
   addressed the bot in gated mode without being a member — and on WhatsApp the
   user id *is* the phone number, so this is the single most sensitive
-  non-member record the system keeps. A row leaves the table three ways now:
-  deleted on approval (`add_member` -> `clearAccessRequest`), erased on
-  `forget_me`/`purge_user_data` (delegating to that same single deletion path,
-  inside the purge transaction), or age-purged once the requester has gone
-  quiet for `ACCESS_REQUEST_RETENTION_DAYS` (default disabled; a 30-day floor
-  when enabled). The retention clock runs off `last_requested_at`, not
+  non-member record the system keeps. A row leaves the table four ways now:
+  deleted on approval (`add_member` -> `clearAccessRequest`), deleted on an
+  explicit admin decline (`decline_access_request`, issue #1006 — same
+  `clearAccessRequest` call, but standalone and audited
+  (`actionKind: 'decline_access_request'`) rather than a side effect of
+  granting membership, so an admin can close out an unwanted request — spam,
+  a throwaway, no longer relevant — without either granting access or leaving
+  it to nag the digest forever), erased on `forget_me`/`purge_user_data`
+  (delegating to that same single deletion path, inside the purge
+  transaction), or age-purged once the requester has gone quiet for
+  `ACCESS_REQUEST_RETENTION_DAYS` (default disabled; a 30-day floor when
+  enabled). The retention clock runs off `last_requested_at`, not
   `first_requested_at`, so an open request from someone still asking is never
   swept — only abandoned ones. Erasing a pending request is safe where erasing
   a `blocked_users` row would not be: the queue entry grants nothing and gates
   nothing, and a purged requester who asks again simply reappears as a fresh
-  request (and re-triggers the first-time-only admin alert, by design).
-  Enabling retention does bound `list_access_requests`/the admin digest's
-  oldest-pending age from above — anything older has been deleted — which is
-  why the floor is generous rather than tight.
+  request (and re-triggers the first-time-only admin alert, by design) —
+  `decline_access_request` is explicitly not a block, only a same-semantics
+  early clear of today's ask; a fresh request from the same identity re-queues
+  exactly as it does after any other clear. Enabling retention does bound
+  `list_access_requests`/the admin digest's oldest-pending age from above —
+  anything older has been deleted — which is why the floor is generous rather
+  than tight.
 - **forget_me/purge scope**: deletes the user's messages, replies to them,
   knowledge entries *sourced from* them, content reports *they submitted
   as reporter*, their response-style preference, their auto-moderation
