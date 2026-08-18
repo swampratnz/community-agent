@@ -1,5 +1,8 @@
 import { atLeast } from '@swampratnz/agent-base/auth/rbac.js';
+import { config } from '@swampratnz/agent-base/config.js';
+import { countActiveWarnings } from '@swampratnz/agent-base/storage/repository.js';
 import { formatInterestResults, formatProjectResults, LIST_PROJECTS_DEFAULT_LIMIT } from './agent/tools.js';
+import { formatMyWarningsText } from './agent/tools/selfService.js';
 import { TEXT_COMMAND_UNMATCHED, type RegisteredCommand } from '@swampratnz/agent-base/commands/registry.js';
 import { formatStatusMessage, getStatusCache } from './status/anthropicStatus.js';
 
@@ -132,6 +135,27 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
     whatsapp: async (text) => {
       if (!/^!status$/i.test(text)) return TEXT_COMMAND_UNMATCHED;
       return formatStatusMessage(getStatusCache(), Date.now());
+    },
+  },
+  {
+    // Anchored, argument-rejecting matcher (issue #1000 SECURITY criterion
+    // 6): `!warnings anything` falls through to TEXT_COMMAND_UNMATCHED rather
+    // than matching, so no message-supplied identifier can ever reach
+    // countActiveWarnings — the identity passed below is always the
+    // adapter-resolved (msg.platform, msg.userId).
+    name: 'warnings',
+    platforms: ['discord', 'whatsapp'],
+    whatsapp: async (text, msg, role) => {
+      if (!/^!warnings$/i.test(text)) return TEXT_COMMAND_UNMATCHED;
+      if (!atLeast(role, 'member')) return null;
+      const limit = config.moderation.strikeLimit;
+      const windowDays = config.moderation.strikeWindowDays;
+      const active = await countActiveWarnings(msg.platform, msg.userId);
+      const windowed =
+        active > 0 && active < limit && windowDays
+          ? await countActiveWarnings(msg.platform, msg.userId, windowDays)
+          : null;
+      return formatMyWarningsText(active, limit, windowed);
     },
   },
 ];

@@ -13,6 +13,31 @@ import {
 import { formatRelativeAge, PROJECT_NOTE_RETENTION_NOTICE, text, truncateForEcho } from './helpers.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
+/**
+ * Pure render for the caller's own active-warning state — the "one function,
+ * two entry points" the `my_warnings` tool handler and the `/warnings`/
+ * `!warnings` commands (issue #1000) share, so a command answer can never
+ * drift from what `my_warnings` itself would say for the same DB state.
+ * `windowed` is `null` whenever the windowed second read was skipped (no
+ * `strikeWindowDays` configured, or `active` is 0/at-or-over `limit`, which
+ * both short-circuit to a fixed message that never mentions the window).
+ */
+export function formatMyWarningsText(active: number, limit: number, windowed: number | null): string {
+  if (active === 0) {
+    return 'You have no active warnings.';
+  }
+  if (active >= limit) {
+    return `You've reached the warning limit (${active}/${limit}). An admin can clear this.`;
+  }
+  let msg = `You have ${active} active warning${active === 1 ? '' : 's'} (limit ${limit}).`;
+  if (windowed !== null && windowed < active) {
+    msg +=
+      ` ${active - windowed} of these are old enough not to count toward a new mute, but any uncleared ` +
+      'warning still applies if you leave and rejoin.';
+  }
+  return msg;
+}
+
 export const selfServiceTools = [
   defineTool({
     name: 'forget_me',
@@ -160,22 +185,11 @@ export const selfServiceTools = [
       // When no window is configured the two counts are identical, so the
       // extra read is skipped.
       const active = await countActiveWarnings(caller.platform, caller.userId);
-      if (active === 0) {
-        return text('You have no active warnings.');
-      }
-      if (active >= limit) {
-        return text(`You've reached the warning limit (${active}/${limit}). An admin can clear this.`);
-      }
-      let msg = `You have ${active} active warning${active === 1 ? '' : 's'} (limit ${limit}).`;
-      if (windowDays) {
-        const windowed = await countActiveWarnings(caller.platform, caller.userId, windowDays);
-        if (windowed < active) {
-          msg +=
-            ` ${active - windowed} of these are old enough not to count toward a new mute, but any uncleared ` +
-            'warning still applies if you leave and rejoin.';
-        }
-      }
-      return text(msg);
+      const windowed =
+        active > 0 && active < limit && windowDays
+          ? await countActiveWarnings(caller.platform, caller.userId, windowDays)
+          : null;
+      return text(formatMyWarningsText(active, limit, windowed));
     },
   }),
 

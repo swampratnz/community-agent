@@ -63,6 +63,7 @@ const KNOWLEDGE_LOW_RATED_CAVEAT_TEXT = notice('knowledgeLowRatedCaveat');
 const { stripEmDashes } = await import('@swampratnz/agent-base/agent/outbound.js');
 const { formatStatusMessage, getStatusCache, pollAnthropicStatus, resetStatusCacheForTests } =
   await import('../src/module/status/anthropicStatus.js');
+const { formatMyWarningsText } = await import('../src/module/agent/tools/selfService.js');
 
 type Adapter = InstanceType<typeof DiscordAdapter>;
 
@@ -99,6 +100,10 @@ function mockPool(
     conflictExists?: boolean;
     /** `areKnowledgeEntriesLowRated`'s returned id set, as raw rows. */
     lowRatedIds?: number[];
+    /** `countActiveWarnings`'s unwindowed count (issue #1000). */
+    activeWarnings?: number;
+    /** `countActiveWarnings`'s windowed count, returned only when called with a `windowDays` bound param. */
+    windowedWarnings?: number;
   } = {},
 ): Array<{ sql: string; params: unknown[] }> {
   const calls: Array<{ sql: string; params: unknown[] }> = [];
@@ -145,6 +150,11 @@ function mockPool(
     }
     if (sql.includes('FROM language_prefs')) {
       return { rows: opts.languagePref ? [{ language: opts.languagePref }] : [], rowCount: 0 };
+    }
+    if (sql.includes('FROM member_warnings')) {
+      const windowDays = params[2];
+      const n = windowDays == null ? (opts.activeWarnings ?? 0) : (opts.windowedWarnings ?? 0);
+      return { rows: [{ n }], rowCount: 0 };
     }
     return { rows: [], rowCount: 0 };
   }) as typeof pool.query);
@@ -261,7 +271,7 @@ test('SECURITY: with DISCORD_SLASH_COMMANDS_ENABLED unset, no InteractionCreate 
 
 // --- Criterion 2 / SECURITY criterion 16: flag on, guild-scoped registration -
 
-test('with DISCORD_SLASH_COMMANDS_ENABLED=true, the four commands are registered guild-scoped on ClientReady, and an InteractionCreate listener IS attached (acceptance criterion 2)', async (t) => {
+test('with DISCORD_SLASH_COMMANDS_ENABLED=true, all commands are registered guild-scoped on ClientReady, and an InteractionCreate listener IS attached (acceptance criterion 2)', async (t) => {
   const flag = slashFlag();
   const was = flag.slashCommandsEnabled;
   flag.slashCommandsEnabled = true;
@@ -303,7 +313,7 @@ test('with DISCORD_SLASH_COMMANDS_ENABLED=true, the four commands are registered
     'SECURITY: registration must never be global (a call with no guild arg)',
   );
   const names = (commands as Array<{ name: string }>).map((c) => c.name).sort();
-  assert.deepEqual(names, ['digest', 'guidelines', 'kb', 'projects', 'status', 'whois']);
+  assert.deepEqual(names, ['digest', 'guidelines', 'kb', 'projects', 'status', 'warnings', 'whois']);
 });
 
 test("a slash-command registration failure is caught and logged, never thrown, matching backfillRoster/reconcileMutedRole's fire-and-forget shape", async (t) => {
@@ -321,10 +331,18 @@ test("a slash-command registration failure is caught and logged, never thrown, m
   assert.ok(warnLog.mock.calls.length >= 1, 'a registration failure must be logged, not swallowed silently');
 });
 
-test('buildSlashCommands defines exactly the six approved read-only commands, each with its expected required-ness', () => {
+test('buildSlashCommands defines exactly the seven approved read-only commands, each with its expected required-ness', () => {
   const commands = buildSlashCommands();
   const byName = new Map(commands.map((c) => [c.name, c]));
-  assert.deepEqual([...byName.keys()].sort(), ['digest', 'guidelines', 'kb', 'projects', 'status', 'whois']);
+  assert.deepEqual([...byName.keys()].sort(), [
+    'digest',
+    'guidelines',
+    'kb',
+    'projects',
+    'status',
+    'warnings',
+    'whois',
+  ]);
   const requiredness = (name: string) =>
     (byName.get(name) as { options?: Array<{ name: string; required?: boolean }> }).options?.find(
       (o) => o.name === 'query',
@@ -360,6 +378,11 @@ test('buildSlashCommands defines exactly the six approved read-only commands, ea
     (byName.get('status') as { options?: unknown[] }).options ?? [],
     [],
     '/status takes no options — a single deterministic cache read',
+  );
+  assert.deepEqual(
+    (byName.get('warnings') as { options?: unknown[] }).options ?? [],
+    [],
+    "/warnings takes no options — always the caller's own identity, never a model-supplied id (issue #1000)",
   );
 });
 
@@ -802,6 +825,96 @@ test(
     );
   },
 );
+
+// --- Issue #1000: /warnings ---------------------------------------------
+
+test(
+  '/warnings returns the same content my_warnings returns for the same DB state, across all four count ' +
+    'branches (issue #1000 approved acceptance criterion 1)',
+  async (t) => {
+    const originalLimit = config.moderation.strikeLimit;
+    const originalWindow = config.moderation.strikeWindowDays;
+    config.moderation.strikeLimit = 3;
+    t.after(() => {
+      config.moderation.strikeLimit = originalLimit;
+      config.moderation.strikeWindowDays = originalWindow;
+    });
+
+    // Branch 1: zero warnings.
+    config.moderation.strikeWindowDays = undefined;
+    mockPool(t, { memberRole: 'member', activeWarnings: 0 });
+    let adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    let { interaction, replies } = fakeInteraction({ commandName: 'warnings', userId: 'member-1' });
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+    assert.equal(replies[0].content, formatMyWarningsText(0, 3, null));
+
+    // Branch 2: under limit, no window configured.
+    mockPool(t, { memberRole: 'member', activeWarnings: 1 });
+    adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    ({ interaction, replies } = fakeInteraction({ commandName: 'warnings', userId: 'member-1' }));
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+    assert.equal(replies[0].content, formatMyWarningsText(1, 3, null));
+
+    // Branch 3: under limit, WITH a window, and some strikes have aged out
+    // (windowed < active).
+    config.moderation.strikeWindowDays = 30;
+    mockPool(t, { memberRole: 'member', activeWarnings: 2, windowedWarnings: 1 });
+    adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    ({ interaction, replies } = fakeInteraction({ commandName: 'warnings', userId: 'member-1' }));
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+    assert.equal(replies[0].content, formatMyWarningsText(2, 3, 1));
+    assert.match(replies[0].content, /old enough not to count toward a new mute/);
+
+    // Branch 4: at/over the limit.
+    config.moderation.strikeWindowDays = undefined;
+    mockPool(t, { memberRole: 'member', activeWarnings: 3 });
+    adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    ({ interaction, replies } = fakeInteraction({ commandName: 'warnings', userId: 'member-1' }));
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+    assert.equal(replies[0].content, formatMyWarningsText(3, 3, null));
+  },
+);
+
+test(
+  'SECURITY: a guest caller is rejected on /warnings without countActiveWarnings ever being invoked ' +
+    '(issue #1000 approved acceptance criterion 5)',
+  async (t) => {
+    const calls = mockPool(t, { memberRole: null });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'warnings', userId: 'guest-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].ephemeral, true);
+    assert.match(replies[0].content, /don't have access/i);
+    assert.ok(
+      !calls.some((c) => c.sql.includes('FROM member_warnings')),
+      'countActiveWarnings must never be invoked for a rejected caller',
+    );
+  },
+);
+
+test("a successful /warnings invocation calls recordShortcutHit('slash_command') exactly once (issue #1000)", async (t) => {
+  const calls = mockPool(t, { memberRole: 'member', activeWarnings: 0 });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction } = fakeInteraction({ commandName: 'warnings', userId: 'member-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(shortcutHitCalls(calls).length, 1, '/warnings must record exactly one slash_command hit');
+});
+
+test('SECURITY: recordShortcutHit is never called on the NOT_AUTHORIZED_TEXT branch for /warnings (issue #1000)', async (t) => {
+  const calls = mockPool(t, { memberRole: null });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({ commandName: 'warnings', userId: 'guest-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.match(replies[0].content, /don't have access/i, 'sanity check: /warnings was actually denied');
+  assert.equal(shortcutHitCalls(calls).length, 0, 'an auth-denied reply must never record a shortcut hit');
+});
 
 // --- Criterion 7 / SECURITY criterion 14: /kb excludes auto-provenance -------
 
