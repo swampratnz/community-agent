@@ -3264,7 +3264,8 @@ test('SECURITY: community_info for a WhatsApp caller with whatsappTextCommandsEn
         '- `!projects [query]` — browse the project showcase\n' +
         '- `!guidelines` — community guidelines\n' +
         "- `!digest` — this week's digest\n" +
-        '- `!status` — check for a known Anthropic outage',
+        '- `!status` — check for a known Anthropic outage\n' +
+        '- `!warnings` — your own active warning count',
       'the appended block must be exactly the fixed literal, never caller- or model-composed text',
     );
   } finally {
@@ -19774,6 +19775,57 @@ test(
     assert.equal(result.isError, false);
     assert.match(output, /1 active warning \(limit 3\)/);
     assert.doesNotMatch(output, /reached the warning limit/i);
+  },
+);
+
+test(
+  'my_warnings reports the aged-out-of-window count as a caveat, never as "no active warnings", when a ' +
+    'strike window is configured (issue #1000 approved acceptance criterion 1 windowed sub-branch)',
+  { skip },
+  async () => {
+    const userId = `${MY_WARNINGS_HANDLER_USER}-windowed`;
+    await addWarning({
+      platform: 'whatsapp',
+      userId,
+      reason: 'aged',
+      excerpt: null,
+      source: 'auto',
+      issuedBy: null,
+    });
+    await addWarning({
+      platform: 'whatsapp',
+      userId,
+      reason: 'fresh',
+      excerpt: null,
+      source: 'auto',
+      issuedBy: null,
+    });
+    await pool.query(
+      `UPDATE member_warnings SET created_at = now() - interval '31 days'
+        WHERE platform = $1 AND user_id = $2 AND reason = $3`,
+      ['whatsapp', userId, 'aged'],
+    );
+
+    const originalWindow = config.moderation.strikeWindowDays;
+    config.moderation.strikeWindowDays = 30;
+    try {
+      const result = await myWarningsHandler(userId).handler();
+      const output = result.content[0]?.text ?? '';
+
+      assert.equal(result.isError, false);
+      assert.match(
+        output,
+        /2 active warnings \(limit 3\)/,
+        'the UNWINDOWED count still governs the headline',
+      );
+      assert.match(
+        output,
+        /1 of these are old enough not to count toward a new mute/,
+        'the windowed sub-branch must state exactly how many have aged out',
+      );
+    } finally {
+      config.moderation.strikeWindowDays = originalWindow;
+    }
   },
 );
 

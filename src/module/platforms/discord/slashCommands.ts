@@ -6,8 +6,10 @@ import { atLeast, toolsForRole } from '@swampratnz/agent-base/auth/rbac.js';
 import { getCommunityGuidelines, getCommunityGuidelinesMi } from '../../storage/policies.js';
 import { buildMemberDigestContent } from '../../memberDigest.js';
 import { formatStatusMessage, getStatusCache } from '../../status/anthropicStatus.js';
+import { formatMyWarningsText } from '../../agent/tools/selfService.js';
 import {
   areKnowledgeEntriesLowRated,
+  countActiveWarnings,
   getLanguagePreference,
   hasConflictAmongIds,
   listOwnProjects,
@@ -277,6 +279,35 @@ async function handleStatus(interaction: ChatInputCommandInteraction, deps: Slas
 }
 
 /**
+ * `my_warnings` is structurally in MEMBER_TOOLS but adds its own runtime
+ * floor (`minTier: 'member'`), same shape as `/digest`/`/whois`/`/projects`
+ * above — mirrored here via `toolsForRole` + `atLeast`. No options: always
+ * the caller's own identity, never a model-/interaction-supplied id (issue
+ * #1000).
+ */
+async function handleWarnings(
+  interaction: ChatInputCommandInteraction,
+  deps: SlashCommandDeps,
+): Promise<void> {
+  await deferEphemeral(interaction);
+  const role = await resolveRole('discord', interaction.user.id);
+  if (!toolsForRole(role, 'discord').includes('mcp__community__my_warnings') || !atLeast(role, 'member')) {
+    await replyEphemeral(interaction, NOT_AUTHORIZED_TEXT, deps);
+    return;
+  }
+  const limit = config.moderation.strikeLimit;
+  const windowDays = config.moderation.strikeWindowDays;
+  const active = await countActiveWarnings('discord', interaction.user.id);
+  const windowed =
+    active > 0 && active < limit && windowDays
+      ? await countActiveWarnings('discord', interaction.user.id, windowDays)
+      : null;
+  const message = formatMyWarningsText(active, limit, windowed);
+  recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
+  await replyEphemeral(interaction, message, deps);
+}
+
+/**
  * Bind each registry entry's Discord half (registration JSON + handler).
  *
  * Called from `createConfiguredAdapters()`, NOT at module scope. Binding
@@ -365,5 +396,13 @@ export function bindCommunitySlashCommands(): void {
         .setDescription('Check whether Anthropic has a known service incident right now.')
         .toJSON(),
     handle: handleStatus,
+  });
+  bindDiscordCommand('warnings', {
+    build: () =>
+      new SlashCommandBuilder()
+        .setName('warnings')
+        .setDescription('Check your own active auto-moderation warning count.')
+        .toJSON(),
+    handle: handleWarnings,
   });
 }
