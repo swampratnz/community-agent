@@ -2608,14 +2608,15 @@ the full security posture and its test references.
 
 ## Discord slash commands (issue #744)
 
-`DISCORD_SLASH_COMMANDS_ENABLED` (off by default) registers five read-only,
+`DISCORD_SLASH_COMMANDS_ENABLED` (off by default) registers seven read-only,
 zero-model-call Discord application commands — `/kb <query>`,
-`/whois <query>`, `/projects [query]`, `/guidelines`, `/digest` — the
-discoverable, per-command generalisation of the knowledge shortcut (see "Known
-cost/latency characteristic" below): each answers a common lookup with a
-deterministic repository read instead of a full `query()` turn, and Discord's
-command picker surfaces them where a member would otherwise have to guess a
-phrase close enough to trigger a shortcut or address the bot at all.
+`/whois <query>`, `/projects [query]`, `/guidelines`, `/digest`, `/status`
+(issue #995), `/warnings` (issue #1000) — the discoverable, per-command
+generalisation of the knowledge shortcut (see "Known cost/latency
+characteristic" below): each answers a common lookup with a deterministic
+repository read instead of a full `query()` turn, and Discord's command
+picker surfaces them where a member would otherwise have to guess a phrase
+close enough to trigger a shortcut or address the bot at all.
 
 **The mechanism is the package's; the commands are this module's.** The two
 Discord-client hooks — `registerSlashCommands` and `handleInteraction` — live
@@ -2670,8 +2671,13 @@ has no such extra floor, so `/kb` is reachable by a guest exactly like the
 chat-path tool is — this is what "derived from `toolsForRole`, not a
 hardcoded tier" means per command, not a uniform floor across all three.
 `/guidelines` has no tier gate at all, matching the `community_guidelines`
-tool. A caller who fails a gate gets an ephemeral rejection and the
-underlying repository function is never called.
+tool. `/status` also has no tier gate (issue #995) — it reveals nothing about
+this community, only Anthropic's own public status page. `/warnings` (issue
+#1000) mirrors `/whois`/`/projects`: gates on `toolsForRole(role,
+'discord').includes('mcp__community__my_warnings')` plus `atLeast(role,
+'member')`, the same runtime floor `my_warnings`'s own handler applies. A
+caller who fails a gate gets an ephemeral rejection and the underlying
+repository function is never called.
 
 Every handler's first call, before role resolution or any other async work,
 is `interaction.deferReply({ flags: MessageFlags.Ephemeral })`. Discord
@@ -2726,9 +2732,17 @@ chat path. `/kb` passes the caller's real `(platform, conversationId)` into
 `searchKnowledge`, so a slash command can never widen a caller's knowledge
 read-scope beyond what the chat path already grants them.
 
-All four replies are ephemeral (`MessageFlags.Ephemeral`) — visible only to
+Every reply is ephemeral (`MessageFlags.Ephemeral`) — visible only to
 the caller, a privacy improvement over `/whois`/`/projects`' chat-path
-equivalent (posted in-channel today).
+equivalent (posted in-channel today); for `/warnings` this matters more than
+for any other command in the family, since a member's warning count is the
+one piece of content here genuinely sensitive to expose in a public channel
+(issue #1000). `/warnings` reuses `my_warnings`' own render — the exported
+`formatMyWarningsText(active, limit, windowed)` from `agent/tools/
+selfService.ts` — so the command answer can never drift from what the tool
+itself would say for the same DB state; `handleWarnings` calls
+`countActiveWarnings('discord', interaction.user.id)` directly (the same
+package export the tool imports), never through the tool/model.
 
 **`/guidelines` deliberately does not serve the internal `GUIDELINES` block**
 from `agent/systemPrompt.ts` — despite that block being what the originating
@@ -2753,22 +2767,23 @@ command-picker UI to register these against, so it instead gets a
 literal-prefix text-command equivalent — see "WhatsApp text commands" below
 (issue #859). `shortcut_hits` tracking of slash-command usage (issue #863):
 every successful invocation of `/kb`, `/whois`, `/projects`, `/guidelines`,
-or `/digest` records one `slash_command` `shortcut_hits` row (an aggregate
-per-mechanism count, not broken down by command name, matching the
-granularity of the four original kinds from issue #440), so `usage_stats`'s
-"Shortcuts fired" line now includes this cost-avoidance path in its total
-and its `slash-command N` breakdown. An auth-denied reply records nothing,
-so the counter can never be used to infer auth-denied probe volume. All
-four underlying tools remain reachable via chat on every platform
-regardless of either flag.
+`/digest`, `/status`, or `/warnings` records one `slash_command`
+`shortcut_hits` row (an aggregate per-mechanism count, not broken down by
+command name, matching the granularity of the four original kinds from issue
+#440), so `usage_stats`'s "Shortcuts fired" line now includes this
+cost-avoidance path in its total and its `slash-command N` breakdown. An
+auth-denied reply records nothing, so the counter can never be used to infer
+auth-denied probe volume. Every underlying tool remains reachable via chat on
+every platform regardless of either flag.
 
 ## WhatsApp text commands (issue #859)
 
 `WHATSAPP_TEXT_COMMANDS_ENABLED` (off by default) is the WhatsApp counterpart
 to the Discord slash commands above, re-keyed for a platform with no native
 command-picker UI: a trimmed, case-insensitive WhatsApp message beginning
-`!whois [query]`, `!projects [query]`, `!guidelines`, or `!digest` is served
-by the same deterministic, zero-`query()`-call path, checked in
+`!whois [query]`, `!projects [query]`, `!guidelines`, `!digest`, `!status`
+(issue #995), or `!warnings` (issue #1000) is served by the same
+deterministic, zero-`query()`-call path, checked in
 `Router.handle()` (`tryWhatsAppTextCommand`) alongside the other router-level
 shortcuts (the knowledge shortcut, ack shortcut, etc.). `!kb` is deliberately
 not added — `KNOWLEDGE_SHORTCUT_ENABLED` already gives WhatsApp an implicit,
@@ -2783,10 +2798,16 @@ commands and chat-path tools call (`searchMemberInterests`/
 `searchProjects`/`listRecentProjects`/`formatProjectResults`,
 `getCommunityGuidelines`/`getCommunityGuidelinesMi`,
 `buildMemberDigestContent`), injectable on `Router` the same way
-`tryKnowledgeShortcut`'s `searchKnowledgeForShortcut` already is. Tier floors
-mirror the Discord side exactly: `!whois`, `!projects`, `!digest` require
-`atLeast(role, 'member')` (the same runtime floor each tool's own handler
-applies); `!guidelines` has no tier gate, matching `community_guidelines`.
+`tryKnowledgeShortcut`'s `searchKnowledgeForShortcut` already is. `!status`
+and `!warnings` are the two exceptions — like their Discord counterparts they
+call `formatStatusMessage`/`getStatusCache` and
+`countActiveWarnings`/`formatMyWarningsText` directly rather than through an
+injected `Router` dependency (the `status`-command precedent issue #1000's
+adversarial review cited to justify `!warnings` needing no base `deps` seam
+change). Tier floors mirror the Discord side exactly: `!whois`, `!projects`,
+`!digest`, `!warnings` require `atLeast(role, 'member')` (the same runtime
+floor each tool's own handler applies); `!guidelines` and `!status` have no
+tier gate, matching `community_guidelines`/`check_status`.
 
 A bare `!whois` (no query, issue #889) mirrors `who_is_into`'s/`/whois`'s own
 no-argument self-match: it looks up the caller's own published
@@ -2818,7 +2839,8 @@ cost. WhatsApp has no ephemeral concept — a bespoke denial posted in a group
 would out an ineligible caller's tier to everyone else in it, a probing
 vector Discord's design never had to consider. So on a gate failure (an
 unrecognised prefix, the wrong platform, or a sub-member-tier caller on
-`!whois`/`!projects`/`!digest`), `tryWhatsAppTextCommand` returns `null` and
+`!whois`/`!projects`/`!digest`/`!warnings`), `tryWhatsAppTextCommand` returns
+`null` and
 the message falls through to the normal message-handling path exactly as if
 the `!`-prefixed text weren't recognised at all — never a distinguishing
 reply, mirroring the existing shortcuts' fallthrough-on-miss pattern rather
@@ -2836,7 +2858,7 @@ unmetered read path.
 identical fix for Discord slash commands): the shared `sendWhatsAppTextCommand`
 send path records one `whatsapp_text_command` `shortcut_hits` row per served
 reply — a fixed string literal, never derived from the WhatsApp message text —
-so all four commands are covered from this one call site with no per-command
+so every command is covered from this one call site with no per-command
 wiring. `usage_stats`'s "Shortcuts fired" line includes it in the total and its
 own `whatsapp-text-command N` breakdown, distinct from Discord's
 `slash-command N` (a new kind rather than reusing `slash_command`, which is

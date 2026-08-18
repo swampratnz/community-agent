@@ -27,6 +27,17 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 
 ## 2026-08-18
 
+### Added
+- **`/warnings` (Discord) and `!warnings` (WhatsApp) — a zero-wait shortcut
+  for your own active auto-moderation warning count** (#1000): the same
+  deterministic answer the `my_warnings` chat tool gives, without spending an
+  agent turn. `/warnings` is ephemeral (visible only to you), which matters
+  more here than for any other shortcut in this family since a warning count
+  is the one thing worth keeping out of a public channel. `!warnings` needs
+  member tier and `WHATSAPP_TEXT_COMMANDS_ENABLED`, matching `my_warnings`'
+  own gate; an unrecognised or argument-bearing `!warnings` message falls
+  through to ordinary chat, same as the other WhatsApp shortcuts.
+
 ### Fixed
 - **Weekly admin digest no longer silently vanishes when your WhatsApp window
   is closed.** (#998) If you're an admin on the WhatsApp Cloud path and your
