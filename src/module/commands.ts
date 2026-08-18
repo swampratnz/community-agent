@@ -1,7 +1,12 @@
 import { atLeast } from '@swampratnz/agent-base/auth/rbac.js';
 import { config } from '@swampratnz/agent-base/config.js';
 import { countActiveWarnings } from '@swampratnz/agent-base/storage/repository.js';
-import { formatInterestResults, formatProjectResults, LIST_PROJECTS_DEFAULT_LIMIT } from './agent/tools.js';
+import {
+  formatCommunityInfoText,
+  formatInterestResults,
+  formatProjectResults,
+  LIST_PROJECTS_DEFAULT_LIMIT,
+} from './agent/tools.js';
 import { formatMyWarningsText } from './agent/tools/selfService.js';
 import { TEXT_COMMAND_UNMATCHED, type RegisteredCommand } from '@swampratnz/agent-base/commands/registry.js';
 import { formatStatusMessage, getStatusCache } from './status/anthropicStatus.js';
@@ -14,8 +19,9 @@ import { formatStatusMessage, getStatusCache } from './status/anthropicStatus.js
  * `!`-text-command intercept (`router.ts`, via the registered list in
  * `commands/registry.ts`). Handlers were moved VERBATIM from their previous
  * homes; registry order is the previous `buildSlashCommands()` order (kb,
- * projects, whois, guidelines, digest), with `status` appended (issue #995),
- * which is also safe for the WhatsApp side because every `!` matcher is
+ * projects, whois, guidelines, digest), with `events` (issue #1004),
+ * `status` (issue #995), `warnings` (issue #1000), and `help` (issue #993)
+ * appended — also safe for the WhatsApp side because every `!` matcher is
  * anchored and mutually exclusive.
  *
  * The Discord halves are BOUND by `bindCommunitySlashCommands()`
@@ -159,6 +165,19 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
           ? await countActiveWarnings(msg.platform, msg.userId, windowDays)
           : null;
       return formatMyWarningsText(active, limit, windowed);
+    },
+  },
+  {
+    name: 'help',
+    platforms: ['discord', 'whatsapp'],
+    // No tier gate, matching community_info's own `minTier: 'member'` floor
+    // (a guest-reachable member-floor tool, same reasoning as `guidelines`
+    // above) — formatCommunityInfoText branches its own content on `role`,
+    // so the caller's actual tier is what determines what comes back, not a
+    // dispatch-time gate here.
+    whatsapp: async (text, msg, role) => {
+      if (!/^!help$/i.test(text)) return TEXT_COMMAND_UNMATCHED;
+      return formatCommunityInfoText(role, msg.platform);
     },
   },
 ];

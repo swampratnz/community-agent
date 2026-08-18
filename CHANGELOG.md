@@ -24,7 +24,6 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #963 #964 #965 #968 #971 #983 #988 #989
 -->
 
-
 ## 2026-08-19
 
 ### Added
@@ -71,6 +70,13 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   member tier and `WHATSAPP_TEXT_COMMANDS_ENABLED`, matching `my_warnings`'
   own gate; an unrecognised or argument-bearing `!warnings` message falls
   through to ordinary chat, same as the other WhatsApp shortcuts.
+- **`/help` (Discord) and `!help` (WhatsApp)** (#993) give `community_info`'s
+  capability rundown — "what can you do?" — a zero-cost command, like
+  `/guidelines`, `/digest`, and the other existing shortcuts. Asking the bot
+  directly still works exactly as before; this just adds a free, instant path
+  to the same answer, alongside `/kb`, `/whois`, `/projects`, `/guidelines`,
+  and `/digest`. `!help` needs the WhatsApp shortcuts flag enabled, same as
+  its siblings.
 
 ### Fixed
 - **Weekly admin digest no longer silently vanishes when your WhatsApp window
