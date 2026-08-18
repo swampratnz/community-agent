@@ -2738,7 +2738,8 @@ test('community_info: admin-tier reply stays byte-identical, never gains SUPER_A
     '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
     '- Curate the knowledge base: save a new knowledge entry, browse knowledge entries, edit a knowledge entry, delete a knowledge entry, or merge two entries together, and check for near-duplicate entries or conflicting entries\n' +
     "- Review knowledge candidates, accept a candidate or decline a candidate, track knowledge gaps (questions I couldn't answer), recurring question clusters, raw context digests, pull your own admin-digest snapshot on demand, get a review-queue roll-up of all five review queues at once, or check how quickly I've been answering members (response latency)\n" +
-    '- See who is waiting for access, or who has joined or left the server\n' +
+    '- See who is waiting for access, decline a pending access request without granting it, or see who ' +
+    'has joined or left the server\n' +
     "- Add a note about a member, review notes on a member, delete a note, or look up a member's history across conversations\n" +
     '- Set the community guidelines or the welcome message shown to new members\n' +
     '- Assign a Discord role, remove a Discord role, or list which roles are available to assign\n' +
@@ -3043,8 +3044,10 @@ test('community_info: admin reply stays under a hard char cap, not a wall of tex
   // review added project_remove_member/project_unbind_here/project_archive
   // to the same admin line, and once more for that review's project_unarchive
   // clause (same line again, not a new bullet), and once more for issue
-  // #944's team_setup clause (same project line again, not a new bullet).
-  assert.ok(adminReply.length < 4360, `admin reply should stay short; was ${adminReply.length} chars`);
+  // #944's team_setup clause (same project line again, not a new bullet), and
+  // once more for issue #1006's decline_access_request clause (same
+  // access-request line again, not a new bullet).
+  assert.ok(adminReply.length < 4420, `admin reply should stay short; was ${adminReply.length} chars`);
 });
 
 test('SECURITY: community_info member-tier and guest-tier replies never name an admin/super_admin-only tool or contain any ADMIN_CAPABILITIES_TEXT-unique line (issue #367, issue #311)', async () => {
@@ -3182,9 +3185,10 @@ test('community_info: super_admin reply stays under a hard char cap, not a wall 
   // again for #927's project_remove_member/project_unbind_here/
   // project_archive clauses added in PR review, and once more for that
   // review's project_unarchive clause, and once more alongside the admin cap
-  // for issue #944's team_setup clause.
+  // for issue #944's team_setup clause, and once more alongside the admin cap
+  // for issue #1006's decline_access_request clause.
   assert.ok(
-    superAdminReply.length < 5020,
+    superAdminReply.length < 5070,
     `super_admin reply should stay short; was ${superAdminReply.length} chars`,
   );
 });

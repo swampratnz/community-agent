@@ -51,7 +51,7 @@ export const accessAndSuggestionsTools = [
   defineTool({
     name: 'decline_access_request',
     description:
-      "Clear a pending access request without granting membership — the resolution path for a request an " +
+      'Clear a pending access request without granting membership — the resolution path for a request an ' +
       'admin does not want to approve (spam, a throwaway, no longer relevant). Confers no tier and no data ' +
       'access; the requester loses nothing they had. Non-destructive (no CONFIRM needed) and instantly ' +
       'reversible in the practical sense: a fresh request from the same identity simply re-queues. Audited. ' +
