@@ -28,6 +28,13 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-08-18
 
 ### Added
+- **Coaching for sharing a tip via `suggest_knowledge`.** (#1001) When Agent
+  Skills are enabled, sharing a hard-won answer or workaround now gets a
+  nudge toward a specific FAQ-style title and concrete content, a suggestion
+  to search first so an obvious existing tip doesn't get bounced, a plain
+  explanation that it goes to admin review rather than publishing
+  immediately, and a hand-off to `suggest_improvement` if what you actually
+  meant was a feature or bug idea.
 - **`/warnings` (Discord) and `!warnings` (WhatsApp) — a zero-wait shortcut
   for your own active auto-moderation warning count** (#1000): the same
   deterministic answer the `my_warnings` chat tool gives, without spending an

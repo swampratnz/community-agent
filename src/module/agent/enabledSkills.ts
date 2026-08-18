@@ -29,6 +29,7 @@ export const ENABLED_SKILLS = [
   'project-showcase',
   'claude-code-setup',
   'getting-started',
+  'knowledge-contribution',
 ] as const;
 
 /**
