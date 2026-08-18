@@ -2,24 +2,15 @@ name: CI retry
 
 # One free machine rerun for a failed CI run, before any agent gets involved.
 #
-# Evidence this class is real (2026-07-04): `npm ci` died with
-# `AggregateError [ETIMEDOUT]` reaching the npm registry on runs 28703072249
-# (PR #112 — a human had to push an empty "ci: retry" commit) and 28715457148
-# (a push to main), and a 16:34–18:04 UTC cluster of six zero-step
-# runner-provisioning failures (runner_id 0, logs 404) took out runs across
-# four workflows. All of these recover on a plain rerun; none need a code fix.
+# The mechanism, the evidence for a blind retry, and the staleness guard live
+# in .github/workflows/reusable-rerun-failed-run.yml — this file is the CI
+# half of the contract: the trigger, the attempt cap, and the payload facts.
 #
-# This intentionally does NOT inspect logs to classify the failure first: a
-# blind single retry costs one bounded CI run in the real-failure case, while
-# a classifier is another thing to maintain and another way to be wrong. The
-# division of labour downstream is explicit: pipeline-pr-autofix.yml only
-# engages from run_attempt >= 2, i.e. after this free retry has already been
-# spent, so a genuine failure flows attempt 1 (fail) → rerun (fail) → fix
-# agent → needs-human, and a flake costs zero agent tokens.
-#
-# Same mechanism and cap discipline as pipeline-build-retry.yml: `gh run
-# rerun --failed` re-runs only the failed jobs of the SAME run (run_attempt
-# increments), and the `< 2` guard means exactly one automatic retry.
+# The division of labour downstream is explicit: pipeline-pr-autofix.yml only
+# engages from run_attempt >= 2, i.e. after this free retry has been spent, so
+# a genuine failure flows attempt 1 (fail) → rerun (fail) → fix agent →
+# needs-human, and a flake costs zero agent tokens. Keep the `< 2` bound and
+# `max-attempts` equal — tests/reusableWorkflows.test.ts pins that.
 
 on:
   workflow_run:
@@ -35,30 +26,17 @@ jobs:
     if: >-
       github.event.workflow_run.conclusion == 'failure' &&
       github.event.workflow_run.run_attempt < 2
-    runs-on: ubuntu-latest
-    timeout-minutes: 5 # a single gh call; don't let a hung runner sit for the 6 h default
-    steps:
-      - name: Re-run the failed jobs once (unless the commit was superseded)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RUN_ID: ${{ github.event.workflow_run.id }}
-          FAILED_SHA: ${{ github.event.workflow_run.head_sha }}
-          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
-        run: |
-          set -euo pipefail
-          # Staleness guard (issue #223): `gh run rerun` re-enters CI's
-          # `cancel-in-progress` concurrency group as the newest arrival, so
-          # rerunning a commit that a newer push has already superseded would
-          # CANCEL the newer commit's in-flight CI (and a cancelled run is
-          # invisible to this loop and to autofix — the branch would end with
-          # no CI verdict). Only rerun if the failed run's commit is still the
-          # branch tip. A fork PR's branch isn't in this repo (404) — treat an
-          # unresolvable tip as "not stale" and rerun, matching the prior
-          # always-rerun behaviour for that case.
-          tip="$(gh api "repos/${{ github.repository }}/commits/${HEAD_BRANCH}" --jq '.sha' 2>/dev/null || echo "")"
-          if [ -n "$tip" ] && [ "$tip" != "$FAILED_SHA" ]; then
-            echo "CI run ${RUN_ID} was for ${FAILED_SHA}, but ${HEAD_BRANCH} is now at ${tip} — superseded, not rerunning (the newer commit has its own CI)."
-            exit 0
-          fi
-          echo "CI run ${RUN_ID} failed on attempt ${{ github.event.workflow_run.run_attempt }} — re-running failed jobs (one free retry)."
-          gh run rerun "${RUN_ID}" --failed -R "${{ github.repository }}"
+    uses: ./.github/workflows/reusable-rerun-failed-run.yml
+    permissions:
+      actions: write
+      contents: read
+    with:
+      run-id: ${{ github.event.workflow_run.id }}
+      run-attempt: ${{ github.event.workflow_run.run_attempt }}
+      max-attempts: 2
+      # Re-run only the failed jobs: a CI run's green jobs do not need redoing.
+      failed-jobs-only: true
+      # CI is keyed to a branch tip, so the staleness guard applies here.
+      staleness-branch: ${{ github.event.workflow_run.head_branch }}
+      head-sha: ${{ github.event.workflow_run.head_sha }}
+      label: CI run

@@ -3265,6 +3265,7 @@ test('SECURITY: community_info for a WhatsApp caller with whatsappTextCommandsEn
         '- `!projects [query]` — browse the project showcase\n' +
         '- `!guidelines` — community guidelines\n' +
         "- `!digest` — this week's digest\n" +
+        '- `!status` — check for a known Anthropic outage\n' +
         '- `!help` — this capability rundown',
       'the appended block must be exactly the fixed literal, never caller- or model-composed text',
     );

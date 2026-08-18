@@ -40,6 +40,9 @@ process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.ACCESS_MODE_WHATSAPP = 'open';
 process.env.WHATSAPP_TEXT_COMMANDS_ENABLED = 'true';
+// !status reads the same background-polled cache as check_status (issue
+// #995) — pollAnthropicStatus below needs this set to actually populate it.
+process.env.STATUS_CHECK_API_URL ??= 'https://status.claude.com/api/v2/summary.json';
 // Run-unique identity for the real-DB daily-budget assertion (mirrors
 // repeatQuestionShortcutRouter.test.ts's BUDGET_USER_ID rationale exactly:
 // countRepliesToUser aggregates outbound replies for an IDENTITY across the
@@ -61,6 +64,8 @@ await import('./support/registerPolicyKeys.js');
 const { Router } = await import('@swampratnz/agent-base/router.js');
 const { makeRouterDeps } = await import('../src/module/routerWiring.js');
 const { countRepliesToUser } = await import('@swampratnz/agent-base/storage/repository.js');
+const { formatStatusMessage, getStatusCache, pollAnthropicStatus, resetStatusCacheForTests } =
+  await import('../src/module/status/anthropicStatus.js');
 
 const RUN = `wa-cmd-router-${Date.now()}`;
 
@@ -223,7 +228,7 @@ test('config: WHATSAPP_TEXT_COMMANDS_ENABLED=true is reflected in config.behavio
 
 // --- Acceptance criterion 5 / regression: flag off is byte-identical --------
 
-test('SECURITY acceptance criterion 7: with the flag off, a !help message is NOT treated as a command — falls through to a normal turn like the other four commands (issue #993)', async (t) => {
+test('SECURITY: acceptance criterion 7 — with the flag off, a !help message is NOT treated as a command — falls through to a normal turn like the other four commands (issue #993)', async (t) => {
   const was = config.behaviour.whatsappTextCommandsEnabled;
   config.behaviour.whatsappTextCommandsEnabled = false;
   t.after(() => {
@@ -796,9 +801,45 @@ test("a successful !help invocation calls recordShortcutHit('whatsapp_text_comma
   assert.deepEqual(hits, ['whatsapp_text_command']);
 });
 
+// --- !status (issue #995, no tier gate) --------------------------------------
+
+test('!status returns the same content check_status returns for the same cache state, and has no tier gate (issue #995 acceptance criteria 1, 2, 3)', async (t) => {
+  resetStatusCacheForTests();
+  t.after(() => resetStatusCacheForTests());
+  await pollAnthropicStatus(async () =>
+    JSON.stringify({
+      page: { id: 'abc' },
+      status: { indicator: 'none', description: 'All Systems Operational' },
+      incidents: [],
+    }),
+  );
+  mockPoolRole(t, null); // no community_users row -> guest
+  const router = makeRouter({ runTurn: throwingRunTurn });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!status', userId: 'guest-1' }));
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, formatStatusMessage(getStatusCache(), Date.now()));
+});
+
+test('a bare "!statusx" (no space, unrecognised) is not matched as the !status command — anchored matcher (issue #995 acceptance criterion 2)', async (t) => {
+  mockPoolRole(t, 'member');
+  const router = makeRouter({});
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!statusx', userId: 'member-1' }));
+
+  assert.equal(sent[0].text, REAL_TURN_REPLY);
+});
+
 // --- shortcut_hits tracking (issue #874, acceptance criterion 1) ------------
 
-test('acceptance criterion 1: each of !whois/!projects/!guidelines/!digest records exactly one whatsapp_text_command shortcut hit via the shared send path', async (t) => {
+test('acceptance criterion 1: each of !whois/!projects/!guidelines/!digest/!status records exactly one whatsapp_text_command shortcut hit via the shared send path (issue #995 acceptance criterion 5)', async (t) => {
+  resetStatusCacheForTests();
+  t.after(() => resetStatusCacheForTests());
   mockPoolRole(t, 'member');
   const hits: string[] = [];
   const router = makeRouter({
@@ -820,12 +861,19 @@ test('acceptance criterion 1: each of !whois/!projects/!guidelines/!digest recor
   await trigger(makeMessage({ text: '!projects', userId: 'member-1' }));
   await trigger(makeMessage({ text: '!guidelines', userId: 'member-1' }));
   await trigger(makeMessage({ text: '!digest', userId: 'member-1' }));
+  await trigger(makeMessage({ text: '!status', userId: 'member-1' }));
 
-  assert.equal(sent.length, 4);
+  assert.equal(sent.length, 5);
   assert.deepEqual(
     hits,
-    ['whatsapp_text_command', 'whatsapp_text_command', 'whatsapp_text_command', 'whatsapp_text_command'],
-    'all four commands must record exactly one whatsapp_text_command hit each, via the shared send path',
+    [
+      'whatsapp_text_command',
+      'whatsapp_text_command',
+      'whatsapp_text_command',
+      'whatsapp_text_command',
+      'whatsapp_text_command',
+    ],
+    'all five commands must record exactly one whatsapp_text_command hit each, via the shared send path',
   );
 });
 

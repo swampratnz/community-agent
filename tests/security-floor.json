@@ -3,7 +3,7 @@
   "accessRequestAlert.router.test.ts": 3,
   "accessRequestAlert.test.ts": 4,
   "ackShortcutRouter.test.ts": 3,
-  "adminDigest.test.ts": 57,
+  "adminDigest.test.ts": 58,
   "adminLeverageAlert.test.ts": 3,
   "agentCoreFailureFallbacksMi.test.ts": 2,
   "agentCoreFailureFallbacksPlain.test.ts": 3,
@@ -71,7 +71,7 @@
   "discordAdapter.test.ts": 62,
   "discordEditModerationScan.test.ts": 3,
   "discordImageInput.test.ts": 7,
-  "discordSlashCommands.test.ts": 20,
+  "discordSlashCommands.test.ts": 21,
   "discordThreadArchive.test.ts": 2,
   "docsIngest.test.ts": 2,
   "embeddingHealthCheck.test.ts": 2,
@@ -124,6 +124,7 @@
   "repeatQuestionShortcutRouter.test.ts": 4,
   "replyRetractionDisabled.test.ts": 2,
   "replyRetractionRouter.test.ts": 1,
+  "reusableWorkflows.test.ts": 2,
   "reviewVerdict.test.ts": 5,
   "router.test.ts": 9,
   "routerInterceptChain.test.ts": 4,
@@ -150,6 +151,6 @@
   "whatsappCloudImageInputSystemPromptEnabled.test.ts": 1,
   "whatsappCloudVoiceInput.test.ts": 9,
   "whatsappImageInputSystemPromptEnabled.test.ts": 1,
-  "whatsappTextCommandsRouter.test.ts": 11,
+  "whatsappTextCommandsRouter.test.ts": 12,
   "whoIsIntoBrowseEmbedCount.test.ts": 1
 }

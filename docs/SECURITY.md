@@ -3646,10 +3646,29 @@ all-disconnected `queuePendingAlert` branch (where present) is unchanged —
 this only adds the connected-but-window-closed sibling case for these six
 producers. Deliberately still out of scope (named growth path, not bundled
 here): `router.ts`'s `notifyAccessRequest`/`alertSuperAdminsBudgetCheckFailed`,
-`agent/core.ts`'s usage-limit alert, `adminDigest.ts`'s per-admin digest send
-(a single `await`/`try`/`catch`, not a per-recipient loop), and `health.ts`'s
-`flushPendingAlerts` itself (queuing a flush-failure back into this same
-queue needs its own analysis to avoid a resend loop).
+`agent/core.ts`'s usage-limit alert, and `health.ts`'s `flushPendingAlerts`
+itself (queuing a flush-failure back into this same queue needs its own
+analysis to avoid a resend loop).
+
+Issue #998 closed the one remaining named gap: `adminDigest.ts`'s per-admin
+weekly digest send. The single `await adapter.sendDirectMessage(...)` call
+in `runAdminDigestOnce` is now wrapped in its own inner `try`/`catch` —
+a `WindowClosedError` with a truthy `adapter.queueForWindowReopen` calls
+`queueForWindowReopen(admin.platformUserId, message, 'low')` and falls
+through to `recordAdminDigestSent`/counts that admin as succeeded, exactly
+as a successful send would (matching #888's precedent that a queued send is
+treated the same as a delivered one). `'low'`, not `'system'` — this is a
+per-admin DM reachable at admin tier, matching #644's per-recipient DMs
+rather than #888's six super-admin-only broadcasts, so a flood of queued
+digests can never displace a `'system'`-priority alert queued for the same
+recipient. Any other rejection — a Discord/Baileys send failure, a
+non-`WindowClosedError` Cloud API error, or `WindowClosedError` when the
+adapter has no `queueForWindowReopen` — rethrows into the existing outer
+catch, unchanged: logged-and-dropped, `succeeded` not incremented
+(`SECURITY:` test pins recipient isolation: a different admin's unrelated
+failure produces zero queue calls and isn't recorded as sent). No new
+mechanism, no new queue — the same already-reviewed per-recipient queue,
+now fed by 6 producers instead of 5.
 
 ### `/healthz` endpoint
 Opt-in (`HEALTH_PORT` unset = no listening port at all — matches this

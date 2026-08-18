@@ -66,6 +66,7 @@ const WHATSAPP_TEXT_COMMANDS_TEXT =
   '- `!projects [query]` — browse the project showcase\n' +
   '- `!guidelines` — community guidelines\n' +
   "- `!digest` — this week's digest\n" +
+  '- `!status` — check for a known Anthropic outage\n' +
   '- `!help` — this capability rundown';
 
 /**

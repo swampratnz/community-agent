@@ -196,6 +196,9 @@ human merge**, and branch protection on `main` is the backstop. See
 - [Capability ideas](docs/CAPABILITY-IDEAS.md) — curated backlog of candidate
   directions (not commitments)
 - [Pipeline](docs/PIPELINE.md) — the self-improving research/review/build loops
+- [Pipeline playbook](docs/PIPELINE-PLAYBOOK.md) — how to adopt this
+  automation on ANOTHER repo: the assessment questions, the component
+  catalogue, a staged rollout, and the failure modes worth knowing first
 - [CI/CD](docs/CICD.md) — mechanical reference for every workflow, the CI gate
   and its check scripts, the mechanisms shared across the loops, and what is
   portable to another repo

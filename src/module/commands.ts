@@ -6,6 +6,7 @@ import {
   LIST_PROJECTS_DEFAULT_LIMIT,
 } from './agent/tools.js';
 import { TEXT_COMMAND_UNMATCHED, type RegisteredCommand } from '@swampratnz/agent-base/commands/registry.js';
+import { formatStatusMessage, getStatusCache } from './status/anthropicStatus.js';
 
 /**
  * The community command registry (agent-base plan §3 `commands` row): ONE
@@ -15,9 +16,9 @@ import { TEXT_COMMAND_UNMATCHED, type RegisteredCommand } from '@swampratnz/agen
  * `!`-text-command intercept (`router.ts`, via the registered list in
  * `commands/registry.ts`). Handlers were moved VERBATIM from their previous
  * homes; registry order is the previous `buildSlashCommands()` order (kb,
- * projects, whois, guidelines, digest), plus `help` appended at the end
- * (issue #993) — also safe for the WhatsApp side because every `!` matcher
- * is anchored and mutually exclusive.
+ * projects, whois, guidelines, digest), with `status` (issue #995) and
+ * `help` (issue #993) appended — also safe for the WhatsApp side because
+ * every `!` matcher is anchored and mutually exclusive.
  *
  * The Discord halves are BOUND by `bindCommunitySlashCommands()`
  * (slashCommands.ts), which `createConfiguredAdapters()` calls — never at
@@ -125,6 +126,17 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
       if (!atLeast(role, 'member')) return null;
       const message = await deps.buildDigestContentFn();
       return message ?? 'Nothing to report right now.';
+    },
+  },
+  {
+    // No tier gate — mirrors `guidelines` above: `check_status` reveals
+    // nothing about this community, only Anthropic's own public status page,
+    // so it must never be gated tighter than the tool it fronts (issue #995).
+    name: 'status',
+    platforms: ['discord', 'whatsapp'],
+    whatsapp: async (text) => {
+      if (!/^!status$/i.test(text)) return TEXT_COMMAND_UNMATCHED;
+      return formatStatusMessage(getStatusCache(), Date.now());
     },
   },
   {
