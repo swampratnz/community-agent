@@ -1,4 +1,6 @@
 import { atLeast } from '@swampratnz/agent-base/auth/tiers.js';
+import type { Tier } from '@swampratnz/agent-base/auth/tiers.js';
+import type { Platform } from '@swampratnz/agent-base/platforms/types.js';
 import { config } from '@swampratnz/agent-base/config.js';
 import { getCommunityGuidelines, getCommunityGuidelinesMi } from '../../storage/policies.js';
 import { getLanguagePreference } from '@swampratnz/agent-base/storage/repository.js';
@@ -63,7 +65,8 @@ const WHATSAPP_TEXT_COMMANDS_TEXT =
   '- `!whois <topic>` — find members into a topic\n' +
   '- `!projects [query]` — browse the project showcase\n' +
   '- `!guidelines` — community guidelines\n' +
-  "- `!digest` — this week's digest";
+  "- `!digest` — this week's digest\n" +
+  '- `!help` — this capability rundown';
 
 /**
  * Plain-language rundown of what an admin can additionally ask the bot to
@@ -122,6 +125,29 @@ const SUPER_ADMIN_CAPABILITIES_TEXT =
  */
 export const EVENTS_LIST_LIMIT = 10;
 
+/**
+ * Pure formatter behind `community_info` AND the `/help`/`!help` commands
+ * (issue #993) — factored out so the tool handler and both command entry
+ * points render byte-identical text for the same (role, platform), rather
+ * than each re-deriving the role/platform branching independently. Depends
+ * only on its arguments plus `config.behaviour.whatsappTextCommandsEnabled`
+ * (the same flag the tool handler already read) — never on caller identity
+ * beyond the resolved role.
+ */
+export function formatCommunityInfoText(role: Tier, platform: Platform): string {
+  const memberSegment =
+    platform === 'whatsapp' && config.behaviour.whatsappTextCommandsEnabled && atLeast(role, 'member')
+      ? `${MEMBER_CAPABILITIES_TEXT}\n${WHATSAPP_TEXT_COMMANDS_TEXT}`
+      : MEMBER_CAPABILITIES_TEXT;
+  if (role === 'super_admin') {
+    return `${memberSegment}\n${ADMIN_CAPABILITIES_TEXT}\n${SUPER_ADMIN_CAPABILITIES_TEXT}`;
+  }
+  if (role === 'admin') {
+    return `${memberSegment}\n${ADMIN_CAPABILITIES_TEXT}`;
+  }
+  return memberSegment;
+}
+
 export const infoTools = [
   defineTool({
     name: 'community_info',
@@ -132,21 +158,7 @@ export const infoTools = [
     minTier: 'member',
     readOnlyHint: true,
     schema: {},
-    handler: async (_args, { caller }) => {
-      const memberSegment =
-        caller.platform === 'whatsapp' &&
-        config.behaviour.whatsappTextCommandsEnabled &&
-        atLeast(caller.role, 'member')
-          ? `${MEMBER_CAPABILITIES_TEXT}\n${WHATSAPP_TEXT_COMMANDS_TEXT}`
-          : MEMBER_CAPABILITIES_TEXT;
-      if (caller.role === 'super_admin') {
-        return text(`${memberSegment}\n${ADMIN_CAPABILITIES_TEXT}\n${SUPER_ADMIN_CAPABILITIES_TEXT}`);
-      }
-      if (caller.role === 'admin') {
-        return text(`${memberSegment}\n${ADMIN_CAPABILITIES_TEXT}`);
-      }
-      return text(memberSegment);
-    },
+    handler: async (_args, { caller }) => text(formatCommunityInfoText(caller.role, caller.platform)),
   }),
 
   // Read-only, no arguments; returns the admin-set guidelines text verbatim,

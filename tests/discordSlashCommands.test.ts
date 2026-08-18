@@ -298,7 +298,7 @@ test('with DISCORD_SLASH_COMMANDS_ENABLED=true, the four commands are registered
     'SECURITY: registration must never be global (a call with no guild arg)',
   );
   const names = (commands as Array<{ name: string }>).map((c) => c.name).sort();
-  assert.deepEqual(names, ['digest', 'guidelines', 'kb', 'projects', 'whois']);
+  assert.deepEqual(names, ['digest', 'guidelines', 'help', 'kb', 'projects', 'whois']);
 });
 
 test("a slash-command registration failure is caught and logged, never thrown, matching backfillRoster/reconcileMutedRole's fire-and-forget shape", async (t) => {
@@ -316,10 +316,10 @@ test("a slash-command registration failure is caught and logged, never thrown, m
   assert.ok(warnLog.mock.calls.length >= 1, 'a registration failure must be logged, not swallowed silently');
 });
 
-test('buildSlashCommands defines exactly the five approved read-only commands, each with its expected required-ness', () => {
+test('buildSlashCommands defines exactly the six approved read-only commands, each with its expected required-ness', () => {
   const commands = buildSlashCommands();
   const byName = new Map(commands.map((c) => [c.name, c]));
-  assert.deepEqual([...byName.keys()].sort(), ['digest', 'guidelines', 'kb', 'projects', 'whois']);
+  assert.deepEqual([...byName.keys()].sort(), ['digest', 'guidelines', 'help', 'kb', 'projects', 'whois']);
   const requiredness = (name: string) =>
     (byName.get(name) as { options?: Array<{ name: string; required?: boolean }> }).options?.find(
       (o) => o.name === 'query',
@@ -350,6 +350,11 @@ test('buildSlashCommands defines exactly the five approved read-only commands, e
     (byName.get('digest') as { options?: unknown[] }).options ?? [],
     [],
     '/digest takes no options — always the current on-demand snapshot, never a windowed query',
+  );
+  assert.deepEqual(
+    (byName.get('help') as { options?: unknown[] }).options ?? [],
+    [],
+    '/help takes no options — the reply is fully determined by the caller role',
   );
 });
 
@@ -1235,6 +1240,98 @@ test('SECURITY: /digest never wraps its reply in untrusted() — unlike communit
     '/digest must render buildMemberDigestContent() plain, never quarantined via untrusted()',
   );
   assert.match(replies[0].content, /MCP server auth/);
+});
+
+// --- /help (issue #993): zero-cost command counterpart to community_info -----
+
+test('/help has no tier gate — served even for a guest caller, mirroring /guidelines (issue #993 authoritative criterion 2)', async (t) => {
+  mockPool(t, { memberRole: null });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({ commandName: 'help', userId: 'guest-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].ephemeral, true);
+  assert.ok(!replies[0].content.includes("don't have access"));
+});
+
+/** Reassembles a possibly-chunked ephemeral reply — community_info's admin/super_admin text can exceed the 2000-char Discord limit, so replyEphemeral splits it across editReply + followUp calls (chunkText slices with no separator, so a plain join reconstructs the original). */
+function fullReplyText(result: { replies: FakeReply[]; followUps: FakeReply[] }): string {
+  return result.replies[0].content + result.followUps.map((f) => f.content).join('');
+}
+
+test('SECURITY: /help for a member caller never contains ADMIN_CAPABILITIES_TEXT/SUPER_ADMIN_CAPABILITIES_TEXT content, and for an admin caller never contains SUPER_ADMIN_CAPABILITIES_TEXT content (issue #993 authoritative criterion 6)', async (t) => {
+  mockPool(t, { memberRole: 'member' });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+
+  const member = fakeInteraction({ commandName: 'help', userId: 'member-1' });
+  await handleInteraction(member.interaction as never, adapterDeps(adapter));
+  const memberText = fullReplyText(member);
+  assert.doesNotMatch(memberText, /warn, mute, kick/i, 'member reply must exclude admin content');
+  assert.doesNotMatch(
+    memberText,
+    /grant or revoke admin status/i,
+    'member reply must exclude super-admin content',
+  );
+
+  mockPool(t, { memberRole: 'admin' });
+  const admin = fakeInteraction({ commandName: 'help', userId: 'admin-1' });
+  await handleInteraction(admin.interaction as never, adapterDeps(adapter));
+  const adminText = fullReplyText(admin);
+  assert.match(adminText, /warn, mute, kick/i, 'admin reply must include admin content');
+  assert.doesNotMatch(
+    adminText,
+    /grant or revoke admin status/i,
+    'admin reply must exclude super-admin content',
+  );
+});
+
+test('/help renders byte-identical text to community_info for the same (role, platform) — the single-source-of-truth formatter (issue #993 authoritative criterion 1)', async (t) => {
+  const { formatCommunityInfoText } = await import('../src/module/agent/tools.js');
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+
+  // super_admin is resolved from config.rbac.superAdminDiscordIds, never
+  // community_users — mutate it directly (config is parsed once at import
+  // time, so setting the env var this late would have no effect).
+  const originalSuperAdmins = [...config.rbac.superAdminDiscordIds];
+  config.rbac.superAdminDiscordIds.push('super-1');
+  t.after(() => {
+    config.rbac.superAdminDiscordIds.length = 0;
+    config.rbac.superAdminDiscordIds.push(...originalSuperAdmins);
+  });
+
+  for (const role of ['member', 'admin', 'super_admin'] as const) {
+    mockPool(t, { memberRole: role === 'super_admin' ? null : role });
+    const userId = role === 'super_admin' ? 'super-1' : `${role}-1`;
+    const result = fakeInteraction({ commandName: 'help', userId });
+    await handleInteraction(result.interaction as never, adapterDeps(adapter));
+    assert.equal(
+      fullReplyText(result),
+      await adapter.filtered(formatCommunityInfoText(role, 'discord')),
+      `/help reply for ${role} must match formatCommunityInfoText's own output, post outbound-filter`,
+    );
+  }
+});
+
+test("a successful /help invocation calls recordShortcutHit('slash_command') exactly once (issue #993, mirrors issue #863 acceptance criterion 1)", async (t) => {
+  const calls = mockPool(t, { memberRole: 'member' });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction } = fakeInteraction({ commandName: 'help', userId: 'member-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(shortcutHitCalls(calls).length, 1, '/help must record exactly one slash_command hit');
+});
+
+test('PR #748 review: /help calls deferReply before its first reply/DB round trip, matching every other command', async (t) => {
+  mockPool(t, { memberRole: 'member' });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, order } = fakeInteraction({ commandName: 'help', userId: 'member-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(order[0], 'deferReply', '/help must call deferReply before anything else');
 });
 
 // --- Rejection text and non-command interactions ------------------------------

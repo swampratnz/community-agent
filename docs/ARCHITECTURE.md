@@ -2608,10 +2608,11 @@ the full security posture and its test references.
 
 ## Discord slash commands (issue #744)
 
-`DISCORD_SLASH_COMMANDS_ENABLED` (off by default) registers five read-only,
+`DISCORD_SLASH_COMMANDS_ENABLED` (off by default) registers six read-only,
 zero-model-call Discord application commands — `/kb <query>`,
-`/whois <query>`, `/projects [query]`, `/guidelines`, `/digest` — the
-discoverable, per-command generalisation of the knowledge shortcut (see "Known
+`/whois <query>`, `/projects [query]`, `/guidelines`, `/digest`, `/help`
+(issue #993) — the discoverable, per-command generalisation of the knowledge
+shortcut (see "Known
 cost/latency characteristic" below): each answers a common lookup with a
 deterministic repository read instead of a full `query()` turn, and Discord's
 command picker surfaces them where a member would otherwise have to guess a
@@ -2726,9 +2727,17 @@ chat path. `/kb` passes the caller's real `(platform, conversationId)` into
 `searchKnowledge`, so a slash command can never widen a caller's knowledge
 read-scope beyond what the chat path already grants them.
 
-All four replies are ephemeral (`MessageFlags.Ephemeral`) — visible only to
+All five replies are ephemeral (`MessageFlags.Ephemeral`) — visible only to
 the caller, a privacy improvement over `/whois`/`/projects`' chat-path
 equivalent (posted in-channel today).
+
+**`/help`** (issue #993) has no tier gate at all, matching `/guidelines` and
+its own underlying tool, `community_info`: `handleHelp` defers, resolves the
+caller's role via `resolveRole('discord', ...)`, and replies with
+`formatCommunityInfoText(role, 'discord')` — a pure formatter exported from
+`agent/tools/info.ts` and factored out of `community_info`'s own handler body,
+so the tool and `/help` render byte-identical text for the same caller rather
+than each re-deriving the role-branching capability rundown independently.
 
 **`/guidelines` deliberately does not serve the internal `GUIDELINES` block**
 from `agent/systemPrompt.ts` — despite that block being what the originating
@@ -2753,22 +2762,22 @@ command-picker UI to register these against, so it instead gets a
 literal-prefix text-command equivalent — see "WhatsApp text commands" below
 (issue #859). `shortcut_hits` tracking of slash-command usage (issue #863):
 every successful invocation of `/kb`, `/whois`, `/projects`, `/guidelines`,
-or `/digest` records one `slash_command` `shortcut_hits` row (an aggregate
-per-mechanism count, not broken down by command name, matching the
+`/digest`, or `/help` records one `slash_command` `shortcut_hits` row (an
+aggregate per-mechanism count, not broken down by command name, matching the
 granularity of the four original kinds from issue #440), so `usage_stats`'s
 "Shortcuts fired" line now includes this cost-avoidance path in its total
 and its `slash-command N` breakdown. An auth-denied reply records nothing,
 so the counter can never be used to infer auth-denied probe volume. All
-four underlying tools remain reachable via chat on every platform
-regardless of either flag.
+underlying tools remain reachable via chat on every platform regardless of
+either flag.
 
 ## WhatsApp text commands (issue #859)
 
 `WHATSAPP_TEXT_COMMANDS_ENABLED` (off by default) is the WhatsApp counterpart
 to the Discord slash commands above, re-keyed for a platform with no native
 command-picker UI: a trimmed, case-insensitive WhatsApp message beginning
-`!whois [query]`, `!projects [query]`, `!guidelines`, or `!digest` is served
-by the same deterministic, zero-`query()`-call path, checked in
+`!whois [query]`, `!projects [query]`, `!guidelines`, `!digest`, or `!help`
+(issue #993) is served by the same deterministic, zero-`query()`-call path, checked in
 `Router.handle()` (`tryWhatsAppTextCommand`) alongside the other router-level
 shortcuts (the knowledge shortcut, ack shortcut, etc.). `!kb` is deliberately
 not added — `KNOWLEDGE_SHORTCUT_ENABLED` already gives WhatsApp an implicit,
@@ -2786,7 +2795,11 @@ commands and chat-path tools call (`searchMemberInterests`/
 `tryKnowledgeShortcut`'s `searchKnowledgeForShortcut` already is. Tier floors
 mirror the Discord side exactly: `!whois`, `!projects`, `!digest` require
 `atLeast(role, 'member')` (the same runtime floor each tool's own handler
-applies); `!guidelines` has no tier gate, matching `community_guidelines`.
+applies); `!guidelines` and `!help` have no tier gate, matching
+`community_guidelines`/`community_info`. `!help` (issue #993) calls the same
+`formatCommunityInfoText(role, 'whatsapp')` formatter `/help` and
+`community_info` call, so all three entry points render byte-identical text
+for a given (role, platform).
 
 A bare `!whois` (no query, issue #889) mirrors `who_is_into`'s/`/whois`'s own
 no-argument self-match: it looks up the caller's own published
@@ -2836,7 +2849,7 @@ unmetered read path.
 identical fix for Discord slash commands): the shared `sendWhatsAppTextCommand`
 send path records one `whatsapp_text_command` `shortcut_hits` row per served
 reply — a fixed string literal, never derived from the WhatsApp message text —
-so all four commands are covered from this one call site with no per-command
+so all five commands are covered from this one call site with no per-command
 wiring. `usage_stats`'s "Shortcuts fired" line includes it in the total and its
 own `whatsapp-text-command N` breakdown, distinct from Discord's
 `slash-command N` (a new kind rather than reusing `slash_command`, which is

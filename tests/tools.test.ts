@@ -108,6 +108,7 @@ const {
   WARN_USER_RATE_LIMIT_PER_HOUR,
   ANNOUNCE_RATE_LIMIT_PER_HOUR,
   EVENTS_LIST_LIMIT,
+  formatCommunityInfoText,
   APPEAL_MODERATION_REASON_MAX_CHARS,
   HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER,
   PROJECT_NOTE_RETENTION_NOTICE,
@@ -3263,7 +3264,8 @@ test('SECURITY: community_info for a WhatsApp caller with whatsappTextCommandsEn
         '- `!whois <topic>` — find members into a topic\n' +
         '- `!projects [query]` — browse the project showcase\n' +
         '- `!guidelines` — community guidelines\n' +
-        "- `!digest` — this week's digest",
+        "- `!digest` — this week's digest\n" +
+        '- `!help` — this capability rundown',
       'the appended block must be exactly the fixed literal, never caller- or model-composed text',
     );
   } finally {
@@ -3290,6 +3292,29 @@ test('SECURITY: community_info for a guest-tier WhatsApp caller never advertises
       /!whois|!projects|!digest/,
       'a guest-tier reply must never mention the member-gated WhatsApp shortcuts',
     );
+  } finally {
+    config.behaviour.whatsappTextCommandsEnabled = original;
+  }
+});
+
+// --- issue #993: community_info and /help, !help share ONE formatter --------
+
+test('community_info renders byte-identical text to formatCommunityInfoText for every (role, platform) combination — the single source of truth /help and !help also call (issue #993 authoritative criterion 1)', async () => {
+  const original = config.behaviour.whatsappTextCommandsEnabled;
+  try {
+    config.behaviour.whatsappTextCommandsEnabled = true;
+    const roles = ['guest', 'member', 'admin', 'super_admin'] as const;
+    const platforms = ['discord', 'whatsapp'] as const;
+    for (const role of roles) {
+      for (const platform of platforms) {
+        const handlerReply = (await communityInfoHandler(role, platform)).content[0]?.text ?? '';
+        assert.equal(
+          handlerReply,
+          formatCommunityInfoText(role, platform),
+          `community_info(${role}, ${platform}) must match formatCommunityInfoText's own output`,
+        );
+      }
+    }
   } finally {
     config.behaviour.whatsappTextCommandsEnabled = original;
   }

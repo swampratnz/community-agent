@@ -19,6 +19,7 @@ import {
   searchProjects,
 } from '@swampratnz/agent-base/storage/repository.js';
 import {
+  formatCommunityInfoText,
   formatInterestResults,
   formatKnowledgeSearchResults,
   formatProjectResults,
@@ -263,6 +264,20 @@ async function handleDigest(interaction: ChatInputCommandInteraction, deps: Slas
 }
 
 /**
+ * No tier gate — mirrors `handleGuidelines` above: `community_info` is a
+ * `minTier: 'member'` tool reachable by every caller including guests (same
+ * "MEMBER_TOOLS is also a guest's surface in open mode" reachability every
+ * sibling tool documents), and `formatCommunityInfoText` itself branches on
+ * the resolved role, so there is nothing left for this handler to gate.
+ */
+async function handleHelp(interaction: ChatInputCommandInteraction, deps: SlashCommandDeps): Promise<void> {
+  await deferEphemeral(interaction);
+  const role = await resolveRole('discord', interaction.user.id);
+  recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
+  await replyEphemeral(interaction, formatCommunityInfoText(role, 'discord'), deps);
+}
+
+/**
  * Bind each registry entry's Discord half (registration JSON + handler).
  *
  * Called from `createConfiguredAdapters()`, NOT at module scope. Binding
@@ -343,5 +358,13 @@ export function bindCommunitySlashCommands(): void {
         .setDescription("Pull this week's community digest on demand — topics, new knowledge, projects.")
         .toJSON(),
     handle: handleDigest,
+  });
+  bindDiscordCommand('help', {
+    build: () =>
+      new SlashCommandBuilder()
+        .setName('help')
+        .setDescription('Show what you can ask this bot to do.')
+        .toJSON(),
+    handle: handleHelp,
   });
 }

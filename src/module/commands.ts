@@ -1,5 +1,10 @@
 import { atLeast } from '@swampratnz/agent-base/auth/rbac.js';
-import { formatInterestResults, formatProjectResults, LIST_PROJECTS_DEFAULT_LIMIT } from './agent/tools.js';
+import {
+  formatCommunityInfoText,
+  formatInterestResults,
+  formatProjectResults,
+  LIST_PROJECTS_DEFAULT_LIMIT,
+} from './agent/tools.js';
 import { TEXT_COMMAND_UNMATCHED, type RegisteredCommand } from '@swampratnz/agent-base/commands/registry.js';
 
 /**
@@ -10,8 +15,9 @@ import { TEXT_COMMAND_UNMATCHED, type RegisteredCommand } from '@swampratnz/agen
  * `!`-text-command intercept (`router.ts`, via the registered list in
  * `commands/registry.ts`). Handlers were moved VERBATIM from their previous
  * homes; registry order is the previous `buildSlashCommands()` order (kb,
- * projects, whois, guidelines, digest), which is also safe for the WhatsApp
- * side because every `!` matcher is anchored and mutually exclusive.
+ * projects, whois, guidelines, digest), plus `help` appended at the end
+ * (issue #993) — also safe for the WhatsApp side because every `!` matcher
+ * is anchored and mutually exclusive.
  *
  * The Discord halves are BOUND by `bindCommunitySlashCommands()`
  * (slashCommands.ts), which `createConfiguredAdapters()` calls — never at
@@ -119,6 +125,19 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
       if (!atLeast(role, 'member')) return null;
       const message = await deps.buildDigestContentFn();
       return message ?? 'Nothing to report right now.';
+    },
+  },
+  {
+    name: 'help',
+    platforms: ['discord', 'whatsapp'],
+    // No tier gate, matching community_info's own `minTier: 'member'` floor
+    // (a guest-reachable member-floor tool, same reasoning as `guidelines`
+    // above) — formatCommunityInfoText branches its own content on `role`,
+    // so the caller's actual tier is what determines what comes back, not a
+    // dispatch-time gate here.
+    whatsapp: async (text, msg, role) => {
+      if (!/^!help$/i.test(text)) return TEXT_COMMAND_UNMATCHED;
+      return formatCommunityInfoText(role, msg.platform);
     },
   },
 ];

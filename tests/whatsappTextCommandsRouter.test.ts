@@ -223,6 +223,24 @@ test('config: WHATSAPP_TEXT_COMMANDS_ENABLED=true is reflected in config.behavio
 
 // --- Acceptance criterion 5 / regression: flag off is byte-identical --------
 
+test('SECURITY acceptance criterion 7: with the flag off, a !help message is NOT treated as a command — falls through to a normal turn like the other four commands (issue #993)', async (t) => {
+  const was = config.behaviour.whatsappTextCommandsEnabled;
+  config.behaviour.whatsappTextCommandsEnabled = false;
+  t.after(() => {
+    config.behaviour.whatsappTextCommandsEnabled = was;
+  });
+  mockPoolRole(t, 'member');
+
+  const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!help', userId: 'member-1' }));
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, REAL_TURN_REPLY);
+});
+
 test('acceptance criterion 5: with the flag off, a !whois message is NOT treated as a command — falls through to a normal turn', async (t) => {
   const was = config.behaviour.whatsappTextCommandsEnabled;
   config.behaviour.whatsappTextCommandsEnabled = false;
@@ -668,6 +686,89 @@ test('!digest replies with the fixed "Nothing to report" text when buildDigestCo
   await trigger(makeMessage({ text: '!digest', userId: 'member-1' }));
 
   assert.equal(sent[0].text, 'Nothing to report right now.');
+});
+
+// --- !help (issue #993): zero-cost command counterpart to community_info ---
+
+test('!help has no tier gate — served even for a guest caller, mirroring !guidelines', async (t) => {
+  mockPoolRole(t, null); // no community_users row -> guest
+  const router = makeRouter({ runTurn: throwingRunTurn });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!help', userId: 'guest-1' }));
+
+  assert.equal(sent.length, 1);
+  assert.doesNotMatch(sent[0].text, /don't have access/i);
+});
+
+test('!help renders byte-identical text to formatCommunityInfoText(role, "whatsapp") for member/admin/super_admin (issue #993 authoritative criterion 1)', async (t) => {
+  const { formatCommunityInfoText } = await import('../src/module/agent/tools.js');
+  for (const role of ['member', 'admin'] as const) {
+    mockPoolRole(t, role);
+    const router = makeRouter({ runTurn: throwingRunTurn });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!help', userId: `${role}-1` }));
+
+    assert.equal(sent[0].text, formatCommunityInfoText(role, 'whatsapp'));
+  }
+
+  // super_admin is resolved from config.rbac.superAdminWhatsappNumbers, never
+  // community_users — mutate it directly (config is parsed once at import
+  // time, so setting the env var this late would have no effect; this file's
+  // top-level env only sets SUPER_ADMIN_DISCORD_IDS, not the WhatsApp one).
+  const originalSuperAdmins = [...config.rbac.superAdminWhatsappNumbers];
+  config.rbac.superAdminWhatsappNumbers.push('super-1');
+  t.after(() => {
+    config.rbac.superAdminWhatsappNumbers.length = 0;
+    config.rbac.superAdminWhatsappNumbers.push(...originalSuperAdmins);
+  });
+  mockPoolRole(t, null);
+  const router = makeRouter({ runTurn: throwingRunTurn });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!help', userId: 'super-1' }));
+
+  assert.equal(sent[0].text, formatCommunityInfoText('super_admin', 'whatsapp'));
+});
+
+test('SECURITY: !help for a member caller never contains ADMIN_CAPABILITIES_TEXT/SUPER_ADMIN_CAPABILITIES_TEXT content, and for an admin caller never contains SUPER_ADMIN_CAPABILITIES_TEXT content (issue #993 authoritative criterion 6)', async (t) => {
+  mockPoolRole(t, 'member');
+  const memberRouter = makeRouter({ runTurn: throwingRunTurn });
+  const member = makeAdapter();
+  memberRouter.register(member.adapter);
+  await member.trigger(makeMessage({ text: '!help', userId: 'member-1' }));
+  assert.doesNotMatch(member.sent[0].text, /warn, mute, kick/i);
+  assert.doesNotMatch(member.sent[0].text, /grant or revoke admin status/i);
+
+  mockPoolRole(t, 'admin');
+  const adminRouter = makeRouter({ runTurn: throwingRunTurn });
+  const admin = makeAdapter();
+  adminRouter.register(admin.adapter);
+  await admin.trigger(makeMessage({ text: '!help', userId: 'admin-1' }));
+  assert.match(admin.sent[0].text, /warn, mute, kick/i);
+  assert.doesNotMatch(admin.sent[0].text, /grant or revoke admin status/i);
+});
+
+test("a successful !help invocation calls recordShortcutHit('whatsapp_text_command') exactly once (issue #993, mirrors issue #874 acceptance criterion 1)", async (t) => {
+  mockPoolRole(t, 'member');
+  const hits: string[] = [];
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    recordShortcutHitFn: async (kind) => {
+      hits.push(kind);
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!help', userId: 'member-1' }));
+
+  assert.equal(sent.length, 1);
+  assert.deepEqual(hits, ['whatsapp_text_command']);
 });
 
 // --- shortcut_hits tracking (issue #874, acceptance criterion 1) ------------
