@@ -4,6 +4,7 @@ import { getCommunityGuidelines, getCommunityGuidelinesMi } from '../../storage/
 import { getLanguagePreference } from '@swampratnz/agent-base/storage/repository.js';
 import { formatStatusMessage, getStatusCache } from '../../status/anthropicStatus.js';
 import { formatEventTime } from '@swampratnz/agent-base/util/eventTime.js';
+import type { UpcomingEvent } from '@swampratnz/agent-base/platforms/types.js';
 import { text } from './helpers.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
@@ -124,6 +125,27 @@ const SUPER_ADMIN_CAPABILITIES_TEXT =
  */
 export const EVENTS_LIST_LIMIT = 10;
 
+/**
+ * Pure render of `listUpcomingEvents`' rows into `list_events`' reply text —
+ * hoisted out of the tool handler (issue #1004) so the `/events` slash
+ * command can call the exact same formatting, mirroring how
+ * `formatProjectResults`/`formatInterestResults` were hoisted out of
+ * `agent/tools.ts`'s tool-factory closure for the same reason. Caller must
+ * handle the empty-list case ("No upcoming events.") itself, matching the
+ * tool handler below.
+ */
+export function formatUpcomingEvents(events: readonly UpcomingEvent[]): string {
+  return events
+    .map((e) => {
+      const when = e.scheduledEndAt
+        ? `${formatEventTime(e.scheduledStartAt)} – ${formatEventTime(e.scheduledEndAt)}`
+        : formatEventTime(e.scheduledStartAt);
+      const desc = e.description ? `: ${e.description}` : '';
+      return `- ${e.name} (${when}) @ ${e.location}${desc} [id: ${e.id}]`;
+    })
+    .join('\n');
+}
+
 export const infoTools = [
   defineTool({
     name: 'community_info',
@@ -213,17 +235,7 @@ export const infoTools = [
       }
       const events = await adapter.listUpcomingEvents(EVENTS_LIST_LIMIT);
       if (events.length === 0) return text('No upcoming events.');
-      return text(
-        events
-          .map((e) => {
-            const when = e.scheduledEndAt
-              ? `${formatEventTime(e.scheduledStartAt)} – ${formatEventTime(e.scheduledEndAt)}`
-              : formatEventTime(e.scheduledStartAt);
-            const desc = e.description ? `: ${e.description}` : '';
-            return `- ${e.name} (${when}) @ ${e.location}${desc} [id: ${e.id}]`;
-          })
-          .join('\n'),
-      );
+      return text(formatUpcomingEvents(events));
     },
   }),
 ];

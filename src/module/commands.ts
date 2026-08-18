@@ -37,6 +37,9 @@ import { formatStatusMessage, getStatusCache } from './status/anthropicStatus.js
 
 export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
   { name: 'kb', platforms: ['discord'] },
+  // Discord-only, same shape as 'kb' above — Discord Scheduled Events have no
+  // WhatsApp equivalent, matching the list_events tool itself (issue #1004).
+  { name: 'events', platforms: ['discord'] },
   {
     name: 'projects',
     platforms: ['discord', 'whatsapp'],
