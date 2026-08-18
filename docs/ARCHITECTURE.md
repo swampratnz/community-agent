@@ -1422,9 +1422,10 @@ weakening it:
    growth path ("no evidenced complaint... left as an explicit, separate
    growth path"); #582 is that follow-up, closing the one tier `community_info`
    previously under-served. A WhatsApp caller additionally gets a fixed,
-   four-shortcut discovery block appended to the member segment (issue #872)
+   six-shortcut discovery block appended to the member segment (issue #872)
    when `WHATSAPP_TEXT_COMMANDS_ENABLED` is on — the `!whois`/`!projects`/
-   `!guidelines`/`!digest` shortcuts (issue #859) have no client-native
+   `!guidelines`/`!digest` (issue #859), `!status` (issue #995) and `!help`
+   (issue #993) shortcuts have no client-native
    discovery surface the way Discord's slash commands do via
    `SlashCommandBuilder.setDescription`, so `community_info` is the only
    place a WhatsApp member learns they exist. Branch condition is
@@ -1434,7 +1435,7 @@ weakening it:
    `MEMBER_CAPABILITIES_TEXT` itself; a Discord caller's reply is
    byte-identical regardless of the flag, and a WhatsApp caller with the flag
    off is byte-identical to before #872. The role check matters because
-   three of the four shortcuts (`!whois`/`!projects`/`!digest`) themselves
+   three of the six shortcuts (`!whois`/`!projects`/`!digest`) themselves
    gate on `atLeast(role, 'member')` in `tryWhatsAppTextCommand` — a guest
    caller never satisfies it, so the block is withheld rather than
    advertising shortcuts that would silently no-op for them.
@@ -2073,7 +2074,7 @@ Two on-demand surfaces call it directly, mirroring `admin_digest`'s
   `atLeast(role, 'member')` floor, then calls `buildMemberDigestContent()`
   directly (never through the tool/model) and replies ephemeral with the
   message or the same fallback — plain text through `deps.filtered()` only,
-  no `untrusted()` wrapper, since (like the other four slash commands) this
+  no `untrusted()` wrapper, since (like the other six slash commands) this
   reply never re-enters model context.
 
 Neither surface touches `wasMemberDigestSentRecently`/
@@ -2608,10 +2609,11 @@ the full security posture and its test references.
 
 ## Discord slash commands (issue #744)
 
-`DISCORD_SLASH_COMMANDS_ENABLED` (off by default) registers six read-only,
+`DISCORD_SLASH_COMMANDS_ENABLED` (off by default) registers seven read-only,
 zero-model-call Discord application commands — `/kb <query>`,
-`/whois <query>`, `/projects [query]`, `/guidelines`, `/digest`, `/help`
-(issue #993) — the discoverable, per-command generalisation of the knowledge
+`/whois <query>`, `/projects [query]`, `/guidelines`, `/digest`,
+`/status` (issue #995), `/help` (issue #993) — the discoverable, per-command
+generalisation of the knowledge
 shortcut (see "Known
 cost/latency characteristic" below): each answers a common lookup with a
 deterministic repository read instead of a full `query()` turn, and Discord's
@@ -2727,7 +2729,7 @@ chat path. `/kb` passes the caller's real `(platform, conversationId)` into
 `searchKnowledge`, so a slash command can never widen a caller's knowledge
 read-scope beyond what the chat path already grants them.
 
-All five replies are ephemeral (`MessageFlags.Ephemeral`) — visible only to
+All seven replies are ephemeral (`MessageFlags.Ephemeral`) — visible only to
 the caller, a privacy improvement over `/whois`/`/projects`' chat-path
 equivalent (posted in-channel today).
 
@@ -2849,7 +2851,7 @@ unmetered read path.
 identical fix for Discord slash commands): the shared `sendWhatsAppTextCommand`
 send path records one `whatsapp_text_command` `shortcut_hits` row per served
 reply — a fixed string literal, never derived from the WhatsApp message text —
-so all five commands are covered from this one call site with no per-command
+so all six commands are covered from this one call site with no per-command
 wiring. `usage_stats`'s "Shortcuts fired" line includes it in the total and its
 own `whatsapp-text-command N` breakdown, distinct from Discord's
 `slash-command N` (a new kind rather than reusing `slash_command`, which is
