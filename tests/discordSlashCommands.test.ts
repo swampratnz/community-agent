@@ -840,16 +840,28 @@ test(
       config.moderation.strikeWindowDays = originalWindow;
     });
 
+    // `t.mock.method` may only be called ONCE per method per test — a second
+    // call on the same test's `t` leaves `pool.query` stuck on an
+    // intermediate mock instead of restoring the real implementation at
+    // teardown (discovered via whatsappTextCommandsRouter.test.ts's
+    // real-DB acceptance-criterion-8 test breaking when this file's sibling
+    // test used the same repeated-mockPool-call shape). Mock once and mutate
+    // the returned options object's properties instead of re-mocking.
+    const opts: { memberRole: 'member'; activeWarnings?: number; windowedWarnings?: number } = {
+      memberRole: 'member',
+      activeWarnings: 0,
+    };
+    mockPool(t, opts);
+
     // Branch 1: zero warnings.
     config.moderation.strikeWindowDays = undefined;
-    mockPool(t, { memberRole: 'member', activeWarnings: 0 });
     let adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     let { interaction, replies } = fakeInteraction({ commandName: 'warnings', userId: 'member-1' });
     await handleInteraction(interaction as never, adapterDeps(adapter));
     assert.equal(replies[0].content, formatMyWarningsText(0, 3, null));
 
     // Branch 2: under limit, no window configured.
-    mockPool(t, { memberRole: 'member', activeWarnings: 1 });
+    opts.activeWarnings = 1;
     adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     ({ interaction, replies } = fakeInteraction({ commandName: 'warnings', userId: 'member-1' }));
     await handleInteraction(interaction as never, adapterDeps(adapter));
@@ -858,7 +870,8 @@ test(
     // Branch 3: under limit, WITH a window, and some strikes have aged out
     // (windowed < active).
     config.moderation.strikeWindowDays = 30;
-    mockPool(t, { memberRole: 'member', activeWarnings: 2, windowedWarnings: 1 });
+    opts.activeWarnings = 2;
+    opts.windowedWarnings = 1;
     adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     ({ interaction, replies } = fakeInteraction({ commandName: 'warnings', userId: 'member-1' }));
     await handleInteraction(interaction as never, adapterDeps(adapter));
@@ -867,7 +880,8 @@ test(
 
     // Branch 4: at/over the limit.
     config.moderation.strikeWindowDays = undefined;
-    mockPool(t, { memberRole: 'member', activeWarnings: 3 });
+    opts.activeWarnings = 3;
+    opts.windowedWarnings = undefined;
     adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     ({ interaction, replies } = fakeInteraction({ commandName: 'warnings', userId: 'member-1' }));
     await handleInteraction(interaction as never, adapterDeps(adapter));

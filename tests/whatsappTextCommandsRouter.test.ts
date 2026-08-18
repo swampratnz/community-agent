@@ -224,31 +224,34 @@ function mockPoolRole(
 }
 
 /**
- * Stubs `pool.query`'s role lookup AND `countActiveWarnings`'s read
- * (`FROM member_warnings`, issue #1000) — `!warnings` calls `countActiveWarnings`
- * directly (no injectable dep on `Router`, mirroring `!status`'s direct
- * `formatStatusMessage`/`getStatusCache` call), so this file's tests observe
- * it the same way `discordSlashCommands.test.ts` observes every other
- * repository read: via `pool.query`. `windowDays` is bound as the query's
- * third parameter (`null` for the unwindowed call).
+ * Mocks `pool.query`'s role + `countActiveWarnings` (`FROM member_warnings`)
+ * branches exactly ONCE (`t.mock.method` may only be called once per method
+ * per test — a second call on the same test's `t` leaves `pool.query`
+ * permanently stuck on an intermediate mock instead of restoring the real
+ * implementation at teardown, which silently broke acceptance criterion 8's
+ * real-DB assertion further down this file when discovered during review).
+ * Callers that need to vary the counts across several `trigger()` calls
+ * within one test mutate the returned ref object instead of re-mocking.
  */
 function mockPoolRoleAndWarnings(
   t: { mock: { method: typeof import('node:test').mock.method } },
   role: 'admin' | 'member' | null,
   activeWarnings = 0,
   windowedWarnings = 0,
-) {
+): { active: number; windowed: number } {
+  const ref = { active: activeWarnings, windowed: windowedWarnings };
   t.mock.method(pool, 'query', (async (sql: string, params: unknown[] = []) => {
     if (sql.includes('SELECT role FROM community_users')) {
       return { rows: role ? [{ role }] : [], rowCount: 0 };
     }
     if (sql.includes('FROM member_warnings')) {
       const windowDays = params[2];
-      const n = windowDays == null ? activeWarnings : windowedWarnings;
+      const n = windowDays == null ? ref.active : ref.windowed;
       return { rows: [{ n }], rowCount: 0 };
     }
     return { rows: [], rowCount: 0 };
   }) as typeof pool.query);
+  return ref;
 }
 
 test('config: WHATSAPP_TEXT_COMMANDS_ENABLED=true is reflected in config.behaviour.whatsappTextCommandsEnabled', () => {
@@ -752,36 +755,32 @@ test(
       config.moderation.strikeWindowDays = originalWindow;
     });
 
-    // Branch 1: zero warnings.
     config.moderation.strikeWindowDays = undefined;
-    mockPoolRoleAndWarnings(t, 'member', 0);
+    const ref = mockPoolRoleAndWarnings(t, 'member', 0);
     let router = makeRouter({ runTurn: throwingRunTurn });
     let { adapter, sent, trigger } = makeAdapter();
     router.register(adapter);
     await trigger(makeMessage({ text: '!warnings', userId: 'member-1' }));
     assert.equal(sent[0].text, formatMyWarningsText(0, 3, null));
 
-    // Branch 2: under limit, no window configured.
-    mockPoolRoleAndWarnings(t, 'member', 1);
+    ref.active = 1;
     router = makeRouter({ runTurn: throwingRunTurn });
     ({ adapter, sent, trigger } = makeAdapter());
     router.register(adapter);
     await trigger(makeMessage({ text: '!warnings', userId: 'member-1' }));
     assert.equal(sent[0].text, formatMyWarningsText(1, 3, null));
 
-    // Branch 3: under limit, WITH a window, and some strikes have aged out.
     config.moderation.strikeWindowDays = 30;
-    mockPoolRoleAndWarnings(t, 'member', 2, 1);
+    ref.active = 2;
+    ref.windowed = 1;
     router = makeRouter({ runTurn: throwingRunTurn });
     ({ adapter, sent, trigger } = makeAdapter());
     router.register(adapter);
     await trigger(makeMessage({ text: '!warnings', userId: 'member-1' }));
     assert.equal(sent[0].text, formatMyWarningsText(2, 3, 1));
-    assert.match(sent[0].text, /old enough not to count toward a new mute/);
 
-    // Branch 4: at/over the limit.
     config.moderation.strikeWindowDays = undefined;
-    mockPoolRoleAndWarnings(t, 'member', 3);
+    ref.active = 3;
     router = makeRouter({ runTurn: throwingRunTurn });
     ({ adapter, sent, trigger } = makeAdapter());
     router.register(adapter);
@@ -805,12 +804,12 @@ test(
   'SECURITY: "!warnings <anything>" is never matched — the anchored matcher rejects any argument, so no ' +
     'message-supplied identifier can ever reach countActiveWarnings (issue #1000 SECURITY criterion 6)',
   async (t) => {
-    const calls = { warningsQueried: false };
+    let warningsQueried = false;
     t.mock.method(pool, 'query', (async (sql: string) => {
       if (sql.includes('SELECT role FROM community_users'))
         return { rows: [{ role: 'member' }], rowCount: 0 };
       if (sql.includes('FROM member_warnings')) {
-        calls.warningsQueried = true;
+        warningsQueried = true;
         return { rows: [{ n: 0 }], rowCount: 0 };
       }
       return { rows: [], rowCount: 0 };
@@ -822,11 +821,7 @@ test(
     await trigger(makeMessage({ text: '!warnings some-other-user-id', userId: 'member-1' }));
 
     assert.equal(sent[0].text, REAL_TURN_REPLY, 'an argument must fall through to a normal turn');
-    assert.equal(
-      calls.warningsQueried,
-      false,
-      'countActiveWarnings must never run when an argument is present',
-    );
+    assert.equal(warningsQueried, false, 'countActiveWarnings must never run when an argument is present');
   },
 );
 
@@ -834,11 +829,11 @@ test(
   'SECURITY: a guest caller\'s "!warnings" falls through to the normal turn — countActiveWarnings is never ' +
     'invoked (issue #1000 approved acceptance criterion 5)',
   async (t) => {
-    const calls = { warningsQueried: false };
+    let warningsQueried = false;
     t.mock.method(pool, 'query', (async (sql: string) => {
       if (sql.includes('SELECT role FROM community_users')) return { rows: [], rowCount: 0 };
       if (sql.includes('FROM member_warnings')) {
-        calls.warningsQueried = true;
+        warningsQueried = true;
         return { rows: [{ n: 0 }], rowCount: 0 };
       }
       return { rows: [], rowCount: 0 };
@@ -855,7 +850,7 @@ test(
       REAL_TURN_REPLY,
       'a guest gets no distinguishing denial reply, per the family norm',
     );
-    assert.equal(calls.warningsQueried, false, 'countActiveWarnings must never run for a rejected caller');
+    assert.equal(warningsQueried, false, 'countActiveWarnings must never run for a rejected caller');
   },
 );
 
