@@ -1427,11 +1427,11 @@ weakening it:
    growth path ("no evidenced complaint... left as an explicit, separate
    growth path"); #582 is that follow-up, closing the one tier `community_info`
    previously under-served. A WhatsApp caller additionally gets a fixed,
-   six-shortcut discovery block appended to the member segment (issue #872)
+   seven-shortcut discovery block appended to the member segment (issue #872)
    when `WHATSAPP_TEXT_COMMANDS_ENABLED` is on — the `!whois`/`!projects`/
-   `!guidelines`/`!digest` (issue #859), `!status` (issue #995) and `!help`
-   (issue #993) shortcuts have no client-native
-   discovery surface the way Discord's slash commands do via
+   `!guidelines`/`!digest` (issue #859), `!status` (issue #995),
+   `!warnings` (issue #1000), and `!help` (issue #993) shortcuts have no
+   client-native discovery surface the way Discord's slash commands do via
    `SlashCommandBuilder.setDescription`, so `community_info` is the only
    place a WhatsApp member learns they exist. Branch condition is
    `caller.platform === 'whatsapp'` plus the config flag plus
@@ -1440,9 +1440,9 @@ weakening it:
    `MEMBER_CAPABILITIES_TEXT` itself; a Discord caller's reply is
    byte-identical regardless of the flag, and a WhatsApp caller with the flag
    off is byte-identical to before #872. The role check matters because
-   three of the six shortcuts (`!whois`/`!projects`/`!digest`) themselves
-   gate on `atLeast(role, 'member')` in `tryWhatsAppTextCommand` — a guest
-   caller never satisfies it, so the block is withheld rather than
+   four of the seven shortcuts (`!whois`/`!projects`/`!digest`/`!warnings`)
+   themselves gate on `atLeast(role, 'member')` in `tryWhatsAppTextCommand` —
+   a guest caller never satisfies it, so the block is withheld rather than
    advertising shortcuts that would silently no-op for them.
 7. **Opt-in auto-enroll** (issue #605, off unless
    `DISCORD_AUTO_ENROLL_MEMBERS=true`). Removes the manual per-person
@@ -2079,7 +2079,7 @@ Two on-demand surfaces call it directly, mirroring `admin_digest`'s
   `atLeast(role, 'member')` floor, then calls `buildMemberDigestContent()`
   directly (never through the tool/model) and replies ephemeral with the
   message or the same fallback — plain text through `deps.filtered()` only,
-  no `untrusted()` wrapper, since (like the other six slash commands) this
+  no `untrusted()` wrapper, since (like the other eight slash commands) this
   reply never re-enters model context.
 
 Neither surface touches `wasMemberDigestSentRecently`/
