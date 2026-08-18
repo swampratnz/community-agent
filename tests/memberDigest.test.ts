@@ -41,6 +41,10 @@ const {
   countInterestsPublishedSince,
   setMemberInterests,
   setHelperAvailability,
+  countHelperMatchesSince,
+  countProjectConnectionsSince,
+  recordHelperNotificationIfUnderCap,
+  recordProjectConnectionIfUnderCap,
 } = await import('@swampratnz/agent-base/storage/repository.js');
 const { config } = await import('@swampratnz/agent-base/config.js');
 
@@ -77,6 +81,8 @@ function throwingContentDeps(): MemberDigestContentDeps {
     getReleaseWatchUpdates: unexpected('getReleaseWatchUpdates'),
     getMemberTipCount: unexpected('getMemberTipCount'),
     getNewInterestCount: unexpected('getNewInterestCount'),
+    getHelperMatchesCount: unexpected('getHelperMatchesCount'),
+    getProjectConnectionsCount: unexpected('getProjectConnectionsCount'),
   };
 }
 
@@ -463,6 +469,87 @@ test('formatMemberDigestMessage: a quiet week across all five inputs (topics, kn
   assert.equal(formatMemberDigestMessage([], [], 0, [], 0), null);
 });
 
+// --- formatMemberDigestMessage: member→member connection count (issue #1012) --
+
+test('formatMemberDigestMessage: connectionCount > 0 renders the connections section with singular/plural agreement', () => {
+  const singular = formatMemberDigestMessage([], [], 0, [], 0, 0, 1);
+  assert.equal(singular, '🤝 1 member connected with help or a collaborator this week.');
+  const plural = formatMemberDigestMessage([], [], 0, [], 0, 0, 3);
+  assert.equal(plural, '🤝 3 members connected with help or a collaborator this week.');
+});
+
+test('formatMemberDigestMessage: connectionCount === 0 (default, omitted argument) renders byte-identical to the shorter-argument output — no connections section', () => {
+  const withoutConnectionArg = formatMemberDigestMessage(
+    [{ topic: 'MCP server auth', questionCount: 1 }],
+    ['Setting up MCP auth'],
+    1,
+    [{ title: 'docs: release-notes/overview', url: null }],
+    0,
+    1,
+  );
+  const withZeroConnectionCount = formatMemberDigestMessage(
+    [{ topic: 'MCP server auth', questionCount: 1 }],
+    ['Setting up MCP auth'],
+    1,
+    [{ title: 'docs: release-notes/overview', url: null }],
+    0,
+    1,
+    0,
+  );
+  assert.equal(withoutConnectionArg, withZeroConnectionCount);
+});
+
+test('formatMemberDigestMessage: an only-connections week (all other inputs empty) still returns a non-null message containing only the connections section', () => {
+  const message = formatMemberDigestMessage([], [], 0, [], 0, 0, 2);
+  assert.equal(message, '🤝 2 members connected with help or a collaborator this week.');
+  assert.doesNotMatch(
+    message ?? '',
+    /This week's topics|knowledge base|showcase|platform updates|interests/i,
+  );
+});
+
+test('formatMemberDigestMessage: connections section renders last, after topics, knowledge-base, project, release-watch and interests sections', () => {
+  const message = formatMemberDigestMessage(
+    [{ topic: 'MCP server auth', questionCount: 1 }],
+    ['Setting up MCP auth'],
+    1,
+    [{ title: 'docs: release-notes/overview', url: 'https://platform.claude.com/a' }],
+    0,
+    1,
+    1,
+  );
+  assert.equal(
+    message,
+    '📅 This week\'s topics:\n• MCP server auth (1 question)\n\n📚 New in the knowledge base (1): Setting up MCP auth\n\n🚀 1 new project added to the showcase this week — ask me to show the project showcase to browse.\n\n🆕 Anthropic platform updates this week: [docs: release-notes/overview](https://platform.claude.com/a)\n\n🔍 1 member published or updated their interests this week — ask me "who\'s into X?" to find them.\n\n🤝 1 member connected with help or a collaborator this week.',
+  );
+});
+
+test('formatMemberDigestMessage: a quiet week across all six inputs (topics, knowledge, projects, release-watch, interests, connections) still renders null — connectionCount is a 6th input to the null-guard OR condition', () => {
+  assert.equal(formatMemberDigestMessage([], [], 0, [], 0, 0, 0), null);
+});
+
+test('SECURITY: formatMemberDigestMessage: the connections section is exactly the fixed template with only the count digit(s) interpolated — no identifier, handle, topic, project name, or platform is reachable through this code path (issue #1012 acceptance criterion 5)', () => {
+  const inputs = [1, 2, 10, 999_999];
+  for (const connectionCount of inputs) {
+    const message = formatMemberDigestMessage([], [], 0, [], 0, 0, connectionCount);
+    assert.equal(
+      message,
+      `🤝 ${connectionCount} member${connectionCount === 1 ? '' : 's'} connected with help or a collaborator this week.`,
+      `connectionCount=${connectionCount} must render exactly the fixed template with only the digit(s) interpolated`,
+    );
+    assert.doesNotMatch(
+      message ?? '',
+      /discord|whatsapp/i,
+      `connectionCount=${connectionCount} must never leak a platform name`,
+    );
+    assert.doesNotMatch(
+      message ?? '',
+      /\b\d{15,20}\b/,
+      `connectionCount=${connectionCount} must never leak a Discord-snowflake-shaped id`,
+    );
+  }
+});
+
 // --- makeDefaultMemberDigestRun (injected deps, no real DB) ----------------
 
 test('makeDefaultMemberDigestRun: MEMBER_DIGEST_CHANNEL_ID unset, runOnce is a no-op — no send, no freshness read', async () => {
@@ -556,6 +643,8 @@ test('makeDefaultMemberDigestRun: a quiet week (no digests, no new knowledge, no
     getNewInterestCount: async () => 0,
     getNewProjectCount: async () => 0,
     getMemberTipCount: async () => 0,
+    getHelperMatchesCount: async () => 0,
+    getProjectConnectionsCount: async () => 0,
     recordSent: async () => {
       recordCalled = true;
     },
@@ -576,6 +665,8 @@ test('makeDefaultMemberDigestRun: past the freshness window with content, posts 
     getNewInterestCount: async () => 0,
     getNewProjectCount: async () => 0,
     getMemberTipCount: async () => 0,
+    getHelperMatchesCount: async () => 0,
+    getProjectConnectionsCount: async () => 0,
     recordSent: async () => {
       recordCalled = true;
     },
@@ -607,6 +698,8 @@ test('makeDefaultMemberDigestRun: getMemberTipCount is called with the exact sam
       tipSince = since;
       return 1;
     },
+    getHelperMatchesCount: async () => 0,
+    getProjectConnectionsCount: async () => 0,
     recordSent: async () => {},
   });
   await runOnce();
@@ -634,6 +727,8 @@ test("makeDefaultMemberDigestRun: an only-projects week (zero topics, zero new k
     getNewInterestCount: async () => 0,
     getNewProjectCount: async () => 2,
     getMemberTipCount: async () => 0,
+    getHelperMatchesCount: async () => 0,
+    getProjectConnectionsCount: async () => 0,
     recordSent: async () => {
       recordCalled = true;
     },
@@ -665,6 +760,8 @@ test('makeDefaultMemberDigestRun: getNewProjectCount is called with the exact sa
       return 0;
     },
     getMemberTipCount: async () => 0,
+    getHelperMatchesCount: async () => 0,
+    getProjectConnectionsCount: async () => 0,
     recordSent: async () => {},
   });
   await runOnce();
@@ -693,6 +790,8 @@ test('SECURITY: makeDefaultMemberDigestRun never calls getReleaseWatchUpdates wh
       getNewInterestCount: async () => 0,
       getNewProjectCount: async () => 0,
       getMemberTipCount: async () => 0,
+      getHelperMatchesCount: async () => 0,
+      getProjectConnectionsCount: async () => 0,
       getReleaseWatchUpdates: async () => {
         releaseWatchCalled = true;
         return [{ pageTitle: 'docs: release-notes/overview', sourceUrl: null }];
@@ -732,6 +831,8 @@ test('makeDefaultMemberDigestRun: with RELEASE_WATCH_ENABLED true, getReleaseWat
       getNewInterestCount: async () => 0,
       getNewProjectCount: async () => 0,
       getMemberTipCount: async () => 0,
+      getHelperMatchesCount: async () => 0,
+      getProjectConnectionsCount: async () => 0,
       getReleaseWatchUpdates: async (since, pathPrefixes) => {
         receivedPaths = pathPrefixes;
         assert.equal(since.getTime(), receivedSince?.getTime(), 'shares the exact same since instant');
@@ -771,6 +872,8 @@ test('makeDefaultMemberDigestRun: an only-release-watch week (zero topics, zero 
       getNewInterestCount: async () => 0,
       getNewProjectCount: async () => 0,
       getMemberTipCount: async () => 0,
+      getHelperMatchesCount: async () => 0,
+      getProjectConnectionsCount: async () => 0,
       getReleaseWatchUpdates: async () => [{ pageTitle: 'docs: release-notes/overview', sourceUrl: null }],
       recordSent: async () => {
         recordCalled = true;
@@ -801,6 +904,8 @@ test('makeDefaultMemberDigestRun: an only-interests week (zero topics, zero new 
     // stub here is a silent live-Postgres dependency, not a no-op.
     getMemberTipCount: async () => 0,
     getNewInterestCount: async () => 4,
+    getHelperMatchesCount: async () => 0,
+    getProjectConnectionsCount: async () => 0,
     recordSent: async () => {
       recordCalled = true;
     },
@@ -835,6 +940,8 @@ test('makeDefaultMemberDigestRun: getNewInterestCount is called with the exact s
     // buildMemberDigestContent's `deps.x ?? <repo fn>` defaults), so a missing
     // stub here is a silent live-Postgres dependency, not a no-op.
     getMemberTipCount: async () => 0,
+    getHelperMatchesCount: async () => 0,
+    getProjectConnectionsCount: async () => 0,
     recordSent: async () => {},
   });
   await runOnce();
@@ -845,6 +952,76 @@ test('makeDefaultMemberDigestRun: getNewInterestCount is called with the exact s
     'getNewInterestCount receives the exact same since instant as getNewProjectCount',
   );
   assert.equal(sent.length, 0, 'both inputs still zero this run — nothing to post');
+});
+
+// --- makeDefaultMemberDigestRun: member→member connection wiring (issue #1012) --
+
+test('makeDefaultMemberDigestRun: an only-connections week (zero topics, zero new knowledge, zero new projects, no release-watch, no new interests) still posts — connectionCount is a 6th input to the same null-guard OR condition', async () => {
+  const { adapter, sent } = makeAdapter();
+  let recordCalled = false;
+  const runOnce = makeDefaultMemberDigestRun([adapter], {
+    ...throwingRunDeps(),
+    wasSentRecently: async () => false,
+    getDigests: async () => [],
+    getNewKnowledgeTitles: async () => [],
+    getNewProjectCount: async () => 0,
+    getMemberTipCount: async () => 0,
+    getNewInterestCount: async () => 0,
+    getHelperMatchesCount: async () => 3,
+    getProjectConnectionsCount: async () => 1,
+    recordSent: async () => {
+      recordCalled = true;
+    },
+  });
+  await runOnce();
+  assert.equal(sent.length, 1, 'a week with only connection activity still posts');
+  assert.equal(
+    sent[0].text,
+    '🤝 4 members connected with help or a collaborator this week.',
+    'the rendered count is the sum of getHelperMatchesCount and getProjectConnectionsCount',
+  );
+  assert.equal(recordCalled, true);
+});
+
+test('makeDefaultMemberDigestRun: getHelperMatchesCount and getProjectConnectionsCount are both called with the exact same `since` instant already computed for getNewInterestCount — one window, no second Date.now() call', async () => {
+  const { adapter, sent } = makeAdapter();
+  let interestSince: Date | undefined;
+  let helperSince: Date | undefined;
+  let connectionSince: Date | undefined;
+  const runOnce = makeDefaultMemberDigestRun([adapter], {
+    ...throwingRunDeps(),
+    wasSentRecently: async () => false,
+    getDigests: async () => [],
+    getNewKnowledgeTitles: async () => [],
+    getNewProjectCount: async () => 0,
+    getMemberTipCount: async () => 0,
+    getNewInterestCount: async (since) => {
+      interestSince = since;
+      return 0;
+    },
+    getHelperMatchesCount: async (since) => {
+      helperSince = since;
+      return 0;
+    },
+    getProjectConnectionsCount: async (since) => {
+      connectionSince = since;
+      return 0;
+    },
+    recordSent: async () => {},
+  });
+  await runOnce();
+  assert.ok(interestSince instanceof Date && helperSince instanceof Date && connectionSince instanceof Date);
+  assert.equal(
+    helperSince?.getTime(),
+    interestSince?.getTime(),
+    'getHelperMatchesCount receives the exact same since instant as getNewInterestCount',
+  );
+  assert.equal(
+    connectionSince?.getTime(),
+    interestSince?.getTime(),
+    'getProjectConnectionsCount receives the exact same since instant as getNewInterestCount',
+  );
+  assert.equal(sent.length, 0, 'all inputs still zero this run — nothing to post');
 });
 
 test('SECURITY: makeDefaultMemberDigestRun drops a digest topic below MEMBER_DIGEST_MIN_DISTINCT_USERS — its own k-anonymity floor, independent of the builder/export floors', async () => {
@@ -863,6 +1040,8 @@ test('SECURITY: makeDefaultMemberDigestRun drops a digest topic below MEMBER_DIG
       getNewProjectCount: async () => 0,
       getMemberTipCount: async () => 0,
       getNewInterestCount: async () => 0,
+      getHelperMatchesCount: async () => 0,
+      getProjectConnectionsCount: async () => 0,
       recordSent: async () => {},
     });
     await runOnce();
@@ -888,6 +1067,8 @@ test('makeDefaultMemberDigestRun: a week where every digest is below the k-floor
       getNewInterestCount: async () => 0,
       getNewProjectCount: async () => 0,
       getMemberTipCount: async () => 0,
+      getHelperMatchesCount: async () => 0,
+      getProjectConnectionsCount: async () => 0,
       recordSent: async () => {
         recordCalled = true;
       },
@@ -914,6 +1095,8 @@ test("SECURITY: makeDefaultMemberDigestRun never surfaces a WhatsApp-sourced dig
     getNewInterestCount: async () => 0,
     getNewProjectCount: async () => 0,
     getMemberTipCount: async () => 0,
+    getHelperMatchesCount: async () => 0,
+    getProjectConnectionsCount: async () => 0,
     recordSent: async () => {},
   });
   await runOnce();
@@ -942,6 +1125,8 @@ test('SECURITY: makeDefaultMemberDigestRun posts to exactly MEMBER_DIGEST_CHANNE
     getNewInterestCount: async () => 0,
     getNewProjectCount: async () => 0,
     getMemberTipCount: async () => 0,
+    getHelperMatchesCount: async () => 0,
+    getProjectConnectionsCount: async () => 0,
     recordSent: async () => {},
   });
   await runOnce();
@@ -973,6 +1158,8 @@ test("SECURITY: makeDefaultMemberDigestRun never leaks a ContextDigest's distinc
     getNewInterestCount: async () => 0,
     getNewProjectCount: async () => 0,
     getMemberTipCount: async () => 0,
+    getHelperMatchesCount: async () => 0,
+    getProjectConnectionsCount: async () => 0,
     recordSent: async () => {},
   });
   await runOnce();
@@ -1388,6 +1575,8 @@ test("buildMemberDigestContent: with injected deps, gathers, applies the two-flo
     getNewProjectCount: async () => 1,
     getMemberTipCount: async () => 0,
     getNewInterestCount: async () => 0,
+    getHelperMatchesCount: async () => 0,
+    getProjectConnectionsCount: async () => 0,
   });
   assert.equal(
     message,
@@ -1403,9 +1592,108 @@ test('buildMemberDigestContent: every input empty renders null, same as formatMe
     getNewProjectCount: async () => 0,
     getMemberTipCount: async () => 0,
     getNewInterestCount: async () => 0,
+    getHelperMatchesCount: async () => 0,
+    getProjectConnectionsCount: async () => 0,
   });
   assert.equal(message, null);
 });
+
+// --- buildMemberDigestContent: member→member connection wiring (issue #1012, DB-integration) --
+
+test(
+  "SECURITY: buildMemberDigestContent only issues the countHelperMatchesSince query when config.findHelper.enabled is true; with the flag off, its contribution to connectionCount is always 0 and no extra query is issued — mirrors adminDigest.ts's own #820 gating test (issue #1012 acceptance criterion 4)",
+  { skip },
+  async (t) => {
+    const marker = `t${Date.now()}${Math.floor(Math.random() * 1e6)}-findhelperoff`;
+    const owner = `${marker}-owner`;
+    const requester = `${marker}-requester`;
+
+    // A seeded project connection guarantees a non-null message so "no
+    // helper contribution" is a meaningful assertion, not just "no message".
+    const claimed = await recordProjectConnectionIfUnderCap('discord', owner, 'discord', requester, 333);
+    assert.ok(claimed, 'seed connection request claims a slot');
+
+    const wasEnabled = config.findHelper.enabled;
+    mutable(config.findHelper).enabled = false;
+    const querySpy = t.mock.method(pool, 'query');
+
+    let message: string | null;
+    try {
+      message = await buildMemberDigestContent();
+    } finally {
+      mutable(config.findHelper).enabled = wasEnabled;
+    }
+
+    assert.match(
+      message ?? '',
+      /🤝 \d+ members? connected with help or a collaborator this week\./,
+      'the seeded project connection alone still renders the connections section',
+    );
+
+    const issuedHelperNotificationsQuery = querySpy.mock.calls.some((call) =>
+      String(call.arguments[0]).includes('helper_notifications'),
+    );
+    assert.ok(
+      !issuedHelperNotificationsQuery,
+      'SECURITY: the helper_notifications COUNT(*) is never issued while the flag is off — fail-safe by construction (config.findHelper.enabled resolves straight to Promise.resolve(0)), not merely a zero result',
+    );
+
+    await pool.query(`DELETE FROM project_connection_requests WHERE owner_user_id = $1`, [owner]);
+  },
+);
+
+test(
+  'buildMemberDigestContent: with config.findHelper.enabled true, connectionCount reflects countHelperMatchesSince(since) + countProjectConnectionsSince(since) and renders on the connections section (issue #1012 acceptance criteria 2, 3)',
+  { skip },
+  async () => {
+    const marker = `t${Date.now()}${Math.floor(Math.random() * 1e6)}-findhelperon`;
+    const helperOwner = `${marker}-helper`;
+    const helperRequester = `${marker}-requester`;
+    const projectOwner = `${marker}-projowner`;
+    const projectRequester = `${marker}-projrequester`;
+    const since = new Date(Date.now() - 7 * 86_400_000);
+
+    const helperBefore = await countHelperMatchesSince(since);
+    const projectBefore = await countProjectConnectionsSince(since);
+
+    const claimedHelper = await recordHelperNotificationIfUnderCap(
+      'discord',
+      helperOwner,
+      'discord',
+      helperRequester,
+      `${marker}-topic`,
+    );
+    assert.ok(claimedHelper, 'seed helper notification claims a slot');
+    const claimedProject = await recordProjectConnectionIfUnderCap(
+      'discord',
+      projectOwner,
+      'discord',
+      projectRequester,
+      444,
+    );
+    assert.ok(claimedProject, 'seed project connection claims a slot');
+
+    const wasEnabled = config.findHelper.enabled;
+    mutable(config.findHelper).enabled = true;
+
+    let message: string | null;
+    try {
+      message = await buildMemberDigestContent();
+    } finally {
+      mutable(config.findHelper).enabled = wasEnabled;
+    }
+
+    const expectedCount = helperBefore + 1 + (projectBefore + 1);
+    assert.match(
+      message ?? '',
+      new RegExp(`🤝 ${expectedCount} members connected with help or a collaborator this week\\.`),
+      'connectionCount is the sum of both seeded signals',
+    );
+
+    await pool.query(`DELETE FROM helper_notifications WHERE helper_user_id = $1`, [helperOwner]);
+    await pool.query(`DELETE FROM project_connection_requests WHERE owner_user_id = $1`, [projectOwner]);
+  },
+);
 
 test(
   "SECURITY: buildMemberDigestContent (the shared gather both community_digest and /digest call) never touches member_digest_sends — repeated on-demand pulls leave wasMemberDigestSentRecently's answer unchanged, and a subsequent makeDefaultMemberDigestRun tick still posts on its normal freshness-guarded cadence (issue #841 acceptance criterion 6)",
@@ -1444,6 +1732,8 @@ test(
         // config.releaseWatch.enabled true — an order dependency, not a contract.
         getNewInterestCount: async () => 0,
         getReleaseWatchUpdates: async () => [],
+        getHelperMatchesCount: async () => 0,
+        getProjectConnectionsCount: async () => 0,
         recordSent: async () => {
           recordCalled = true;
         },

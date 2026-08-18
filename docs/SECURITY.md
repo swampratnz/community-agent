@@ -977,6 +977,14 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
     already has on this surface. Clamped to the number of knowledge titles
     actually shown, so it can never read as claiming more member
     contributions than the post displays.
+  - The member→member connections line (issue #1012,
+    `countHelperMatchesSince` gated behind `config.findHelper.enabled` +
+    `countProjectConnectionsSince`, unconditional): the same two throughput
+    counts `adminDigest.ts` already renders admin-only (#820/#870), now also
+    surfaced here as a single combined integer — widening only *where* the
+    aggregate is shown, never what it contains. Neither source function
+    returns an identity, topic, or project name, so this line carries the
+    same structural guarantee as `newProjectCount`/`newInterestCount` above.
 - **Suggestions** (`suggestions`, issue #46): member-authored improvement
   ideas for the bot. No new data class (members' messages are already
   stored; guests, whose content is never stored in gated mode, have no
