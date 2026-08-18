@@ -51,6 +51,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   alongside its match %, and — unlike `knowledge_search` — includes weak
   matches so a loosely-remembered entry is still reachable, ready to pass
   straight to `update_knowledge`/`delete_knowledge`/`merge_knowledge`.
+- **The weekly member digest now shows member→member connections made this
+  week** (#1012): `find_helper` and `request_project_connection` quietly
+  connect members one DM at a time, so nobody outside admin digests ever saw
+  proof that either was working. The digest now adds a single "N members
+  connected with help or a collaborator this week" line — a bare combined
+  count, never who connected or what about, same as the existing new-projects
+  and new-interests lines — so the whole community can see the flywheel is
+  real, not just admins.
 
 ## 2026-08-18
 

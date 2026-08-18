@@ -1454,6 +1454,14 @@ test("a member caller passes the /digest gate, defers before any DB read, and re
     if (sql.includes('FROM member_interests')) {
       return { rows: [{ n: '0' }], rowCount: 0 };
     }
+    // countHelperMatchesSince / countProjectConnectionsSince (issue #1012) —
+    // the 7th/8th reads buildMemberDigestContent now issues.
+    if (sql.includes('FROM helper_notifications')) {
+      return { rows: [{ n: '0' }], rowCount: 0 };
+    }
+    if (sql.includes('FROM project_connection_requests')) {
+      return { rows: [{ n: '0' }], rowCount: 0 };
+    }
     if (sql.includes('FROM knowledge')) {
       return { rows: [], rowCount: 0 };
     }
@@ -1487,6 +1495,8 @@ test('/digest replies with the fixed "Nothing to report right now." text when bu
     if (sql.includes('FROM knowledge_candidates')) return { rows: [{ n: '0' }], rowCount: 0 };
     if (sql.includes('FROM member_projects')) return { rows: [{ n: '0' }], rowCount: 0 };
     if (sql.includes('FROM member_interests')) return { rows: [{ n: '0' }], rowCount: 0 };
+    if (sql.includes('FROM helper_notifications')) return { rows: [{ n: '0' }], rowCount: 0 };
+    if (sql.includes('FROM project_connection_requests')) return { rows: [{ n: '0' }], rowCount: 0 };
     // FROM context_digests and the generic FROM knowledge (curated titles)
     // branches both resolve to an empty row set — every input empty renders
     // null (formatMemberDigestMessage's own silence-over-noise contract).
@@ -1525,6 +1535,8 @@ test('SECURITY: /digest never wraps its reply in untrusted() — unlike communit
     if (sql.includes('FROM knowledge_candidates')) return { rows: [{ n: '0' }], rowCount: 0 };
     if (sql.includes('FROM member_projects')) return { rows: [{ n: '0' }], rowCount: 0 };
     if (sql.includes('FROM member_interests')) return { rows: [{ n: '0' }], rowCount: 0 };
+    if (sql.includes('FROM helper_notifications')) return { rows: [{ n: '0' }], rowCount: 0 };
+    if (sql.includes('FROM project_connection_requests')) return { rows: [{ n: '0' }], rowCount: 0 };
     return { rows: [], rowCount: 0 };
   }) as typeof pool.query);
   const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
@@ -1640,6 +1652,8 @@ test("a successful /digest invocation calls recordShortcutHit('slash_command') e
     if (sql.includes('FROM knowledge_candidates')) return { rows: [{ n: '0' }], rowCount: 0 };
     if (sql.includes('FROM member_projects')) return { rows: [{ n: '0' }], rowCount: 0 };
     if (sql.includes('FROM member_interests')) return { rows: [{ n: '0' }], rowCount: 0 };
+    if (sql.includes('FROM helper_notifications')) return { rows: [{ n: '0' }], rowCount: 0 };
+    if (sql.includes('FROM project_connection_requests')) return { rows: [{ n: '0' }], rowCount: 0 };
     return { rows: [], rowCount: 0 };
   }) as typeof pool.query);
   const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
