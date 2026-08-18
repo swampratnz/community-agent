@@ -15,6 +15,7 @@ overlapping:
 | [`DEPLOYMENT.md`](DEPLOYMENT.md) | The production host: systemd units, the redeploy timer, rollback |
 | [`SECURITY.md`](SECURITY.md) | The threat model the guardrails below implement |
 | [`STANDARDS.md`](STANDARDS.md) | What a contributor must do before pushing |
+| [`PIPELINE-PLAYBOOK.md`](PIPELINE-PLAYBOOK.md) | How to adopt this automation on a DIFFERENT repo — assessment, staged rollout, portable failure modes |
 
 When this file and `PIPELINE.md` disagree about a loop's *rationale*,
 `PIPELINE.md` wins. When they disagree about a trigger, permission or
