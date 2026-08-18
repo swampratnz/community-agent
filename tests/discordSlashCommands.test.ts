@@ -37,7 +37,12 @@ const { resetPolicyCacheForTests } = await import('@swampratnz/agent-base/storag
 // list; here this file makes it, in the same order.
 await import('./support/registerCommands.js');
 const { bindCommunitySlashCommands } = await import('../src/module/platforms/discord/slashCommands.js');
-bindCommunitySlashCommands();
+// /events needs a live adapter threaded in (issue #1004) — the initial bind
+// just needs SOME adapter to satisfy the signature; events-specific tests
+// below rebind with their own adapter (bindCommunitySlashCommands refreshes
+// the stored reference on every call, independent of the one-time `bound`
+// registration latch) so they dispatch against a mocked listUpcomingEvents.
+bindCommunitySlashCommands(new DiscordAdapter(DISCORD_TEXT_PACK));
 const { handleInteraction, buildSlashCommands, registerSlashCommands } =
   await import('@swampratnz/agent-base/platforms/discord/slashDispatch.js');
 const { buildMemberDigestContent } = await import('../src/module/memberDigest.js');
