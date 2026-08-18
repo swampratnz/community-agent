@@ -38,6 +38,15 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   own gate; an unrecognised or argument-bearing `!warnings` message falls
   through to ordinary chat, same as the other WhatsApp shortcuts.
 
+### Fixed
+- **Weekly admin digest no longer silently vanishes when your WhatsApp window
+  is closed.** (#998) If you're an admin on the WhatsApp Cloud path and your
+  24-hour customer-service window happened to be closed when the weekly
+  digest job ran, that week's digest used to just disappear — no retry, no
+  record. It now queues instead, and arrives as soon as you next message the
+  bot, the same recovery every other admin/member notification DM already
+  had.
+
 ## 2026-08-17
 
 ### Changed

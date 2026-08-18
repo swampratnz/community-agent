@@ -39,6 +39,7 @@
     "tests/platformRegistry.test.ts",
     "tests/projectScope.test.ts",
     "tests/repeatQuestionShortcutRouter.test.ts",
+    "tests/reusableWorkflows.test.ts",
     "tests/routerInterceptChain.test.ts",
     "tests/schemaConstraintIdempotency.test.ts",
     "tests/toolTierMap.test.ts",

@@ -3330,10 +3330,23 @@ dead" (e.g. a banned WhatsApp number stuck in Baileys' reconnect loop).
   window-closed sibling case. Still-open growth path (deliberately excluded
   from #888's scope): `router.ts`'s `notifyAccessRequest` and
   `alertSuperAdminsBudgetCheckFailed`, `agent/core.ts`'s usage-limit alert,
-  `adminDigest.ts`'s per-admin digest send (a single `await`/`try`/`catch`,
-  not a per-recipient loop), and `health.ts`'s `flushPendingAlerts` itself
-  (queuing a flush-failure back into the window-reopen queue needs its own
-  analysis to avoid a resend loop).
+  and `health.ts`'s `flushPendingAlerts` itself (queuing a flush-failure back
+  into the window-reopen queue needs its own analysis to avoid a resend
+  loop).
+- **Window-reopen recovery extended to `adminDigest.ts`'s per-admin digest
+  send** (issue #998) — the one remaining named gap from #888's list above.
+  The single `await adapter.sendDirectMessage(...)` call in
+  `runAdminDigestOnce` is now wrapped in its own inner `try`/`catch`: a
+  `WindowClosedError` with a truthy `adapter.queueForWindowReopen` queues via
+  `queueForWindowReopen(admin.platformUserId, message, 'low')` and falls
+  through to `recordAdminDigestSent`/counts that admin as succeeded, same as
+  a successful send (matching #888's precedent that a queued send is treated
+  as delivered). `'low'`, not `'system'` — a per-admin DM matching #644's
+  per-recipient tier, not #888's six super-admin-only broadcasts. Any other
+  rejection rethrows into the existing outer catch, unchanged:
+  logged-and-dropped, `succeeded` not incremented. No new queue, no new
+  mechanism: the same capped-at-3-per-recipient, priority-aware queue above
+  now has 6 producers instead of 5.
 - **`/healthz`** (opt-in via `HEALTH_PORT`) — unauthenticated `GET` returning
   `{status: "ok"|"degraded", db: boolean, adapters: {discord: boolean,
   whatsapp: boolean}}`. No message content or user ids in the response.
