@@ -482,55 +482,34 @@ jobs:
 
       # Deterministic safety net for the incremental-push mandate: agents have
       # completed multi-hour builds and still never pushed (issue #633's third
-      # attempt: implementation done, gates green, zero pushes — everything
-      # died with the runner). Prompt-only compliance is unreliable, so after
-      # the agent has EXITED, push whatever it committed. This is the #663
-      # adversarial review's own recommended shape: a post-step publish with
-      # the job's GITHUB_TOKEN (valid for the whole job, unlike the ~1h App
-      # token), no adversarial-exfil window (the agent process is gone), and
-      # branch pushes trigger no workflows. If the remote branch exists with
-      # different history (a prior attempt), the checkpoint goes to a unique
-      # -ckpt-<run_id> ref instead of force-pushing over anything.
+      # attempt: implementation done, gates green, zero pushes — everything died
+      # with the runner). Prompt-only compliance is unreliable, so after the
+      # agent has EXITED, push whatever it committed.
+      #
+      # Shared with the three PR-repair loops since the extraction — the copies
+      # had drifted, and this worker's was the one MISSING the 40-hex guard on
+      # the `gh api` lookup and the ancestor pre-check. It has no PR yet, so it
+      # passes no pr-number (no recovery comment) and no head-before (the
+      # "did the agent commit anything" test falls back to "is HEAD ahead of
+      # main"). Pinned to @main, never `./` — see the action's header.
       - name: Checkpoint unpushed work (deterministic)
+        id: checkpoint
         if: always() && env.HAS_TOKEN == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-          if [ -z "${branch}" ] || [ "${branch}" = "main" ] || [ "${branch}" = "HEAD" ]; then
-            echo "No work branch in the workspace — nothing to checkpoint."; exit 0
-          fi
-          ahead="$(git rev-list --count origin/main..HEAD 2>/dev/null || echo 0)"
-          if [ "${ahead}" -eq 0 ]; then
-            echo "No commits beyond origin/main — nothing to checkpoint."; exit 0
-          fi
-          head_sha="$(git rev-parse HEAD)"
-          remote_sha="$(gh api "repos/${{ github.repository }}/git/ref/heads/${branch}" --jq '.object.sha' 2>/dev/null || true)"
-          if [ "${remote_sha}" = "${head_sha}" ]; then
-            echo "Branch ${branch} already pushed at ${head_sha}.";
-            echo "CKPT_REF=${branch}" >> "$GITHUB_ENV"; echo "CKPT_SHA=${head_sha}" >> "$GITHUB_ENV"
-            exit 0
-          fi
-          push_url="https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
-          if git push "${push_url}" "HEAD:refs/heads/${branch}" 2>/dev/null; then
-            echo "Checkpointed ${branch} at ${head_sha}."
-            echo "CKPT_REF=${branch}" >> "$GITHUB_ENV"; echo "CKPT_SHA=${head_sha}" >> "$GITHUB_ENV"
-          else
-            alt="${branch}-ckpt-${{ github.run_id }}"
-            if git push "${push_url}" "HEAD:refs/heads/${alt}"; then
-              echo "Remote ${branch} diverged; checkpointed to ${alt} at ${head_sha}."
-              echo "CKPT_REF=${alt}" >> "$GITHUB_ENV"; echo "CKPT_SHA=${head_sha}" >> "$GITHUB_ENV"
-            else
-              echo "::warning::Checkpoint push failed — unpushed work will die with this runner."
-            fi
-          fi
+        uses: swampratnz/community-agent/.github/actions/agent-checkpoint@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Verify a PR was produced (else escalate + fail loudly)
         id: verify
         if: always() && env.HAS_TOKEN == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The surviving-branch pointer this step publishes, from the shared
+          # checkpoint action. Previously the checkpoint step wrote these two
+          # straight to $GITHUB_ENV; an action reports them as outputs, so they
+          # are re-bound here and the script below reads them unchanged.
+          CKPT_REF: ${{ steps.checkpoint.outputs.ref }}
+          CKPT_SHA: ${{ steps.checkpoint.outputs.sha }}
         run: |
           set -euo pipefail
 
