@@ -3404,6 +3404,7 @@ test('community_info: super_admin reply stays under a hard char cap, not a wall 
   // alongside the admin cap for issue #1008's find_knowledge clause.
   assert.ok(
     superAdminReply.length < 5120,
+    `super_admin reply should stay short; was ${superAdminReply.length} chars`,
   );
 });
 
