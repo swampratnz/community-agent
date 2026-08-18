@@ -3,11 +3,15 @@ import { config } from '@swampratnz/agent-base/config.js';
 import { logger } from '@swampratnz/agent-base/logger.js';
 import { resolveRole } from '@swampratnz/agent-base/auth/roles.js';
 import { atLeast, toolsForRole } from '@swampratnz/agent-base/auth/rbac.js';
+import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 import { getCommunityGuidelines, getCommunityGuidelinesMi } from '../../storage/policies.js';
 import { buildMemberDigestContent } from '../../memberDigest.js';
 import { formatStatusMessage, getStatusCache } from '../../status/anthropicStatus.js';
+import { formatMyWarningsText } from '../../agent/tools/selfService.js';
+import { EVENTS_LIST_LIMIT, formatUpcomingEvents } from '../../agent/tools/info.js';
 import {
   areKnowledgeEntriesLowRated,
+  countActiveWarnings,
   getLanguagePreference,
   hasConflictAmongIds,
   listOwnProjects,
@@ -292,6 +296,77 @@ async function handleHelp(interaction: ChatInputCommandInteraction, deps: SlashC
 }
 
 /**
+ * `my_warnings` is structurally in MEMBER_TOOLS but adds its own runtime
+ * floor (`minTier: 'member'`), same shape as `/digest`/`/whois`/`/projects`
+ * above — mirrored here via `toolsForRole` + `atLeast`. No options: always
+ * the caller's own identity, never a model-/interaction-supplied id (issue
+ * #1000).
+ */
+async function handleWarnings(
+  interaction: ChatInputCommandInteraction,
+  deps: SlashCommandDeps,
+): Promise<void> {
+  await deferEphemeral(interaction);
+  const role = await resolveRole('discord', interaction.user.id);
+  if (!toolsForRole(role, 'discord').includes('mcp__community__my_warnings') || !atLeast(role, 'member')) {
+    await replyEphemeral(interaction, NOT_AUTHORIZED_TEXT, deps);
+    return;
+  }
+  const limit = config.moderation.strikeLimit;
+  const windowDays = config.moderation.strikeWindowDays;
+  const active = await countActiveWarnings('discord', interaction.user.id);
+  const windowed =
+    active > 0 && active < limit && windowDays
+      ? await countActiveWarnings('discord', interaction.user.id, windowDays)
+      : null;
+  const message = formatMyWarningsText(active, limit, windowed);
+  recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
+  await replyEphemeral(interaction, message, deps);
+}
+
+/**
+ * `list_events` is structurally in MEMBER_TOOLS with no extra runtime floor
+ * beyond `toolsForRole` (unlike `/warnings`/`/whois`/`/projects`/`/digest`
+ * above) — mirrored here exactly like `/kb`'s gate (issue #1004). Takes no
+ * options: identity/data come only from `resolveRole` and the injected
+ * adapter, never from the interaction payload.
+ */
+async function handleEvents(interaction: ChatInputCommandInteraction, deps: SlashCommandDeps): Promise<void> {
+  await deferEphemeral(interaction);
+  const role = await resolveRole('discord', interaction.user.id);
+  if (!toolsForRole(role, 'discord').includes('mcp__community__list_events')) {
+    await replyEphemeral(interaction, NOT_AUTHORIZED_TEXT, deps);
+    return;
+  }
+  // Degrades the same way the list_events tool itself does when the adapter
+  // doesn't implement the optional capability — never reachable in practice
+  // since /events is only ever registered on the Discord adapter, but kept
+  // for parity with the tool's own guard rather than assuming.
+  if (!discordAdapter?.listUpcomingEvents) {
+    await replyEphemeral(interaction, "Event listings aren't available on discord.", deps);
+    return;
+  }
+  const events = await discordAdapter.listUpcomingEvents(EVENTS_LIST_LIMIT);
+  const message = events.length === 0 ? 'No upcoming events.' : formatUpcomingEvents(events);
+  recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
+  await replyEphemeral(interaction, message, deps);
+}
+
+/**
+ * `/events` is the first command whose data source is an adapter method
+ * (`listUpcomingEvents`) rather than a repository read, so binding needs the
+ * live Discord adapter instance, not just the command list (issue #1004).
+ * Assigned on EVERY call, independent of the `bound` idempotency latch below
+ * — `handleEvents` reads this at dispatch time, not at bind time, so a second
+ * `createConfiguredAdapters()` call (tests build adapters more than once per
+ * process) refreshes the reference to the new, live adapter even though the
+ * command registration itself only ever happens once. Without this, the
+ * `events` binding created on the FIRST call would stay closed over that
+ * call's (now torn-down/stale) adapter instance forever.
+ */
+let discordAdapter: PlatformAdapter | undefined;
+
+/**
  * Bind each registry entry's Discord half (registration JSON + handler).
  *
  * Called from `createConfiguredAdapters()`, NOT at module scope. Binding
@@ -308,7 +383,8 @@ async function handleHelp(interaction: ChatInputCommandInteraction, deps: SlashC
  * adapters more than once per process.
  */
 let bound = false;
-export function bindCommunitySlashCommands(): void {
+export function bindCommunitySlashCommands(adapter: PlatformAdapter): void {
+  discordAdapter = adapter;
   if (bound) return;
   bound = true;
   bindDiscordCommand('kb', {
@@ -380,6 +456,22 @@ export function bindCommunitySlashCommands(): void {
         .setDescription('Check whether Anthropic has a known service incident right now.')
         .toJSON(),
     handle: handleStatus,
+  });
+  bindDiscordCommand('warnings', {
+    build: () =>
+      new SlashCommandBuilder()
+        .setName('warnings')
+        .setDescription('Check your own active auto-moderation warning count.')
+        .toJSON(),
+    handle: handleWarnings,
+  });
+  bindDiscordCommand('events', {
+    build: () =>
+      new SlashCommandBuilder()
+        .setName('events')
+        .setDescription('List upcoming Discord scheduled meetups/events.')
+        .toJSON(),
+    handle: handleEvents,
   });
   bindDiscordCommand('help', {
     build: () =>

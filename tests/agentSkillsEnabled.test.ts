@@ -73,9 +73,11 @@ test('SECURITY: AC2 — AGENT_SKILLS_ENABLED=true adds Skill to tools and loads 
         'project-showcase',
         'claude-code-setup',
         'getting-started',
+        'knowledge-contribution',
       ],
       `${role}: skills must be exactly ['prompt-review', 'model-and-plan-selection', ` +
-        `'agent-architecture-review', 'project-showcase', 'claude-code-setup', 'getting-started']`,
+        `'agent-architecture-review', 'project-showcase', 'claude-code-setup', 'getting-started', ` +
+        `'knowledge-contribution']`,
     );
   }
 });
@@ -90,6 +92,7 @@ test("SECURITY: AC6/AC7 (#755) — skills is always the literal ENABLED_SKILLS a
       'project-showcase',
       'claude-code-setup',
       'getting-started',
+      'knowledge-contribution',
     ]);
     assert.notEqual(opts.skills, 'all');
   }
@@ -117,6 +120,41 @@ test("SECURITY: issue #757 — claude-code-setup resolves to the bundled SKILL.m
       opts.disallowedTools,
       ['Task', 'WebFetch', ...(webSearch ? [] : ['WebSearch'])],
       `${role}: disallowedTools must be unaffected by adding claude-code-setup to ENABLED_SKILLS`,
+    );
+  }
+});
+
+test("SECURITY: issue #1001 — knowledge-contribution resolves to the bundled SKILL.md, grants no new tool access, and changes no role's disallowedTools", async () => {
+  const { toolsForRole } = await import('@swampratnz/agent-base/auth/rbac.js');
+  const skillPath = join(
+    dirname(fileURLToPath(import.meta.url)),
+    '../src/module/agent/skills/knowledge-contribution/SKILL.md',
+  );
+  const body = readFileSync(skillPath, 'utf8');
+  assert.match(
+    body,
+    /^---\nname: knowledge-contribution\n/,
+    'SKILL.md must carry valid knowledge-contribution front-matter',
+  );
+  for (const role of ['guest', 'member', 'admin', 'super_admin'] as const) {
+    const opts = buildQueryOptions(role, 'prompt', {}, null, 'conv-1', 'discord');
+    assert.ok(
+      opts.skills?.includes('knowledge-contribution'),
+      `${role}: skills must include knowledge-contribution when the flag is on`,
+    );
+    const webSearch = role === 'admin' || role === 'super_admin';
+    assert.deepEqual(
+      opts.disallowedTools,
+      ['Task', 'WebFetch', ...(webSearch ? [] : ['WebSearch'])],
+      `${role}: disallowedTools must be unaffected by adding knowledge-contribution to ENABLED_SKILLS`,
+    );
+    const expected = [...toolsForRole(role, 'discord'), ...(webSearch ? ['WebSearch'] : [])].filter(
+      (t) => !(FEATURE_FLAGGED_TOOLS as readonly string[]).includes(t),
+    );
+    assert.deepEqual(
+      [...opts.allowedTools].sort(),
+      [...expected].sort(),
+      `${role}: allowedTools must be unaffected by knowledge-contribution — no new MCP tool surface`,
     );
   }
 });
@@ -295,5 +333,9 @@ test('SECURITY: AC5 — the bundled skill plugin directory contains no hooks/, a
   assert.ok(
     files.some((f) => f.endsWith(join('getting-started', 'SKILL.md'))),
     'expected getting-started/SKILL.md to be present',
+  );
+  assert.ok(
+    files.some((f) => f.endsWith(join('knowledge-contribution', 'SKILL.md'))),
+    'expected knowledge-contribution/SKILL.md to be present',
   );
 });

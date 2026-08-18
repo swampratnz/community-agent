@@ -6,6 +6,7 @@ import { getCommunityGuidelines, getCommunityGuidelinesMi } from '../../storage/
 import { getLanguagePreference } from '@swampratnz/agent-base/storage/repository.js';
 import { formatStatusMessage, getStatusCache } from '../../status/anthropicStatus.js';
 import { formatEventTime } from '@swampratnz/agent-base/util/eventTime.js';
+import type { UpcomingEvent } from '@swampratnz/agent-base/platforms/types.js';
 import { text } from './helpers.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
@@ -67,6 +68,7 @@ const WHATSAPP_TEXT_COMMANDS_TEXT =
   '- `!guidelines` — community guidelines\n' +
   "- `!digest` — this week's digest\n" +
   '- `!status` — check for a known Anthropic outage\n' +
+  '- `!warnings` — your own active warning count\n' +
   '- `!help` — this capability rundown';
 
 /**
@@ -78,7 +80,8 @@ const WHATSAPP_TEXT_COMMANDS_TEXT =
  * (moderate, clear_warnings, archive_thread) come first, mirroring
  * MEMBER_CAPABILITIES_TEXT's own "most safety-relevant first" convention.
  * No interpolation of any runtime/tool argument — static text only, same
- * trust level as MEMBER_CAPABILITIES_TEXT.
+ * trust level as MEMBER_CAPABILITIES_TEXT. Issue #1008 added the
+ * find_knowledge clause to the knowledge-curation line.
  */
 const ADMIN_CAPABILITIES_TEXT =
   'As an admin, you also have:\n' +
@@ -86,9 +89,10 @@ const ADMIN_CAPABILITIES_TEXT =
   "- Manage membership: add a new member, remove a member, link a member's cross-platform identity, or unlink a member's cross-platform identity\n" +
   '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, check which knowledge entries are rated poorly, and review recurring unhelpful-answer themes across all answers\n' +
   '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
-  '- Curate the knowledge base: save a new knowledge entry, browse knowledge entries, edit a knowledge entry, delete a knowledge entry, or merge two entries together, and check for near-duplicate entries or conflicting entries\n' +
+  "- Curate the knowledge base: save a new knowledge entry, browse knowledge entries, semantically find a knowledge entry's id by what it says, edit a knowledge entry, delete a knowledge entry, or merge two entries together, and check for near-duplicate entries or conflicting entries\n" +
   "- Review knowledge candidates, accept a candidate or decline a candidate, track knowledge gaps (questions I couldn't answer), recurring question clusters, raw context digests, pull your own admin-digest snapshot on demand, get a review-queue roll-up of all five review queues at once, or check how quickly I've been answering members (response latency)\n" +
-  '- See who is waiting for access, or who has joined or left the server\n' +
+  '- See who is waiting for access, decline a pending access request without granting it, or see who ' +
+  'has joined or left the server\n' +
   "- Add a note about a member, review notes on a member, delete a note, or look up a member's history across conversations\n" +
   '- Set the community guidelines or the welcome message shown to new members\n' +
   '- Assign a Discord role, remove a Discord role, or list which roles are available to assign\n' +
@@ -147,6 +151,27 @@ export function formatCommunityInfoText(role: Tier, platform: Platform): string 
     return `${memberSegment}\n${ADMIN_CAPABILITIES_TEXT}`;
   }
   return memberSegment;
+}
+
+/**
+ * Pure render of `listUpcomingEvents`' rows into `list_events`' reply text —
+ * hoisted out of the tool handler (issue #1004) so the `/events` slash
+ * command can call the exact same formatting, mirroring how
+ * `formatProjectResults`/`formatInterestResults` were hoisted out of
+ * `agent/tools.ts`'s tool-factory closure for the same reason. Caller must
+ * handle the empty-list case ("No upcoming events.") itself, matching the
+ * tool handler below.
+ */
+export function formatUpcomingEvents(events: readonly UpcomingEvent[]): string {
+  return events
+    .map((e) => {
+      const when = e.scheduledEndAt
+        ? `${formatEventTime(e.scheduledStartAt)} – ${formatEventTime(e.scheduledEndAt)}`
+        : formatEventTime(e.scheduledStartAt);
+      const desc = e.description ? `: ${e.description}` : '';
+      return `- ${e.name} (${when}) @ ${e.location}${desc} [id: ${e.id}]`;
+    })
+    .join('\n');
 }
 
 export const infoTools = [
@@ -224,17 +249,7 @@ export const infoTools = [
       }
       const events = await adapter.listUpcomingEvents(EVENTS_LIST_LIMIT);
       if (events.length === 0) return text('No upcoming events.');
-      return text(
-        events
-          .map((e) => {
-            const when = e.scheduledEndAt
-              ? `${formatEventTime(e.scheduledStartAt)} – ${formatEventTime(e.scheduledEndAt)}`
-              : formatEventTime(e.scheduledStartAt);
-            const desc = e.description ? `: ${e.description}` : '';
-            return `- ${e.name} (${when}) @ ${e.location}${desc} [id: ${e.id}]`;
-          })
-          .join('\n'),
-      );
+      return text(formatUpcomingEvents(events));
     },
   }),
 ];

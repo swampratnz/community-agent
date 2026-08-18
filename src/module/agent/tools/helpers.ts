@@ -339,6 +339,39 @@ export function formatKnowledgeSearchResults(
 }
 
 /**
+ * Pure renderer for `find_knowledge` (issue #1008): hits in, admin reply text
+ * out — exported separately from the tool handler so the id-rendering,
+ * ranking, and empty-KB message are unit-testable without a DB round trip,
+ * the same split `formatKnowledgeSearchResults`/`formatKnowledgeTopics` use.
+ * Unlike `formatKnowledgeSearchResults`, no relevance floor is applied here —
+ * the handler passes `searchKnowledge`'s hits through unfiltered, so this
+ * only formats whatever it is given, in the order given (`searchKnowledge`'s
+ * own similarity-descending order) — a weak match still renders, with its
+ * match % visibly low, rather than being silently dropped.
+ */
+export function formatFoundKnowledge(
+  hits: ReadonlyArray<{
+    id: number;
+    title: string | null;
+    content: string;
+    similarity: number;
+    updatedAt: Date;
+  }>,
+): string {
+  if (hits.length === 0) return 'No knowledge entries found.';
+  return untrusted(
+    'Knowledge search results',
+    hits
+      .map(
+        (h) =>
+          `#${h.id} (${(h.similarity * 100).toFixed(0)}% match) ${h.title ? `${h.title}: ` : ''}` +
+          `${h.content.slice(0, 200)} (updated ${h.updatedAt.toISOString()})`,
+      )
+      .join('\n'),
+  );
+}
+
+/**
  * Pure renderer for `list_knowledge_topics` (issue #437): titles in, reply
  * text out — exported separately from the tool handler so the empty-KB and
  * truncation-note edge cases are unit-testable without a DB round trip, same

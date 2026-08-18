@@ -24,9 +24,52 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #963 #964 #965 #968 #971 #983 #988 #989
 -->
 
+## 2026-08-19
+
+### Added
+- **`decline_access_request` — admins can now close out an unwanted access
+  request without granting it** (#1006): previously the only resolution path
+  for a pending gated-access request was `add_member`, so a spam signup, an
+  obvious throwaway, or a request an admin simply judged not worth granting
+  had no way to stop nagging the weekly digest short of granting membership
+  to someone the admin didn't want to admit. `decline_access_request` clears
+  the request (same underlying effect `add_member` already had as a side
+  effect) without conferring any tier or data access — a fresh request from
+  the same person simply re-queues later if they ask again.
+- **`/events` (Discord) — a zero-wait shortcut listing upcoming Discord
+  scheduled meetups/events** (#1004): the same deterministic answer the
+  `list_events` chat tool gives (id, name, start/end time, location,
+  description), without spending an agent turn. Gated purely on your access
+  to the underlying tool — no extra tier floor, matching `/kb`. Discord-only,
+  with no `!events` WhatsApp equivalent, since the underlying event data
+  itself only exists on Discord.
+- **`find_knowledge` (admin) — semantic knowledge search that returns entry
+  ids** (#1008): closes the gap where `list_knowledge` returns ids but can't
+  search, and `knowledge_search` searches but hides ids. Reuses the same
+  semantic search `knowledge_search` already calls, renders each hit's `#id`
+  alongside its match %, and — unlike `knowledge_search` — includes weak
+  matches so a loosely-remembered entry is still reachable, ready to pass
+  straight to `update_knowledge`/`delete_knowledge`/`merge_knowledge`.
+
 ## 2026-08-18
 
 ### Added
+- **Coaching for sharing a tip via `suggest_knowledge`.** (#1001) When Agent
+  Skills are enabled, sharing a hard-won answer or workaround now gets a
+  nudge toward a specific FAQ-style title and concrete content, a suggestion
+  to search first so an obvious existing tip doesn't get bounced, a plain
+  explanation that it goes to admin review rather than publishing
+  immediately, and a hand-off to `suggest_improvement` if what you actually
+  meant was a feature or bug idea.
+- **`/warnings` (Discord) and `!warnings` (WhatsApp) — a zero-wait shortcut
+  for your own active auto-moderation warning count** (#1000): the same
+  deterministic answer the `my_warnings` chat tool gives, without spending an
+  agent turn. `/warnings` is ephemeral (visible only to you), which matters
+  more here than for any other shortcut in this family since a warning count
+  is the one thing worth keeping out of a public channel. `!warnings` needs
+  member tier and `WHATSAPP_TEXT_COMMANDS_ENABLED`, matching `my_warnings`'
+  own gate; an unrecognised or argument-bearing `!warnings` message falls
+  through to ordinary chat, same as the other WhatsApp shortcuts.
 - **`/help` (Discord) and `!help` (WhatsApp)** (#993) give `community_info`'s
   capability rundown — "what can you do?" — a zero-cost command, like
   `/guidelines`, `/digest`, and the other existing shortcuts. Asking the bot
@@ -34,8 +77,6 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   to the same answer, alongside `/kb`, `/whois`, `/projects`, `/guidelines`,
   and `/digest`. `!help` needs the WhatsApp shortcuts flag enabled, same as
   its siblings.
-
-## 2026-08-18
 
 ### Fixed
 - **Weekly admin digest no longer silently vanishes when your WhatsApp window

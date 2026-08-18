@@ -66,6 +66,7 @@ const { makeRouterDeps } = await import('../src/module/routerWiring.js');
 const { countRepliesToUser } = await import('@swampratnz/agent-base/storage/repository.js');
 const { formatStatusMessage, getStatusCache, pollAnthropicStatus, resetStatusCacheForTests } =
   await import('../src/module/status/anthropicStatus.js');
+const { formatMyWarningsText } = await import('../src/module/agent/tools/selfService.js');
 
 const RUN = `wa-cmd-router-${Date.now()}`;
 
@@ -220,6 +221,37 @@ function mockPoolRole(
     }
     return { rows: [], rowCount: 0 };
   }) as typeof pool.query);
+}
+
+/**
+ * Mocks `pool.query`'s role + `countActiveWarnings` (`FROM member_warnings`)
+ * branches exactly ONCE (`t.mock.method` may only be called once per method
+ * per test — a second call on the same test's `t` leaves `pool.query`
+ * permanently stuck on an intermediate mock instead of restoring the real
+ * implementation at teardown, which silently broke acceptance criterion 8's
+ * real-DB assertion further down this file when discovered during review).
+ * Callers that need to vary the counts across several `trigger()` calls
+ * within one test mutate the returned ref object instead of re-mocking.
+ */
+function mockPoolRoleAndWarnings(
+  t: { mock: { method: typeof import('node:test').mock.method } },
+  role: 'admin' | 'member' | null,
+  activeWarnings = 0,
+  windowedWarnings = 0,
+): { active: number; windowed: number } {
+  const ref = { active: activeWarnings, windowed: windowedWarnings };
+  t.mock.method(pool, 'query', (async (sql: string, params: unknown[] = []) => {
+    if (sql.includes('SELECT role FROM community_users')) {
+      return { rows: role ? [{ role }] : [], rowCount: 0 };
+    }
+    if (sql.includes('FROM member_warnings')) {
+      const windowDays = params[2];
+      const n = windowDays == null ? ref.active : ref.windowed;
+      return { rows: [{ n }], rowCount: 0 };
+    }
+    return { rows: [], rowCount: 0 };
+  }) as typeof pool.query);
+  return ref;
 }
 
 test('config: WHATSAPP_TEXT_COMMANDS_ENABLED=true is reflected in config.behaviour.whatsappTextCommandsEnabled', () => {
@@ -835,12 +867,125 @@ test('a bare "!statusx" (no space, unrecognised) is not matched as the !status c
   assert.equal(sent[0].text, REAL_TURN_REPLY);
 });
 
+// --- !warnings (issue #1000) --------------------------------------------------
+
+test(
+  '!warnings returns the same content my_warnings returns for the same DB state, across all four count ' +
+    'branches (issue #1000 approved acceptance criteria 1, 4)',
+  async (t) => {
+    const originalLimit = config.moderation.strikeLimit;
+    const originalWindow = config.moderation.strikeWindowDays;
+    config.moderation.strikeLimit = 3;
+    t.after(() => {
+      config.moderation.strikeLimit = originalLimit;
+      config.moderation.strikeWindowDays = originalWindow;
+    });
+
+    config.moderation.strikeWindowDays = undefined;
+    const ref = mockPoolRoleAndWarnings(t, 'member', 0);
+    let router = makeRouter({ runTurn: throwingRunTurn });
+    let { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+    await trigger(makeMessage({ text: '!warnings', userId: 'member-1' }));
+    assert.equal(sent[0].text, formatMyWarningsText(0, 3, null));
+
+    ref.active = 1;
+    router = makeRouter({ runTurn: throwingRunTurn });
+    ({ adapter, sent, trigger } = makeAdapter());
+    router.register(adapter);
+    await trigger(makeMessage({ text: '!warnings', userId: 'member-1' }));
+    assert.equal(sent[0].text, formatMyWarningsText(1, 3, null));
+
+    config.moderation.strikeWindowDays = 30;
+    ref.active = 2;
+    ref.windowed = 1;
+    router = makeRouter({ runTurn: throwingRunTurn });
+    ({ adapter, sent, trigger } = makeAdapter());
+    router.register(adapter);
+    await trigger(makeMessage({ text: '!warnings', userId: 'member-1' }));
+    assert.equal(sent[0].text, formatMyWarningsText(2, 3, 1));
+
+    config.moderation.strikeWindowDays = undefined;
+    ref.active = 3;
+    router = makeRouter({ runTurn: throwingRunTurn });
+    ({ adapter, sent, trigger } = makeAdapter());
+    router.register(adapter);
+    await trigger(makeMessage({ text: '!warnings', userId: 'member-1' }));
+    assert.equal(sent[0].text, formatMyWarningsText(3, 3, null));
+  },
+);
+
+test('a bare "!warningsx" (no space, unrecognised) is not matched as the !warnings command — anchored matcher (issue #1000 SECURITY criterion 6)', async (t) => {
+  mockPoolRole(t, 'member');
+  const router = makeRouter({});
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!warningsx', userId: 'member-1' }));
+
+  assert.equal(sent[0].text, REAL_TURN_REPLY);
+});
+
+test(
+  'SECURITY: "!warnings <anything>" is never matched — the anchored matcher rejects any argument, so no ' +
+    'message-supplied identifier can ever reach countActiveWarnings (issue #1000 SECURITY criterion 6)',
+  async (t) => {
+    let warningsQueried = false;
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users'))
+        return { rows: [{ role: 'member' }], rowCount: 0 };
+      if (sql.includes('FROM member_warnings')) {
+        warningsQueried = true;
+        return { rows: [{ n: 0 }], rowCount: 0 };
+      }
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!warnings some-other-user-id', userId: 'member-1' }));
+
+    assert.equal(sent[0].text, REAL_TURN_REPLY, 'an argument must fall through to a normal turn');
+    assert.equal(warningsQueried, false, 'countActiveWarnings must never run when an argument is present');
+  },
+);
+
+test(
+  'SECURITY: a guest caller\'s "!warnings" falls through to the normal turn — countActiveWarnings is never ' +
+    'invoked (issue #1000 approved acceptance criterion 5)',
+  async (t) => {
+    let warningsQueried = false;
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users')) return { rows: [], rowCount: 0 };
+      if (sql.includes('FROM member_warnings')) {
+        warningsQueried = true;
+        return { rows: [{ n: 0 }], rowCount: 0 };
+      }
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!warnings', userId: 'guest-1' }));
+
+    assert.equal(sent.length, 1);
+    assert.equal(
+      sent[0].text,
+      REAL_TURN_REPLY,
+      'a guest gets no distinguishing denial reply, per the family norm',
+    );
+    assert.equal(warningsQueried, false, 'countActiveWarnings must never run for a rejected caller');
+  },
+);
+
 // --- shortcut_hits tracking (issue #874, acceptance criterion 1) ------------
 
-test('acceptance criterion 1: each of !whois/!projects/!guidelines/!digest/!status records exactly one whatsapp_text_command shortcut hit via the shared send path (issue #995 acceptance criterion 5)', async (t) => {
+test('acceptance criterion 1: each of !whois/!projects/!guidelines/!digest/!status/!warnings records exactly one whatsapp_text_command shortcut hit via the shared send path (issue #1000)', async (t) => {
   resetStatusCacheForTests();
   t.after(() => resetStatusCacheForTests());
-  mockPoolRole(t, 'member');
+  mockPoolRoleAndWarnings(t, 'member', 0);
   const hits: string[] = [];
   const router = makeRouter({
     runTurn: throwingRunTurn,
@@ -862,8 +1007,9 @@ test('acceptance criterion 1: each of !whois/!projects/!guidelines/!digest/!stat
   await trigger(makeMessage({ text: '!guidelines', userId: 'member-1' }));
   await trigger(makeMessage({ text: '!digest', userId: 'member-1' }));
   await trigger(makeMessage({ text: '!status', userId: 'member-1' }));
+  await trigger(makeMessage({ text: '!warnings', userId: 'member-1' }));
 
-  assert.equal(sent.length, 5);
+  assert.equal(sent.length, 6);
   assert.deepEqual(
     hits,
     [
@@ -872,8 +1018,9 @@ test('acceptance criterion 1: each of !whois/!projects/!guidelines/!digest/!stat
       'whatsapp_text_command',
       'whatsapp_text_command',
       'whatsapp_text_command',
+      'whatsapp_text_command',
     ],
-    'all five commands must record exactly one whatsapp_text_command hit each, via the shared send path',
+    'all six commands must record exactly one whatsapp_text_command hit each, via the shared send path',
   );
 });
 

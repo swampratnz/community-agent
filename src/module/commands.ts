@@ -1,10 +1,13 @@
 import { atLeast } from '@swampratnz/agent-base/auth/rbac.js';
+import { config } from '@swampratnz/agent-base/config.js';
+import { countActiveWarnings } from '@swampratnz/agent-base/storage/repository.js';
 import {
   formatCommunityInfoText,
   formatInterestResults,
   formatProjectResults,
   LIST_PROJECTS_DEFAULT_LIMIT,
 } from './agent/tools.js';
+import { formatMyWarningsText } from './agent/tools/selfService.js';
 import { TEXT_COMMAND_UNMATCHED, type RegisteredCommand } from '@swampratnz/agent-base/commands/registry.js';
 import { formatStatusMessage, getStatusCache } from './status/anthropicStatus.js';
 
@@ -16,9 +19,10 @@ import { formatStatusMessage, getStatusCache } from './status/anthropicStatus.js
  * `!`-text-command intercept (`router.ts`, via the registered list in
  * `commands/registry.ts`). Handlers were moved VERBATIM from their previous
  * homes; registry order is the previous `buildSlashCommands()` order (kb,
- * projects, whois, guidelines, digest), with `status` (issue #995) and
- * `help` (issue #993) appended — also safe for the WhatsApp side because
- * every `!` matcher is anchored and mutually exclusive.
+ * projects, whois, guidelines, digest), with `events` (issue #1004),
+ * `status` (issue #995), `warnings` (issue #1000), and `help` (issue #993)
+ * appended — also safe for the WhatsApp side because every `!` matcher is
+ * anchored and mutually exclusive.
  *
  * The Discord halves are BOUND by `bindCommunitySlashCommands()`
  * (slashCommands.ts), which `createConfiguredAdapters()` calls — never at
@@ -39,6 +43,9 @@ import { formatStatusMessage, getStatusCache } from './status/anthropicStatus.js
 
 export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
   { name: 'kb', platforms: ['discord'] },
+  // Discord-only, same shape as 'kb' above — Discord Scheduled Events have no
+  // WhatsApp equivalent, matching the list_events tool itself (issue #1004).
+  { name: 'events', platforms: ['discord'] },
   {
     name: 'projects',
     platforms: ['discord', 'whatsapp'],
@@ -137,6 +144,27 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
     whatsapp: async (text) => {
       if (!/^!status$/i.test(text)) return TEXT_COMMAND_UNMATCHED;
       return formatStatusMessage(getStatusCache(), Date.now());
+    },
+  },
+  {
+    // Anchored, argument-rejecting matcher (issue #1000 SECURITY criterion
+    // 6): `!warnings anything` falls through to TEXT_COMMAND_UNMATCHED rather
+    // than matching, so no message-supplied identifier can ever reach
+    // countActiveWarnings — the identity passed below is always the
+    // adapter-resolved (msg.platform, msg.userId).
+    name: 'warnings',
+    platforms: ['discord', 'whatsapp'],
+    whatsapp: async (text, msg, role) => {
+      if (!/^!warnings$/i.test(text)) return TEXT_COMMAND_UNMATCHED;
+      if (!atLeast(role, 'member')) return null;
+      const limit = config.moderation.strikeLimit;
+      const windowDays = config.moderation.strikeWindowDays;
+      const active = await countActiveWarnings(msg.platform, msg.userId);
+      const windowed =
+        active > 0 && active < limit && windowDays
+          ? await countActiveWarnings(msg.platform, msg.userId, windowDays)
+          : null;
+      return formatMyWarningsText(active, limit, windowed);
     },
   },
   {

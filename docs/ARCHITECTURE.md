@@ -469,7 +469,12 @@ memory**:
    verbatim), and an optional `provenance` filter narrows the browse to just
    one of those (issue #294) — the same trust signal `knowledge_search`
    already uses to decide quarantine, now visible to the one tool built for
-   browsing it. `merge_knowledge` (issue #886) is the consolidation step
+   browsing it. `find_knowledge` (issue #1008) is the semantic, id-returning
+   admin counterpart: it calls the same `searchKnowledge` `knowledge_search`
+   does (so it shares that tool's caller-scoped visibility, narrower than
+   `list_knowledge`'s unrestricted browse) but renders each hit's `#id` and
+   omits the relevance floor, closing the gap where the only id-returning
+   tool couldn't search and the only searching tool hid the id. `merge_knowledge` (issue #886) is the consolidation step
    `list_duplicate_knowledge`/`list_knowledge_conflicts` (#316/#330) both
    describe in their own tool text ("merge (`update_knowledge`) or retire
    (`delete_knowledge`)") but that this codebase never implemented until now:
@@ -2609,16 +2614,16 @@ the full security posture and its test references.
 
 ## Discord slash commands (issue #744)
 
-`DISCORD_SLASH_COMMANDS_ENABLED` (off by default) registers seven read-only,
+`DISCORD_SLASH_COMMANDS_ENABLED` (off by default) registers nine read-only,
 zero-model-call Discord application commands — `/kb <query>`,
-`/whois <query>`, `/projects [query]`, `/guidelines`, `/digest`,
-`/status` (issue #995), `/help` (issue #993) — the discoverable, per-command
-generalisation of the knowledge
-shortcut (see "Known
-cost/latency characteristic" below): each answers a common lookup with a
-deterministic repository read instead of a full `query()` turn, and Discord's
-command picker surfaces them where a member would otherwise have to guess a
-phrase close enough to trigger a shortcut or address the bot at all.
+`/whois <query>`, `/projects [query]`, `/guidelines`, `/digest`, `/status`
+(issue #995), `/warnings` (issue #1000), `/events` (issue #1004), `/help`
+(issue #993) — the discoverable, per-command generalisation of the knowledge
+shortcut (see "Known cost/latency characteristic" below): each answers a
+common lookup with a deterministic repository read instead of a full
+`query()` turn, and Discord's command picker surfaces them where a member
+would otherwise have to guess a phrase close enough to trigger a shortcut or
+address the bot at all.
 
 **The mechanism is the package's; the commands are this module's.** The two
 Discord-client hooks — `registerSlashCommands` and `handleInteraction` — live
@@ -2639,13 +2644,22 @@ that list is registered during the singleton phase, which runs when
 `index.ts`'s *body* calls `createAgent` — long after this module was evaluated
 as part of the static import graph. Binding at module load therefore always
 ran first and threw `registeredCommands: no command list registered`, killing
-the process at startup (#961). `createConfiguredAdapters()` is the earliest
-point guaranteed to be after `createAgent`, and it runs before any adapter
-exists to dispatch an interaction. The bind is idempotent (a `bound` latch,
+the process at startup (#961). `bindCommunitySlashCommands(adapter)` is called
+immediately after the Discord adapter is constructed inside
+`createConfiguredAdapters()`'s factory loop (issue #1004 — earlier it was
+called once, before the loop, since every command's data source was a
+repository read; `/events` is the first sourced from the adapter itself, so
+binding now needs a live instance to inject) — still strictly before any
+adapter starts listening for interactions (construction alone doesn't attach
+listeners; that happens later in `index.ts`'s startup sequence), preserving
+the original guarantee. The bind is idempotent (a `bound` latch,
 plus `bindDiscordCommand` rejecting a duplicate name) because tests build
-adapters more than once per process. Under the old side-effect composition
-`index.ts` imported the commands module early and the order happened to work;
-the flip to `createAgent` inverted it.
+adapters more than once per process — but the injected adapter reference
+itself is reassigned on every call regardless of that latch, so a later
+`createConfiguredAdapters()` call always repoints `/events` at its own live
+adapter rather than leaving it closed over a stale one. Under the old
+side-effect composition `index.ts` imported the commands module early and the
+order happened to work; the flip to `createAgent` inverted it.
 
 Registration itself is fire-and-forget from `adapter.ts`'s existing
 `Events.ClientReady` handler, alongside `backfillRoster`/`reconcileMutedRole`
@@ -2673,8 +2687,39 @@ has no such extra floor, so `/kb` is reachable by a guest exactly like the
 chat-path tool is — this is what "derived from `toolsForRole`, not a
 hardcoded tier" means per command, not a uniform floor across all three.
 `/guidelines` has no tier gate at all, matching the `community_guidelines`
-tool. A caller who fails a gate gets an ephemeral rejection and the
-underlying repository function is never called.
+tool. `/status` also has no tier gate (issue #995) — it reveals nothing about
+this community, only Anthropic's own public status page. `/warnings` (issue
+#1000) mirrors `/whois`/`/projects`: gates on `toolsForRole(role,
+'discord').includes('mcp__community__my_warnings')` plus `atLeast(role,
+'member')`, the same runtime floor `my_warnings`'s own handler applies. A
+caller who fails a gate gets an ephemeral rejection and the underlying
+repository function is never called.
+
+`/events` (issue #1004) gates on `toolsForRole(role,
+'discord').includes('mcp__community__list_events')` alone — no extra
+`atLeast` floor — the same "derived from `toolsForRole`, not a hardcoded
+tier" shape as `/kb`, tracking `list_events`' own real reachability (a
+member-floor, zero-arg tool with no extra runtime floor of its own). Its data
+source is `PlatformAdapter.listUpcomingEvents`, not a repository read — the
+first command in this family sourced from an adapter method rather than
+`storage/repository.ts` — so `createConfiguredAdapters()`
+(`platforms/factories.ts`) threads the live, just-constructed Discord adapter
+into `bindCommunitySlashCommands(adapter)` immediately after `factory.create()`
+for the `'discord'` entry, rather than calling it once before the adapter
+loop as every earlier command's repository-only binding allowed. The injected
+adapter reference is refreshed on **every** call to
+`bindCommunitySlashCommands`, independent of its own `bound` idempotency latch
+(which still guards the one-time command *registration*) — so a test (or a
+future re-composition) that calls `createConfiguredAdapters()` more than once
+per process always dispatches `/events` against the latest live adapter, never
+a torn-down instance from an earlier call. When the injected adapter doesn't
+implement `listUpcomingEvents` at all, `handleEvents` degrades to the same
+"not available on this platform" text `list_events` itself returns, rather
+than throwing. `list_events`' row-formatting was hoisted out of the tool
+handler into an exported `formatUpcomingEvents` (`agent/tools/info.ts`),
+mirroring how `formatProjectResults`/`formatInterestResults` were hoisted for
+`/projects`/`/whois` below — so `/events` and the `list_events` tool render
+from the one implementation, never a second, drifting formatter.
 
 Every handler's first call, before role resolution or any other async work,
 is `interaction.deferReply({ flags: MessageFlags.Ephemeral })`. Discord
@@ -2729,9 +2774,17 @@ chat path. `/kb` passes the caller's real `(platform, conversationId)` into
 `searchKnowledge`, so a slash command can never widen a caller's knowledge
 read-scope beyond what the chat path already grants them.
 
-All seven replies are ephemeral (`MessageFlags.Ephemeral`) — visible only to
+Every reply is ephemeral (`MessageFlags.Ephemeral`) — visible only to
 the caller, a privacy improvement over `/whois`/`/projects`' chat-path
-equivalent (posted in-channel today).
+equivalent (posted in-channel today); for `/warnings` this matters more than
+for any other command in the family, since a member's warning count is the
+one piece of content here genuinely sensitive to expose in a public channel
+(issue #1000). `/warnings` reuses `my_warnings`' own render — the exported
+`formatMyWarningsText(active, limit, windowed)` from `agent/tools/
+selfService.ts` — so the command answer can never drift from what the tool
+itself would say for the same DB state; `handleWarnings` calls
+`countActiveWarnings('discord', interaction.user.id)` directly (the same
+package export the tool imports), never through the tool/model.
 
 **`/help`** (issue #993) has no tier gate at all, matching `/guidelines` and
 its own underlying tool, `community_info`: `handleHelp` defers, resolves the
@@ -2764,22 +2817,23 @@ command-picker UI to register these against, so it instead gets a
 literal-prefix text-command equivalent — see "WhatsApp text commands" below
 (issue #859). `shortcut_hits` tracking of slash-command usage (issue #863):
 every successful invocation of `/kb`, `/whois`, `/projects`, `/guidelines`,
-`/digest`, or `/help` records one `slash_command` `shortcut_hits` row (an
-aggregate per-mechanism count, not broken down by command name, matching the
-granularity of the four original kinds from issue #440), so `usage_stats`'s
-"Shortcuts fired" line now includes this cost-avoidance path in its total
-and its `slash-command N` breakdown. An auth-denied reply records nothing,
-so the counter can never be used to infer auth-denied probe volume. All
-underlying tools remain reachable via chat on every platform regardless of
-either flag.
+`/digest`, `/status`, `/warnings`, `/events`, or `/help` records one
+`slash_command` `shortcut_hits` row (an aggregate per-mechanism count, not
+broken down by command name, matching the granularity of the four original
+kinds from issue #440), so `usage_stats`'s "Shortcuts fired" line now
+includes this cost-avoidance path in its total and its `slash-command N`
+breakdown. An auth-denied reply records nothing, so the counter can never be
+used to infer auth-denied probe volume. Every underlying tool remains
+reachable via chat on every platform regardless of either flag.
 
 ## WhatsApp text commands (issue #859)
 
 `WHATSAPP_TEXT_COMMANDS_ENABLED` (off by default) is the WhatsApp counterpart
 to the Discord slash commands above, re-keyed for a platform with no native
 command-picker UI: a trimmed, case-insensitive WhatsApp message beginning
-`!whois [query]`, `!projects [query]`, `!guidelines`, `!digest`, or `!help`
-(issue #993) is served by the same deterministic, zero-`query()`-call path, checked in
+`!whois [query]`, `!projects [query]`, `!guidelines`, `!digest`, `!status`
+(issue #995), `!warnings` (issue #1000), or `!help` (issue #993) is served by
+the same deterministic, zero-`query()`-call path, checked in
 `Router.handle()` (`tryWhatsAppTextCommand`) alongside the other router-level
 shortcuts (the knowledge shortcut, ack shortcut, etc.). `!kb` is deliberately
 not added — `KNOWLEDGE_SHORTCUT_ENABLED` already gives WhatsApp an implicit,
@@ -2794,11 +2848,17 @@ commands and chat-path tools call (`searchMemberInterests`/
 `searchProjects`/`listRecentProjects`/`formatProjectResults`,
 `getCommunityGuidelines`/`getCommunityGuidelinesMi`,
 `buildMemberDigestContent`), injectable on `Router` the same way
-`tryKnowledgeShortcut`'s `searchKnowledgeForShortcut` already is. Tier floors
-mirror the Discord side exactly: `!whois`, `!projects`, `!digest` require
-`atLeast(role, 'member')` (the same runtime floor each tool's own handler
-applies); `!guidelines` and `!help` have no tier gate, matching
-`community_guidelines`/`community_info`. `!help` (issue #993) calls the same
+`tryKnowledgeShortcut`'s `searchKnowledgeForShortcut` already is. `!status`
+and `!warnings` are the two exceptions — like their Discord counterparts they
+call `formatStatusMessage`/`getStatusCache` and
+`countActiveWarnings`/`formatMyWarningsText` directly rather than through an
+injected `Router` dependency (the `status`-command precedent issue #1000's
+adversarial review cited to justify `!warnings` needing no base `deps` seam
+change). Tier floors mirror the Discord side exactly: `!whois`, `!projects`,
+`!digest`, `!warnings` require `atLeast(role, 'member')` (the same runtime
+floor each tool's own handler applies); `!guidelines`, `!status`, and `!help`
+have no tier gate, matching `community_guidelines`/`check_status`/
+`community_info`. `!help` (issue #993) calls the same
 `formatCommunityInfoText(role, 'whatsapp')` formatter `/help` and
 `community_info` call, so all three entry points render byte-identical text
 for a given (role, platform).
@@ -2833,7 +2893,8 @@ cost. WhatsApp has no ephemeral concept — a bespoke denial posted in a group
 would out an ineligible caller's tier to everyone else in it, a probing
 vector Discord's design never had to consider. So on a gate failure (an
 unrecognised prefix, the wrong platform, or a sub-member-tier caller on
-`!whois`/`!projects`/`!digest`), `tryWhatsAppTextCommand` returns `null` and
+`!whois`/`!projects`/`!digest`/`!warnings`), `tryWhatsAppTextCommand` returns
+`null` and
 the message falls through to the normal message-handling path exactly as if
 the `!`-prefixed text weren't recognised at all — never a distinguishing
 reply, mirroring the existing shortcuts' fallthrough-on-miss pattern rather
@@ -2851,7 +2912,7 @@ unmetered read path.
 identical fix for Discord slash commands): the shared `sendWhatsAppTextCommand`
 send path records one `whatsapp_text_command` `shortcut_hits` row per served
 reply — a fixed string literal, never derived from the WhatsApp message text —
-so all six commands are covered from this one call site with no per-command
+so every command is covered from this one call site with no per-command
 wiring. `usage_stats`'s "Shortcuts fired" line includes it in the total and its
 own `whatsapp-text-command N` breakdown, distinct from Discord's
 `slash-command N` (a new kind rather than reusing `slash_command`, which is

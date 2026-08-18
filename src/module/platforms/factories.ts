@@ -86,12 +86,6 @@ export const ADAPTER_FACTORIES: readonly AdapterFactory[] = [
  * the wrong key would otherwise corrupt the router's per-platform lookup.
  */
 export function createConfiguredAdapters(): PlatformAdapter[] {
-  // Bind the slash commands' Discord halves before any adapter exists to
-  // dispatch them. This is the earliest point that is guaranteed to be AFTER
-  // createAgent registered the command list — index.ts calls createAgent, then
-  // this. Doing it at module scope instead threw at startup, because static
-  // imports are evaluated before index.ts's body runs at all.
-  bindCommunitySlashCommands();
   const adapters: PlatformAdapter[] = [];
   for (const factory of ADAPTER_FACTORIES) {
     if (!descriptorFor(factory.platform)) {
@@ -105,6 +99,20 @@ export function createConfiguredAdapters(): PlatformAdapter[] {
       );
     }
     adapters.push(adapter);
+    // Bind the slash commands' Discord halves right after the Discord adapter
+    // is constructed (issue #1004) — still strictly before any adapter starts
+    // listening for interactions (construction alone doesn't attach
+    // listeners; that happens later in index.ts's startup sequence), so the
+    // original guarantee ("after createAgent registered the command list,
+    // before dispatch is possible") is preserved. This is the first command
+    // whose data source is an adapter method rather than a repository read
+    // (`/events` → `adapter.listUpcomingEvents`), so binding now needs the
+    // live Discord adapter instance threaded in, not just the command list.
+    // Doing this at module scope instead threw at startup (#961), because
+    // static imports are evaluated before index.ts's body runs at all.
+    if (factory.platform === 'discord') {
+      bindCommunitySlashCommands(adapter);
+    }
   }
   return adapters;
 }
