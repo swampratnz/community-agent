@@ -25,6 +25,17 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 -->
 
 
+## 2026-08-19
+
+### Added
+- **`/events` (Discord) — a zero-wait shortcut listing upcoming Discord
+  scheduled meetups/events** (#1004): the same deterministic answer the
+  `list_events` chat tool gives (id, name, start/end time, location,
+  description), without spending an agent turn. Gated purely on your access
+  to the underlying tool — no extra tier floor, matching `/kb`. Discord-only,
+  with no `!events` WhatsApp equivalent, since the underlying event data
+  itself only exists on Discord.
+
 ## 2026-08-18
 
 ### Added

@@ -2608,10 +2608,11 @@ the full security posture and its test references.
 
 ## Discord slash commands (issue #744)
 
-`DISCORD_SLASH_COMMANDS_ENABLED` (off by default) registers seven read-only,
+`DISCORD_SLASH_COMMANDS_ENABLED` (off by default) registers eight read-only,
 zero-model-call Discord application commands — `/kb <query>`,
 `/whois <query>`, `/projects [query]`, `/guidelines`, `/digest`, `/status`
-(issue #995), `/warnings` (issue #1000) — the discoverable, per-command
+(issue #995), `/warnings` (issue #1000), `/events` (issue #1004) — the
+discoverable, per-command
 generalisation of the knowledge shortcut (see "Known cost/latency
 characteristic" below): each answers a common lookup with a deterministic
 repository read instead of a full `query()` turn, and Discord's command
@@ -2637,13 +2638,22 @@ that list is registered during the singleton phase, which runs when
 `index.ts`'s *body* calls `createAgent` — long after this module was evaluated
 as part of the static import graph. Binding at module load therefore always
 ran first and threw `registeredCommands: no command list registered`, killing
-the process at startup (#961). `createConfiguredAdapters()` is the earliest
-point guaranteed to be after `createAgent`, and it runs before any adapter
-exists to dispatch an interaction. The bind is idempotent (a `bound` latch,
+the process at startup (#961). `bindCommunitySlashCommands(adapter)` is called
+immediately after the Discord adapter is constructed inside
+`createConfiguredAdapters()`'s factory loop (issue #1004 — earlier it was
+called once, before the loop, since every command's data source was a
+repository read; `/events` is the first sourced from the adapter itself, so
+binding now needs a live instance to inject) — still strictly before any
+adapter starts listening for interactions (construction alone doesn't attach
+listeners; that happens later in `index.ts`'s startup sequence), preserving
+the original guarantee. The bind is idempotent (a `bound` latch,
 plus `bindDiscordCommand` rejecting a duplicate name) because tests build
-adapters more than once per process. Under the old side-effect composition
-`index.ts` imported the commands module early and the order happened to work;
-the flip to `createAgent` inverted it.
+adapters more than once per process — but the injected adapter reference
+itself is reassigned on every call regardless of that latch, so a later
+`createConfiguredAdapters()` call always repoints `/events` at its own live
+adapter rather than leaving it closed over a stale one. Under the old
+side-effect composition `index.ts` imported the commands module early and the
+order happened to work; the flip to `createAgent` inverted it.
 
 Registration itself is fire-and-forget from `adapter.ts`'s existing
 `Events.ClientReady` handler, alongside `backfillRoster`/`reconcileMutedRole`
@@ -2678,6 +2688,32 @@ this community, only Anthropic's own public status page. `/warnings` (issue
 'member')`, the same runtime floor `my_warnings`'s own handler applies. A
 caller who fails a gate gets an ephemeral rejection and the underlying
 repository function is never called.
+
+`/events` (issue #1004) gates on `toolsForRole(role,
+'discord').includes('mcp__community__list_events')` alone — no extra
+`atLeast` floor — the same "derived from `toolsForRole`, not a hardcoded
+tier" shape as `/kb`, tracking `list_events`' own real reachability (a
+member-floor, zero-arg tool with no extra runtime floor of its own). Its data
+source is `PlatformAdapter.listUpcomingEvents`, not a repository read — the
+first command in this family sourced from an adapter method rather than
+`storage/repository.ts` — so `createConfiguredAdapters()`
+(`platforms/factories.ts`) threads the live, just-constructed Discord adapter
+into `bindCommunitySlashCommands(adapter)` immediately after `factory.create()`
+for the `'discord'` entry, rather than calling it once before the adapter
+loop as every earlier command's repository-only binding allowed. The injected
+adapter reference is refreshed on **every** call to
+`bindCommunitySlashCommands`, independent of its own `bound` idempotency latch
+(which still guards the one-time command *registration*) — so a test (or a
+future re-composition) that calls `createConfiguredAdapters()` more than once
+per process always dispatches `/events` against the latest live adapter, never
+a torn-down instance from an earlier call. When the injected adapter doesn't
+implement `listUpcomingEvents` at all, `handleEvents` degrades to the same
+"not available on this platform" text `list_events` itself returns, rather
+than throwing. `list_events`' row-formatting was hoisted out of the tool
+handler into an exported `formatUpcomingEvents` (`agent/tools/info.ts`),
+mirroring how `formatProjectResults`/`formatInterestResults` were hoisted for
+`/projects`/`/whois` below — so `/events` and the `list_events` tool render
+from the one implementation, never a second, drifting formatter.
 
 Every handler's first call, before role resolution or any other async work,
 is `interaction.deferReply({ flags: MessageFlags.Ephemeral })`. Discord

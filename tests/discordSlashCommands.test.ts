@@ -13,6 +13,7 @@ import { DISCORD_TEXT_PACK } from '../src/module/platforms/textPacks.js';
 // graph evaluates a notice consumer registers it explicitly here, first.
 import './support/registerNotices.js';
 import { Events, MessageFlags } from 'discord.js';
+import type { PlatformAdapter, UpcomingEvent } from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time (see tests/discordAdapter.test.ts for
 // the same rationale) — DATABASE_URL points nowhere; every DB read below is
@@ -56,7 +57,9 @@ await import('./support/registerPolicyKeys.js');
 // every module-scope `notice()` render (the pack is registered by
 // `createAgent`, after imports). Same catalogue entries, same selection — the
 // assertions below pin exactly what they did before.
-const { KNOWLEDGE_CONFLICT_CAVEAT_TEXT } = await import('../src/module/agent/tools.js');
+const { KNOWLEDGE_CONFLICT_CAVEAT_TEXT, buildToolServer } = await import('../src/module/agent/tools.js');
+const { EVENTS_LIST_LIMIT, formatUpcomingEvents } = await import('../src/module/agent/tools/info.js');
+const { createConfiguredAdapters } = await import('../src/module/platforms/factories.js');
 const { notice } = await import('../src/module/strings/notices.js');
 const KNOWLEDGE_LOW_RATED_CAVEAT_TEXT = notice('knowledgeLowRatedCaveat');
 // Both caveat constants contain an em dash, and every /kb reply passes through
@@ -237,6 +240,60 @@ function adapterDeps(adapter: Adapter): { filtered: (text: string) => Promise<st
   };
 }
 
+/**
+ * A minimal `PlatformAdapter` with no `listUpcomingEvents` at all (issue
+ * #1004) — for exercising `/events`' graceful-degrade branch, mirroring
+ * `list_events`' own "adapter doesn't implement the optional capability"
+ * guard. Deliberately NOT a `DiscordAdapter` (which always implements the
+ * method): this is a distinct object bound only as the module's injected
+ * `discordAdapter` reference, so `deps.filtered` in the same test can still
+ * come from a real `DiscordAdapter` instance.
+ */
+function stubAdapterWithoutEvents(): PlatformAdapter {
+  return {
+    platform: 'discord',
+    start: async () => {},
+    stop: async () => {},
+    isConnected: () => true,
+    onMessage: () => {},
+    sendMessage: async () => undefined,
+    sendDirectMessage: async () => {},
+    conversationsForUser: async () => [],
+    adminCapabilities: new Set(),
+    performAdminAction: async () => {
+      throw new Error('not implemented in stub');
+    },
+  };
+}
+
+/**
+ * Invokes the real `list_events` tool handler directly (bypassing the model)
+ * against the given adapter, for the /events-vs-tool byte-identical
+ * comparison below — mirrors `tests/tools.test.ts`'s own `listEventsHandler`.
+ */
+async function callListEventsTool(adapter: PlatformAdapter, userId: string): Promise<string> {
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId,
+      userName: 'Events Caller',
+      role: 'member' as const,
+      conversationId: 'events-convo',
+    },
+    adapter,
+  );
+  const registered = (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        { handler: () => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }> }
+      >;
+    }
+  )._registeredTools['list_events'];
+  const result = await registered.handler();
+  return result.content[0]?.text ?? '';
+}
+
 // --- Criterion 1 / SECURITY criterion 11: flag off ---------------------------
 
 test('SECURITY: with DISCORD_SLASH_COMMANDS_ENABLED unset, no InteractionCreate listener is attached and no commands are registered (acceptance criterion 1)', async (t) => {
@@ -318,7 +375,16 @@ test('with DISCORD_SLASH_COMMANDS_ENABLED=true, all commands are registered guil
     'SECURITY: registration must never be global (a call with no guild arg)',
   );
   const names = (commands as Array<{ name: string }>).map((c) => c.name).sort();
-  assert.deepEqual(names, ['digest', 'guidelines', 'kb', 'projects', 'status', 'warnings', 'whois']);
+  assert.deepEqual(names, [
+    'digest',
+    'events',
+    'guidelines',
+    'kb',
+    'projects',
+    'status',
+    'warnings',
+    'whois',
+  ]);
 });
 
 test("a slash-command registration failure is caught and logged, never thrown, matching backfillRoster/reconcileMutedRole's fire-and-forget shape", async (t) => {
@@ -336,11 +402,12 @@ test("a slash-command registration failure is caught and logged, never thrown, m
   assert.ok(warnLog.mock.calls.length >= 1, 'a registration failure must be logged, not swallowed silently');
 });
 
-test('buildSlashCommands defines exactly the seven approved read-only commands, each with its expected required-ness', () => {
+test('buildSlashCommands defines exactly the eight approved read-only commands, each with its expected required-ness', () => {
   const commands = buildSlashCommands();
   const byName = new Map(commands.map((c) => [c.name, c]));
   assert.deepEqual([...byName.keys()].sort(), [
     'digest',
+    'events',
     'guidelines',
     'kb',
     'projects',
@@ -388,6 +455,11 @@ test('buildSlashCommands defines exactly the seven approved read-only commands, 
     (byName.get('warnings') as { options?: unknown[] }).options ?? [],
     [],
     "/warnings takes no options — always the caller's own identity, never a model-supplied id (issue #1000)",
+  );
+  assert.deepEqual(
+    (byName.get('events') as { options?: unknown[] }).options ?? [],
+    [],
+    "/events takes no options — matches list_events' own empty schema (issue #1004)",
   );
 });
 
@@ -1599,4 +1671,185 @@ test('SECURITY: recordShortcutHit is never called on the NOT_AUTHORIZED_TEXT bra
     0,
     'an auth-denied reply must never record a shortcut hit — that would let the counter be used to infer auth-denied probe volume',
   );
+});
+
+// --- Issue #1004: /events -----------------------------------------------
+
+const SAMPLE_EVENTS: UpcomingEvent[] = [
+  {
+    id: 'event-id-wellington',
+    name: 'Wellington Meetup',
+    scheduledStartAt: '2099-06-01T19:00:00.000Z',
+    scheduledEndAt: '2099-06-01T21:00:00.000Z',
+    location: 'Wellington Central Library',
+    description: 'Bring your laptop',
+  },
+  {
+    id: 'event-id-auckland',
+    name: 'Auckland Hack Night',
+    scheduledStartAt: '2099-06-08T19:00:00.000Z',
+    location: 'general-voice',
+  },
+];
+
+test('/events returns byte-identical text to the list_events tool for the same caller and adapter data (issue #1004 acceptance criterion 2)', async (t) => {
+  mockPool(t, { memberRole: 'member' });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  t.mock.method(adapter, 'listUpcomingEvents', async () => SAMPLE_EVENTS);
+  bindCommunitySlashCommands(adapter);
+
+  const { interaction, replies } = fakeInteraction({ commandName: 'events', userId: 'member-1' });
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  const toolText = await callListEventsTool(adapter, 'member-1');
+  assert.equal(replies.length, 1);
+  assert.equal(
+    replies[0].content,
+    stripEmDashes(toolText),
+    "must carry exactly list_events' own formatted text (post outbound-filter), no added fields",
+  );
+});
+
+test('/events replies "No upcoming events." for a zero-events guild, matching list_events (issue #1004 acceptance criterion 4)', async (t) => {
+  mockPool(t, { memberRole: 'member' });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  t.mock.method(adapter, 'listUpcomingEvents', async () => []);
+  bindCommunitySlashCommands(adapter);
+
+  const { interaction, replies } = fakeInteraction({ commandName: 'events', userId: 'member-1' });
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].content, 'No upcoming events.');
+});
+
+test(
+  '/events degrades to the tool\'s own "not available" text when the injected adapter has no ' +
+    'listUpcomingEvents at all, rather than throwing (issue #1004 acceptance criterion 4)',
+  async (t) => {
+    mockPool(t, { memberRole: 'member' });
+    // deps.filtered() comes from a normal, fully-capable DiscordAdapter —
+    // only the module's INJECTED discordAdapter (via bindCommunitySlashCommands)
+    // lacks listUpcomingEvents, isolating the capability check from the
+    // unrelated outbound-filter plumbing.
+    const filterAdapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    bindCommunitySlashCommands(stubAdapterWithoutEvents());
+
+    const { interaction, replies } = fakeInteraction({ commandName: 'events', userId: 'member-1' });
+    await handleInteraction(interaction as never, adapterDeps(filterAdapter));
+
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].content, "Event listings aren't available on discord.");
+  },
+);
+
+test(
+  'SECURITY: /events calls the real PlatformAdapter.listUpcomingEvents on the injected adapter with ' +
+    'only the fixed EVENTS_LIST_LIMIT argument — no interaction-supplied content reaches the call ' +
+    '(issue #1004 acceptance criteria 3, 8)',
+  async (t) => {
+    mockPool(t, { memberRole: 'member' });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const spy = t.mock.method(adapter, 'listUpcomingEvents', async () => []);
+    bindCommunitySlashCommands(adapter);
+
+    const { interaction } = fakeInteraction({ commandName: 'events', userId: 'member-1' });
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(spy.mock.calls.length, 1, 'listUpcomingEvents must be called exactly once');
+    assert.deepEqual(
+      spy.mock.calls[0].arguments,
+      [EVENTS_LIST_LIMIT],
+      'the call must carry only the fixed EVENTS_LIST_LIMIT — never anything from the interaction payload',
+    );
+  },
+);
+
+test(
+  'SECURITY: bindCommunitySlashCommands refreshes the injected adapter on every createConfiguredAdapters() ' +
+    'call, so /events never dispatches against a torn-down/stale instance from an earlier call (issue #1004 ' +
+    'acceptance criterion 5)',
+  async (t) => {
+    mockPool(t, { memberRole: 'member' });
+
+    const firstAdapters = createConfiguredAdapters();
+    const firstDiscord = firstAdapters.find((a) => a.platform === 'discord') as Adapter;
+    const firstSpy = t.mock.method(firstDiscord, 'listUpcomingEvents', async () => []);
+
+    const secondAdapters = createConfiguredAdapters();
+    const secondDiscord = secondAdapters.find((a) => a.platform === 'discord') as Adapter;
+    const secondSpy = t.mock.method(secondDiscord, 'listUpcomingEvents', async () => []);
+
+    const { interaction } = fakeInteraction({ commandName: 'events', userId: 'member-1' });
+    await handleInteraction(interaction as never, adapterDeps(secondDiscord));
+
+    assert.equal(
+      secondSpy.mock.calls.length,
+      1,
+      "the SECOND createConfiguredAdapters() call's live adapter must be the one /events dispatches against",
+    );
+    assert.equal(
+      firstSpy.mock.calls.length,
+      0,
+      'the FIRST, now-superseded adapter must never be called once a later call has rebound the reference',
+    );
+  },
+);
+
+test(
+  "/events tracks list_events' own toolsForRole reachability rather than a hardcoded role check — a guest " +
+    'CAN use /events, exactly like /kb (list_events has no extra runtime floor beyond toolsForRole, issue #1004)',
+  async (t) => {
+    mockPool(t, { memberRole: null }); // no community_users row -> guest
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    t.mock.method(adapter, 'listUpcomingEvents', async () => []);
+    bindCommunitySlashCommands(adapter);
+
+    const { interaction, replies } = fakeInteraction({ commandName: 'events', userId: 'guest-1' });
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies.length, 1);
+    assert.ok(
+      !replies[0].content.includes("don't have access"),
+      'a guest must NOT be rejected on /events — list_events has no extra role floor beyond toolsForRole, ' +
+        'same as knowledge_search/kb',
+    );
+    assert.equal(replies[0].content, 'No upcoming events.');
+  },
+);
+
+test("a successful /events invocation calls recordShortcutHit('slash_command') exactly once and replies ephemerally (issue #1004)", async (t) => {
+  const calls = mockPool(t, { memberRole: 'member' });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  t.mock.method(adapter, 'listUpcomingEvents', async () => []);
+  bindCommunitySlashCommands(adapter);
+
+  const { interaction, replies } = fakeInteraction({ commandName: 'events', userId: 'member-1' });
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(shortcutHitCalls(calls).length, 1, '/events must record exactly one slash_command hit');
+  assert.equal(replies[0].ephemeral, true);
+});
+
+test('SECURITY: /events reply routes through the same outbound filter as every other slash-command reply — a secret in an event description cannot reach Discord unredacted (issue #1004)', async (t) => {
+  const secret = 'sk-ant-' + 'w'.repeat(30);
+  mockPool(t, { memberRole: 'member' });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  t.mock.method(adapter, 'listUpcomingEvents', async () => [
+    {
+      id: 'event-id-secret',
+      name: 'Secret Event',
+      scheduledStartAt: '2099-06-01T19:00:00.000Z',
+      location: 'somewhere',
+      description: `contact ${secret} for details`,
+    },
+  ]);
+  bindCommunitySlashCommands(adapter);
+
+  const { interaction, replies } = fakeInteraction({ commandName: 'events', userId: 'member-1' });
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies.length, 1);
+  assert.ok(!replies[0].content.includes('sk-ant-'), 'no raw secret fragment may reach the ephemeral reply');
+  assert.ok(replies[0].content.includes('[redacted]'), 'the secret must be redacted, not silently dropped');
 });
