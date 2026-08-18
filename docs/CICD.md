@@ -15,6 +15,7 @@ overlapping:
 | [`DEPLOYMENT.md`](DEPLOYMENT.md) | The production host: systemd units, the redeploy timer, rollback |
 | [`SECURITY.md`](SECURITY.md) | The threat model the guardrails below implement |
 | [`STANDARDS.md`](STANDARDS.md) | What a contributor must do before pushing |
+| [`PIPELINE-PLAYBOOK.md`](PIPELINE-PLAYBOOK.md) | How to adopt this automation on a DIFFERENT repo — assessment, staged rollout, portable failure modes |
 
 When this file and `PIPELINE.md` disagree about a loop's *rationale*,
 `PIPELINE.md` wins. When they disagree about a trigger, permission or
@@ -90,6 +91,13 @@ pool.
 | `changelog-autofill.yml` ⚡ | `47 19 * * *`, dispatch | single group | `contents`,`pull-requests`:write, `id-token:write` | 30 min | the secret |
 | `branch-janitor.yml` | `0 3 * * 1`, dispatch (`dry_run`, `extra`) | single group | `contents:write`, `pull-requests:read` | 15 min | always |
 | `setup-labels.yml` | `workflow_dispatch` only | — | `contents:read`, `issues:write` | — | manual |
+
+Three workflows in that table are thin callers: `ci-retry.yml` and
+`pipeline-build-retry.yml` delegate to `reusable-rerun-failed-run.yml`, and
+`branch-janitor.yml` to `reusable-branch-janitor.yml`. The two `reusable-*.yml`
+files are `workflow_call`-only — they never run on their own, hold no trigger,
+and appear in the Actions list without runs of their own (a caller's run
+contains their jobs). See [§8.3](#83-proposed-shape-of-the-reusable-solution).
 
 Two notes on that permissions column. A **job-level `permissions:` block
 replaces the workflow-level grant outright** rather than adding to it — which is
@@ -518,7 +526,7 @@ What it would take to lift this into a reusable pipeline for other repos.
 
 | Tier | Meaning | Workflows |
 |---|---|---|
-| **A — portable as-is** | no repo knowledge beyond `GITHUB_TOKEN` | `ci-retry.yml`, `pipeline-build-retry.yml`, `branch-janitor.yml` |
+| **A — portable as-is** | no repo knowledge beyond `GITHUB_TOKEN` | ~~`ci-retry.yml`, `pipeline-build-retry.yml`, `branch-janitor.yml`~~ — **extracted**: now `reusable-rerun-failed-run.yml` + `reusable-branch-janitor.yml`, called by those three |
 | **B — portable with inputs** | logic is generic; label names, identities and thresholds are the only couplings | `pipeline-groundskeeper.yml`, `pipeline-pr-automerge.yml`, `pipeline-outcomes.yml`, `setup-labels.yml`, `changelog-coverage.yml` |
 | **C — portable with inputs + a project-supplied gate** | as B, plus each needs to know how to run *this project's* checks and services | `pipeline-build.yml`, `pipeline-pr-review.yml`, `pipeline-pr-autofix.yml`, `pipeline-pr-revise.yml`, `pipeline-pr-conflict.yml`, `changelog-autofill.yml` |
 | **D — project-specific by nature** | the definition of green for one codebase | `ci.yml`, `scripts/check-*.mjs` |
@@ -622,9 +630,38 @@ settle too:
 The cost/job-summary step was left alone: it appears in only two workflows
 (build and review) and they format different things.
 
-**2 · Reusable workflows (`workflow_call`) for Tiers A and B.** The
-deterministic loops carry no prompts and no project gate, so they parameterise
-cleanly:
+**2 · Reusable workflows (`workflow_call`) for Tiers A and B — Tier A DONE.**
+The deterministic loops carry no prompts and no project gate, so they
+parameterise cleanly. Tier A now lives in two `workflow_call` workflows:
+
+```
+.github/workflows/reusable-rerun-failed-run.yml  ← ci-retry, pipeline-build-retry
+.github/workflows/reusable-branch-janitor.yml    ← branch-janitor
+```
+
+Two things that extraction settled:
+
+- **`on:` triggers cannot be parameterised**, so the split is not "move the
+  whole workflow". Each caller keeps its trigger, its event-payload `if:` gate
+  and its cap, and passes the payload facts as inputs; the reusable workflow
+  owns the mechanism. That is why the attempt cap is written twice — once in
+  the caller's `if:` (the cheap gate that claims no runner) and once as
+  `max-attempts` (the backstop, for a caller whose `if:` is wrong). Both
+  `SECURITY:` tests in `tests/reusableWorkflows.test.ts` exist because that
+  duplication is structural and drifts silently.
+- **The two retry loops were the same mechanism**, differing only in cap, in
+  `--failed`, and in whether a branch-staleness guard applies. Collapsing them
+  was real deduplication rather than packaging: a fix to the staleness guard or
+  the rerun call now lands once. `branch-janitor` is the pure-packaging case —
+  its body already knew nothing about this repo.
+
+A reusable workflow rejects an undeclared input at run time (unlike a composite
+action, which ignores unknown `with:` keys silently), so that class of mistake
+fails loudly — but only once the loop next fires, which for a retry loop means
+the next red CI. The wiring test catches it at merge time instead.
+
+For a consuming repo the shape is the same, with the local path swapped for a
+pinned remote one:
 
 ```yaml
 uses: <org>/agent-pipeline/.github/workflows/automerge.yml@v1
@@ -684,7 +721,8 @@ a consumer weaken them has extracted the shape and lost the substance:
 ### 8.5 Suggested extraction order
 
 1. ~~The composite action (§8.3.1)~~ — **done**; see above.
-2. Tier A workflows — trivially portable, prove the packaging.
+2. ~~Tier A workflows~~ — **done**; see §8.3. The retry pair deduplicated;
+   the janitor proved the packaging.
 3. Tier B, starting with the groundskeeper and outcomes loops (read-mostly, low
    blast radius) and ending with auto-merge (highest stakes).
 4. Tier C, once the prompt-as-file seam exists.
