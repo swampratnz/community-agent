@@ -58,6 +58,13 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   count, never who connected or what about, same as the existing new-projects
   and new-interests lines — so the whole community can see the flywheel is
   real, not just admins.
+- **New Agent Skill: `debug-claude-api-error`** (#1014): a symptom-to-cause-
+  to-fix decision tree for a member whose own code hit an Anthropic Messages
+  API error — branching by HTTP status/`error.type` (auth, request-shape,
+  permission, model, rate-limit vs capacity, streaming/timeout) rather than a
+  wall of docs. Complements `claude-code-setup`, which stays scoped to the
+  CLI. Loads only when `AGENT_SKILLS_ENABLED` is on, same as every other
+  bundled skill.
 
 ## 2026-08-18
 

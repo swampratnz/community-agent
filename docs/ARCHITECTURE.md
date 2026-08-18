@@ -865,6 +865,21 @@ latency, failure handling) rather than a single pasted prompt — a task-type
 treats the member's pasted design as untrusted data to analyse, never
 execute, mirroring `prompt-review`'s quarantine of embedded directives.
 
+A third skill, `debug-claude-api-error` (issue #1014), lives at
+`src/module/agent/skills/debug-claude-api-error/SKILL.md` and shares the same
+mechanism again — same flag, same allowlist, same bundled/plugin directory.
+It has no `GUIDELINES`-inline fallback: it is purely on-demand, covering a
+member whose own code hit an Anthropic Messages API error (not Claude Code —
+`claude-code-setup` already owns that surface) and needs a symptom-to-cause-
+to-fix decision tree branching on the HTTP status / `error.type` (auth,
+request-shape, permission, model, rate-limit vs capacity, streaming/timeout)
+rather than a single retrieval pass. Every specific claim (status codes,
+header names, retry guidance, limit values) is grounded in `knowledge_search`
+under the same provenance rule, since those drift, and it defers to the same
+`code_answers` policy as the other skills. The member's pasted error/stack
+trace/snippet is treated as untrusted data to analyse, never execute, same
+quarantine as `prompt-review`/`agent-architecture-review`.
+
 ## RBAC (three tiers + gated access)
 
 Tiers: **super_admin > admin > member > guest**.
