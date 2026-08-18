@@ -1,6 +1,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
+import { WindowClosedError } from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -4623,6 +4624,136 @@ test(
     );
     await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = ANY($1)`, [
       [okAdminId, failAdminId],
+    ]);
+  },
+);
+
+// --- issue #998: adminDigest.ts's sendDirectMessage never adopted #888's
+// WindowClosedError -> queueForWindowReopen recovery — the one remaining
+// module-side gap SECURITY.md named after #888/#922. These two tests pin
+// the recovery branch directly against runAdminDigestOnce, mirroring the
+// notify.ts producers' own coverage in tests/notifyMemberWindowReopenQueue.test.ts.
+
+test(
+  'SECURITY: runAdminDigestOnce: a WindowClosedError from sendDirectMessage queues via queueForWindowReopen at low priority for that admin only, then still records the send and counts the admin as succeeded — a non-WindowClosedError rejection for a DIFFERENT admin is unaffected: no queue call, no recordAdminDigestSent, not counted as succeeded (issue #998 acceptance criteria 1, 2, 3)',
+  { skip },
+  async () => {
+    const windowAdminId = `${RUN}-windowclosed-admin`;
+    const failAdminId = `${RUN}-genericfail-admin`;
+    const requesterId = `${RUN}-windowclosed-requester`;
+    await upsertMember({ platform: 'discord', userId: windowAdminId, role: 'admin', addedBy: `${RUN}-actor` });
+    await upsertMember({ platform: 'discord', userId: failAdminId, role: 'admin', addedBy: `${RUN}-actor` });
+    // A pending access request is a guild-wide count (countAccessRequests
+    // takes no scope), so it guarantees a non-null digest message for BOTH
+    // admins — same technique as the #385 total-failure test above, which
+    // would otherwise `continue` on a quiet week before ever reaching
+    // sendDirectMessage.
+    await recordAccessRequest({ platform: 'discord', userId: requesterId, userName: 'guest' });
+
+    const queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }> = [];
+    const baseAdapter = fakeAdapter({
+      platform: 'discord',
+      conversationIds: [`${RUN}-c-windowclosed-empty`],
+      sent: [],
+    });
+    const adapter: PlatformAdapter = {
+      ...baseAdapter,
+      async sendDirectMessage(userId, text) {
+        if (userId === windowAdminId) throw new WindowClosedError(userId);
+        if (userId === failAdminId) throw new Error('sentinel-generic-send-failure');
+        return baseAdapter.sendDirectMessage(userId, text);
+      },
+      queueForWindowReopen(userId, message, priority) {
+        queued.push({ userId, message, priority });
+      },
+    };
+
+    await assert.doesNotReject(() => runAdminDigestOnce([adapter]));
+
+    assert.equal(
+      queued.length,
+      1,
+      'exactly one queueForWindowReopen call — the generic failure on the other admin must never queue',
+    );
+    assert.equal(
+      queued[0]?.userId,
+      windowAdminId,
+      "the queued entry carries the window-closed admin's own platformUserId, never the other admin's (issue #998 acceptance criterion 3(a) — recipient isolation)",
+    );
+    assert.equal(
+      queued[0]?.priority,
+      'low',
+      "priority is the literal 'low', never 'system' (issue #998 acceptance criterion 1)",
+    );
+
+    assert.equal(
+      await wasAdminDigestSentRecently('discord', windowAdminId, 7),
+      true,
+      'the queued admin is still recorded as sent and counted as succeeded — a queued send is treated the same as a delivered one, matching #888\'s precedent (issue #998 acceptance criterion 3(b))',
+    );
+    assert.equal(
+      await wasAdminDigestSentRecently('discord', failAdminId, 7),
+      false,
+      'the generically-failed admin is NOT recorded as sent — falls through unchanged to the existing log-and-drop (issue #998 acceptance criterion 3(c))',
+    );
+
+    await clearAccessRequest('discord', requesterId);
+    await pool.query(
+      `DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = ANY($1)`,
+      [[windowAdminId, failAdminId]],
+    );
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = ANY($1)`, [
+      [windowAdminId, failAdminId],
+    ]);
+  },
+);
+
+test(
+  'runAdminDigestOnce: a WindowClosedError falls through to the existing log-and-drop when the adapter has no queueForWindowReopen (Discord/Baileys shape) — no throw escapes the per-admin loop, and the admin after it is still processed (issue #998 acceptance criterion 4)',
+  { skip },
+  async () => {
+    const noQueueAdminId = `${RUN}-noqueue-admin`;
+    const okAdminId = `${RUN}-noqueue-ok-admin`;
+    const requesterId = `${RUN}-noqueue-requester`;
+    await upsertMember({ platform: 'discord', userId: noQueueAdminId, role: 'admin', addedBy: `${RUN}-actor` });
+    await upsertMember({ platform: 'discord', userId: okAdminId, role: 'admin', addedBy: `${RUN}-actor` });
+    await recordAccessRequest({ platform: 'discord', userId: requesterId, userName: 'guest' });
+
+    const baseAdapter = fakeAdapter({
+      platform: 'discord',
+      conversationIds: [`${RUN}-c-noqueue-empty`],
+      sent: [],
+    });
+    // No queueForWindowReopen at all — the Discord/Baileys shape.
+    const adapter: PlatformAdapter = {
+      ...baseAdapter,
+      async sendDirectMessage(userId, text) {
+        if (userId === noQueueAdminId) throw new WindowClosedError(userId);
+        return baseAdapter.sendDirectMessage(userId, text);
+      },
+    };
+    assert.equal(adapter.queueForWindowReopen, undefined, 'precondition: no queueForWindowReopen method');
+
+    await assert.doesNotReject(() => runAdminDigestOnce([adapter]));
+
+    assert.equal(
+      await wasAdminDigestSentRecently('discord', noQueueAdminId, 7),
+      false,
+      'unrecoverable on an adapter with no queueForWindowReopen — falls through to log-and-drop, not recorded as sent',
+    );
+    assert.equal(
+      await wasAdminDigestSentRecently('discord', okAdminId, 7),
+      true,
+      "the next admin in the loop is still processed — the window-closed admin's failure never aborts the loop (issue #998 acceptance criterion 4)",
+    );
+
+    await clearAccessRequest('discord', requesterId);
+    await pool.query(
+      `DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = ANY($1)`,
+      [[noQueueAdminId, okAdminId]],
+    );
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = ANY($1)`, [
+      [noQueueAdminId, okAdminId],
     ]);
   },
 );

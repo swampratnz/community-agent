@@ -1,6 +1,7 @@
 import { config } from '@swampratnz/agent-base/config.js';
 import { logger } from '@swampratnz/agent-base/logger.js';
 import { startTrackedJob } from '@swampratnz/agent-base/jobs/trackedJob.js';
+import { WindowClosedError } from '@swampratnz/agent-base/platforms/types.js';
 import {
   answerFeedbackOriginSummary,
   answerFeedbackWeeklySummary,
@@ -1186,6 +1187,21 @@ export async function buildAdminDigestForAdmin(
  * fail) or a legitimate zero-attempt run (no admins, or no connected
  * adapter for any of them) never throws, matching #335's
  * partial-failure-must-never-throw convention.
+ *
+ * The `sendDirectMessage` call is wrapped separately (issue #998, closing
+ * the `adminDigest.ts` gap SECURITY.md named after #888): a rejection that
+ * is specifically a `WindowClosedError` — the WhatsApp Cloud adapter's
+ * "adapter connected, this one admin's 24h window is closed" failure — is
+ * queued via the adapter's optional `queueForWindowReopen` at `'low'`
+ * priority (matching `notify.ts`'s per-recipient DMs, not #888's `'system'`
+ * super-admin broadcasts) instead of being logged and dropped, so it is
+ * delivered the moment that admin's own next inbound message reopens their
+ * window. `recordAdminDigestSent` still runs and the admin still counts as
+ * `succeeded` in this case — a queued send is treated the same as a
+ * delivered one, matching #888's precedent for its six alerts. Any other
+ * rejection (a Discord/Baileys send failure, a non-`WindowClosedError`
+ * Cloud API error, or `WindowClosedError` when the adapter has no
+ * `queueForWindowReopen`) falls through unchanged to the outer catch below.
  */
 export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): Promise<void> {
   const admins = await listAdmins();
@@ -1225,7 +1241,19 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         continue; // quiet week — no send, freshness row untouched
       }
 
-      await adapter.sendDirectMessage(admin.platformUserId, message);
+      try {
+        await adapter.sendDirectMessage(admin.platformUserId, message);
+      } catch (sendErr) {
+        if (sendErr instanceof WindowClosedError && adapter.queueForWindowReopen) {
+          adapter.queueForWindowReopen(admin.platformUserId, message, 'low');
+          logger.warn(
+            { platform: admin.platform, id: admin.platformUserId },
+            "Admin digest: recipient's window is closed, queued for reopen",
+          );
+        } else {
+          throw sendErr;
+        }
+      }
       await recordAdminDigestSent(admin.platform, admin.platformUserId, currentCounts);
       ok = true;
     } catch (err) {
