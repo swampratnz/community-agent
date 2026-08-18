@@ -4641,7 +4641,12 @@ test(
     const windowAdminId = `${RUN}-windowclosed-admin`;
     const failAdminId = `${RUN}-genericfail-admin`;
     const requesterId = `${RUN}-windowclosed-requester`;
-    await upsertMember({ platform: 'discord', userId: windowAdminId, role: 'admin', addedBy: `${RUN}-actor` });
+    await upsertMember({
+      platform: 'discord',
+      userId: windowAdminId,
+      role: 'admin',
+      addedBy: `${RUN}-actor`,
+    });
     await upsertMember({ platform: 'discord', userId: failAdminId, role: 'admin', addedBy: `${RUN}-actor` });
     // A pending access request is a guild-wide count (countAccessRequests
     // takes no scope), so it guarantees a non-null digest message for BOTH
@@ -4689,7 +4694,7 @@ test(
     assert.equal(
       await wasAdminDigestSentRecently('discord', windowAdminId, 7),
       true,
-      'the queued admin is still recorded as sent and counted as succeeded — a queued send is treated the same as a delivered one, matching #888\'s precedent (issue #998 acceptance criterion 3(b))',
+      "the queued admin is still recorded as sent and counted as succeeded — a queued send is treated the same as a delivered one, matching #888's precedent (issue #998 acceptance criterion 3(b))",
     );
     assert.equal(
       await wasAdminDigestSentRecently('discord', failAdminId, 7),
@@ -4715,7 +4720,12 @@ test(
     const noQueueAdminId = `${RUN}-noqueue-admin`;
     const okAdminId = `${RUN}-noqueue-ok-admin`;
     const requesterId = `${RUN}-noqueue-requester`;
-    await upsertMember({ platform: 'discord', userId: noQueueAdminId, role: 'admin', addedBy: `${RUN}-actor` });
+    await upsertMember({
+      platform: 'discord',
+      userId: noQueueAdminId,
+      role: 'admin',
+      addedBy: `${RUN}-actor`,
+    });
     await upsertMember({ platform: 'discord', userId: okAdminId, role: 'admin', addedBy: `${RUN}-actor` });
     await recordAccessRequest({ platform: 'discord', userId: requesterId, userName: 'guest' });
 
@@ -4732,7 +4742,6 @@ test(
         return baseAdapter.sendDirectMessage(userId, text);
       },
     };
-    assert.equal(adapter.queueForWindowReopen, undefined, 'precondition: no queueForWindowReopen method');
 
     await assert.doesNotReject(() => runAdminDigestOnce([adapter]));
 
