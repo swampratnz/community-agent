@@ -5,6 +5,7 @@ import { resolveRole } from '@swampratnz/agent-base/auth/roles.js';
 import { atLeast, toolsForRole } from '@swampratnz/agent-base/auth/rbac.js';
 import { getCommunityGuidelines, getCommunityGuidelinesMi } from '../../storage/policies.js';
 import { buildMemberDigestContent } from '../../memberDigest.js';
+import { formatStatusMessage, getStatusCache } from '../../status/anthropicStatus.js';
 import {
   areKnowledgeEntriesLowRated,
   getLanguagePreference,
@@ -263,6 +264,19 @@ async function handleDigest(interaction: ChatInputCommandInteraction, deps: Slas
 }
 
 /**
+ * No tier gate — mirrors `handleGuidelines` above: `check_status` reveals
+ * nothing about this community, only Anthropic's own public status page, so
+ * it must never be gated tighter than the `check_status` tool it fronts
+ * (issue #995).
+ */
+async function handleStatus(interaction: ChatInputCommandInteraction, deps: SlashCommandDeps): Promise<void> {
+  await deferEphemeral(interaction);
+  const message = formatStatusMessage(getStatusCache(), Date.now());
+  recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
+  await replyEphemeral(interaction, message, deps);
+}
+
+/**
  * Bind each registry entry's Discord half (registration JSON + handler).
  *
  * Called from `createConfiguredAdapters()`, NOT at module scope. Binding
@@ -343,5 +357,13 @@ export function bindCommunitySlashCommands(): void {
         .setDescription("Pull this week's community digest on demand — topics, new knowledge, projects.")
         .toJSON(),
     handle: handleDigest,
+  });
+  bindDiscordCommand('status', {
+    build: () =>
+      new SlashCommandBuilder()
+        .setName('status')
+        .setDescription('Check whether Anthropic has a known service incident right now.')
+        .toJSON(),
+    handle: handleStatus,
   });
 }

@@ -63,7 +63,8 @@ const WHATSAPP_TEXT_COMMANDS_TEXT =
   '- `!whois <topic>` — find members into a topic\n' +
   '- `!projects [query]` — browse the project showcase\n' +
   '- `!guidelines` — community guidelines\n' +
-  "- `!digest` — this week's digest";
+  "- `!digest` — this week's digest\n" +
+  '- `!status` — check for a known Anthropic outage';
 
 /**
  * Plain-language rundown of what an admin can additionally ask the bot to
