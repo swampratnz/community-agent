@@ -692,7 +692,7 @@ test('!digest replies with the fixed "Nothing to report" text when buildDigestCo
 
 test('!help has no tier gate — served even for a guest caller, mirroring !guidelines', async (t) => {
   mockPoolRole(t, null); // no community_users row -> guest
-  const router = makeRouter({ runTurn: throwingRunTurn });
+  const router = makeRouter({ runTurn: throwingRunTurn, recordShortcutHitFn: async () => {} });
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -704,9 +704,23 @@ test('!help has no tier gate — served even for a guest caller, mirroring !guid
 
 test('!help renders byte-identical text to formatCommunityInfoText(role, "whatsapp") for member/admin/super_admin (issue #993 authoritative criterion 1)', async (t) => {
   const { formatCommunityInfoText } = await import('../src/module/agent/tools.js');
+  // A SINGLE t.mock.method call for this whole test, with the role read from
+  // a mutable closure variable — calling t.mock.method repeatedly on the same
+  // (pool, 'query') target within one test only unwinds one layer on
+  // cleanup, permanently leaving pool.query mocked for every later test in
+  // the file (reproduced in isolation; not a node:test/mockPoolRole misuse
+  // any other test in this file happens to make).
+  let currentRole: 'admin' | 'member' | null = null;
+  t.mock.method(pool, 'query', (async (sql: string) => {
+    if (sql.includes('SELECT role FROM community_users')) {
+      return { rows: currentRole ? [{ role: currentRole }] : [], rowCount: 0 };
+    }
+    return { rows: [], rowCount: 0 };
+  }) as typeof pool.query);
+
   for (const role of ['member', 'admin'] as const) {
-    mockPoolRole(t, role);
-    const router = makeRouter({ runTurn: throwingRunTurn });
+    currentRole = role;
+    const router = makeRouter({ runTurn: throwingRunTurn, recordShortcutHitFn: async () => {} });
     const { adapter, sent, trigger } = makeAdapter();
     router.register(adapter);
 
@@ -725,8 +739,8 @@ test('!help renders byte-identical text to formatCommunityInfoText(role, "whatsa
     config.rbac.superAdminWhatsappNumbers.length = 0;
     config.rbac.superAdminWhatsappNumbers.push(...originalSuperAdmins);
   });
-  mockPoolRole(t, null);
-  const router = makeRouter({ runTurn: throwingRunTurn });
+  currentRole = null;
+  const router = makeRouter({ runTurn: throwingRunTurn, recordShortcutHitFn: async () => {} });
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
 
@@ -736,16 +750,27 @@ test('!help renders byte-identical text to formatCommunityInfoText(role, "whatsa
 });
 
 test('SECURITY: !help for a member caller never contains ADMIN_CAPABILITIES_TEXT/SUPER_ADMIN_CAPABILITIES_TEXT content, and for an admin caller never contains SUPER_ADMIN_CAPABILITIES_TEXT content (issue #993 authoritative criterion 6)', async (t) => {
-  mockPoolRole(t, 'member');
-  const memberRouter = makeRouter({ runTurn: throwingRunTurn });
+  // A SINGLE t.mock.method call for this whole test (mutable role, not a
+  // second mockPoolRole call) — re-mocking (pool, 'query') a second time
+  // within one test only unwinds one layer on cleanup, permanently leaving
+  // pool.query mocked for every later test in the file.
+  let currentRole: 'admin' | 'member' | null = 'member';
+  t.mock.method(pool, 'query', (async (sql: string) => {
+    if (sql.includes('SELECT role FROM community_users')) {
+      return { rows: currentRole ? [{ role: currentRole }] : [], rowCount: 0 };
+    }
+    return { rows: [], rowCount: 0 };
+  }) as typeof pool.query);
+
+  const memberRouter = makeRouter({ runTurn: throwingRunTurn, recordShortcutHitFn: async () => {} });
   const member = makeAdapter();
   memberRouter.register(member.adapter);
   await member.trigger(makeMessage({ text: '!help', userId: 'member-1' }));
   assert.doesNotMatch(member.sent[0].text, /warn, mute, kick/i);
   assert.doesNotMatch(member.sent[0].text, /grant or revoke admin status/i);
 
-  mockPoolRole(t, 'admin');
-  const adminRouter = makeRouter({ runTurn: throwingRunTurn });
+  currentRole = 'admin';
+  const adminRouter = makeRouter({ runTurn: throwingRunTurn, recordShortcutHitFn: async () => {} });
   const admin = makeAdapter();
   adminRouter.register(admin.adapter);
   await admin.trigger(makeMessage({ text: '!help', userId: 'admin-1' }));
