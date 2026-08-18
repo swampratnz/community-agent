@@ -3,21 +3,21 @@ name: Pipeline build retry
 # Auto-recover the build worker from transient/infra failures so a human is
 # only pinged for PERSISTENT ones. When a "Pipeline build worker" run fails
 # (its verify step found no PR — a flake, a cold-start timing blip, a transient
-# DB/pool hiccup, etc.), re-run it via `gh run rerun`, bounded by run_attempt.
-# The build worker's verify step only labels the issue `needs-human` on its
-# FINAL attempt, so escalation happens once retries are exhausted — replacing
-# the manual "toggle status:approved to re-trigger" that a human kept doing.
+# DB/pool hiccup), re-run it, bounded by run_attempt. The build worker's verify
+# step only labels the issue `needs-human` on its FINAL attempt, so escalation
+# happens once retries are exhausted — replacing the manual "toggle
+# status:approved to re-trigger" that a human kept doing.
 #
-# Why `gh run rerun` rather than re-adding a label: a GITHUB_TOKEN label edit
-# does NOT re-trigger the build worker (GitHub does not let Actions trigger
-# Actions via the default token — the same rule that stops GITHUB_TOKEN pushes
-# from re-running CI). Re-running the failed run is the reliable, no-PAT
-# mechanism, and it re-uses the original `issues` event so it rebuilds exactly
-# the same proposal with a fresh checkout, DB, and agent budget.
+# The rerun mechanism lives in
+# .github/workflows/reusable-rerun-failed-run.yml; this file is the build
+# half: the trigger, the cap, and the payload facts.
 #
-# A PERSISTENT failure (a real bug, or an exhausted Max pool) fails all attempts
-# and correctly lands at needs-human — auto-retry recovers flakes, it does not
-# paper over genuine breakage.
+# A PERSISTENT failure (a real bug, or an exhausted Max pool) fails all
+# attempts and correctly lands at needs-human — auto-retry recovers flakes, it
+# does not paper over genuine breakage.
+#
+# No staleness guard here, deliberately: a build run is keyed to an ISSUE, not
+# to a branch tip, so there is no "superseded commit" to detect.
 
 on:
   workflow_run:
@@ -33,18 +33,17 @@ jobs:
     # while under the attempt cap. run_attempt is 1 on the first run and
     # increments on each rerun, so `< 3` = at most two auto-reruns before the
     # build worker's own final-attempt escalation stands. MUST stay in sync with
-    # the `>= 3` cap in pipeline-build.yml's verify step.
+    # the `>= 3` cap in pipeline-build.yml's verify step, and with
+    # `max-attempts` below — tests/reusableWorkflows.test.ts pins both.
     if: >-
       github.event.workflow_run.conclusion == 'failure' &&
       github.event.workflow_run.event == 'issues' &&
       github.event.workflow_run.run_attempt < 3
-    runs-on: ubuntu-latest
-    timeout-minutes: 5 # a single gh call; don't let a hung runner sit for the 6 h default
-    steps:
-      - name: Re-run the failed build
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          echo "Build run ${{ github.event.workflow_run.id }} failed on attempt ${{ github.event.workflow_run.run_attempt }} — re-running (cap 3)."
-          gh run rerun "${{ github.event.workflow_run.id }}" -R "${{ github.repository }}"
+    uses: ./.github/workflows/reusable-rerun-failed-run.yml
+    permissions:
+      actions: write
+    with:
+      run-id: ${{ github.event.workflow_run.id }}
+      run-attempt: ${{ github.event.workflow_run.run_attempt }}
+      max-attempts: 3
+      label: Build run

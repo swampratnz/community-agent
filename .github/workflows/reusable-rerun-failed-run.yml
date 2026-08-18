@@ -1,0 +1,124 @@
+name: Reusable — rerun a failed workflow run
+
+# Re-run a failed workflow run, bounded by attempt count. Called by
+# ci-retry.yml and pipeline-build-retry.yml, which were the same mechanism
+# with different caps and one extra guard.
+#
+# WHY A BLIND RETRY AND NOT A CLASSIFIER (the evidence, 2026-07-04): `npm ci`
+# died with `AggregateError [ETIMEDOUT]` reaching the npm registry on runs
+# 28703072249 (PR #112 — a human had to push an empty "ci: retry" commit) and
+# 28715457148 (a push to main), and a 16:34–18:04 UTC cluster of six zero-step
+# runner-provisioning failures (runner_id 0, logs 404) took out runs across
+# four workflows. All recover on a plain rerun; none need a code fix. A blind
+# single retry costs one bounded run in the real-failure case, while a log
+# classifier is another thing to maintain and another way to be wrong.
+#
+# WHY `gh run rerun` AND NOT A LABEL TOGGLE: a GITHUB_TOKEN label edit does
+# NOT re-trigger a workflow (GitHub does not let Actions trigger Actions via
+# the default token — the same rule that stops GITHUB_TOKEN pushes from
+# re-running CI). Re-running the failed run is the reliable, no-PAT mechanism,
+# and it re-uses the original event, so it repeats exactly the same work with
+# a fresh checkout, DB and agent budget.
+#
+# THE CAP IS CHECKED TWICE, ON PURPOSE. A caller gates on `run_attempt` in its
+# job `if:` (cheapest — no runner is claimed), and this workflow re-checks the
+# same bound before calling the API. The `if:` cannot be moved in here because
+# `on:` triggers and their payload conditions belong to the caller, so without
+# the second check a caller that forgot its `if:` would rerun forever.
+#
+# PORTABILITY: nothing here knows anything about this repository. A consumer
+# supplies the trigger and the payload facts; `github.repository` resolves to
+# whichever repo is calling.
+
+on:
+  workflow_call:
+    inputs:
+      run-id:
+        description: 'The failed run to re-run.'
+        required: true
+        type: string
+      run-attempt:
+        description: 'That run''s attempt number (1 on the first run).'
+        required: true
+        type: number
+      max-attempts:
+        description: >-
+          Total attempts allowed. `run-attempt` must be strictly below this or
+          the rerun is refused. Keep it equal to the bound in the caller's `if:`.
+        required: true
+        type: number
+      failed-jobs-only:
+        description: 'Pass --failed, re-running only the failed jobs of the run.'
+        required: false
+        default: false
+        type: boolean
+      staleness-branch:
+        description: >-
+          Branch to compare against before rerunning. When set, the rerun is
+          SKIPPED if this branch has moved past `head-sha` — see the staleness
+          guard below. Leave empty for a run that is not keyed to a branch tip
+          (an issue-triggered build, say), where staleness is meaningless.
+        required: false
+        default: ''
+        type: string
+      head-sha:
+        description: 'Commit the failed run was for. Required when staleness-branch is set.'
+        required: false
+        default: ''
+        type: string
+      label:
+        description: 'How to name the run in log lines, e.g. "CI run".'
+        required: false
+        default: 'Run'
+        type: string
+
+jobs:
+  rerun:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5 # a single gh call; don't let a hung runner sit for the 6 h default
+    steps:
+      - name: Re-run the failed run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ inputs.run-id }}
+          RUN_ATTEMPT: ${{ inputs.run-attempt }}
+          MAX_ATTEMPTS: ${{ inputs.max-attempts }}
+          FAILED_ONLY: ${{ inputs.failed-jobs-only }}
+          STALENESS_BRANCH: ${{ inputs.staleness-branch }}
+          HEAD_SHA: ${{ inputs.head-sha }}
+          LABEL: ${{ inputs.label }}
+        run: |
+          set -euo pipefail
+
+          # Second cap check — see the header. A caller whose `if:` is missing
+          # or wrong stops here rather than rerunning without bound.
+          if [ "${RUN_ATTEMPT}" -ge "${MAX_ATTEMPTS}" ]; then
+            echo "${LABEL} ${RUN_ID} is on attempt ${RUN_ATTEMPT} of ${MAX_ATTEMPTS} — cap reached, not rerunning."
+            exit 0
+          fi
+
+          # Staleness guard (issue #223): `gh run rerun` re-enters the target
+          # workflow's `cancel-in-progress` concurrency group as the NEWEST
+          # arrival, so rerunning a commit that a newer push has already
+          # superseded would CANCEL the newer commit's in-flight run — and a
+          # cancelled run is invisible to both this loop and the fix agents, so
+          # the branch would end with no verdict at all. Only rerun while the
+          # failed run's commit is still the branch tip. A fork PR's branch is
+          # not in this repo (404): treat an unresolvable tip as "not stale"
+          # and rerun, matching the always-rerun behaviour for that case.
+          if [ -n "${STALENESS_BRANCH}" ]; then
+            tip="$(gh api "repos/${REPO}/commits/${STALENESS_BRANCH}" --jq '.sha' 2>/dev/null || echo "")"
+            if [ -n "${tip}" ] && [ "${tip}" != "${HEAD_SHA}" ]; then
+              echo "${LABEL} ${RUN_ID} was for ${HEAD_SHA}, but ${STALENESS_BRANCH} is now at ${tip} — superseded, not rerunning (the newer commit has its own run)."
+              exit 0
+            fi
+          fi
+
+          if [ "${FAILED_ONLY}" = 'true' ]; then
+            echo "${LABEL} ${RUN_ID} failed on attempt ${RUN_ATTEMPT} — re-running failed jobs (cap ${MAX_ATTEMPTS})."
+            gh run rerun "${RUN_ID}" --failed -R "${REPO}"
+          else
+            echo "${LABEL} ${RUN_ID} failed on attempt ${RUN_ATTEMPT} — re-running (cap ${MAX_ATTEMPTS})."
+            gh run rerun "${RUN_ID}" -R "${REPO}"
+          fi
