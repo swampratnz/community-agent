@@ -77,7 +77,8 @@ const WHATSAPP_TEXT_COMMANDS_TEXT =
  * (moderate, clear_warnings, archive_thread) come first, mirroring
  * MEMBER_CAPABILITIES_TEXT's own "most safety-relevant first" convention.
  * No interpolation of any runtime/tool argument — static text only, same
- * trust level as MEMBER_CAPABILITIES_TEXT.
+ * trust level as MEMBER_CAPABILITIES_TEXT. Issue #1008 added the
+ * find_knowledge clause to the knowledge-curation line.
  */
 const ADMIN_CAPABILITIES_TEXT =
   'As an admin, you also have:\n' +
@@ -85,7 +86,7 @@ const ADMIN_CAPABILITIES_TEXT =
   "- Manage membership: add a new member, remove a member, link a member's cross-platform identity, or unlink a member's cross-platform identity\n" +
   '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, check which knowledge entries are rated poorly, and review recurring unhelpful-answer themes across all answers\n' +
   '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
-  '- Curate the knowledge base: save a new knowledge entry, browse knowledge entries, edit a knowledge entry, delete a knowledge entry, or merge two entries together, and check for near-duplicate entries or conflicting entries\n' +
+  "- Curate the knowledge base: save a new knowledge entry, browse knowledge entries, semantically find a knowledge entry's id by what it says, edit a knowledge entry, delete a knowledge entry, or merge two entries together, and check for near-duplicate entries or conflicting entries\n" +
   "- Review knowledge candidates, accept a candidate or decline a candidate, track knowledge gaps (questions I couldn't answer), recurring question clusters, raw context digests, pull your own admin-digest snapshot on demand, get a review-queue roll-up of all five review queues at once, or check how quickly I've been answering members (response latency)\n" +
   '- See who is waiting for access, or who has joined or left the server\n' +
   "- Add a note about a member, review notes on a member, delete a note, or look up a member's history across conversations\n" +
