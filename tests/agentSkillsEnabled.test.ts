@@ -74,10 +74,11 @@ test('SECURITY: AC2 — AGENT_SKILLS_ENABLED=true adds Skill to tools and loads 
         'claude-code-setup',
         'getting-started',
         'knowledge-contribution',
+        'debug-claude-api-error',
       ],
       `${role}: skills must be exactly ['prompt-review', 'model-and-plan-selection', ` +
         `'agent-architecture-review', 'project-showcase', 'claude-code-setup', 'getting-started', ` +
-        `'knowledge-contribution']`,
+        `'knowledge-contribution', 'debug-claude-api-error']`,
     );
   }
 });
@@ -93,6 +94,7 @@ test("SECURITY: AC6/AC7 (#755) — skills is always the literal ENABLED_SKILLS a
       'claude-code-setup',
       'getting-started',
       'knowledge-contribution',
+      'debug-claude-api-error',
     ]);
     assert.notEqual(opts.skills, 'all');
   }
@@ -155,6 +157,41 @@ test("SECURITY: issue #1001 — knowledge-contribution resolves to the bundled S
       [...opts.allowedTools].sort(),
       [...expected].sort(),
       `${role}: allowedTools must be unaffected by knowledge-contribution — no new MCP tool surface`,
+    );
+  }
+});
+
+test("SECURITY: issue #1014 — debug-claude-api-error resolves to the bundled SKILL.md, grants no new tool access, and changes no role's disallowedTools", async () => {
+  const { toolsForRole } = await import('@swampratnz/agent-base/auth/rbac.js');
+  const skillPath = join(
+    dirname(fileURLToPath(import.meta.url)),
+    '../src/module/agent/skills/debug-claude-api-error/SKILL.md',
+  );
+  const body = readFileSync(skillPath, 'utf8');
+  assert.match(
+    body,
+    /^---\nname: debug-claude-api-error\n/,
+    'SKILL.md must carry valid debug-claude-api-error front-matter',
+  );
+  for (const role of ['guest', 'member', 'admin', 'super_admin'] as const) {
+    const opts = buildQueryOptions(role, 'prompt', {}, null, 'conv-1', 'discord');
+    assert.ok(
+      opts.skills?.includes('debug-claude-api-error'),
+      `${role}: skills must include debug-claude-api-error when the flag is on`,
+    );
+    const webSearch = role === 'admin' || role === 'super_admin';
+    assert.deepEqual(
+      opts.disallowedTools,
+      ['Task', 'WebFetch', ...(webSearch ? [] : ['WebSearch'])],
+      `${role}: disallowedTools must be unaffected by adding debug-claude-api-error to ENABLED_SKILLS`,
+    );
+    const expected = [...toolsForRole(role, 'discord'), ...(webSearch ? ['WebSearch'] : [])].filter(
+      (t) => !(FEATURE_FLAGGED_TOOLS as readonly string[]).includes(t),
+    );
+    assert.deepEqual(
+      [...opts.allowedTools].sort(),
+      [...expected].sort(),
+      `${role}: allowedTools must be unaffected by debug-claude-api-error — no new MCP tool surface`,
     );
   }
 });
@@ -337,5 +374,9 @@ test('SECURITY: AC5 — the bundled skill plugin directory contains no hooks/, a
   assert.ok(
     files.some((f) => f.endsWith(join('knowledge-contribution', 'SKILL.md'))),
     'expected knowledge-contribution/SKILL.md to be present',
+  );
+  assert.ok(
+    files.some((f) => f.endsWith(join('debug-claude-api-error', 'SKILL.md'))),
+    'expected debug-claude-api-error/SKILL.md to be present',
   );
 });

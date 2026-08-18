@@ -30,6 +30,7 @@ export const ENABLED_SKILLS = [
   'claude-code-setup',
   'getting-started',
   'knowledge-contribution',
+  'debug-claude-api-error',
 ] as const;
 
 /**
