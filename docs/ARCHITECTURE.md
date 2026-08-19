@@ -1465,8 +1465,12 @@ weakening it:
    behind `community_info`/`/help`/`!help`, issue #993) is async precisely
    for this read, and resolves the segment via the module notice pack's
    `communityInfoMemberCapabilities` entry rather than a raw string constant.
-   Admin/super_admin segments and the WhatsApp shortcuts block stay
-   English-only, an explicit growth path rather than this issue's scope.
+   The WhatsApp shortcuts block itself got the same treatment (issue #1034):
+   it resolves via the module notice pack's `whatsappTextCommands` entry,
+   selected on the same already-read `language` value, so a `'mi'`-preference
+   WhatsApp member no longer sees an abrupt English flip mid-reply.
+   Admin/super_admin segments stay English-only, an explicit growth path
+   rather than this issue's scope.
 7. **Opt-in auto-enroll** (issue #605, off unless
    `DISCORD_AUTO_ENROLL_MEMBERS=true`). Removes the manual per-person
    `add_member` step: on every non-bot Discord join, `onGuildMemberAdd` calls

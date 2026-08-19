@@ -153,3 +153,23 @@ test(
     );
   },
 );
+
+test(
+  "SECURITY: whatsappTextCommands' base and mi values contain no template placeholders/interpolation " +
+    "tokens — fixed, human-authored text only, mirroring communityInfoMemberCapabilities' own check above " +
+    '(issue #1034 acceptance criterion 6)',
+  () => {
+    const entry = NOTICE_ENTRIES.whatsappTextCommands;
+    const placeholderPattern = /\$\{|\{\{|%s|%d|\{[0-9a-zA-Z_]*\}/;
+    assert.doesNotMatch(
+      entry.base,
+      placeholderPattern,
+      'base must be fixed text with no interpolation markers',
+    );
+    assert.doesNotMatch(
+      entry.language.mi,
+      placeholderPattern,
+      'the mi variant must be fixed text with no interpolation markers',
+    );
+  },
+);

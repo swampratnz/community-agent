@@ -27,6 +27,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-08-20
 
 ### Fixed
+- **The WhatsApp `!`-shortcuts discovery block in `community_info`/`!help` now
+  honours a standing te reo Māori preference too** (#1034): #1028 (below)
+  fixed the member-capabilities rundown but left the WhatsApp-only
+  `!`-shortcuts list immediately below it as a named follow-up — a
+  `language_preference = 'mi'` WhatsApp member got eight lines of te reo
+  Māori, then an abrupt flip to English for the one part of the reply most
+  specific to them. A WhatsApp member-tier caller with `language_preference =
+  'mi'` and the WhatsApp text-commands feature on now gets that block in te
+  reo Māori too; a caller with no preference (or `'en'`/`'auto'`) sees
+  byte-identical English to before.
 - **`my_data` (and its `/mydata`/`!mydata` mirrors) now reports your language
   preference, not just your response-style preference** (#1030): `my_data`'s
   whole job is telling you what the bot has stored about you, and it already
@@ -59,7 +69,9 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   'mi'` now gets the member-capabilities rundown in te reo Māori, matching
   `community_guidelines`'s existing behaviour; a caller with no preference (or
   `'en'`/`'auto'`) sees byte-identical English to before. Admin/super-admin
-  content and the WhatsApp `!`-shortcuts block stay English-only for now.
+  content stays English-only for now; the WhatsApp `!`-shortcuts block
+  immediately below this segment got the same te reo Māori treatment in #1034
+  (above).
 
 ## 2026-08-19
 

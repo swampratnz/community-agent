@@ -354,10 +354,12 @@ const NOTICE_ENTRIES = {
    * rundown (issue #1028) — `base` moved VERBATIM from the old
    * `MEMBER_CAPABILITIES_TEXT` constant in info.ts, so this is a byte-neutral
    * relocation, not a rewrite. Scope is deliberately member-tier only: the
-   * admin/super-admin segments and the WhatsApp `!`-shortcuts segment
-   * (`ADMIN_CAPABILITIES_TEXT`/`SUPER_ADMIN_CAPABILITIES_TEXT`/
-   * `WHATSAPP_TEXT_COMMANDS_TEXT`, still in info.ts) stay English-only,
-   * named growth in the issue rather than folded into this entry.
+   * admin/super-admin segments (`ADMIN_CAPABILITIES_TEXT`/
+   * `SUPER_ADMIN_CAPABILITIES_TEXT`, still in info.ts) stay English-only —
+   * out of scope for this repo's admin/super-admin tier (issue #1028). The
+   * WhatsApp `!`-shortcuts segment got its own `mi` variant in
+   * `whatsappTextCommands` below (issue #1034), the follow-up this entry's
+   * doc comment used to name as scoped out.
    */
   communityInfoMemberCapabilities: {
     base:
@@ -432,6 +434,45 @@ const NOTICE_ENTRIES = {
         '- Tuhi whakatau i roto i tētahi kaupapa e uru ana koe, rapu anō i ngā mahara tiritahi o taua ' +
         'kaupapa ā muri ake, rārangi rānei i ō kaupapa\n' +
         '- Muku i katoa āu raraunga kua rongoātia i ngā wā katoa ("forget me")',
+    },
+  },
+  // --- community_info WhatsApp `!`-shortcuts discovery block (agent/tools/info.ts) ---
+  /**
+   * The WhatsApp-only `!`-shortcuts discovery block appended to the member
+   * capabilities segment above (issue #872) — `base` moved VERBATIM from the
+   * old `WHATSAPP_TEXT_COMMANDS_TEXT` constant in info.ts, so this is a
+   * byte-neutral relocation, not a rewrite (issue #1034, the follow-up
+   * `communityInfoMemberCapabilities`'s own doc comment named as scoped
+   * out). The `!`-prefixed command tokens stay literal/untranslated in the
+   * `mi` variant — `commands.ts`'s regexes match those exact ASCII strings.
+   * No `style` variant, matching `communityInfoMemberCapabilities`'s own
+   * scope. Never interpolates caller or message data — same trust level as
+   * the member capabilities notice above.
+   */
+  whatsappTextCommands: {
+    base:
+      "You're on WhatsApp, so you can also use these zero-wait shortcuts:\n" +
+      '- `!whois <topic>` — find members into a topic\n' +
+      '- `!projects [query]` — browse the project showcase\n' +
+      '- `!guidelines` — community guidelines\n' +
+      "- `!digest` — this week's digest\n" +
+      '- `!status` — check for a known Anthropic outage\n' +
+      '- `!warnings` — your own active warning count\n' +
+      '- `!mysubmissions` — status of your filed suggestions/reports\n' +
+      '- `!mydata` — what the bot has stored about you\n' +
+      '- `!help` — this capability rundown',
+    language: {
+      mi:
+        'Kei runga koe i WhatsApp, nō reira ka taea hoki e koe te whakamahi i ēnei pokatata tere:\n' +
+        '- `!whois <topic>` — rapu mema e pā ana ki tētahi kaupapa\n' +
+        '- `!projects [query]` — tirotiro i te whakaaturanga kaupapa\n' +
+        '- `!guidelines` — ngā tikanga hapori\n' +
+        '- `!digest` — te whakarāpopototanga o tēnei wiki\n' +
+        '- `!status` — tirotiro mehemea he raru mōhiotia nā Anthropic\n' +
+        '- `!warnings` — te tatau o ō whakatūpato e mahi tonu ana\n' +
+        '- `!mysubmissions` — te āhua o ō tono/pūrongo kua tukuna\n' +
+        '- `!mydata` — he aha kua rongoātia e ahau mōu\n' +
+        '- `!help` — tēnei whakarāpopototanga pūkenga',
     },
   },
   // --- knowledge citation-note fragments (agent/tools/helpers.ts) ----------
