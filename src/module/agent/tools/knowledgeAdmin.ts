@@ -22,9 +22,22 @@ import {
   searchKnowledge,
   updateKnowledge,
 } from '@swampratnz/agent-base/storage/repository.js';
-import { formatFoundKnowledge, resolveSanitizedLabel, text, untrusted } from './helpers.js';
+import {
+  formatFoundKnowledge,
+  formatKnowledgeEntryLine,
+  resolveSanitizedLabel,
+  text,
+  untrusted,
+} from './helpers.js';
 import { notifyKnowledgeTipResolved } from './notify.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
+
+// list_top_knowledge's internal fetch cap (issue #1024): comfortably above
+// this community's expected KB size (low hundreds of entries per the
+// proposal), so a single bounded fetch covers the whole scope to rank over —
+// never `args.limit`, which would only rank an arbitrary first page. See the
+// comment at the tool's own definition below.
+const TOP_KNOWLEDGE_FETCH_CAP = 500;
 
 export const knowledgeAdminTools = [
   defineTool({
@@ -120,20 +133,63 @@ export const knowledgeAdminTools = [
         ...(args.sourceUnreachable ? { sourceUnreachable: true } : {}),
       });
       if (entries.length === 0) return text('No knowledge entries found.');
+      return text(untrusted('Knowledge entries', entries.map(formatKnowledgeEntryLine).join('\n')));
+    },
+  }),
+
+  // Positive-signal counterpart to every knowledge-health lens above being a
+  // "what's wrong" one (list_duplicate_knowledge/list_knowledge_conflicts/
+  // list_low_rated_knowledge/list_knowledge({ staleOnly: true }) — issue
+  // #1024). Reuses list_knowledge's own listKnowledge() call — no new
+  // repository function, no SQL — and ranks by retrievalCount in module code,
+  // so an admin no longer has to page the full browse list and eyeball every
+  // `retrieved Nx` suffix by hand to find what's actually earning its keep.
+  //
+  // Ranks the FULL scope, not a page: fetches a bounded superset
+  // (TOP_KNOWLEDGE_FETCH_CAP, comfortably above this community's expected KB
+  // size) via listKnowledge({ offset: 0, limit: TOP_KNOWLEDGE_FETCH_CAP }),
+  // sorts, THEN slices to the requested limit. Sorting only the first
+  // `args.limit` unsorted (updated_at DESC) rows would silently rank an
+  // arbitrary recent page instead of the true top-N — the correctness trap
+  // the adversarial review flagged and pinned in the rewritten criteria.
+  defineTool({
+    name: 'list_top_knowledge',
+    description:
+      'Rank knowledge entries by retrieval count, most relied-on first — the positive-signal counterpart to ' +
+      'list_duplicate_knowledge/list_knowledge_conflicts/list_low_rated_knowledge/' +
+      "list_knowledge({ staleOnly: true }), which only ever surface what's wrong. Entries with zero retrievals " +
+      'are eligible to appear (ranked last), never hidden. Same row format as list_knowledge. Admin only.',
+    minTier: 'admin',
+    readOnlyHint: true,
+    schema: {
+      scope: z
+        .string()
+        .optional()
+        .describe('Filter to a scope (e.g. "global", a platform, or a conversation id)'),
+      limit: z.number().optional().describe('Max entries to return (default 10, hard-capped at 50)'),
+    },
+    handler: async (args, { caller }) => {
+      assertAtLeast(caller.role, 'admin', 'list_top_knowledge');
+      const limit = Math.min(args.limit ?? 10, 50);
+      const entries = await listKnowledge({
+        scope: args.scope,
+        offset: 0,
+        limit: TOP_KNOWLEDGE_FETCH_CAP,
+      });
+      const ranked = [...entries]
+        .sort((a, b) => {
+          if (b.retrievalCount !== a.retrievalCount) return b.retrievalCount - a.retrievalCount;
+          const aTime = a.lastRetrievedAt?.getTime() ?? 0;
+          const bTime = b.lastRetrievedAt?.getTime() ?? 0;
+          if (bTime !== aTime) return bTime - aTime;
+          return a.id - b.id;
+        })
+        .slice(0, limit);
+      if (ranked.length === 0) return text('No knowledge entries found.');
       return text(
         untrusted(
-          'Knowledge entries',
-          entries
-            .map(
-              (e) =>
-                `#${e.id} [${e.scope}] [${e.createdByRole}] ${e.title ? `${e.title}: ` : ''}${e.content.slice(0, 200)} ` +
-                `(updated ${e.updatedAt.toISOString()}, retrieved ${e.retrievalCount}x` +
-                `${e.lastRetrievedAt ? `, last ${e.lastRetrievedAt.toISOString()}` : ''}` +
-                `${e.sourceUrl ? `, source: ${e.sourceTitle ?? e.sourceUrl} (${e.sourceUrl})` : ''}` +
-                `${e.verifiedAt ? `, verified ${e.verifiedAt.toISOString()}` : ''}` +
-                `${e.sourceUnreachable ? `, ⚠️ source unreachable (checked ${e.sourceCheckedAt?.toISOString()})` : ''})`,
-            )
-            .join('\n'),
+          'Top knowledge entries by retrieval count',
+          ranked.map(formatKnowledgeEntryLine).join('\n'),
         ),
       );
     },

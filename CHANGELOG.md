@@ -24,6 +24,20 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #963 #964 #965 #968 #971 #983 #988 #989 #991 #992 #994
 -->
 
+## 2026-08-20
+
+### Added
+- **`list_top_knowledge` — admins can now rank knowledge entries by how often
+  they're retrieved, not just find what's wrong with them** (#1024): every
+  existing knowledge-health tool (`list_duplicate_knowledge`,
+  `list_knowledge_conflicts`, `list_low_rated_knowledge`,
+  `list_knowledge({ staleOnly: true })`) answers "what needs fixing" —
+  there was no way to see which entries are actually earning their keep short
+  of paging through the full `list_knowledge` browse list and eyeballing
+  every entry's retrieval count by hand. `list_top_knowledge` ranks the whole
+  scope by retrieval count (an entry never retrieved is still shown, ranked
+  last, not hidden), same admin-only, read-only tier as its siblings.
+
 ## 2026-08-19
 
 ### Added

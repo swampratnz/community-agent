@@ -2791,6 +2791,221 @@ test('SECURITY: list_knowledge_conflicts rejects a non-admin caller (assertAtLea
   );
 });
 
+test(
+  'list_top_knowledge ranks by retrievalCount descending over the FULL scope, not just the first `limit` ' +
+    'unsorted rows — an older, high-retrieval entry that a naive fetch-then-sort would page out still ranks ' +
+    'first (issue #1024 acceptance criterion 2)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-top-knowledge-global-scope`;
+    const { id: topId } = await saveKnowledge({
+      title: 'top-knowledge-highest-count',
+      content: 'The entry with by far the most retrievals, but the oldest updated_at in this scope.',
+      scope,
+    });
+    // Older than every entry below, and its retrieval count is set directly
+    // (not via recordKnowledgeRetrieval) so last_retrieved_at stays null —
+    // isolates the test to the retrievalCount ordering alone.
+    await pool.query(
+      `UPDATE knowledge SET updated_at = now() - interval '1 day', retrieval_count = 9 WHERE id = $1`,
+      [topId],
+    );
+
+    // Three more-recently-updated, zero-retrieval entries — a buggy handler
+    // that fetches only `limit` rows in listKnowledge's default (updated_at
+    // DESC) order and sorts afterward would return exactly these three and
+    // never see topId at all.
+    const others = await Promise.all(
+      [0, 1, 2].map((i) =>
+        saveKnowledge({
+          title: `top-knowledge-zero-count-${i}`,
+          content: `A never-retrieved entry, more recently updated than the top entry (${i}).`,
+          scope,
+        }),
+      ),
+    );
+
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'admin-1',
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: 'convo-list-top-knowledge-ranking',
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['list_top_knowledge'];
+
+    const result = await registeredTool.handler({ scope, limit: 3 });
+    const output = result.content[0]?.text ?? '';
+    // untrusted() collapses the entries' joining '\n' into a single space, so
+    // all returned rows share one body line — position is asserted via
+    // substring index, not line-splitting.
+    const topIndex = output.indexOf(`#${topId} [`);
+    assert.notEqual(
+      topIndex,
+      -1,
+      'the highest-retrieval entry must be present at all — a handler that fetches only `limit` rows in ' +
+        "listKnowledge's default (updated_at DESC) order before sorting would omit it entirely, since it is " +
+        'the oldest-updated row in the scope',
+    );
+    for (const { id: otherId } of others) {
+      const otherIndex = output.indexOf(`#${otherId} [`);
+      if (otherIndex !== -1) {
+        assert.ok(
+          topIndex < otherIndex,
+          'the highest-retrieval entry must rank ahead of any lower-retrieval (zero-count) entry that also appears',
+        );
+      }
+    }
+    const entryCount = (output.match(/#\d+ \[/g) ?? []).length;
+    assert.equal(entryCount, 3, '`limit: 3` caps the ranked result to 3 entries, not the full 4-entry scope');
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[topId, ...others.map((o) => o.id)]]);
+  },
+);
+
+test(
+  'list_top_knowledge is eligible to show a retrievalCount === 0 entry (ranked last, not filtered out) when the scope has fewer entries than `limit` (issue #1024 acceptance criterion 3)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-top-knowledge-small-kb-scope`;
+    const { id: retrievedId } = await saveKnowledge({
+      title: 'top-knowledge-small-kb-retrieved',
+      content: 'A retrieved entry in a scope smaller than the requested limit.',
+      scope,
+    });
+    await recordKnowledgeRetrieval([retrievedId]);
+    const { id: neverRetrievedId } = await saveKnowledge({
+      title: 'top-knowledge-small-kb-never-retrieved',
+      content: 'A never-retrieved entry in the same small scope.',
+      scope,
+    });
+
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'admin-1',
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: 'convo-list-top-knowledge-small-kb',
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['list_top_knowledge'];
+
+    const result = await registeredTool.handler({ scope, limit: 10 });
+    const output = result.content[0]?.text ?? '';
+    assert.match(output, new RegExp(`#${retrievedId}\\b`), 'the retrieved entry appears');
+    assert.match(
+      output,
+      new RegExp(`#${neverRetrievedId}\\b`),
+      'a retrievalCount === 0 entry is eligible to appear rather than being filtered out',
+    );
+    assert.ok(
+      output.indexOf(`#${retrievedId}`) < output.indexOf(`#${neverRetrievedId}`),
+      'the retrieved entry ranks ahead of the never-retrieved one',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[retrievedId, neverRetrievedId]]);
+  },
+);
+
+test('SECURITY: list_top_knowledge rejects a member and a guest caller (assertAtLeast re-check, issue #1024 acceptance criterion 4)', async () => {
+  const adapter = stubAdapter(async () => {});
+  for (const role of ['member', 'guest'] as const) {
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${role}-1`,
+      userName: 'Caller',
+      role,
+      conversationId: 'convo-list-top-knowledge-reject',
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['list_top_knowledge'];
+
+    await assert.rejects(
+      () => registeredTool.handler({}),
+      /admin/i,
+      `a ${role} caller must be rejected by the assertAtLeast re-check`,
+    );
+  }
+});
+
+test(
+  "SECURITY: list_top_knowledge's rendered row is byte-identical to list_knowledge's rendered row for the " +
+    'same entry — both go through the same formatKnowledgeEntryLine renderer, so list_top_knowledge can ' +
+    'never expose a field list_knowledge does not already render (issue #1024 acceptance criterion 5)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-top-knowledge-field-parity-scope`;
+    const { id } = await saveKnowledge({
+      title: 'top-knowledge-field-parity',
+      content: 'An entry with a source citation, so every optional rendered field is populated.',
+      scope,
+      sourceUrl: 'https://example.com/top-knowledge-field-parity',
+      sourceTitle: 'Field parity fixture',
+    });
+    await recordKnowledgeRetrieval([id]);
+
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'admin-1',
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: 'convo-list-top-knowledge-field-parity',
+    };
+    const server = buildToolServer(caller, adapter);
+    const tools = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools;
+
+    const listKnowledgeOutput = (await tools['list_knowledge'].handler({ scope })).content[0]?.text ?? '';
+    const listTopKnowledgeOutput =
+      (await tools['list_top_knowledge'].handler({ scope })).content[0]?.text ?? '';
+
+    // Only one entry in this scope, so each output's body (the line after
+    // untrusted()'s fixed label-line newline) IS that entry's whole rendered
+    // row — no multi-entry splitting needed.
+    const listKnowledgeLine = listKnowledgeOutput.split('\n')[1];
+    const listTopKnowledgeLine = listTopKnowledgeOutput.split('\n')[1];
+    assert.match(listKnowledgeLine ?? '', new RegExp(`^#${id} \\[`), 'list_knowledge must render this entry');
+    assert.equal(
+      listTopKnowledgeLine,
+      listKnowledgeLine,
+      "list_top_knowledge's row for this entry must be byte-identical to list_knowledge's — no new field",
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
+  },
+);
+
 test('SECURITY: set_language_preference rejects any language outside {auto,en,mi} at the zod schema boundary (issue #189)', () => {
   const adapter = stubAdapter(async () => {});
   const caller = {
@@ -2954,7 +3169,7 @@ test('community_info: admin-tier reply stays byte-identical, never gains SUPER_A
     "- Manage membership: add a new member, remove a member, link a member's cross-platform identity, or unlink a member's cross-platform identity\n" +
     '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, check which knowledge entries are rated poorly, and review recurring unhelpful-answer themes across all answers\n' +
     '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
-    "- Curate the knowledge base: save a new knowledge entry, browse knowledge entries, semantically find a knowledge entry's id by what it says, edit a knowledge entry, delete a knowledge entry, or merge two entries together, and check for near-duplicate entries or conflicting entries\n" +
+    "- Curate the knowledge base: save a new knowledge entry, browse knowledge entries, semantically find a knowledge entry's id by what it says, edit a knowledge entry, delete a knowledge entry, or merge two entries together, check for near-duplicate entries or conflicting entries, or rank entries by how often they're retrieved\n" +
     "- Review knowledge candidates, accept a candidate or decline a candidate, track knowledge gaps (questions I couldn't answer), recurring question clusters, raw context digests, pull your own admin-digest snapshot on demand, get a review-queue roll-up of all five review queues at once, or check how quickly I've been answering members (response latency)\n" +
     '- See who is waiting for access, decline a pending access request without granting it, or see who ' +
     'has joined or left the server\n' +
@@ -2972,7 +3187,8 @@ test('community_info: admin-tier reply stays byte-identical, never gains SUPER_A
     adminReply,
     `${memberReply}\n${expectedAdminCapabilitiesText}`,
     "admin-tier reply must be byte-identical to today's deliberately-updated text (issue #1008 added the " +
-      'find_knowledge clause) — this PR must not change the admin branch beyond that documented addition',
+      'find_knowledge clause; issue #1024 added the list_top_knowledge clause) — this PR must not change ' +
+      'the admin branch beyond that documented addition',
   );
   assert.doesNotMatch(
     adminReply,
@@ -3162,6 +3378,7 @@ const ADMIN_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__merge_knowledge', /merge two entries together/i],
   ['mcp__community__list_duplicate_knowledge', /near-duplicate entries/i],
   ['mcp__community__list_knowledge_conflicts', /conflicting entries/i],
+  ['mcp__community__list_top_knowledge', /rank entries by how often they're retrieved/i],
   ['mcp__community__list_access_requests', /waiting for access/i],
   ['mcp__community__decline_access_request', /decline a pending access request/i],
   ['mcp__community__add_member_note', /add a note about a member/i],
@@ -3268,8 +3485,10 @@ test('community_info: admin reply stays under a hard char cap, not a wall of tex
   // once more for issue #1006's decline_access_request clause (same
   // access-request line again, not a new bullet); bumped once more for issue
   // #1008's find_knowledge clause (consolidated into the existing
-  // knowledge-base curation bullet, not a new bullet).
-  assert.ok(adminReply.length < 4470, `admin reply should stay short; was ${adminReply.length} chars`);
+  // knowledge-base curation bullet, not a new bullet); bumped once more for
+  // issue #1024's list_top_knowledge clause (same knowledge-base curation
+  // bullet again, not a new bullet).
+  assert.ok(adminReply.length < 4520, `admin reply should stay short; was ${adminReply.length} chars`);
 });
 
 test('SECURITY: community_info member-tier and guest-tier replies never name an admin/super_admin-only tool or contain any ADMIN_CAPABILITIES_TEXT-unique line (issue #367, issue #311)', async () => {
@@ -3409,9 +3628,11 @@ test('community_info: super_admin reply stays under a hard char cap, not a wall 
   // review's project_unarchive clause, and once more alongside the admin cap
   // for issue #944's team_setup clause, and once more alongside the admin cap
   // for issue #1006's decline_access_request clause; bumped once more
-  // alongside the admin cap for issue #1008's find_knowledge clause.
+  // alongside the admin cap for issue #1008's find_knowledge clause; bumped
+  // once more alongside the admin cap for issue #1024's list_top_knowledge
+  // clause.
   assert.ok(
-    superAdminReply.length < 5120,
+    superAdminReply.length < 5170,
     `super_admin reply should stay short; was ${superAdminReply.length} chars`,
   );
 });
