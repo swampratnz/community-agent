@@ -35,6 +35,7 @@
   "ambientArchiving.test.ts": 5,
   "ambientArchivingOff.test.ts": 2,
   "anthropicStatus.test.ts": 5,
+  "appealStaleAlert.test.ts": 3,
   "autoAnswerConfirmRouter.test.ts": 2,
   "autoAnswerGatedRouter.test.ts": 1,
   "autoAnswerRepeatShortcutRouter.test.ts": 1,

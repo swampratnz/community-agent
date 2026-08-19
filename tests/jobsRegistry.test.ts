@@ -70,6 +70,7 @@ const JOBS: ReadonlyArray<{ name: string; on: NodeJS.ProcessEnv | null }> = [
       DEV_TEAM_AUTH_TOKEN: 'test-token',
     },
   },
+  { name: 'appeal-stale-alert', on: null },
 ];
 
 test('registry: every JobSpec name is unique', () => {
