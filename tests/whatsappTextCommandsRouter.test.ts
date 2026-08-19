@@ -1179,7 +1179,67 @@ test(
       interestsPublished: 0,
       responseStyle: 'standard' as const,
     };
-    assert.equal(sent[0].text, formatMyDataText(zeroSummary, 'member', 5, 2));
+    assert.equal(sent[0].text, formatMyDataText(zeroSummary, 'member', 5, 2, 'auto'));
+  },
+);
+
+test(
+  "!mydata reports the caller's standing language preference alongside the response-style preference, " +
+    "symmetric between the 'mi', 'en' and unset states (issue #1030 acceptance criterion 1)",
+  async (t) => {
+    for (const [languagePref, expected] of [
+      ['mi', 'Language preference: te reo Māori'],
+      ['en', 'Language preference: NZ English'],
+      [undefined, 'Language preference: none set (auto-detected per message)'],
+    ] as const) {
+      t.mock.reset();
+      t.mock.method(pool, 'query', (async (sql: string) => {
+        if (sql.includes('SELECT role FROM community_users'))
+          return { rows: [{ role: 'member' }], rowCount: 0 };
+        if (sql.includes('own_messages'))
+          return { rows: [{ own_messages: 0, replies_to_them: 0 }], rowCount: 0 };
+        if (sql.includes('FROM language_prefs'))
+          return { rows: languagePref ? [{ language: languagePref }] : [], rowCount: 0 };
+        return { rows: [], rowCount: 0 };
+      }) as typeof pool.query);
+      const router = makeRouter({ runTurn: throwingRunTurn });
+      const { adapter, sent, trigger } = makeAdapter();
+      router.register(adapter);
+
+      await trigger(makeMessage({ text: '!mydata', userId: 'member-1' }));
+
+      assert.match(sent[0].text, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    }
+  },
+);
+
+test(
+  "SECURITY: !mydata's language-preference read is scoped to the sender's own platform/userId, never a " +
+    'message-supplied identifier (issue #1030 SECURITY criterion)',
+  async (t) => {
+    const calls: Array<{ sql: string; params: unknown[] }> = [];
+    t.mock.method(pool, 'query', (async (sql: string, params: unknown[] = []) => {
+      calls.push({ sql, params });
+      if (sql.includes('SELECT role FROM community_users'))
+        return { rows: [{ role: 'member' }], rowCount: 0 };
+      if (sql.includes('own_messages'))
+        return { rows: [{ own_messages: 0, replies_to_them: 0 }], rowCount: 0 };
+      if (sql.includes('FROM language_prefs')) return { rows: [{ language: 'mi' }], rowCount: 0 };
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: throwingRunTurn });
+    const { adapter, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!mydata', userId: 'member-scoped' }));
+
+    const languageQuery = calls.find((c) => c.sql.includes('FROM language_prefs'));
+    assert.ok(languageQuery, '!mydata must read the language preference');
+    assert.deepEqual(
+      languageQuery?.params,
+      ['whatsapp', 'member-scoped'],
+      "the language_prefs read must be keyed on the sender's own platform/userId",
+    );
   },
 );
 

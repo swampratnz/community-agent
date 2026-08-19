@@ -1283,9 +1283,55 @@ test('/mydata returns the same content the shared formatter renders for a caller
     interestsPublished: 0,
     responseStyle: 'standard' as const,
   };
-  assert.equal(replies[0].content, formatMyDataText(zeroSummary, 'member', 5, 2));
+  assert.equal(replies[0].content, formatMyDataText(zeroSummary, 'member', 5, 2, 'auto'));
   assert.match(replies[0].content, /Replies in the last 24h: 2 \/ 5/);
 });
+
+test(
+  "/mydata reports the caller's standing language preference alongside the response-style preference, " +
+    "symmetric between the 'mi', 'en' and unset states (issue #1030 acceptance criterion 1)",
+  async (t) => {
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+
+    mockPool(t, { memberRole: 'member', languagePref: 'mi' });
+    const miResult = fakeInteraction({ commandName: 'mydata', userId: 'member-mi' });
+    await handleInteraction(miResult.interaction as never, adapterDeps(adapter));
+    assert.match(miResult.replies[0].content, /Language preference: te reo Māori/);
+
+    mockPool(t, { memberRole: 'member', languagePref: 'en' });
+    const enResult = fakeInteraction({ commandName: 'mydata', userId: 'member-en' });
+    await handleInteraction(enResult.interaction as never, adapterDeps(adapter));
+    assert.match(enResult.replies[0].content, /Language preference: NZ English/);
+
+    mockPool(t, { memberRole: 'member' });
+    const unsetResult = fakeInteraction({ commandName: 'mydata', userId: 'member-unset' });
+    await handleInteraction(unsetResult.interaction as never, adapterDeps(adapter));
+    assert.match(
+      unsetResult.replies[0].content,
+      /Language preference: none set \(auto-detected per message\)/,
+    );
+  },
+);
+
+test(
+  "SECURITY: /mydata's language-preference read is scoped to the calling interaction's own discord user id, " +
+    'never a model- or interaction-supplied identifier (issue #1030 SECURITY criterion)',
+  async (t) => {
+    const calls = mockPool(t, { memberRole: 'member', languagePref: 'mi' });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction } = fakeInteraction({ commandName: 'mydata', userId: 'member-scoped' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    const languageQuery = calls.find((c) => c.sql.includes('FROM language_prefs'));
+    assert.ok(languageQuery, '/mydata must read the language preference');
+    assert.deepEqual(
+      languageQuery?.params,
+      ['discord', 'member-scoped'],
+      "the language_prefs read must be keyed on the caller's own platform/userId",
+    );
+  },
+);
 
 test('SECURITY: a guest caller is rejected on /mydata without getMyDataSummary ever being invoked (issue #1018)', async (t) => {
   const calls = mockPool(t, { memberRole: null });

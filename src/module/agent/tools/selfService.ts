@@ -3,6 +3,7 @@ import type { Tier } from '@swampratnz/agent-base/auth/rbac.js';
 import {
   countActiveWarnings,
   countRepliesToUser,
+  getLanguagePreference,
   getMyDataSummary,
   listOwnAppeals,
   listOwnKnowledgeCandidates,
@@ -10,6 +11,7 @@ import {
   listOwnReports,
   listOwnSuggestions,
   purgeUserData,
+  type LanguagePreference,
 } from '@swampratnz/agent-base/storage/repository.js';
 import { formatRelativeAge, PROJECT_NOTE_RETENTION_NOTICE, text, truncateForEcho } from './helpers.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
@@ -126,12 +128,17 @@ export function formatMySubmissionsText(
  * `used` is the caller's reply count in the last 24h, or `null` whenever
  * that read is skipped (super admin — exempt — or no daily limit
  * configured), mirroring `formatMyWarningsText`'s `windowed` parameter.
+ * `language` is the caller's own `getLanguagePreference` value, threaded in
+ * as an explicit parameter (rather than read inside this function) so the
+ * render stays pure — symmetric with the sibling `responseStyle` preference
+ * already carried on `summary` (issue #1030).
  */
 export function formatMyDataText(
   summary: Awaited<ReturnType<typeof getMyDataSummary>>,
   role: Tier,
   limit: number,
   used: number | null,
+  language: LanguagePreference,
 ): string {
   const lines = [
     `Messages you've sent: ${summary.ownMessages}`,
@@ -142,6 +149,13 @@ export function formatMyDataText(
     `Projects you've shared: ${summary.projectsShared}`,
     `Interests published (who_is_into): ${summary.interestsPublished > 0 ? 'yes' : 'no'}`,
     `Response style preference: ${summary.responseStyle === 'plain' ? 'plain' : 'standard (default)'}`,
+    `Language preference: ${
+      language === 'mi'
+        ? 'te reo Māori'
+        : language === 'en'
+          ? 'NZ English'
+          : 'none set (auto-detected per message)'
+    }`,
   ];
   if (role === 'super_admin') {
     lines.push('Daily reply limit: exempt (super admin).');
@@ -270,8 +284,8 @@ export const selfServiceTools = [
     description:
       'Summarize what the bot has stored about the caller: their own message count, replies the bot has ' +
       'sent them, knowledge entries sourced from them, content reports and suggestions they filed, whether ' +
-      "they've published interests for member discovery, their standing response-style preference, and " +
-      "where they stand against today's daily reply budget. Use " +
+      "they've published interests for member discovery, their standing response-style and language " +
+      "preferences, and where they stand against today's daily reply budget. Use " +
       'this when a member asks what the bot knows about them, wants to see what forget_me would erase ' +
       'before deciding to invoke it, or asks how many messages they have left today. Read-only, scoped ' +
       "exactly like forget_me — the caller's own identity plus any identity linked via link_member — so " +
@@ -291,7 +305,11 @@ export const selfServiceTools = [
         caller.role !== 'super_admin' && limit !== 0
           ? await countRepliesToUser(caller.platform, caller.userId)
           : null;
-      return text(formatMyDataText(summary, caller.role, limit, used));
+      // Language preference (issue #1030) — same accessor and self-scoping
+      // as info.ts/notify.ts, read a second time here rather than folded
+      // into getMyDataSummary's (base-owned) return shape.
+      const language = await getLanguagePreference(caller.platform, caller.userId);
+      return text(formatMyDataText(summary, caller.role, limit, used, language));
     },
   }),
 ];
