@@ -26,6 +26,17 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 
 ## 2026-08-20
 
+### Fixed
+- **`my_data` (and its `/mydata`/`!mydata` mirrors) now reports your language
+  preference, not just your response-style preference** (#1030): `my_data`'s
+  whole job is telling you what the bot has stored about you, and it already
+  reported your standing plain/standard reply-style choice — but silently
+  left out the equally-standing `set_language_preference('en'|'mi')` choice,
+  even though every other surface (`community_guidelines`,
+  `community_info`/`!help`, moderation and approval DMs) already honours it.
+  All three surfaces (the tool, `/mydata`, `!mydata`) now show a `Language
+  preference:` line right under the response-style one.
+
 ### Added
 - **`list_top_knowledge` — admins can now rank knowledge entries by how often
   they're retrieved, not just find what's wrong with them** (#1024): every

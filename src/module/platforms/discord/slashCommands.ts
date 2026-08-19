@@ -400,7 +400,8 @@ async function handleMyData(interaction: ChatInputCommandInteraction, deps: Slas
   const limit = config.behaviour.dailyReplyLimitPerUser;
   const used =
     role !== 'super_admin' && limit !== 0 ? await countRepliesToUser('discord', interaction.user.id) : null;
-  const message = formatMyDataText(summary, role, limit, used);
+  const language = await getLanguagePreference('discord', interaction.user.id);
+  const message = formatMyDataText(summary, role, limit, used, language);
   recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
   await replyEphemeral(interaction, message, deps);
 }

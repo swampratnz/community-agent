@@ -3,6 +3,7 @@ import { config } from '@swampratnz/agent-base/config.js';
 import {
   countActiveWarnings,
   countRepliesToUser,
+  getLanguagePreference,
   getMyDataSummary,
   listOwnAppeals,
   listOwnKnowledgeCandidates,
@@ -215,7 +216,8 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
       const limit = config.behaviour.dailyReplyLimitPerUser;
       const used =
         role !== 'super_admin' && limit !== 0 ? await countRepliesToUser(msg.platform, msg.userId) : null;
-      return formatMyDataText(summary, role, limit, used);
+      const language = await getLanguagePreference(msg.platform, msg.userId);
+      return formatMyDataText(summary, role, limit, used, language);
     },
   },
   {

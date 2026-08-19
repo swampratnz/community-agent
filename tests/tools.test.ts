@@ -21556,14 +21556,18 @@ test(
   { skip },
   async () => {
     const userId = `${MY_DATA_HANDLER_USER}-formatter-parity`;
-    const [handlerResult, summary] = await Promise.all([
+    const [handlerResult, summary, language] = await Promise.all([
       myDataHandler(userId).handler(),
       getMyDataSummary('whatsapp', userId),
+      getLanguagePreference('whatsapp', userId),
     ]);
     const limit = config.behaviour.dailyReplyLimitPerUser;
     const used = limit !== 0 ? await countRepliesToUser('whatsapp', userId) : null;
 
-    assert.equal(handlerResult.content[0]?.text ?? '', formatMyDataText(summary, 'member', limit, used));
+    assert.equal(
+      handlerResult.content[0]?.text ?? '',
+      formatMyDataText(summary, 'member', limit, used, language),
+    );
   },
 );
 
@@ -21621,6 +21625,53 @@ test(
     assert.match(output, /Projects you've shared: 1/);
     assert.match(output, /Interests published \(who_is_into\): yes/);
     assert.match(output, /Response style preference: plain/);
+  },
+);
+
+test(
+  "my_data's Language preference line reflects the caller's own set_language_preference state exactly, " +
+    "symmetric with the Response style preference line, for the 'mi', 'en' and unset states (issue #1030 " +
+    'acceptance criterion 1)',
+  { skip },
+  async () => {
+    const userId = `${MY_DATA_HANDLER_USER}-language`;
+
+    const unsetOutput = (await myDataHandler(userId).handler()).content[0]?.text ?? '';
+    assert.match(unsetOutput, /Language preference: none set \(auto-detected per message\)/);
+
+    await setLanguagePreferenceHandler({ platform: 'whatsapp', userId }).handler({ language: 'mi' });
+    const miOutput = (await myDataHandler(userId).handler()).content[0]?.text ?? '';
+    assert.match(miOutput, /Language preference: te reo Māori/);
+
+    await setLanguagePreferenceHandler({ platform: 'whatsapp', userId }).handler({ language: 'en' });
+    const enOutput = (await myDataHandler(userId).handler()).content[0]?.text ?? '';
+    assert.match(enOutput, /Language preference: NZ English/);
+
+    await pool.query(`DELETE FROM language_prefs WHERE platform = 'whatsapp' AND user_id = $1`, [userId]);
+  },
+);
+
+test(
+  "SECURITY: my_data's Language preference line reflects only the caller's OWN getLanguagePreference state, " +
+    "never another user's — scoped identically to every other field my_data renders (issue #1030 SECURITY " +
+    'criterion)',
+  { skip },
+  async () => {
+    const caller = `${MY_DATA_HANDLER_USER}-language-caller`;
+    const otherUser = `${MY_DATA_HANDLER_USER}-language-other`;
+
+    await setLanguagePreferenceHandler({ platform: 'whatsapp', userId: otherUser }).handler({
+      language: 'mi',
+    });
+
+    // The tool takes no arguments (pinned above) — there is no identifier a
+    // model could supply to redirect the read, so the caller's own (unset)
+    // language preference is all that can ever be reflected back, never the
+    // other user's 'mi' preference just set.
+    const output = (await myDataHandler(caller).handler()).content[0]?.text ?? '';
+    assert.match(output, /Language preference: none set \(auto-detected per message\)/);
+
+    await pool.query(`DELETE FROM language_prefs WHERE platform = 'whatsapp' AND user_id = $1`, [otherUser]);
   },
 );
 
@@ -21818,6 +21869,27 @@ test("my_data's tool description mentions the daily reply budget so the model kn
   )._registeredTools['my_data'].description;
   assert.match(description ?? '', /reply budget/i);
 });
+
+test(
+  "my_data's tool description lists the language preference alongside the response-style preference it " +
+    'already lists (issue #1030 acceptance criterion 3)',
+  () => {
+    const server = buildToolServer(
+      {
+        platform: 'whatsapp' as const,
+        userId: 'u1',
+        userName: 'Member',
+        role: 'member',
+        conversationId: 'c1',
+      },
+      stubAdapter(async () => {}),
+    );
+    const description = (
+      server.instance as unknown as { _registeredTools: Record<string, { description?: string }> }
+    )._registeredTools['my_data'].description;
+    assert.match(description ?? '', /response-style and language preferences/i);
+  },
+);
 
 test(
   'my_data: getMyDataSummary/MyDataSummary is unchanged by the reply-budget addition — the new line is ' +
