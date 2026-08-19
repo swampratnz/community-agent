@@ -13,6 +13,7 @@ import {
   getPublishedInterestsForOwners,
   isKnowledgeStale,
   KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD,
+  type KnowledgeEntry,
   type LanguagePreference,
   type MemberInterestRow,
   type MemberInterestSearchHit,
@@ -368,6 +369,27 @@ export function formatFoundKnowledge(
           `${h.content.slice(0, 200)} (updated ${h.updatedAt.toISOString()})`,
       )
       .join('\n'),
+  );
+}
+
+/**
+ * Pure renderer for one `list_knowledge`-family browse row: id, scope,
+ * provenance, title/content preview, retrieval count, and — when present —
+ * last-retrieved/source/verified/unreachable notes. Extracted (issue #1024)
+ * so `list_top_knowledge` renders every row through the exact same function
+ * `list_knowledge` does, rather than a second hand-copied template that could
+ * drift and expose a field the original doesn't — the two are guaranteed
+ * byte-identical per row by construction, not by a separate field-parity
+ * test having to be kept in sync.
+ */
+export function formatKnowledgeEntryLine(e: KnowledgeEntry): string {
+  return (
+    `#${e.id} [${e.scope}] [${e.createdByRole}] ${e.title ? `${e.title}: ` : ''}${e.content.slice(0, 200)} ` +
+    `(updated ${e.updatedAt.toISOString()}, retrieved ${e.retrievalCount}x` +
+    `${e.lastRetrievedAt ? `, last ${e.lastRetrievedAt.toISOString()}` : ''}` +
+    `${e.sourceUrl ? `, source: ${e.sourceTitle ?? e.sourceUrl} (${e.sourceUrl})` : ''}` +
+    `${e.verifiedAt ? `, verified ${e.verifiedAt.toISOString()}` : ''}` +
+    `${e.sourceUnreachable ? `, ⚠️ source unreachable (checked ${e.sourceCheckedAt?.toISOString()})` : ''})`
   );
 }
 
