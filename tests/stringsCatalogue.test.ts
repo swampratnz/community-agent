@@ -133,3 +133,23 @@ test('CONFIRM/CANCEL stay literal, untranslated tokens in every pending-notice v
     assert.match(text, /\bCANCEL\b/);
   }
 });
+
+test(
+  "SECURITY: communityInfoMemberCapabilities' base and mi values contain no template placeholders/" +
+    "interpolation tokens — fixed, human-authored text only, consistent with this file's equivalence checks " +
+    'above (issue #1028 acceptance criterion 6)',
+  () => {
+    const entry = NOTICE_ENTRIES.communityInfoMemberCapabilities;
+    const placeholderPattern = /\$\{|\{\{|%s|%d|\{[0-9a-zA-Z_]*\}/;
+    assert.doesNotMatch(
+      entry.base,
+      placeholderPattern,
+      'base must be fixed text with no interpolation markers',
+    );
+    assert.doesNotMatch(
+      entry.language.mi,
+      placeholderPattern,
+      'the mi variant must be fixed text with no interpolation markers',
+    );
+  },
+);

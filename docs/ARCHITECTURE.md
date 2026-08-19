@@ -1458,7 +1458,15 @@ weakening it:
    four of the seven shortcuts (`!whois`/`!projects`/`!digest`/`!warnings`)
    themselves gate on `atLeast(role, 'member')` in `tryWhatsAppTextCommand` —
    a guest caller never satisfies it, so the block is withheld rather than
-   advertising shortcuts that would silently no-op for them.
+   advertising shortcuts that would silently no-op for them. The member
+   segment itself honours a standing `'mi'` `language_preference` (issue
+   #1028), the same `getLanguagePreference`/`community_guidelines` pattern
+   used throughout this list — `formatCommunityInfoText` (the one formatter
+   behind `community_info`/`/help`/`!help`, issue #993) is async precisely
+   for this read, and resolves the segment via the module notice pack's
+   `communityInfoMemberCapabilities` entry rather than a raw string constant.
+   Admin/super_admin segments and the WhatsApp shortcuts block stay
+   English-only, an explicit growth path rather than this issue's scope.
 7. **Opt-in auto-enroll** (issue #605, off unless
    `DISCORD_AUTO_ENROLL_MEMBERS=true`). Removes the manual per-person
    `add_member` step: on every non-bot Discord join, `onGuildMemberAdd` calls
@@ -2804,10 +2812,13 @@ package export the tool imports), never through the tool/model.
 **`/help`** (issue #993) has no tier gate at all, matching `/guidelines` and
 its own underlying tool, `community_info`: `handleHelp` defers, resolves the
 caller's role via `resolveRole('discord', ...)`, and replies with
-`formatCommunityInfoText(role, 'discord')` — a pure formatter exported from
-`agent/tools/info.ts` and factored out of `community_info`'s own handler body,
-so the tool and `/help` render byte-identical text for the same caller rather
-than each re-deriving the role-branching capability rundown independently.
+`formatCommunityInfoText(role, 'discord', interaction.user.id)` — an async
+formatter exported from `agent/tools/info.ts` and factored out of
+`community_info`'s own handler body, so the tool and `/help` render
+byte-identical text for the same caller rather than each re-deriving the
+role-branching capability rundown independently. Async since issue #1028: it
+also reads the caller's own standing `language_preference`, so a `userId` is
+now part of its signature alongside `role`/`platform`.
 
 **`/guidelines` deliberately does not serve the internal `GUIDELINES` block**
 from `agent/systemPrompt.ts` — despite that block being what the originating
@@ -2874,9 +2885,9 @@ change). Tier floors mirror the Discord side exactly: `!whois`, `!projects`,
 floor each tool's own handler applies); `!guidelines`, `!status`, and `!help`
 have no tier gate, matching `community_guidelines`/`check_status`/
 `community_info`. `!help` (issue #993) calls the same
-`formatCommunityInfoText(role, 'whatsapp')` formatter `/help` and
+`formatCommunityInfoText(role, 'whatsapp', msg.userId)` formatter `/help` and
 `community_info` call, so all three entry points render byte-identical text
-for a given (role, platform).
+for a given (role, platform, language).
 
 A bare `!whois` (no query, issue #889) mirrors `who_is_into`'s/`/whois`'s own
 no-argument self-match: it looks up the caller's own published

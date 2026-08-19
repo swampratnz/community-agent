@@ -1935,11 +1935,32 @@ test('/help renders byte-identical text to community_info for the same (role, pl
     await handleInteraction(result.interaction as never, adapterDeps(adapter));
     assert.equal(
       fullReplyText(result),
-      await adapter.filtered(formatCommunityInfoText(role, 'discord')),
+      await adapter.filtered(await formatCommunityInfoText(role, 'discord', userId)),
       `/help reply for ${role} must match formatCommunityInfoText's own output, post outbound-filter`,
     );
   }
 });
+
+test(
+  "/help serves the te reo Māori member-capabilities text to a caller with a standing 'mi' language " +
+    'preference, and the fixed English default to an unset/en preference (issue #1028 acceptance criteria 2, 3)',
+  async (t) => {
+    mockPool(t, { memberRole: 'member', languagePref: 'mi' });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const miResult = fakeInteraction({ commandName: 'help', userId: 'member-mi' });
+    await handleInteraction(miResult.interaction as never, adapterDeps(adapter));
+    const miText = fullReplyText(miResult);
+    assert.match(miText, /Anei ngā mea ka taea e koe te tono mai ki ahau/);
+    assert.doesNotMatch(miText, /Here's what you can ask me to do/);
+
+    mockPool(t, { memberRole: 'member' });
+    const enResult = fakeInteraction({ commandName: 'help', userId: 'member-en' });
+    await handleInteraction(enResult.interaction as never, adapterDeps(adapter));
+    const enText = fullReplyText(enResult);
+    assert.match(enText, /Here's what you can ask me to do/);
+    assert.doesNotMatch(enText, /Anei ngā mea ka taea e koe te tono mai ki ahau/);
+  },
+);
 
 test("a successful /help invocation calls recordShortcutHit('slash_command') exactly once (issue #993, mirrors issue #863 acceptance criterion 1)", async (t) => {
   const calls = mockPool(t, { memberRole: 'member' });

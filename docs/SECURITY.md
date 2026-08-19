@@ -3521,6 +3521,47 @@ give themselves the same visibility with one `project_add_member` call anyway,
 so the narrower scope would cost the audit trail without buying confidentiality.
 Same precedent as `list_roster` and `blocked_users` (PR #929 review).
 
+### 26. `community_info` honours a standing `'mi'` language preference (issue #1028)
+
+`community_info`/`/help`/`!help` shared one gap the rest of the `'mi'` sweep
+(§7's `link_member` aside, and the `getLanguagePreference` sites §24 and
+`docs/ARCHITECTURE.md` catalogue — `set_language_preference`, `community_
+guidelines`, the three static router notices, the gated-guest notice, escalation
+offers, the repeat-question shortcut, the membership/admin-grant DMs) had
+already closed: the bot's own onboarding answer told a member te reo Māori was
+available ("Ask me to explain things more simply, or reply in te reo Māori")
+while always rendering that answer itself in English.
+
+- **Same accessor, same trust level, no new boundary.** `formatCommunityInfoText`
+  (`agent/tools/info.ts`) reads `getLanguagePreference(platform, userId)` — the
+  identical call `community_guidelines`'s handler already makes — and resolves
+  the member-tier segment via the module notice pack's
+  `communityInfoMemberCapabilities` entry (`strings/notices.ts`) instead of a
+  raw string constant. No new table, tool, or tier; the read is on the
+  caller's own already-stored row only, never another caller's.
+- **Fixed, human-authored text — no model call, no runtime translation.** The
+  `mi` variant is a literal in the notice pack, matching the trust level every
+  other `NOTICE_ENTRIES` value has; `selectNoticeVariant` (the base catalogue
+  mechanism) is the only place that chooses between them, and it never
+  interpolates caller or message data into either variant.
+- **Scoped to the member-tier segment only.** `ADMIN_CAPABILITIES_TEXT`,
+  `SUPER_ADMIN_CAPABILITIES_TEXT` and the WhatsApp `!`-shortcuts block (§24)
+  stay English-only and unchanged — named growth, not this issue's scope.
+- **SECURITY: no template placeholders.** A test asserts the
+  `communityInfoMemberCapabilities` entry's `base` and `mi` values contain no
+  interpolation markers, consistent with `tests/stringsCatalogue.test.ts`'s
+  existing per-entry checks — the entry can only ever render fixed text.
+- **SECURITY: own-preference-only.** A test asserts the language selection is
+  driven solely by `(caller.platform, caller.userId)`'s own stored row — never
+  by message content and never by another caller's identity — mirroring
+  `router.test.ts`'s existing "gated-notice language is driven solely by the
+  stored preference" invariant for the same accessor.
+- **Regression safety for the common case.** A caller with no stored
+  preference (or `'en'`/`'auto'`) renders byte-identical English output to
+  before this issue — `selectNoticeVariant` falls back to `base` for any
+  unregistered axis value, which is what `'en'`/`'auto'` are by convention
+  throughout this catalogue.
+
 ## Platform-specific notes
 
 ### WhatsApp / Baileys ToS risk

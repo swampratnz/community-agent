@@ -348,6 +348,92 @@ const NOTICE_ENTRIES = {
         'Ask me "what can you do?" for a rundown, including your new admin tools.',
     },
   },
+  // --- community_info member capabilities rundown (agent/tools/info.ts) ---
+  /**
+   * The member-tier segment of `community_info`/`/help`/`!help`'s capability
+   * rundown (issue #1028) — `base` moved VERBATIM from the old
+   * `MEMBER_CAPABILITIES_TEXT` constant in info.ts, so this is a byte-neutral
+   * relocation, not a rewrite. Scope is deliberately member-tier only: the
+   * admin/super-admin segments and the WhatsApp `!`-shortcuts segment
+   * (`ADMIN_CAPABILITIES_TEXT`/`SUPER_ADMIN_CAPABILITIES_TEXT`/
+   * `WHATSAPP_TEXT_COMMANDS_TEXT`, still in info.ts) stay English-only,
+   * named growth in the issue rather than folded into this entry.
+   */
+  communityInfoMemberCapabilities: {
+    base:
+      'NZ Claude Community — a New Zealand group building with Claude and the Anthropic API. ' +
+      "Here's what you can ask me to do:\n" +
+      '- Flag harassment, spam, or a rule violation to admins ("report this"), or withdraw one filed by mistake\n' +
+      '- Ask admins to review a warning you think was a mistake ("appeal my warning")\n' +
+      '- Ask me for our community guidelines ("what are the rules here?")\n' +
+      '- Answer questions from curated community knowledge — just ask\n' +
+      '- Browse the topics our knowledge base covers, if you\'re not sure what to ask ("what do you know about?")\n' +
+      '- Search back through your own past messages for something said earlier\n' +
+      "- Check what I've stored about you, your active warnings, or your filed suggestions/reports\n" +
+      '- Catch you up on recent activity in this conversation ("what did I miss?")\n' +
+      '- Suggest how the bot or community could be better, or suggest a knowledge-base tip for other members ' +
+      'to find later, or withdraw one before an admin reviews it\n' +
+      '- Rate my last answer helpful or not\n' +
+      '- Ask to talk to a human community admin, if I\'m not getting you anywhere ("can I talk to a ' +
+      'human?")\n' +
+      '- Ask me to explain things more simply, or reply in te reo Māori ("keep it simple")\n' +
+      '- React to a message with an emoji instead of replying\n' +
+      '- Ask if a Claude/API problem is a known Anthropic outage, not your bug\n' +
+      '- Ask what meetups/events are coming up ("what\'s on?")\n' +
+      '- Share a project you\'ve built with the community, or browse what others have shared ("share my ' +
+      'project", "what has everyone built?")\n' +
+      "- Ask to connect with a project owner who's looking for collaborators (\"I'd like to help with that " +
+      'project")\n' +
+      '- Publish your own interests so other members can find you, or find members into a topic ("add me to ' +
+      'who\'s into RAG", "who\'s working on Discord bots?")\n' +
+      '- Ask if someone in the community can help with something you\'re stuck on ("can someone help with ' +
+      'X?"), or opt in/out of being notified for other members\' requests\n' +
+      '- Pull the community digest on demand\n' +
+      "- Record decisions in a project you're part of and search that project's shared memory later, or " +
+      'list your projects\n' +
+      '- Erase all your stored data any time ("forget me")',
+    language: {
+      mi:
+        'NZ Claude Community — he rōpū o Aotearoa e hanga ana ki a Claude me te Anthropic API. ' +
+        'Anei ngā mea ka taea e koe te tono mai ki ahau:\n' +
+        '- Tohu i te whakatoihara, te para, te takahi tikanga rānei ki ngā kaiwhakahaere ("report this"), ' +
+        'tango rānei i tētahi i tukuna pōhēhē\n' +
+        '- Tono ki ngā kaiwhakahaere kia arotake i tētahi whakatūpato e whakaaro ana koe he pōhēhē ' +
+        '("appeal my warning")\n' +
+        '- Pātai mai i ā mātou tikanga hapori ("what are the rules here?")\n' +
+        '- Whakautu pātai mai i te mōhiotanga hapori kua whiriwhiria — pātai noa mai\n' +
+        '- Tirotiro i ngā kaupapa e kapi ana e tō mātou pātengi mōhiotanga, mehemea kāore koe e mōhio he aha ' +
+        'te pātai ("what do you know about?")\n' +
+        '- Rapu whakamuri i āu karere o mua mō tētahi mea i kīa i mua\n' +
+        '- Tirohia he aha kua rongoātia e ahau mōu, ō whakatūpato e mahi tonu ana, ō tono/pūrongo rānei kua ' +
+        'tukuna\n' +
+        '- Whakahōtaka i a koe mō ngā mahi hōu i tēnei kōrerorero ("what did I miss?")\n' +
+        '- Tuku whakaaro mō te pai ake o te pouaka, o te hapori rānei, tuku whakaaro mō tētahi taunakitanga ' +
+        'mō te pātengi mōhiotanga hei kitenga mā ētahi atu mema, tango rānei i tētahi i mua i te arotakenga ' +
+        'a te kaiwhakahaere\n' +
+        '- Tohu i tāku whakautu whakamutunga he āwhina, kāore rānei\n' +
+        '- Tono ki te kōrero ki tētahi kaiwhakahaere tangata, mehemea kāore au e āwhina ana i a koe ("can I ' +
+        'talk to a human?")\n' +
+        '- Tono ki ahau kia whakamāramatia ngā mea kia ngāwari ake, whakahoki mai rānei i te reo Māori ' +
+        '("keep it simple")\n' +
+        '- Tohu karere mā te emoji, kaua e whakahoki kōrero\n' +
+        '- Pātai mehemea he raru mōhiotia nā Anthropic tā Claude/API raru, ehara i te hapa nāu\n' +
+        '- Pātai he aha ngā hui/kaupapa e haere ake nei ("what\'s on?")\n' +
+        '- Tohatoha i tētahi kaupapa i hangaia e koe ki te hapori, tirotiro rānei i ngā mea kua tohaina e ' +
+        'ētahi atu ("share my project", "what has everyone built?")\n' +
+        '- Tono kia hono ki te kaipupuri kaupapa e rapu hoa mahi ana ("I\'d like to help with that ' +
+        'project")\n' +
+        '- Whakaputa i ō ake hiahia kia kitea koe e ētahi atu mema, rapu rānei i ngā mema e pā ana ki ' +
+        'tētahi kaupapa ("add me to who\'s into RAG", "who\'s working on Discord bots?")\n' +
+        '- Pātai mehemea ka taea e tētahi o te hapori te āwhina i a koe ki tētahi mea e raru ana koe ("can ' +
+        'someone help with X?"), whakauru rānei/waiho rānei kia kaua e whakamōhiotia mō ngā tono a ētahi ' +
+        'atu mema\n' +
+        '- Tiki i te whakarāpopototanga hapori ā-tono\n' +
+        '- Tuhi whakatau i roto i tētahi kaupapa e uru ana koe, rapu anō i ngā mahara tiritahi o taua ' +
+        'kaupapa ā muri ake, rārangi rānei i ō kaupapa\n' +
+        '- Muku i katoa āu raraunga kua rongoātia i ngā wā katoa ("forget me")',
+    },
+  },
   // --- knowledge citation-note fragments (agent/tools/helpers.ts) ----------
   knowledgeLowRatedCaveat: {
     base: 'other members found this unhelpful — you can flag it too with rate_answer',

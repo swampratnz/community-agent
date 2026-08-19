@@ -312,13 +312,18 @@ async function handleStatus(interaction: ChatInputCommandInteraction, deps: Slas
  * `minTier: 'member'` tool reachable by every caller including guests (same
  * "MEMBER_TOOLS is also a guest's surface in open mode" reachability every
  * sibling tool documents), and `formatCommunityInfoText` itself branches on
- * the resolved role, so there is nothing left for this handler to gate.
+ * the resolved role (and, since issue #1028, on the caller's own stored
+ * language preference), so there is nothing left for this handler to gate.
  */
 async function handleHelp(interaction: ChatInputCommandInteraction, deps: SlashCommandDeps): Promise<void> {
   await deferEphemeral(interaction);
   const role = await resolveRole('discord', interaction.user.id);
   recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
-  await replyEphemeral(interaction, formatCommunityInfoText(role, 'discord'), deps);
+  await replyEphemeral(
+    interaction,
+    await formatCommunityInfoText(role, 'discord', interaction.user.id),
+    deps,
+  );
 }
 
 /**

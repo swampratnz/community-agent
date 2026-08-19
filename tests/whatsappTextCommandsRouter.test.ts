@@ -17,6 +17,10 @@ import type {
   MemberProjectSearchHit,
 } from '@swampratnz/agent-base/storage/repository/memberProjects.js';
 import type { ShortcutKind } from '@swampratnz/agent-base/storage/repository/shortcutHits.js';
+// !help (issue #1028) reads the module notice pack's communityInfoMemberCapabilities
+// entry via formatCommunityInfoText — the pack is registered by createAgent in
+// production; tests opt in explicitly, same convention as tools.test.ts.
+import './support/registerNotices.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -764,7 +768,7 @@ test('!help renders byte-identical text to formatCommunityInfoText(role, "whatsa
 
     await trigger(makeMessage({ text: '!help', userId: `${role}-1` }));
 
-    assert.equal(sent[0].text, formatCommunityInfoText(role, 'whatsapp'));
+    assert.equal(sent[0].text, await formatCommunityInfoText(role, 'whatsapp', `${role}-1`));
   }
 
   // super_admin is resolved from config.rbac.superAdminWhatsappNumbers, never
@@ -784,7 +788,7 @@ test('!help renders byte-identical text to formatCommunityInfoText(role, "whatsa
 
   await trigger(makeMessage({ text: '!help', userId: 'super-1' }));
 
-  assert.equal(sent[0].text, formatCommunityInfoText('super_admin', 'whatsapp'));
+  assert.equal(sent[0].text, await formatCommunityInfoText('super_admin', 'whatsapp', 'super-1'));
 });
 
 test('SECURITY: !help for a member caller never contains ADMIN_CAPABILITIES_TEXT/SUPER_ADMIN_CAPABILITIES_TEXT content, and for an admin caller never contains SUPER_ADMIN_CAPABILITIES_TEXT content (issue #993 authoritative criterion 6)', async (t) => {
@@ -815,6 +819,40 @@ test('SECURITY: !help for a member caller never contains ADMIN_CAPABILITIES_TEXT
   assert.match(admin.sent[0].text, /warn, mute, kick/i);
   assert.doesNotMatch(admin.sent[0].text, /grant or revoke admin status/i);
 });
+
+test(
+  "!help serves the te reo Māori member-capabilities text to a member-tier caller with a standing 'mi' " +
+    'language preference, and the fixed English default to a caller with no preference (issue #1028 ' +
+    'acceptance criteria 2, 3, 5)',
+  async (t) => {
+    let currentLanguage: 'mi' | null = null;
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users')) {
+        return { rows: [{ role: 'member' }], rowCount: 0 };
+      }
+      if (sql.includes('FROM language_prefs')) {
+        return { rows: currentLanguage ? [{ language: currentLanguage }] : [], rowCount: 0 };
+      }
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+
+    currentLanguage = 'mi';
+    const miRouter = makeRouter({ runTurn: throwingRunTurn, recordShortcutHitFn: async () => {} });
+    const mi = makeAdapter();
+    miRouter.register(mi.adapter);
+    await mi.trigger(makeMessage({ text: '!help', userId: 'member-mi' }));
+    assert.match(mi.sent[0].text, /Anei ngā mea ka taea e koe te tono mai ki ahau/);
+    assert.doesNotMatch(mi.sent[0].text, /Here's what you can ask me to do/);
+
+    currentLanguage = null;
+    const enRouter = makeRouter({ runTurn: throwingRunTurn, recordShortcutHitFn: async () => {} });
+    const en = makeAdapter();
+    enRouter.register(en.adapter);
+    await en.trigger(makeMessage({ text: '!help', userId: 'member-en' }));
+    assert.match(en.sent[0].text, /Here's what you can ask me to do/);
+    assert.doesNotMatch(en.sent[0].text, /Anei ngā mea ka taea e koe te tono mai ki ahau/);
+  },
+);
 
 test("a successful !help invocation calls recordShortcutHit('whatsapp_text_command') exactly once (issue #993, mirrors issue #874 acceptance criterion 1)", async (t) => {
   mockPoolRole(t, 'member');

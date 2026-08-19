@@ -223,12 +223,13 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
     platforms: ['discord', 'whatsapp'],
     // No tier gate, matching community_info's own `minTier: 'member'` floor
     // (a guest-reachable member-floor tool, same reasoning as `guidelines`
-    // above) — formatCommunityInfoText branches its own content on `role`,
-    // so the caller's actual tier is what determines what comes back, not a
-    // dispatch-time gate here.
+    // above) — formatCommunityInfoText branches its own content on `role`
+    // (and, since issue #1028, on the caller's own stored language
+    // preference), so the caller's actual tier is what determines what comes
+    // back, not a dispatch-time gate here.
     whatsapp: async (text, msg, role) => {
       if (!/^!help$/i.test(text)) return TEXT_COMMAND_UNMATCHED;
-      return formatCommunityInfoText(role, msg.platform);
+      return await formatCommunityInfoText(role, msg.platform, msg.userId);
     },
   },
 ];

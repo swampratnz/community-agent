@@ -38,6 +38,18 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   scope by retrieval count (an entry never retrieved is still shown, ranked
   last, not hidden), same admin-only, read-only tier as its siblings.
 
+### Fixed
+- **`community_info`/`/help`/`!help` now honour a standing te reo Māori
+  preference** (#1028): the bot's own "what can you do?" answer used to tell
+  every member te reo Māori is available ("Ask me to explain things more
+  simply, or reply in te reo Māori") while always answering that question
+  itself in English, regardless of what the member had already stored with
+  `set_language_preference`. A member-tier caller with `language_preference =
+  'mi'` now gets the member-capabilities rundown in te reo Māori, matching
+  `community_guidelines`'s existing behaviour; a caller with no preference (or
+  `'en'`/`'auto'`) sees byte-identical English to before. Admin/super-admin
+  content and the WhatsApp `!`-shortcuts block stay English-only for now.
+
 ## 2026-08-19
 
 ### Added

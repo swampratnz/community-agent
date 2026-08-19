@@ -3040,17 +3040,22 @@ test('SECURITY: set_language_preference rejects any language outside {auto,en,mi
 });
 
 // community_info (issue #92): the reply is fully determined by caller.role
-// (already trusted, tier-resolved data), so the handler is exercised directly
-// via the MCP server's registered tool, same pattern as the
-// moderation_history zod test above — no DB, no adapter behaviour involved.
+// (already trusted, tier-resolved data) plus — since issue #1028 — the
+// caller's own stored language_prefs row, so the handler is exercised
+// directly via the MCP server's registered tool, same pattern as the
+// moderation_history zod test above — no adapter behaviour involved. userId
+// defaults to a fixed value so every pre-#1028 call site (implicitly asking
+// for the default/unset-preference English text) is unchanged; pass a
+// distinct userId to exercise a caller with a standing language preference.
 function communityInfoHandler(
   role: 'guest' | 'member' | 'admin' | 'super_admin',
   platform: 'discord' | 'whatsapp' = 'discord',
+  userId = 'caller-1',
 ) {
   const adapter = stubAdapter(async () => {});
   const caller = {
     platform,
-    userId: 'caller-1',
+    userId,
     userName: 'Caller',
     role,
     conversationId: 'convo-1',
@@ -3762,7 +3767,7 @@ test('community_info renders byte-identical text to formatCommunityInfoText for 
         const handlerReply = (await communityInfoHandler(role, platform)).content[0]?.text ?? '';
         assert.equal(
           handlerReply,
-          formatCommunityInfoText(role, platform),
+          await formatCommunityInfoText(role, platform, 'caller-1'),
           `community_info(${role}, ${platform}) must match formatCommunityInfoText's own output`,
         );
       }
@@ -3771,6 +3776,70 @@ test('community_info renders byte-identical text to formatCommunityInfoText for 
     config.behaviour.whatsappTextCommandsEnabled = original;
   }
 });
+
+// --- issue #1028: community_info honours a standing 'mi' language preference
+
+test(
+  'community_info/formatCommunityInfoText serve the te reo Māori member-capabilities text to a member-tier ' +
+    "caller with a standing 'mi' language preference, and byte-identical English to a caller with no " +
+    "stored preference or an 'en' preference (issue #1028 acceptance criteria 2, 3)",
+  { skip },
+  async () => {
+    const miUser = `${RUN}-info-mi-preference`;
+    const enUser = `${RUN}-info-en-preference`;
+
+    await setLanguagePreferenceHandler({ platform: 'discord', userId: miUser }).handler({ language: 'mi' });
+    await setLanguagePreferenceHandler({ platform: 'discord', userId: enUser }).handler({ language: 'en' });
+
+    const defaultReply = (await communityInfoHandler('member', 'discord')).content[0]?.text ?? '';
+    const miReply = (await communityInfoHandler('member', 'discord', miUser)).content[0]?.text ?? '';
+    const enReply = (await communityInfoHandler('member', 'discord', enUser)).content[0]?.text ?? '';
+
+    assert.equal(
+      enReply,
+      defaultReply,
+      "an 'en'-preference caller must render byte-identical to a caller with no stored preference",
+    );
+    assert.match(
+      miReply,
+      /Anei ngā mea ka taea e koe te tono mai ki ahau/,
+      "a 'mi'-preference caller must get the te reo Māori member-capabilities text",
+    );
+    assert.doesNotMatch(
+      miReply,
+      /Here's what you can ask me to do/,
+      'the mi reply must not also contain the English member-capabilities text',
+    );
+    assert.equal(
+      await formatCommunityInfoText('member', 'discord', miUser),
+      miReply,
+      "formatCommunityInfoText's own output must match the tool handler's (single source of truth)",
+    );
+  },
+);
+
+test(
+  "SECURITY: community_info's language selection is driven solely by the caller's own (platform, userId) " +
+    "stored language preference — a 'mi'-preference caller's language never leaks into a distinct caller's " +
+    'reply (issue #1028 acceptance criterion 4)',
+  { skip },
+  async () => {
+    const miUser = `${RUN}-info-sec-mi`;
+    const otherUser = `${RUN}-info-sec-other`;
+
+    await setLanguagePreferenceHandler({ platform: 'discord', userId: miUser }).handler({ language: 'mi' });
+
+    const miReply = (await communityInfoHandler('member', 'discord', miUser)).content[0]?.text ?? '';
+    const otherReply = (await communityInfoHandler('member', 'discord', otherUser)).content[0]?.text ?? '';
+
+    assert.match(miReply, /Anei ngā mea ka taea e koe te tono mai ki ahau/);
+    assert.match(
+      otherReply,
+      /Here's what you can ask me to do/,
+      "a distinct caller with no stored preference must never inherit another caller's 'mi' preference",
+    );
+  },
+);
 
 test('SECURITY: redeploy_bot registers a pending action instead of executing directly (issue #101)', async () => {
   const adapter = stubAdapter(async () => {});
