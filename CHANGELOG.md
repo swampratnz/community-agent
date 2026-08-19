@@ -21,7 +21,7 @@ shows it to members. Append numbers; never remove them.
 Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #775 #784 #804 #807 #809 #810 #812 #814 #816 #817 #818 #819 #821 #824 #825
 #868 #896 #899 #904 #949 #950 #951 #952 #953 #954 #955 #956 #957 #958 #961
-#963 #964 #965 #968 #971 #983 #988 #989
+#963 #964 #965 #968 #971 #983 #988 #989 #991 #992 #994
 -->
 
 ## 2026-08-19
@@ -92,6 +92,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   to the same answer, alongside `/kb`, `/whois`, `/projects`, `/guidelines`,
   and `/digest`. `!help` needs the WhatsApp shortcuts flag enabled, same as
   its siblings.
+- **`/status` (Discord) and `!status` (WhatsApp) — a zero-wait shortcut for
+  Anthropic's public status page** (#997): the same deterministic answer the
+  `check_status` chat tool gives, without spending an agent turn. It carries
+  no tier gate, matching `/guidelines` — `check_status` only echoes
+  Anthropic's own public status page, already reachable by guests in open
+  mode, so the shortcut can't be gated tighter than the tool it fronts.
+  `!status` is listed alongside the other WhatsApp text commands for
+  discoverability.
 
 ### Fixed
 - **Weekly admin digest no longer silently vanishes when your WhatsApp window
