@@ -9,6 +9,7 @@ import {
   FIND_HELPER_WEEKLY_LIMIT_PER_HELPER,
   findHelperCandidates,
   getActiveProjectById,
+  getPublishedInterestsForOwners,
   isFindHelperRequesterAtDailyCap,
   isProjectConnectionRequesterAtDailyCap,
   listOwnProjects,
@@ -43,6 +44,16 @@ import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 /** list_projects' row cap for both the no-query (recent) and query (similarity) paths. */
 export const LIST_PROJECTS_DEFAULT_LIMIT = 8;
+
+/**
+ * who_is_into's no-query, no-published-row guidance — shared verbatim (issue
+ * #1022) between the existing self-match fallback and the new `mine: true`
+ * empty state, so a caller with no published interests sees byte-identical
+ * wording regardless of which path told them.
+ */
+export const WHO_IS_INTO_NO_PROFILE_HINT =
+  "You haven't published interests yet — call set_my_interests first, then who_is_into with no " +
+  'topic will search using your own published interests.';
 
 export const socialTools = [
   // Self-scoped write (one row per identity, upsert/clear semantics),
@@ -112,9 +123,33 @@ export const socialTools = [
           'Topic/keyword to search published member interests by meaning. Omit to search using the ' +
             'caller\'s own published interests instead ("find people like me").',
         ),
+      mine: z
+        .boolean()
+        .optional()
+        .describe(
+          "Only show the caller's own published interests text — ignores query when set. Use this to " +
+            'check what is currently published before calling set_my_interests to update or clear it.',
+        ),
     },
     handler: async (args, { caller }) => {
       assertAtLeast(caller.role, 'member', 'who_is_into');
+      // Checked before the query/self-match branches below (issue #1022,
+      // mirroring list_projects' mine handling): self-scoped by the caller's
+      // OWN identity, never a tool-argument-supplied identifier, and ignores
+      // any query passed alongside it rather than falling through to the
+      // public search path.
+      if (args.mine) {
+        const interestsByOwner = await getPublishedInterestsForOwners([
+          { platform: caller.platform, userId: caller.userId },
+        ]);
+        const own = interestsByOwner.get(`${caller.platform}:${caller.userId}`);
+        if (!own) {
+          return text(WHO_IS_INTO_NO_PROFILE_HINT);
+        }
+        return text(
+          await formatInterestResults([{ platform: caller.platform, userId: caller.userId, interests: own }]),
+        );
+      }
       if (args.query) {
         const hits = await searchMemberInterests(args.query, WHO_IS_INTO_LIMIT);
         if (hits.length === 0) {
@@ -129,9 +164,7 @@ export const socialTools = [
         // most recently published/updated interests (mirroring
         // list_projects' no-query listRecentProjects default), still
         // appending the same set_my_interests hint after the list.
-        const hint =
-          "You haven't published interests yet — call set_my_interests first, then who_is_into with no " +
-          'topic will search using your own published interests.';
+        const hint = WHO_IS_INTO_NO_PROFILE_HINT;
         const recent = await listRecentInterests(WHO_IS_INTO_LIMIT);
         return text(recent.length === 0 ? hint : `${await formatInterestResults(recent)}\n\n${hint}`);
       }

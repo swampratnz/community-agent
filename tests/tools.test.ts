@@ -13728,6 +13728,7 @@ function whoIsIntoHandler(caller: {
         {
           handler: (args: {
             query?: string;
+            mine?: boolean;
           }) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
         }
       >;
@@ -14434,6 +14435,15 @@ test('SECURITY: set_my_interests and who_is_into refuse a guest-tier caller befo
   );
 });
 
+test('SECURITY: who_is_into refuses a guest-tier caller when mine: true is set — the new argument adds no alternate reachability path (issue #1022)', async () => {
+  const whoTool = whoIsIntoHandler({ platform: 'discord', userId: 'guest-4', role: 'guest' });
+  await assert.rejects(
+    () => whoTool.handler({ mine: true }),
+    /Permission denied/,
+    'a guest must be refused with mine: true, before getPublishedInterestsForOwners is ever called',
+  );
+});
+
 test(
   "set_my_interests publishes the caller's interests, upserts in place on a second call, and 'clear' removes the entry — all reflected via who_is_into (issue #634)",
   { skip },
@@ -14712,6 +14722,99 @@ test(
       [caller, matchesPublished, matchesChatOnly],
     ]);
     await pool.query(`DELETE FROM interactions WHERE user_id = $1`, [caller]);
+  },
+);
+
+test(
+  "who_is_into mine:true returns exactly the caller's own published interests text, with a distinct empty-state message, and leaves mine omitted/false byte-identical to today (issue #1022 AC #1, #2, #5)",
+  { skip },
+  async () => {
+    const caller = `${RUN}-who-is-into-mine-caller`;
+    const setTool = setMyInterestsHandler({ platform: 'discord', userId: caller });
+    const whoTool = whoIsIntoHandler({ platform: 'discord', userId: caller });
+
+    const noneYet = await whoTool.handler({ mine: true });
+    assert.equal(noneYet.isError, false);
+    assert.match(noneYet.content[0]?.text ?? '', /haven't published interests yet/i);
+
+    const published = await setTool.handler({ interests: 'Recall-my-own interests text' });
+    assert.equal(published.isError, false);
+
+    const mine = await whoTool.handler({ mine: true });
+    assert.equal(mine.isError, false);
+    assert.match(mine.content[0]?.text ?? '', /Recall-my-own interests text/);
+
+    // AC #5: mine omitted/false stays byte-identical to today's existing
+    // no-query self-match path (the caller now has a published row).
+    const omitted = await whoTool.handler({});
+    const explicitFalse = await whoTool.handler({ mine: false });
+    assert.equal(explicitFalse.content[0]?.text, omitted.content[0]?.text);
+    assert.doesNotMatch(
+      omitted.content[0]?.text ?? '',
+      /Recall-my-own interests text/,
+      "the existing no-query path excludes the caller's own row (issue #882) — mine:true must not have changed that",
+    );
+
+    await pool.query(`DELETE FROM member_interests WHERE platform = 'discord' AND user_id = $1`, [caller]);
+  },
+);
+
+test(
+  "SECURITY: who_is_into({ mine: true }) for caller A never returns caller B's interests, even when B has a published row and A does not (issue #1022 AC #3)",
+  { skip },
+  async () => {
+    const callerA = `${RUN}-who-is-into-mine-caller-a`;
+    const callerB = `${RUN}-who-is-into-mine-caller-b`;
+    const bSetTool = setMyInterestsHandler({ platform: 'discord', userId: callerB });
+    assert.equal(
+      (await bSetTool.handler({ interests: 'must never leak into caller A mine:true results' })).isError,
+      false,
+    );
+
+    const aWhoTool = whoIsIntoHandler({ platform: 'discord', userId: callerA });
+    const aMine = await aWhoTool.handler({ mine: true });
+    assert.match(
+      aMine.content[0]?.text ?? '',
+      /haven't published interests yet/i,
+      "caller A has no published row of their own, regardless of caller B's",
+    );
+    assert.doesNotMatch(aMine.content[0]?.text ?? '', /must never leak into caller A/);
+
+    await pool.query(`DELETE FROM member_interests WHERE platform = 'discord' AND user_id = $1`, [callerB]);
+  },
+);
+
+test(
+  "SECURITY: who_is_into mine:true ignores a supplied query and draws its result exclusively from the caller's own published interests, never falling through to the public search path (issue #1022 AC #4)",
+  { skip },
+  async () => {
+    const ownerId = `${RUN}-who-is-into-mine-ignores-query`;
+    const otherId = `${RUN}-who-is-into-mine-ignores-query-other`;
+    const ownerSetTool = setMyInterestsHandler({ platform: 'discord', userId: ownerId });
+    const otherSetTool = setMyInterestsHandler({ platform: 'discord', userId: otherId });
+    const whoTool = whoIsIntoHandler({ platform: 'discord', userId: ownerId });
+
+    // The caller's own published text deliberately does NOT match the query
+    // below, so if mine:true fell through to the public search path it would
+    // be excluded (or replaced by the other member's matching row).
+    assert.equal((await ownerSetTool.handler({ interests: 'Unrelated own interests text' })).isError, false);
+    assert.equal(
+      (await otherSetTool.handler({ interests: 'a gizmo project matching the query below' })).isError,
+      false,
+    );
+
+    const result = await whoTool.handler({ mine: true, query: 'gizmo' });
+    const resultText = result.content[0]?.text ?? '';
+    assert.match(resultText, /Unrelated own interests text/, "the caller's own text is still shown");
+    assert.doesNotMatch(
+      resultText,
+      /gizmo/,
+      "another member's interests must never appear, even though they match the supplied query",
+    );
+
+    await pool.query(`DELETE FROM member_interests WHERE platform = 'discord' AND user_id = ANY($1)`, [
+      [ownerId, otherId],
+    ]);
   },
 );
 
