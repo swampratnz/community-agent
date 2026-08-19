@@ -58,7 +58,7 @@ export {
   notifyWarningsCleared,
 } from './tools/notify.js';
 export { reserveDevTeamDispatchDaily } from './tools/devTeam.js';
-export { EVENTS_LIST_LIMIT } from './tools/info.js';
+export { EVENTS_LIST_LIMIT, formatCommunityInfoText } from './tools/info.js';
 export { CATCH_UP_DEFAULT_HOURS, CATCH_UP_MAX_HOURS, CATCH_UP_MAX_MESSAGES } from './tools/memory.js';
 export { APPEAL_MODERATION_REASON_MAX_CHARS } from './tools/reportsMember.js';
 export { HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER } from './tools/feedback.js';

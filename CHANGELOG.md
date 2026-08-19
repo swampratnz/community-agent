@@ -24,7 +24,6 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #963 #964 #965 #968 #971 #983 #988 #989 #991 #992 #994
 -->
 
-
 ## 2026-08-19
 
 ### Added
@@ -51,6 +50,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   alongside its match %, and — unlike `knowledge_search` — includes weak
   matches so a loosely-remembered entry is still reachable, ready to pass
   straight to `update_knowledge`/`delete_knowledge`/`merge_knowledge`.
+- **The weekly member digest now shows member→member connections made this
+  week** (#1012): `find_helper` and `request_project_connection` quietly
+  connect members one DM at a time, so nobody outside admin digests ever saw
+  proof that either was working. The digest now adds a single "N members
+  connected with help or a collaborator this week" line — a bare combined
+  count, never who connected or what about, same as the existing new-projects
+  and new-interests lines — so the whole community can see the flywheel is
+  real, not just admins.
 
 ## 2026-08-18
 
@@ -71,6 +78,13 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   member tier and `WHATSAPP_TEXT_COMMANDS_ENABLED`, matching `my_warnings`'
   own gate; an unrecognised or argument-bearing `!warnings` message falls
   through to ordinary chat, same as the other WhatsApp shortcuts.
+- **`/help` (Discord) and `!help` (WhatsApp)** (#993) give `community_info`'s
+  capability rundown — "what can you do?" — a zero-cost command, like
+  `/guidelines`, `/digest`, and the other existing shortcuts. Asking the bot
+  directly still works exactly as before; this just adds a free, instant path
+  to the same answer, alongside `/kb`, `/whois`, `/projects`, `/guidelines`,
+  and `/digest`. `!help` needs the WhatsApp shortcuts flag enabled, same as
+  its siblings.
 - **`/status` (Discord) and `!status` (WhatsApp) — a zero-wait shortcut for
   Anthropic's public status page** (#997): the same deterministic answer the
   `check_status` chat tool gives, without spending an agent turn. It carries

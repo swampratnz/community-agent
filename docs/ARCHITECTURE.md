@@ -1427,10 +1427,11 @@ weakening it:
    growth path ("no evidenced complaint... left as an explicit, separate
    growth path"); #582 is that follow-up, closing the one tier `community_info`
    previously under-served. A WhatsApp caller additionally gets a fixed,
-   four-shortcut discovery block appended to the member segment (issue #872)
+   seven-shortcut discovery block appended to the member segment (issue #872)
    when `WHATSAPP_TEXT_COMMANDS_ENABLED` is on — the `!whois`/`!projects`/
-   `!guidelines`/`!digest` shortcuts (issue #859) have no client-native
-   discovery surface the way Discord's slash commands do via
+   `!guidelines`/`!digest` (issue #859), `!status` (issue #995),
+   `!warnings` (issue #1000), and `!help` (issue #993) shortcuts have no
+   client-native discovery surface the way Discord's slash commands do via
    `SlashCommandBuilder.setDescription`, so `community_info` is the only
    place a WhatsApp member learns they exist. Branch condition is
    `caller.platform === 'whatsapp'` plus the config flag plus
@@ -1439,9 +1440,9 @@ weakening it:
    `MEMBER_CAPABILITIES_TEXT` itself; a Discord caller's reply is
    byte-identical regardless of the flag, and a WhatsApp caller with the flag
    off is byte-identical to before #872. The role check matters because
-   three of the four shortcuts (`!whois`/`!projects`/`!digest`) themselves
-   gate on `atLeast(role, 'member')` in `tryWhatsAppTextCommand` — a guest
-   caller never satisfies it, so the block is withheld rather than
+   four of the seven shortcuts (`!whois`/`!projects`/`!digest`/`!warnings`)
+   themselves gate on `atLeast(role, 'member')` in `tryWhatsAppTextCommand` —
+   a guest caller never satisfies it, so the block is withheld rather than
    advertising shortcuts that would silently no-op for them.
 7. **Opt-in auto-enroll** (issue #605, off unless
    `DISCORD_AUTO_ENROLL_MEMBERS=true`). Removes the manual per-person
@@ -2078,7 +2079,7 @@ Two on-demand surfaces call it directly, mirroring `admin_digest`'s
   `atLeast(role, 'member')` floor, then calls `buildMemberDigestContent()`
   directly (never through the tool/model) and replies ephemeral with the
   message or the same fallback — plain text through `deps.filtered()` only,
-  no `untrusted()` wrapper, since (like the other four slash commands) this
+  no `untrusted()` wrapper, since (like the other eight slash commands) this
   reply never re-enters model context.
 
 Neither surface touches `wasMemberDigestSentRecently`/
@@ -2613,16 +2614,16 @@ the full security posture and its test references.
 
 ## Discord slash commands (issue #744)
 
-`DISCORD_SLASH_COMMANDS_ENABLED` (off by default) registers eight read-only,
+`DISCORD_SLASH_COMMANDS_ENABLED` (off by default) registers nine read-only,
 zero-model-call Discord application commands — `/kb <query>`,
 `/whois <query>`, `/projects [query]`, `/guidelines`, `/digest`, `/status`
-(issue #995), `/warnings` (issue #1000), `/events` (issue #1004) — the
-discoverable, per-command
-generalisation of the knowledge shortcut (see "Known cost/latency
-characteristic" below): each answers a common lookup with a deterministic
-repository read instead of a full `query()` turn, and Discord's command
-picker surfaces them where a member would otherwise have to guess a phrase
-close enough to trigger a shortcut or address the bot at all.
+(issue #995), `/warnings` (issue #1000), `/events` (issue #1004), `/help`
+(issue #993) — the discoverable, per-command generalisation of the knowledge
+shortcut (see "Known cost/latency characteristic" below): each answers a
+common lookup with a deterministic repository read instead of a full
+`query()` turn, and Discord's command picker surfaces them where a member
+would otherwise have to guess a phrase close enough to trigger a shortcut or
+address the bot at all.
 
 **The mechanism is the package's; the commands are this module's.** The two
 Discord-client hooks — `registerSlashCommands` and `handleInteraction` — live
@@ -2785,6 +2786,14 @@ itself would say for the same DB state; `handleWarnings` calls
 `countActiveWarnings('discord', interaction.user.id)` directly (the same
 package export the tool imports), never through the tool/model.
 
+**`/help`** (issue #993) has no tier gate at all, matching `/guidelines` and
+its own underlying tool, `community_info`: `handleHelp` defers, resolves the
+caller's role via `resolveRole('discord', ...)`, and replies with
+`formatCommunityInfoText(role, 'discord')` — a pure formatter exported from
+`agent/tools/info.ts` and factored out of `community_info`'s own handler body,
+so the tool and `/help` render byte-identical text for the same caller rather
+than each re-deriving the role-branching capability rundown independently.
+
 **`/guidelines` deliberately does not serve the internal `GUIDELINES` block**
 from `agent/systemPrompt.ts` — despite that block being what the originating
 proposal's file:line citation named as the "static, verbatim-returnable"
@@ -2808,14 +2817,14 @@ command-picker UI to register these against, so it instead gets a
 literal-prefix text-command equivalent — see "WhatsApp text commands" below
 (issue #859). `shortcut_hits` tracking of slash-command usage (issue #863):
 every successful invocation of `/kb`, `/whois`, `/projects`, `/guidelines`,
-`/digest`, `/status`, or `/warnings` records one `slash_command`
-`shortcut_hits` row (an aggregate per-mechanism count, not broken down by
-command name, matching the granularity of the four original kinds from issue
-#440), so `usage_stats`'s "Shortcuts fired" line now includes this
-cost-avoidance path in its total and its `slash-command N` breakdown. An
-auth-denied reply records nothing, so the counter can never be used to infer
-auth-denied probe volume. Every underlying tool remains reachable via chat on
-every platform regardless of either flag.
+`/digest`, `/status`, `/warnings`, `/events`, or `/help` records one
+`slash_command` `shortcut_hits` row (an aggregate per-mechanism count, not
+broken down by command name, matching the granularity of the four original
+kinds from issue #440), so `usage_stats`'s "Shortcuts fired" line now
+includes this cost-avoidance path in its total and its `slash-command N`
+breakdown. An auth-denied reply records nothing, so the counter can never be
+used to infer auth-denied probe volume. Every underlying tool remains
+reachable via chat on every platform regardless of either flag.
 
 ## WhatsApp text commands (issue #859)
 
@@ -2823,8 +2832,8 @@ every platform regardless of either flag.
 to the Discord slash commands above, re-keyed for a platform with no native
 command-picker UI: a trimmed, case-insensitive WhatsApp message beginning
 `!whois [query]`, `!projects [query]`, `!guidelines`, `!digest`, `!status`
-(issue #995), or `!warnings` (issue #1000) is served by the same
-deterministic, zero-`query()`-call path, checked in
+(issue #995), `!warnings` (issue #1000), or `!help` (issue #993) is served by
+the same deterministic, zero-`query()`-call path, checked in
 `Router.handle()` (`tryWhatsAppTextCommand`) alongside the other router-level
 shortcuts (the knowledge shortcut, ack shortcut, etc.). `!kb` is deliberately
 not added — `KNOWLEDGE_SHORTCUT_ENABLED` already gives WhatsApp an implicit,
@@ -2847,8 +2856,12 @@ injected `Router` dependency (the `status`-command precedent issue #1000's
 adversarial review cited to justify `!warnings` needing no base `deps` seam
 change). Tier floors mirror the Discord side exactly: `!whois`, `!projects`,
 `!digest`, `!warnings` require `atLeast(role, 'member')` (the same runtime
-floor each tool's own handler applies); `!guidelines` and `!status` have no
-tier gate, matching `community_guidelines`/`check_status`.
+floor each tool's own handler applies); `!guidelines`, `!status`, and `!help`
+have no tier gate, matching `community_guidelines`/`check_status`/
+`community_info`. `!help` (issue #993) calls the same
+`formatCommunityInfoText(role, 'whatsapp')` formatter `/help` and
+`community_info` call, so all three entry points render byte-identical text
+for a given (role, platform).
 
 A bare `!whois` (no query, issue #889) mirrors `who_is_into`'s/`/whois`'s own
 no-argument self-match: it looks up the caller's own published

@@ -4,7 +4,9 @@ import { startTrackedJob } from '@swampratnz/agent-base/jobs/trackedJob.js';
 import { scrubPII } from './context/export.js';
 import {
   countAcceptedMemberKnowledgeTipsSince,
+  countHelperMatchesSince,
   countInterestsPublishedSince,
+  countProjectConnectionsSince,
   countProjectsSharedSince,
   listContextDigests,
   listCuratedKnowledgeCreatedSince,
@@ -83,6 +85,20 @@ const MAX_RELEASE_WATCH_PAGES = 10;
  * public channel post, so only an integer ever reaches this surface, never
  * interest text or a member identifier. Defaults to 0 so every existing call
  * site is unaffected.
+ *
+ * `connectionCount` (issue #1012) is a 7th, optional section — the
+ * member→member flywheel-throughput signal, surfaced here for the first
+ * time (it already reaches admins via `adminDigest.ts`'s #820/#870 flywheel
+ * line). It is a single combined integer, `helperMatchesCount +
+ * projectConnectionsCount` (successful `find_helper` DMs plus successful
+ * `request_project_connection` handoffs) — deliberately not split into two
+ * clauses, per this issue's tightened acceptance criteria, to keep the
+ * "people are actually helping each other" framing to one line. Neither
+ * source function returns an identity, topic, or project name (bare
+ * `COUNT(*)` only, same guarantee `newProjectCount`/`newInterestCount`
+ * document above), so this parameter's `number` type makes leaking either
+ * party's identity through this surface structurally impossible. Defaults
+ * to 0 so every existing call site is unaffected.
  */
 export function formatMemberDigestMessage(
   topics: ReadonlyArray<{ topic: string; questionCount: number }>,
@@ -91,13 +107,15 @@ export function formatMemberDigestMessage(
   releaseWatchPages: ReadonlyArray<{ title: string; url: string | null }> = [],
   memberTipCount = 0,
   newInterestCount = 0,
+  connectionCount = 0,
 ): string | null {
   if (
     topics.length === 0 &&
     newKnowledgeTitles.length === 0 &&
     newProjectCount === 0 &&
     releaseWatchPages.length === 0 &&
-    newInterestCount === 0
+    newInterestCount === 0 &&
+    connectionCount === 0
   )
     return null;
 
@@ -141,6 +159,11 @@ export function formatMemberDigestMessage(
       `🔍 ${newInterestCount} member${newInterestCount === 1 ? '' : 's'} published or updated their interests this week — ask me "who's into X?" to find them.`,
     );
   }
+  if (connectionCount > 0) {
+    sections.push(
+      `🤝 ${connectionCount} member${connectionCount === 1 ? '' : 's'} connected with help or a collaborator this week.`,
+    );
+  }
   return sections.join('\n\n');
 }
 
@@ -174,6 +197,8 @@ export type MemberDigestContentDeps = {
   ) => Promise<Array<{ pageTitle: string; sourceUrl: string | null }>>;
   getMemberTipCount: (since: Date) => Promise<number>;
   getNewInterestCount: (since: Date) => Promise<number>;
+  getHelperMatchesCount: (since: Date) => Promise<number>;
+  getProjectConnectionsCount: (since: Date) => Promise<number>;
 };
 
 /**
@@ -191,7 +216,7 @@ export type MemberDigestRunDeps = MemberDigestContentDeps & {
 };
 
 /**
- * Gathers every member-digest signal (the same 6 reads `makeDefaultMemberDigestRun`
+ * Gathers every member-digest signal (the same reads `makeDefaultMemberDigestRun`
  * used to run inline) and renders them via {@link formatMemberDigestMessage}, returning
  * the exact text the weekly push would post right now, or `null` on a quiet
  * week. Extracted (issue #841) so the scheduled push and an on-demand pull
@@ -220,23 +245,44 @@ export async function buildMemberDigestContent(deps?: MemberDigestContentDeps): 
   const getReleaseWatchUpdates = deps?.getReleaseWatchUpdates ?? listReleaseWatchUpdatesSince;
   const getMemberTipCount = deps?.getMemberTipCount ?? countAcceptedMemberKnowledgeTipsSince;
   const getNewInterestCount = deps?.getNewInterestCount ?? countInterestsPublishedSince;
+  // config.findHelper.enabled gates the read itself, not just its output —
+  // mirrors adminDigest.ts's own countHelperMatchesSince call site exactly
+  // (issue #820), so a deployment with find_helper off never issues the
+  // extra helper_notifications query here either.
+  const getHelperMatchesCount =
+    deps?.getHelperMatchesCount ??
+    ((since: Date) => (config.findHelper.enabled ? countHelperMatchesSince(since) : Promise.resolve(0)));
+  // No feature flag exists for request_project_connection, unlike find_helper
+  // — called unconditionally, mirroring adminDigest.ts's own
+  // countProjectConnectionsSince call site (issue #870).
+  const getProjectConnectionsCount = deps?.getProjectConnectionsCount ?? countProjectConnectionsSince;
 
   const since = new Date(Date.now() - FRESHNESS_DAYS * 24 * 3_600_000);
   // RELEASE_WATCH_ENABLED gates the read itself, not just its output — when
   // off, getReleaseWatchUpdates must never be invoked (issue #733's
   // byte-identical-when-disabled contract), so this is a conditional
   // Promise, not a post-hoc empty-array filter.
-  const [digests, newKnowledgeTitles, newProjectCount, releaseWatchPages, memberTipCount, newInterestCount] =
-    await Promise.all([
-      getDigests(FRESHNESS_DAYS, MAX_TOPICS),
-      getNewKnowledgeTitles(since, MAX_NEW_KNOWLEDGE_TITLES),
-      getNewProjectCount(since),
-      config.releaseWatch.enabled
-        ? getReleaseWatchUpdates(since, config.releaseWatch.docPaths, MAX_RELEASE_WATCH_PAGES)
-        : Promise.resolve([]),
-      getMemberTipCount(since),
-      getNewInterestCount(since),
-    ]);
+  const [
+    digests,
+    newKnowledgeTitles,
+    newProjectCount,
+    releaseWatchPages,
+    memberTipCount,
+    newInterestCount,
+    helperMatchesCount,
+    projectConnectionsCount,
+  ] = await Promise.all([
+    getDigests(FRESHNESS_DAYS, MAX_TOPICS),
+    getNewKnowledgeTitles(since, MAX_NEW_KNOWLEDGE_TITLES),
+    getNewProjectCount(since),
+    config.releaseWatch.enabled
+      ? getReleaseWatchUpdates(since, config.releaseWatch.docPaths, MAX_RELEASE_WATCH_PAGES)
+      : Promise.resolve([]),
+    getMemberTipCount(since),
+    getNewInterestCount(since),
+    getHelperMatchesCount(since),
+    getProjectConnectionsCount(since),
+  ]);
   // Two independent floors before a digest topic reaches this public
   // surface (PR #651 review):
   //  - k-anonymity: this surface is more exposed than either existing
@@ -260,6 +306,7 @@ export async function buildMemberDigestContent(deps?: MemberDigestContentDeps): 
     releaseWatchPages.map((p) => ({ title: p.pageTitle, url: p.sourceUrl })),
     memberTipCount,
     newInterestCount,
+    helperMatchesCount + projectConnectionsCount,
   );
 }
 
