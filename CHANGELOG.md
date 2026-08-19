@@ -65,6 +65,15 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   wall of docs. Complements `claude-code-setup`, which stays scoped to the
   CLI. Loads only when `AGENT_SKILLS_ENABLED` is on, same as every other
   bundled skill.
+- **`/mysubmissions` and `/mydata` (Discord) and `!mysubmissions`/`!mydata`
+  (WhatsApp) — zero-wait shortcuts for the two remaining self-service reads**
+  (#1018): the same deterministic answers the `my_submissions` and `my_data`
+  chat tools give — the status of your filed suggestions/reports/appeals/
+  knowledge tips/connection requests, and a summary of what the bot has
+  stored about you — without spending an agent turn. Both are ephemeral on
+  Discord and need member tier plus `WHATSAPP_TEXT_COMMANDS_ENABLED` on
+  WhatsApp, matching `/warnings`'s own gate; an argument-bearing WhatsApp
+  message falls through to a normal reply rather than matching.
 
 ## 2026-08-18
 

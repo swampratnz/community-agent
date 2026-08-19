@@ -1,13 +1,26 @@
 import { atLeast } from '@swampratnz/agent-base/auth/rbac.js';
 import { config } from '@swampratnz/agent-base/config.js';
-import { countActiveWarnings } from '@swampratnz/agent-base/storage/repository.js';
+import {
+  countActiveWarnings,
+  countRepliesToUser,
+  getMyDataSummary,
+  listOwnAppeals,
+  listOwnKnowledgeCandidates,
+  listOwnProjectConnectionRequests,
+  listOwnReports,
+  listOwnSuggestions,
+} from '@swampratnz/agent-base/storage/repository.js';
 import {
   formatCommunityInfoText,
   formatInterestResults,
   formatProjectResults,
   LIST_PROJECTS_DEFAULT_LIMIT,
 } from './agent/tools.js';
-import { formatMyWarningsText } from './agent/tools/selfService.js';
+import {
+  formatMyDataText,
+  formatMySubmissionsText,
+  formatMyWarningsText,
+} from './agent/tools/selfService.js';
 import { TEXT_COMMAND_UNMATCHED, type RegisteredCommand } from '@swampratnz/agent-base/commands/registry.js';
 import { formatStatusMessage, getStatusCache } from './status/anthropicStatus.js';
 
@@ -20,9 +33,10 @@ import { formatStatusMessage, getStatusCache } from './status/anthropicStatus.js
  * `commands/registry.ts`). Handlers were moved VERBATIM from their previous
  * homes; registry order is the previous `buildSlashCommands()` order (kb,
  * projects, whois, guidelines, digest), with `events` (issue #1004),
- * `status` (issue #995), `warnings` (issue #1000), and `help` (issue #993)
- * appended — also safe for the WhatsApp side because every `!` matcher is
- * anchored and mutually exclusive.
+ * `status` (issue #995), `warnings` (issue #1000), `mysubmissions`/`mydata`
+ * (issue #1018), and `help` (issue #993) appended — also safe for the
+ * WhatsApp side because every `!` matcher is anchored and mutually
+ * exclusive.
  *
  * The Discord halves are BOUND by `bindCommunitySlashCommands()`
  * (slashCommands.ts), which `createConfiguredAdapters()` calls — never at
@@ -165,6 +179,43 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
           ? await countActiveWarnings(msg.platform, msg.userId, windowDays)
           : null;
       return formatMyWarningsText(active, limit, windowed);
+    },
+  },
+  {
+    // Anchored, argument-rejecting matcher, same discipline as `warnings`
+    // above (issue #1018 SECURITY criterion 5): `!mysubmissions anything`
+    // falls through to TEXT_COMMAND_UNMATCHED rather than matching, so no
+    // message-supplied identifier can ever reach the self-scoped listOwn*
+    // reads — the identity passed below is always the adapter-resolved
+    // (msg.platform, msg.userId).
+    name: 'mysubmissions',
+    platforms: ['discord', 'whatsapp'],
+    whatsapp: async (text, msg, role) => {
+      if (!/^!mysubmissions$/i.test(text)) return TEXT_COMMAND_UNMATCHED;
+      if (!atLeast(role, 'member')) return null;
+      const [suggestions, reports, appeals, knowledgeTips, connectionRequests] = await Promise.all([
+        listOwnSuggestions(msg.platform, msg.userId, 10),
+        listOwnReports(msg.platform, msg.userId, 10),
+        listOwnAppeals(msg.platform, msg.userId, 10),
+        listOwnKnowledgeCandidates(msg.platform, msg.userId, 10),
+        listOwnProjectConnectionRequests(msg.platform, msg.userId, 10),
+      ]);
+      return formatMySubmissionsText(suggestions, reports, appeals, knowledgeTips, connectionRequests);
+    },
+  },
+  {
+    // Anchored, argument-rejecting matcher, same discipline as `warnings`/
+    // `mysubmissions` above (issue #1018 SECURITY criterion 5).
+    name: 'mydata',
+    platforms: ['discord', 'whatsapp'],
+    whatsapp: async (text, msg, role) => {
+      if (!/^!mydata$/i.test(text)) return TEXT_COMMAND_UNMATCHED;
+      if (!atLeast(role, 'member')) return null;
+      const summary = await getMyDataSummary(msg.platform, msg.userId);
+      const limit = config.behaviour.dailyReplyLimitPerUser;
+      const used =
+        role !== 'super_admin' && limit !== 0 ? await countRepliesToUser(msg.platform, msg.userId) : null;
+      return formatMyDataText(summary, role, limit, used);
     },
   },
   {

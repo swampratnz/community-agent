@@ -66,7 +66,8 @@ const { makeRouterDeps } = await import('../src/module/routerWiring.js');
 const { countRepliesToUser } = await import('@swampratnz/agent-base/storage/repository.js');
 const { formatStatusMessage, getStatusCache, pollAnthropicStatus, resetStatusCacheForTests } =
   await import('../src/module/status/anthropicStatus.js');
-const { formatMyWarningsText } = await import('../src/module/agent/tools/selfService.js');
+const { formatMyDataText, formatMySubmissionsText, formatMyWarningsText } =
+  await import('../src/module/agent/tools/selfService.js');
 
 const RUN = `wa-cmd-router-${Date.now()}`;
 
@@ -979,6 +980,254 @@ test(
     assert.equal(warningsQueried, false, 'countActiveWarnings must never run for a rejected caller');
   },
 );
+
+// --- !mysubmissions (issue #1018) -------------------------------------------
+
+test('!mysubmissions returns the same content the shared formatter renders for the empty state (issue #1018 acceptance criterion 2)', async (t) => {
+  mockPoolRole(t, 'member');
+  const router = makeRouter({ runTurn: throwingRunTurn });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!mysubmissions', userId: 'member-1' }));
+
+  assert.equal(sent[0].text, formatMySubmissionsText([], [], [], [], []));
+});
+
+test('!mysubmissions returns the same content the shared formatter renders for a populated suggestions section (issue #1018 acceptance criterion 2)', async (t) => {
+  const createdAt = new Date('2026-08-01T00:00:00Z');
+  t.mock.method(pool, 'query', (async (sql: string) => {
+    if (sql.includes('SELECT role FROM community_users')) return { rows: [{ role: 'member' }], rowCount: 0 };
+    if (sql.includes('FROM knowledge_candidates')) return { rows: [], rowCount: 0 };
+    if (sql.includes('FROM suggestions')) {
+      return {
+        rows: [
+          {
+            id: 7,
+            platform: 'whatsapp',
+            user_id: 'member-1',
+            display_name: 'Member One',
+            content: 'Add dark mode',
+            status: 'new',
+            created_at: createdAt,
+            reviewed_by: null,
+            reviewed_at: null,
+          },
+        ],
+        rowCount: 0,
+      };
+    }
+    return { rows: [], rowCount: 0 };
+  }) as typeof pool.query);
+  const router = makeRouter({ runTurn: throwingRunTurn });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!mysubmissions', userId: 'member-1' }));
+
+  const expectedSuggestions = [
+    {
+      id: 7,
+      platform: 'whatsapp' as const,
+      userId: 'member-1',
+      displayName: 'Member One',
+      content: 'Add dark mode',
+      status: 'new' as const,
+      createdAt,
+      reviewedBy: null,
+      reviewedAt: null,
+    },
+  ];
+  assert.equal(sent[0].text, formatMySubmissionsText(expectedSuggestions, [], [], [], []));
+});
+
+test('a bare "!mysubmissionsx" (no space, unrecognised) is not matched as the !mysubmissions command — anchored matcher (issue #1018 SECURITY criterion 5)', async (t) => {
+  mockPoolRole(t, 'member');
+  const router = makeRouter({});
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!mysubmissionsx', userId: 'member-1' }));
+
+  assert.equal(sent[0].text, REAL_TURN_REPLY);
+});
+
+test(
+  'SECURITY: "!mysubmissions <anything>" is never matched — the anchored matcher rejects any argument, so no ' +
+    'message-supplied identifier can ever reach the self-scoped listOwn* reads (issue #1018 SECURITY criterion 5)',
+  async (t) => {
+    let suggestionsQueried = false;
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users'))
+        return { rows: [{ role: 'member' }], rowCount: 0 };
+      if (sql.includes('FROM suggestions')) {
+        suggestionsQueried = true;
+        return { rows: [], rowCount: 0 };
+      }
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!mysubmissions some-other-user-id', userId: 'member-1' }));
+
+    assert.equal(sent[0].text, REAL_TURN_REPLY, 'an argument must fall through to a normal turn');
+    assert.equal(suggestionsQueried, false, 'listOwnSuggestions must never run when an argument is present');
+  },
+);
+
+test(
+  'SECURITY: a guest caller\'s "!mysubmissions" falls through to the normal turn — listOwnSuggestions is never ' +
+    'invoked (issue #1018 acceptance criterion 4)',
+  async (t) => {
+    let suggestionsQueried = false;
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users')) return { rows: [], rowCount: 0 };
+      if (sql.includes('FROM suggestions')) {
+        suggestionsQueried = true;
+        return { rows: [], rowCount: 0 };
+      }
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!mysubmissions', userId: 'guest-1' }));
+
+    assert.equal(sent.length, 1);
+    assert.equal(
+      sent[0].text,
+      REAL_TURN_REPLY,
+      'a guest gets no distinguishing denial reply, per the family norm',
+    );
+    assert.equal(suggestionsQueried, false, 'listOwnSuggestions must never run for a rejected caller');
+  },
+);
+
+// --- !mydata (issue #1018) ---------------------------------------------------
+
+test(
+  '!mydata reports the daily reply budget the same way the shared formatter would, for a limit-configured, ' +
+    'under-limit caller (issue #1018 acceptance criterion 3)',
+  async (t) => {
+    const originalLimit = config.behaviour.dailyReplyLimitPerUser;
+    config.behaviour.dailyReplyLimitPerUser = 5;
+    t.after(() => {
+      config.behaviour.dailyReplyLimitPerUser = originalLimit;
+    });
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users'))
+        return { rows: [{ role: 'member' }], rowCount: 0 };
+      if (sql.includes('own_messages'))
+        return { rows: [{ own_messages: 0, replies_to_them: 0 }], rowCount: 0 };
+      if (sql.includes('FROM interactions')) return { rows: [{ n: 2 }], rowCount: 0 };
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: throwingRunTurn });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!mydata', userId: 'member-1' }));
+
+    const zeroSummary = {
+      ownMessages: 0,
+      repliesToThem: 0,
+      knowledgeEntries: 0,
+      reportsFiled: 0,
+      suggestionsFiled: 0,
+      projectsShared: 0,
+      interestsPublished: 0,
+      responseStyle: 'standard' as const,
+    };
+    assert.equal(sent[0].text, formatMyDataText(zeroSummary, 'member', 5, 2));
+  },
+);
+
+test('a bare "!mydatax" (no space, unrecognised) is not matched as the !mydata command — anchored matcher (issue #1018 SECURITY criterion 5)', async (t) => {
+  mockPoolRole(t, 'member');
+  const router = makeRouter({});
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!mydatax', userId: 'member-1' }));
+
+  assert.equal(sent[0].text, REAL_TURN_REPLY);
+});
+
+test(
+  'SECURITY: "!mydata <anything>" is never matched — the anchored matcher rejects any argument, so no ' +
+    'message-supplied identifier can ever reach getMyDataSummary (issue #1018 SECURITY criterion 5)',
+  async (t) => {
+    let summaryQueried = false;
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users'))
+        return { rows: [{ role: 'member' }], rowCount: 0 };
+      if (sql.includes('own_messages')) {
+        summaryQueried = true;
+        return { rows: [{ own_messages: 0, replies_to_them: 0 }], rowCount: 0 };
+      }
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!mydata some-other-user-id', userId: 'member-1' }));
+
+    assert.equal(sent[0].text, REAL_TURN_REPLY, 'an argument must fall through to a normal turn');
+    assert.equal(summaryQueried, false, 'getMyDataSummary must never run when an argument is present');
+  },
+);
+
+test(
+  'SECURITY: a guest caller\'s "!mydata" falls through to the normal turn — getMyDataSummary is never ' +
+    'invoked (issue #1018 acceptance criterion 4)',
+  async (t) => {
+    let summaryQueried = false;
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users')) return { rows: [], rowCount: 0 };
+      if (sql.includes('own_messages')) {
+        summaryQueried = true;
+        return { rows: [{ own_messages: 0, replies_to_them: 0 }], rowCount: 0 };
+      }
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!mydata', userId: 'guest-1' }));
+
+    assert.equal(sent.length, 1);
+    assert.equal(
+      sent[0].text,
+      REAL_TURN_REPLY,
+      'a guest gets no distinguishing denial reply, per the family norm',
+    );
+    assert.equal(summaryQueried, false, 'getMyDataSummary must never run for a rejected caller');
+  },
+);
+
+test('acceptance criterion 9: !mysubmissions and !mydata each record exactly one whatsapp_text_command shortcut hit via the shared send path (issue #1018)', async (t) => {
+  mockPoolRole(t, 'member');
+  const hits: string[] = [];
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    recordShortcutHitFn: async (kind) => {
+      hits.push(kind);
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!mysubmissions', userId: 'member-1' }));
+  await trigger(makeMessage({ text: '!mydata', userId: 'member-1' }));
+
+  assert.equal(sent.length, 2);
+  assert.deepEqual(hits, ['whatsapp_text_command', 'whatsapp_text_command']);
+});
 
 // --- shortcut_hits tracking (issue #874, acceptance criterion 1) ------------
 
