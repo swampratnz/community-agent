@@ -71,7 +71,8 @@ const KNOWLEDGE_LOW_RATED_CAVEAT_TEXT = notice('knowledgeLowRatedCaveat');
 const { stripEmDashes } = await import('@swampratnz/agent-base/agent/outbound.js');
 const { formatStatusMessage, getStatusCache, pollAnthropicStatus, resetStatusCacheForTests } =
   await import('../src/module/status/anthropicStatus.js');
-const { formatMyWarningsText } = await import('../src/module/agent/tools/selfService.js');
+const { formatMyDataText, formatMySubmissionsText, formatMyWarningsText } =
+  await import('../src/module/agent/tools/selfService.js');
 
 type Adapter = InstanceType<typeof DiscordAdapter>;
 
@@ -112,6 +113,18 @@ function mockPool(
     activeWarnings?: number;
     /** `countActiveWarnings`'s windowed count, returned only when called with a `windowDays` bound param. */
     windowedWarnings?: number;
+    /** `listOwnSuggestions`' rows (issue #1018), raw snake_case DB shape. */
+    suggestionRows?: PoolRow[];
+    /** `listOwnReports`' rows (issue #1018), raw snake_case DB shape. */
+    reportRows?: PoolRow[];
+    /** `listOwnAppeals`' rows (issue #1018), raw snake_case DB shape. */
+    appealRows?: PoolRow[];
+    /** `listOwnKnowledgeCandidates`' rows (issue #1018), raw snake_case DB shape. */
+    knowledgeCandidateRows?: PoolRow[];
+    /** `listOwnProjectConnectionRequests`' rows (issue #1018), raw snake_case DB shape. */
+    connectionRequestRows?: PoolRow[];
+    /** `countRepliesToUser`'s count for `/mydata`'s daily-reply-budget line (issue #1018). */
+    repliesUsed?: number;
   } = {},
 ): Array<{ sql: string; params: unknown[] }> {
   const calls: Array<{ sql: string; params: unknown[] }> = [];
@@ -124,15 +137,43 @@ function mockPool(
     // and areKnowledgeEntriesLowRated's join ("FROM answer_feedback JOIN ...
     // JOIN knowledge ...") both contain the generic 'FROM knowledge' substring
     // the plain searchKnowledge branch below matches on, so both are matched
-    // on a more specific substring FIRST.
+    // on a more specific substring FIRST. listOwnKnowledgeCandidates' `FROM
+    // knowledge_candidates kc` also starts with the literal characters "FROM
+    // knowledge", so it needs the same specific-first treatment (issue #1018).
     if (sql.includes('JOIN knowledge b')) {
       return { rows: opts.conflictExists ? [{ '?column?': 1 }] : [], rowCount: 0 };
     }
     if (sql.includes('FROM answer_feedback')) {
       return { rows: (opts.lowRatedIds ?? []).map((id) => ({ id })), rowCount: 0 };
     }
+    if (sql.includes('FROM knowledge_candidates')) {
+      return { rows: opts.knowledgeCandidateRows ?? [], rowCount: 0 };
+    }
     if (sql.includes('FROM knowledge')) {
       return { rows: opts.knowledgeRows ?? [], rowCount: 0 };
+    }
+    if (sql.includes('FROM suggestions')) {
+      return { rows: opts.suggestionRows ?? [], rowCount: 0 };
+    }
+    if (sql.includes('FROM content_reports')) {
+      return { rows: opts.reportRows ?? [], rowCount: 0 };
+    }
+    if (sql.includes('FROM moderation_appeals')) {
+      return { rows: opts.appealRows ?? [], rowCount: 0 };
+    }
+    if (sql.includes('FROM project_connection_requests')) {
+      return { rows: opts.connectionRequestRows ?? [], rowCount: 0 };
+    }
+    // getMyDataSummary's own interactions read (own_messages/replies_to_them)
+    // is distinguished from countRepliesToUser's budget count below by its
+    // distinctive `own_messages` alias — my_data/mydata tests only exercise
+    // the zero-summary and daily-budget branches (issue #1018), never a
+    // populated summary, so this always reads back zero.
+    if (sql.includes('own_messages')) {
+      return { rows: [{ own_messages: 0, replies_to_them: 0 }], rowCount: 0 };
+    }
+    if (sql.includes('FROM interactions')) {
+      return { rows: [{ n: opts.repliesUsed ?? 0 }], rowCount: 0 };
     }
     // listRecentInterests' plain browse query (issue #920) matched FIRST on
     // its distinguishing `ORDER BY updated_at DESC` — self-match/search
@@ -381,6 +422,8 @@ test('with DISCORD_SLASH_COMMANDS_ENABLED=true, all commands are registered guil
     'guidelines',
     'help',
     'kb',
+    'mydata',
+    'mysubmissions',
     'projects',
     'status',
     'warnings',
@@ -403,7 +446,7 @@ test("a slash-command registration failure is caught and logged, never thrown, m
   assert.ok(warnLog.mock.calls.length >= 1, 'a registration failure must be logged, not swallowed silently');
 });
 
-test('buildSlashCommands defines exactly the nine approved read-only commands, each with its expected required-ness', () => {
+test('buildSlashCommands defines exactly the eleven approved read-only commands, each with its expected required-ness', () => {
   const commands = buildSlashCommands();
   const byName = new Map(commands.map((c) => [c.name, c]));
   assert.deepEqual([...byName.keys()].sort(), [
@@ -412,6 +455,8 @@ test('buildSlashCommands defines exactly the nine approved read-only commands, e
     'guidelines',
     'help',
     'kb',
+    'mydata',
+    'mysubmissions',
     'projects',
     'status',
     'warnings',
@@ -467,6 +512,16 @@ test('buildSlashCommands defines exactly the nine approved read-only commands, e
     (byName.get('events') as { options?: unknown[] }).options ?? [],
     [],
     "/events takes no options — matches list_events' own empty schema (issue #1004)",
+  );
+  assert.deepEqual(
+    (byName.get('mysubmissions') as { options?: unknown[] }).options ?? [],
+    [],
+    "/mysubmissions takes no options — always the caller's own identity, never a model-supplied id (issue #1018)",
+  );
+  assert.deepEqual(
+    (byName.get('mydata') as { options?: unknown[] }).options ?? [],
+    [],
+    "/mydata takes no options — always the caller's own identity, never a model-supplied id (issue #1018)",
   );
 });
 
@@ -1011,6 +1066,193 @@ test('SECURITY: recordShortcutHit is never called on the NOT_AUTHORIZED_TEXT bra
   await handleInteraction(interaction as never, adapterDeps(adapter));
 
   assert.match(replies[0].content, /don't have access/i, 'sanity check: /warnings was actually denied');
+  assert.equal(shortcutHitCalls(calls).length, 0, 'an auth-denied reply must never record a shortcut hit');
+});
+
+// --- Issue #1018: /mysubmissions -------------------------------------------
+
+test('/mysubmissions returns the same content the shared formatter renders for the empty state (issue #1018 acceptance criterion 2)', async (t) => {
+  mockPool(t, { memberRole: 'member' });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({ commandName: 'mysubmissions', userId: 'member-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies[0].content, formatMySubmissionsText([], [], [], [], []));
+  assert.match(replies[0].content, /haven't filed any suggestions or reports yet/);
+});
+
+test('/mysubmissions returns the same content the shared formatter renders for a populated suggestions section (issue #1018 acceptance criterion 2)', async (t) => {
+  const createdAt = new Date('2026-08-01T00:00:00Z');
+  mockPool(t, {
+    memberRole: 'member',
+    suggestionRows: [
+      {
+        id: 7,
+        platform: 'discord',
+        user_id: 'member-1',
+        display_name: 'Member One',
+        content: 'Add dark mode',
+        status: 'new',
+        created_at: createdAt,
+        reviewed_by: null,
+        reviewed_at: null,
+      },
+    ],
+  });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({ commandName: 'mysubmissions', userId: 'member-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  const expectedSuggestions = [
+    {
+      id: 7,
+      platform: 'discord' as const,
+      userId: 'member-1',
+      displayName: 'Member One',
+      content: 'Add dark mode',
+      status: 'new' as const,
+      createdAt,
+      reviewedBy: null,
+      reviewedAt: null,
+    },
+  ];
+  // Discord replies pass through deps.filtered() (secret redaction + em-dash
+  // rewriting, outbound.ts's stripEmDashes), same as every other slash-command
+  // reply here (see this file's own note on the /kb caveat constants) — so the
+  // expected text must go through the same filter, not the raw formatter output.
+  assert.equal(
+    replies[0].content,
+    await adapterDeps(adapter).filtered(formatMySubmissionsText(expectedSuggestions, [], [], [], [])),
+  );
+  assert.match(replies[0].content, /Your suggestions:/);
+});
+
+test('SECURITY: a guest caller is rejected on /mysubmissions without any of the five self-scoped reads ever being invoked (issue #1018)', async (t) => {
+  const calls = mockPool(t, { memberRole: null });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({ commandName: 'mysubmissions', userId: 'guest-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].ephemeral, true);
+  assert.match(replies[0].content, /don't have access/i);
+  assert.ok(
+    !calls.some(
+      (c) =>
+        c.sql.includes('FROM suggestions') ||
+        c.sql.includes('FROM content_reports') ||
+        c.sql.includes('FROM moderation_appeals') ||
+        c.sql.includes('FROM knowledge_candidates') ||
+        c.sql.includes('FROM project_connection_requests'),
+    ),
+    'none of the five self-scoped reads may run for a rejected caller',
+  );
+});
+
+test('SECURITY: identity for /mysubmissions is always interaction.user.id — a spoofed admin-looking field changes nothing (issue #1018)', async (t) => {
+  const calls = mockPool(t, { memberRole: null });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({
+    commandName: 'mysubmissions',
+    userId: 'guest-1',
+    spoofedAdminClaim: true,
+  });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.match(replies[0].content, /don't have access/i);
+  assert.ok(
+    !calls.some((c) => c.sql.includes('FROM suggestions')),
+    "resolveRole('discord', interaction.user.id) — not the spoofed payload field — must govern",
+  );
+});
+
+test("a successful /mysubmissions invocation calls recordShortcutHit('slash_command') exactly once (issue #1018)", async (t) => {
+  const calls = mockPool(t, { memberRole: 'member' });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction } = fakeInteraction({ commandName: 'mysubmissions', userId: 'member-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(shortcutHitCalls(calls).length, 1, '/mysubmissions must record exactly one slash_command hit');
+});
+
+test('SECURITY: recordShortcutHit is never called on the NOT_AUTHORIZED_TEXT branch for /mysubmissions (issue #1018)', async (t) => {
+  const calls = mockPool(t, { memberRole: null });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({ commandName: 'mysubmissions', userId: 'guest-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.match(replies[0].content, /don't have access/i, 'sanity check: /mysubmissions was actually denied');
+  assert.equal(shortcutHitCalls(calls).length, 0, 'an auth-denied reply must never record a shortcut hit');
+});
+
+// --- Issue #1018: /mydata ---------------------------------------------------
+
+test('/mydata returns the same content the shared formatter renders for a caller with nothing stored, including the daily reply budget (issue #1018 acceptance criterion 3)', async (t) => {
+  const originalLimit = config.behaviour.dailyReplyLimitPerUser;
+  config.behaviour.dailyReplyLimitPerUser = 5;
+  t.after(() => {
+    config.behaviour.dailyReplyLimitPerUser = originalLimit;
+  });
+  mockPool(t, { memberRole: 'member', repliesUsed: 2 });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({ commandName: 'mydata', userId: 'member-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  const zeroSummary = {
+    ownMessages: 0,
+    repliesToThem: 0,
+    knowledgeEntries: 0,
+    reportsFiled: 0,
+    suggestionsFiled: 0,
+    projectsShared: 0,
+    interestsPublished: 0,
+    responseStyle: 'standard' as const,
+  };
+  assert.equal(replies[0].content, formatMyDataText(zeroSummary, 'member', 5, 2));
+  assert.match(replies[0].content, /Replies in the last 24h: 2 \/ 5/);
+});
+
+test('SECURITY: a guest caller is rejected on /mydata without getMyDataSummary ever being invoked (issue #1018)', async (t) => {
+  const calls = mockPool(t, { memberRole: null });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({ commandName: 'mydata', userId: 'guest-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].ephemeral, true);
+  assert.match(replies[0].content, /don't have access/i);
+  assert.ok(
+    !calls.some((c) => c.sql.includes('own_messages')),
+    'getMyDataSummary must never run for a rejected caller',
+  );
+});
+
+test("a successful /mydata invocation calls recordShortcutHit('slash_command') exactly once (issue #1018)", async (t) => {
+  const calls = mockPool(t, { memberRole: 'member' });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction } = fakeInteraction({ commandName: 'mydata', userId: 'member-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(shortcutHitCalls(calls).length, 1, '/mydata must record exactly one slash_command hit');
+});
+
+test('SECURITY: recordShortcutHit is never called on the NOT_AUTHORIZED_TEXT branch for /mydata (issue #1018)', async (t) => {
+  const calls = mockPool(t, { memberRole: null });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({ commandName: 'mydata', userId: 'guest-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.match(replies[0].content, /don't have access/i, 'sanity check: /mydata was actually denied');
   assert.equal(shortcutHitCalls(calls).length, 0, 'an auth-denied reply must never record a shortcut hit');
 });
 

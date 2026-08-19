@@ -1,4 +1,5 @@
 import { config } from '@swampratnz/agent-base/config.js';
+import type { Tier } from '@swampratnz/agent-base/auth/rbac.js';
 import {
   countActiveWarnings,
   countRepliesToUser,
@@ -36,6 +37,127 @@ export function formatMyWarningsText(active: number, limit: number, windowed: nu
       'warning still applies if you leave and rejoin.';
   }
   return msg;
+}
+
+/**
+ * Pure render for the caller's own filed-item state — the "one function, two
+ * entry points" the `my_submissions` tool handler and the `/mysubmissions`/
+ * `!mysubmissions` commands (issue #1018) share, so a command answer can
+ * never drift from what `my_submissions` itself would say for the same DB
+ * state. Mirrors `formatMyWarningsText`'s split.
+ */
+export function formatMySubmissionsText(
+  suggestions: Awaited<ReturnType<typeof listOwnSuggestions>>,
+  reports: Awaited<ReturnType<typeof listOwnReports>>,
+  appeals: Awaited<ReturnType<typeof listOwnAppeals>>,
+  knowledgeTips: Awaited<ReturnType<typeof listOwnKnowledgeCandidates>>,
+  connectionRequests: Awaited<ReturnType<typeof listOwnProjectConnectionRequests>>,
+): string {
+  if (
+    suggestions.length === 0 &&
+    reports.length === 0 &&
+    appeals.length === 0 &&
+    knowledgeTips.length === 0 &&
+    connectionRequests.length === 0
+  ) {
+    return "You haven't filed any suggestions or reports yet.";
+  }
+
+  const lines: string[] = [];
+  if (suggestions.length > 0) {
+    lines.push('Your suggestions:');
+    for (const s of suggestions) {
+      lines.push(
+        `- #${s.id} [${s.status}] ${truncateForEcho(s.content)} — filed ${formatRelativeAge(s.createdAt)}`,
+      );
+    }
+  }
+  if (reports.length > 0) {
+    if (lines.length > 0) lines.push('');
+    lines.push('Your reports:');
+    for (const r of reports) {
+      lines.push(
+        `- #${r.id} [${r.status}] ${truncateForEcho(r.reason)} — filed ${formatRelativeAge(r.createdAt)}`,
+      );
+    }
+  }
+  if (appeals.length > 0) {
+    if (lines.length > 0) lines.push('');
+    lines.push('Your appeals:');
+    for (const a of appeals) {
+      const reason = a.reason ? truncateForEcho(a.reason) : 'no reason given';
+      lines.push(`- #${a.id} [${a.status}] ${reason} — filed ${formatRelativeAge(a.createdAt)}`);
+    }
+  }
+  if (knowledgeTips.length > 0) {
+    if (lines.length > 0) lines.push('');
+    lines.push('Your knowledge tips:');
+    for (const k of knowledgeTips) {
+      // "used N times" only for an accepted tip with a positive retrieval
+      // count (issue #880) — never "used 0 times" for an accepted-but-
+      // unretrieved or non-accepted tip, which would read as discouraging.
+      const impact =
+        k.status === 'accepted' && k.retrievalCount && k.retrievalCount > 0
+          ? ` — used ${k.retrievalCount} time${k.retrievalCount === 1 ? '' : 's'} in answers so far`
+          : '';
+      lines.push(
+        `- #${k.id} [${k.status}] ${truncateForEcho(k.title)} — filed ${formatRelativeAge(k.createdAt)}${impact}`,
+      );
+    }
+  }
+  if (connectionRequests.length > 0) {
+    if (lines.length > 0) lines.push('');
+    lines.push('Your connection requests:');
+    for (const c of connectionRequests) {
+      // No status column exists (issue #908) — this is a receipt, not a
+      // tracker. A since-removed/purged project reads back null; say so
+      // rather than rendering a blank or throwing.
+      const projectLabel = c.projectName ?? 'a project that is no longer listed';
+      lines.push(`- #${c.id} — ${projectLabel} — filed ${formatRelativeAge(c.createdAt)}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Pure render of `my_data`'s summary — the same "one function, two entry
+ * points" split as `formatMyWarningsText`/`formatMySubmissionsText`, shared
+ * by the tool handler and the `/mydata`/`!mydata` commands (issue #1018).
+ * `used` is the caller's reply count in the last 24h, or `null` whenever
+ * that read is skipped (super admin — exempt — or no daily limit
+ * configured), mirroring `formatMyWarningsText`'s `windowed` parameter.
+ */
+export function formatMyDataText(
+  summary: Awaited<ReturnType<typeof getMyDataSummary>>,
+  role: Tier,
+  limit: number,
+  used: number | null,
+): string {
+  const lines = [
+    `Messages you've sent: ${summary.ownMessages}`,
+    `Replies the bot has sent you: ${summary.repliesToThem}`,
+    `Knowledge entries sourced from you: ${summary.knowledgeEntries}`,
+    `Content reports you've filed: ${summary.reportsFiled}`,
+    `Suggestions you've filed: ${summary.suggestionsFiled}`,
+    `Projects you've shared: ${summary.projectsShared}`,
+    `Interests published (who_is_into): ${summary.interestsPublished > 0 ? 'yes' : 'no'}`,
+    `Response style preference: ${summary.responseStyle === 'plain' ? 'plain' : 'standard (default)'}`,
+  ];
+  if (role === 'super_admin') {
+    lines.push('Daily reply limit: exempt (super admin).');
+  } else if (limit === 0) {
+    lines.push('Daily reply limit: none configured.');
+  } else {
+    lines.push(
+      `Replies in the last 24h: ${used} / ${limit}` +
+        (used !== null && used >= limit ? " — you've reached today's limit." : ''),
+    );
+  }
+  lines.push(
+    '',
+    'For your active warnings, use my_warnings. For the status of a specific report or suggestion, use my_submissions.',
+  );
+  return lines.join('\n');
 }
 
 export const selfServiceTools = [
@@ -91,71 +213,16 @@ export const selfServiceTools = [
         listOwnKnowledgeCandidates(caller.platform, caller.userId, 10),
         listOwnProjectConnectionRequests(caller.platform, caller.userId, 10),
       ]);
-
-      if (
+      const isEmpty =
         suggestions.length === 0 &&
         reports.length === 0 &&
         appeals.length === 0 &&
         knowledgeTips.length === 0 &&
-        connectionRequests.length === 0
-      ) {
-        return text("You haven't filed any suggestions or reports yet.", true);
-      }
-
-      const lines: string[] = [];
-      if (suggestions.length > 0) {
-        lines.push('Your suggestions:');
-        for (const s of suggestions) {
-          lines.push(
-            `- #${s.id} [${s.status}] ${truncateForEcho(s.content)} — filed ${formatRelativeAge(s.createdAt)}`,
-          );
-        }
-      }
-      if (reports.length > 0) {
-        if (lines.length > 0) lines.push('');
-        lines.push('Your reports:');
-        for (const r of reports) {
-          lines.push(
-            `- #${r.id} [${r.status}] ${truncateForEcho(r.reason)} — filed ${formatRelativeAge(r.createdAt)}`,
-          );
-        }
-      }
-      if (appeals.length > 0) {
-        if (lines.length > 0) lines.push('');
-        lines.push('Your appeals:');
-        for (const a of appeals) {
-          const reason = a.reason ? truncateForEcho(a.reason) : 'no reason given';
-          lines.push(`- #${a.id} [${a.status}] ${reason} — filed ${formatRelativeAge(a.createdAt)}`);
-        }
-      }
-      if (knowledgeTips.length > 0) {
-        if (lines.length > 0) lines.push('');
-        lines.push('Your knowledge tips:');
-        for (const k of knowledgeTips) {
-          // "used N times" only for an accepted tip with a positive retrieval
-          // count (issue #880) — never "used 0 times" for an accepted-but-
-          // unretrieved or non-accepted tip, which would read as discouraging.
-          const impact =
-            k.status === 'accepted' && k.retrievalCount && k.retrievalCount > 0
-              ? ` — used ${k.retrievalCount} time${k.retrievalCount === 1 ? '' : 's'} in answers so far`
-              : '';
-          lines.push(
-            `- #${k.id} [${k.status}] ${truncateForEcho(k.title)} — filed ${formatRelativeAge(k.createdAt)}${impact}`,
-          );
-        }
-      }
-      if (connectionRequests.length > 0) {
-        if (lines.length > 0) lines.push('');
-        lines.push('Your connection requests:');
-        for (const c of connectionRequests) {
-          // No status column exists (issue #908) — this is a receipt, not a
-          // tracker. A since-removed/purged project reads back null; say so
-          // rather than rendering a blank or throwing.
-          const projectLabel = c.projectName ?? 'a project that is no longer listed';
-          lines.push(`- #${c.id} — ${projectLabel} — filed ${formatRelativeAge(c.createdAt)}`);
-        }
-      }
-      return text(lines.join('\n'));
+        connectionRequests.length === 0;
+      return text(
+        formatMySubmissionsText(suggestions, reports, appeals, knowledgeTips, connectionRequests),
+        isEmpty,
+      );
     },
   }),
 
@@ -216,36 +283,15 @@ export const selfServiceTools = [
     schema: {},
     handler: async (_args, { caller }) => {
       const summary = await getMyDataSummary(caller.platform, caller.userId);
-      const lines = [
-        `Messages you've sent: ${summary.ownMessages}`,
-        `Replies the bot has sent you: ${summary.repliesToThem}`,
-        `Knowledge entries sourced from you: ${summary.knowledgeEntries}`,
-        `Content reports you've filed: ${summary.reportsFiled}`,
-        `Suggestions you've filed: ${summary.suggestionsFiled}`,
-        `Projects you've shared: ${summary.projectsShared}`,
-        `Interests published (who_is_into): ${summary.interestsPublished > 0 ? 'yes' : 'no'}`,
-        `Response style preference: ${summary.responseStyle === 'plain' ? 'plain' : 'standard (default)'}`,
-      ];
       // Daily reply budget (issue #444) — reuses the exact function
       // router.ts's own enforcement calls, so what this reports can never
       // diverge from what actually gates the caller.
       const limit = config.behaviour.dailyReplyLimitPerUser;
-      if (caller.role === 'super_admin') {
-        lines.push('Daily reply limit: exempt (super admin).');
-      } else if (limit === 0) {
-        lines.push('Daily reply limit: none configured.');
-      } else {
-        const used = await countRepliesToUser(caller.platform, caller.userId);
-        lines.push(
-          `Replies in the last 24h: ${used} / ${limit}` +
-            (used >= limit ? " — you've reached today's limit." : ''),
-        );
-      }
-      lines.push(
-        '',
-        'For your active warnings, use my_warnings. For the status of a specific report or suggestion, use my_submissions.',
-      );
-      return text(lines.join('\n'));
+      const used =
+        caller.role !== 'super_admin' && limit !== 0
+          ? await countRepliesToUser(caller.platform, caller.userId)
+          : null;
+      return text(formatMyDataText(summary, caller.role, limit, used));
     },
   }),
 ];

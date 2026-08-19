@@ -7,14 +7,25 @@ import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js'
 import { getCommunityGuidelines, getCommunityGuidelinesMi } from '../../storage/policies.js';
 import { buildMemberDigestContent } from '../../memberDigest.js';
 import { formatStatusMessage, getStatusCache } from '../../status/anthropicStatus.js';
-import { formatMyWarningsText } from '../../agent/tools/selfService.js';
+import {
+  formatMyDataText,
+  formatMySubmissionsText,
+  formatMyWarningsText,
+} from '../../agent/tools/selfService.js';
 import { EVENTS_LIST_LIMIT, formatUpcomingEvents } from '../../agent/tools/info.js';
 import {
   areKnowledgeEntriesLowRated,
   countActiveWarnings,
+  countRepliesToUser,
   getLanguagePreference,
+  getMyDataSummary,
   hasConflictAmongIds,
+  listOwnAppeals,
+  listOwnKnowledgeCandidates,
+  listOwnProjectConnectionRequests,
   listOwnProjects,
+  listOwnReports,
+  listOwnSuggestions,
   listRecentInterests,
   listRecentProjects,
   recordShortcutHit,
@@ -325,6 +336,56 @@ async function handleWarnings(
 }
 
 /**
+ * `my_submissions` is structurally in MEMBER_TOOLS but adds its own runtime
+ * floor (`minTier: 'member'`), same shape as `/warnings` above — mirrored
+ * here via `toolsForRole` + `atLeast`. No options: always the caller's own
+ * identity, never a model-/interaction-supplied id (issue #1018).
+ */
+async function handleMySubmissions(
+  interaction: ChatInputCommandInteraction,
+  deps: SlashCommandDeps,
+): Promise<void> {
+  await deferEphemeral(interaction);
+  const role = await resolveRole('discord', interaction.user.id);
+  if (!toolsForRole(role, 'discord').includes('mcp__community__my_submissions') || !atLeast(role, 'member')) {
+    await replyEphemeral(interaction, NOT_AUTHORIZED_TEXT, deps);
+    return;
+  }
+  const [suggestions, reports, appeals, knowledgeTips, connectionRequests] = await Promise.all([
+    listOwnSuggestions('discord', interaction.user.id, 10),
+    listOwnReports('discord', interaction.user.id, 10),
+    listOwnAppeals('discord', interaction.user.id, 10),
+    listOwnKnowledgeCandidates('discord', interaction.user.id, 10),
+    listOwnProjectConnectionRequests('discord', interaction.user.id, 10),
+  ]);
+  const message = formatMySubmissionsText(suggestions, reports, appeals, knowledgeTips, connectionRequests);
+  recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
+  await replyEphemeral(interaction, message, deps);
+}
+
+/**
+ * `my_data` is structurally in MEMBER_TOOLS but adds its own runtime floor
+ * (`minTier: 'member'`), same shape as `/warnings`/`/mysubmissions` above.
+ * No options: always the caller's own identity, never a model-/interaction-
+ * supplied id (issue #1018).
+ */
+async function handleMyData(interaction: ChatInputCommandInteraction, deps: SlashCommandDeps): Promise<void> {
+  await deferEphemeral(interaction);
+  const role = await resolveRole('discord', interaction.user.id);
+  if (!toolsForRole(role, 'discord').includes('mcp__community__my_data') || !atLeast(role, 'member')) {
+    await replyEphemeral(interaction, NOT_AUTHORIZED_TEXT, deps);
+    return;
+  }
+  const summary = await getMyDataSummary('discord', interaction.user.id);
+  const limit = config.behaviour.dailyReplyLimitPerUser;
+  const used =
+    role !== 'super_admin' && limit !== 0 ? await countRepliesToUser('discord', interaction.user.id) : null;
+  const message = formatMyDataText(summary, role, limit, used);
+  recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
+  await replyEphemeral(interaction, message, deps);
+}
+
+/**
  * `list_events` is structurally in MEMBER_TOOLS with no extra runtime floor
  * beyond `toolsForRole` (unlike `/warnings`/`/whois`/`/projects`/`/digest`
  * above) — mirrored here exactly like `/kb`'s gate (issue #1004). Takes no
@@ -464,6 +525,24 @@ export function bindCommunitySlashCommands(adapter: PlatformAdapter): void {
         .setDescription('Check your own active auto-moderation warning count.')
         .toJSON(),
     handle: handleWarnings,
+  });
+  bindDiscordCommand('mysubmissions', {
+    build: () =>
+      new SlashCommandBuilder()
+        .setName('mysubmissions')
+        .setDescription(
+          'Check the status of your own filed suggestions, reports, appeals, and knowledge tips.',
+        )
+        .toJSON(),
+    handle: handleMySubmissions,
+  });
+  bindDiscordCommand('mydata', {
+    build: () =>
+      new SlashCommandBuilder()
+        .setName('mydata')
+        .setDescription('See a summary of what the bot has stored about you.')
+        .toJSON(),
+    handle: handleMyData,
   });
   bindDiscordCommand('events', {
     build: () =>

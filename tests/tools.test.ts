@@ -156,6 +156,11 @@ const {
   countRepliesToUser,
   linkMembers,
   getMyDataSummary,
+  listOwnSuggestions,
+  listOwnReports,
+  listOwnAppeals,
+  listOwnKnowledgeCandidates,
+  listOwnProjectConnectionRequests,
   markRosterLeave,
   upsertRosterMember,
   engagementStats,
@@ -194,6 +199,8 @@ const { WhatsAppCloudAdapter, WindowClosedError } =
   await import('@swampratnz/agent-base/platforms/whatsapp/cloudAdapter.js');
 const { buildAdminDigestForAdmin } = await import('../src/module/adminDigest.js');
 const { buildMemberDigestContent } = await import('../src/module/memberDigest.js');
+const { formatMyDataText, formatMySubmissionsText } =
+  await import('../src/module/agent/tools/selfService.js');
 const { getPendingAlertsForTests, resetPendingAlertsForTests } =
   await import('@swampratnz/agent-base/pendingAlertQueue.js');
 
@@ -3487,6 +3494,8 @@ test('SECURITY: community_info for a WhatsApp caller with whatsappTextCommandsEn
         "- `!digest` — this week's digest\n" +
         '- `!status` — check for a known Anthropic outage\n' +
         '- `!warnings` — your own active warning count\n' +
+        '- `!mysubmissions` — status of your filed suggestions/reports\n' +
+        '- `!mydata` — what the bot has stored about you\n' +
         '- `!help` — this capability rundown',
       'the appended block must be exactly the fixed literal, never caller- or model-composed text',
     );
@@ -19449,6 +19458,39 @@ test(
 );
 
 test(
+  "my_submissions' handler output equals formatMySubmissionsText's output for the same DB state — the " +
+    "'/mysubmissions'/'!mysubmissions' shortcuts (issue #1018) share this formatter, so a drift here would " +
+    'silently desync the tool from the shortcut (issue #1018 authoritative acceptance criterion 1)',
+  { skip },
+  async () => {
+    const userId = `${MY_SUBMISSIONS_HANDLER_USER}-formatter-parity`;
+    const suggestion = await createSuggestion({ platform: 'whatsapp', userId, content: 'parity suggestion' });
+    const report = await createContentReport({
+      platform: 'whatsapp',
+      reporterUserId: userId,
+      conversationId: 'convo-1',
+      reason: 'parity report',
+    });
+    assert.ok(suggestion && report, 'fixtures recorded');
+
+    const [handlerResult, suggestions, reports, appeals, knowledgeTips, connectionRequests] =
+      await Promise.all([
+        mySubmissionsHandler(userId).handler(),
+        listOwnSuggestions('whatsapp', userId, 10),
+        listOwnReports('whatsapp', userId, 10),
+        listOwnAppeals('whatsapp', userId, 10),
+        listOwnKnowledgeCandidates('whatsapp', userId, 10),
+        listOwnProjectConnectionRequests('whatsapp', userId, 10),
+      ]);
+
+    assert.equal(
+      handlerResult.content[0]?.text ?? '',
+      formatMySubmissionsText(suggestions, reports, appeals, knowledgeTips, connectionRequests),
+    );
+  },
+);
+
+test(
   'my_submissions omits the "Your appeals:" block when the caller has none, leaving suggestions/reports rendering unchanged (issue #709)',
   { skip },
   async () => {
@@ -21111,6 +21153,24 @@ test(
     assert.match(output, /Response style preference: standard \(default\)/);
     assert.match(output, /my_warnings/, 'points to my_warnings for active-warning status');
     assert.match(output, /my_submissions/, 'points to my_submissions for filed-item status');
+  },
+);
+
+test(
+  "my_data's handler output equals formatMyDataText's output for the same DB state — the '/mydata'/'!mydata' " +
+    'shortcuts (issue #1018) share this formatter, so a drift here would silently desync the tool from the ' +
+    'shortcut (issue #1018 authoritative acceptance criterion 1)',
+  { skip },
+  async () => {
+    const userId = `${MY_DATA_HANDLER_USER}-formatter-parity`;
+    const [handlerResult, summary] = await Promise.all([
+      myDataHandler(userId).handler(),
+      getMyDataSummary('whatsapp', userId),
+    ]);
+    const limit = config.behaviour.dailyReplyLimitPerUser;
+    const used = limit !== 0 ? await countRepliesToUser('whatsapp', userId) : null;
+
+    assert.equal(handlerResult.content[0]?.text ?? '', formatMyDataText(summary, 'member', limit, used));
   },
 );
 

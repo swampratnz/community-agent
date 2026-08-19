@@ -69,6 +69,8 @@ const WHATSAPP_TEXT_COMMANDS_TEXT =
   "- `!digest` — this week's digest\n" +
   '- `!status` — check for a known Anthropic outage\n' +
   '- `!warnings` — your own active warning count\n' +
+  '- `!mysubmissions` — status of your filed suggestions/reports\n' +
+  '- `!mydata` — what the bot has stored about you\n' +
   '- `!help` — this capability rundown';
 
 /**
