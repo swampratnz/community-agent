@@ -19,6 +19,7 @@ import {
   countRepliesToUser,
   getLanguagePreference,
   getMyDataSummary,
+  getPublishedInterestsForOwners,
   hasConflictAmongIds,
   listOwnAppeals,
   listOwnKnowledgeCandidates,
@@ -41,6 +42,7 @@ import {
   formatProjectResults,
   KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD,
   LIST_PROJECTS_DEFAULT_LIMIT,
+  WHO_IS_INTO_NO_PROFILE_HINT,
 } from '../../agent/tools.js';
 import { chunkText } from '@swampratnz/agent-base/platforms/textChunk.js';
 import { bindDiscordCommand, type SlashCommandDeps } from '@swampratnz/agent-base/commands/registry.js';
@@ -194,9 +196,22 @@ async function handleWhois(interaction: ChatInputCommandInteraction, deps: Slash
     await replyEphemeral(interaction, NOT_AUTHORIZED_TEXT, deps);
     return;
   }
+  const mine = interaction.options.getBoolean('mine', false) ?? false;
   const query = interaction.options.getString('query', false);
   let reply: string;
-  if (query) {
+  if (mine) {
+    // Checked before query (issue #1022, mirroring /projects' mine handling
+    // above): self-scoped by the caller's OWN identity, ignores any query
+    // passed alongside it — same underlying lookup as who_is_into's chat-path
+    // handler (social.ts).
+    const interestsByOwner = await getPublishedInterestsForOwners([
+      { platform: 'discord', userId: interaction.user.id },
+    ]);
+    const own = interestsByOwner.get(`discord:${interaction.user.id}`);
+    reply = own
+      ? await formatInterestResults([{ platform: 'discord', userId: interaction.user.id, interests: own }])
+      : WHO_IS_INTO_NO_PROFILE_HINT;
+  } else if (query) {
     const hits = await searchMemberInterests(query);
     reply =
       hits.length === 0
@@ -489,6 +504,12 @@ export function bindCommunitySlashCommands(adapter: PlatformAdapter): void {
           o
             .setName('query')
             .setDescription('Optional topic/keyword; omit to find members like you')
+            .setRequired(false),
+        )
+        .addBooleanOption((o) =>
+          o
+            .setName('mine')
+            .setDescription('Only show your own published interests — ignores query')
             .setRequired(false),
         )
         .toJSON(),

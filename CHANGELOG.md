@@ -74,6 +74,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   Discord and need member tier plus `WHATSAPP_TEXT_COMMANDS_ENABLED` on
   WhatsApp, matching `/warnings`'s own gate; an argument-bearing WhatsApp
   message falls through to a normal reply rather than matching.
+- **`who_is_into({ mine: true })` and `/whois mine:True` — check your own
+  published interests before updating or clearing them** (#1022): previously
+  there was no way to read back what `set_my_interests` last stored — the
+  no-query self-match path explicitly excludes your own entry, and `my_data`
+  only reports whether you've published, never the text itself. The new
+  `mine` option, mirroring `list_projects({ mine: true })`, returns exactly
+  your own stored interests text, self-scoped by your identity — or the
+  familiar "you haven't published interests yet" guidance if you have none.
 
 ## 2026-08-18
 

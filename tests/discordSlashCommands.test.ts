@@ -487,6 +487,13 @@ test('buildSlashCommands defines exactly the eleven approved read-only commands,
   ).options?.find((o) => o.name === 'mine');
   assert.ok(mineOption, '/projects must define a mine option (issue #867)');
   assert.equal(mineOption?.required, false);
+  const whoisMineOption = (
+    byName.get('whois') as {
+      options?: Array<{ name: string; type: number; required?: boolean }>;
+    }
+  ).options?.find((o) => o.name === 'mine');
+  assert.ok(whoisMineOption, '/whois must define a mine option (issue #1022)');
+  assert.equal(whoisMineOption?.required, false);
   assert.deepEqual((byName.get('guidelines') as { options?: unknown[] }).options ?? [], []);
   assert.deepEqual(
     (byName.get('digest') as { options?: unknown[] }).options ?? [],
@@ -566,6 +573,67 @@ test("SECURITY: a guest caller is rejected on /whois without who_is_into's repos
     !calls.some((c) => c.sql.includes('FROM member_interests')),
     'searchMemberInterests must never be called for a rejected caller',
   );
+});
+
+test('SECURITY: a guest caller is rejected on /whois regardless of the mine option value (issue #1022)', async (t) => {
+  const calls = mockPool(t, { memberRole: null });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({
+    commandName: 'whois',
+    userId: 'guest-1',
+    booleanOptions: { mine: true },
+  });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].ephemeral, true);
+  assert.ok(
+    !calls.some((c) => c.sql.includes('FROM member_interests')),
+    'the mine option must never let a guest reach getPublishedInterestsForOwners',
+  );
+});
+
+test("/whois mine:true looks up the caller's own published interests, ignores query, and has a distinct empty-state message (issue #1022)", async (t) => {
+  const calls = mockPool(t, { memberRole: 'member', interestRows: [] });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({
+    commandName: 'whois',
+    userId: 'member-1',
+    options: { query: 'rag' },
+    booleanOptions: { mine: true },
+  });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  const mineCall = calls.find((c) => c.sql.includes('FROM member_interests'));
+  assert.ok(mineCall, 'getPublishedInterestsForOwners must have run');
+  assert.doesNotMatch(
+    mineCall.sql,
+    /<=>/,
+    'mine:true must never fall through to the embedding-similarity search path',
+  );
+  assert.deepEqual(mineCall.params, [['discord'], ['member-1']]);
+  assert.match(replies[0].content, /haven't published interests yet/i);
+});
+
+test("/whois mine:true renders the caller's own stored interests text through the same quarantine as any other interests text (issue #1022)", async (t) => {
+  mockPool(t, {
+    memberRole: 'member',
+    interestRows: [{ platform: 'discord', user_id: 'member-1', interests: 'my own recall-able text' }],
+    projectRows: [],
+  });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({
+    commandName: 'whois',
+    userId: 'member-1',
+    booleanOptions: { mine: true },
+  });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.match(replies[0].content, /my own recall-able text/);
+  assert.ok(replies[0].content.includes('member-interests'), 'must use the quarantine wrapper, not raw rows');
 });
 
 test("SECURITY: a guest caller is rejected on /projects without list_projects's repository function ever being invoked (acceptance criteria 4, 12)", async (t) => {
