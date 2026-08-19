@@ -29,8 +29,9 @@ name: Pipeline PR conflict resolver
 # and pushes code, so they matter):
 #   * Same-repo PRs only (never a fork — workflow-triggered secrets + a push
 #     tool must never run against fork-controlled branches; the discover filter
-#     hard-requires !isCrossRepository). Author must be EITHER the build-worker
-#     bot (with a `Closes #` body) OR a trusted maintainer in MAINTAINER_LOGINS
+#     hard-requires !isCrossRepository). Author must be the build-worker
+#     bot (with a `Closes #` body), the changelog-autofill loop (bot-authored
+#     on its one fixed branch), OR a trusted maintainer in MAINTAINER_LOGINS
 #     (the repo owner's own human PRs — main churn otherwise leaves them stuck
 #     CONFLICTING with no responder). Fork/external-human PRs stay excluded.
 #   * PRs labelled `needs-human` OR `no-auto-resolve` are SKIPPED — the former
@@ -159,7 +160,18 @@ jobs:
           #   (a) a BUILD-WORKER PR — bot-authored with a `Closes #<issue>` body
           #       (the build worker's contract; the `Closes #` test keeps an
           #       unrelated bot PR like a Dependabot bump out), OR
-          #   (b) a MAINTAINER PR — authored by a login in MAINTAINER_LOGINS
+          #   (b) a CHANGELOG-AUTOFILL PR — bot-authored on that loop's ONE
+          #       fixed branch (changelog-autofill.yml's AUTOFILL_BRANCH). It
+          #       is drafted from the daily coverage check, not from an issue,
+          #       so it can never carry a `Closes #` and (a) can never match
+          #       it — while it conflicts constantly, because it edits the one
+          #       file (CHANGELOG.md) that almost every merge to main also
+          #       edits. Keyed on the branch rather than the label because
+          #       that branch is pinned in the autofill workflow's own push
+          #       grant (checkout/branch/switch are withheld from its agent),
+          #       so it is as unspoofable as the `Closes #` test; a label is
+          #       editable by anyone. OR
+          #   (c) a MAINTAINER PR — authored by a login in MAINTAINER_LOGINS
           #       (the repo owner's own human PRs, which main churn otherwise
           #       leaves stuck CONFLICTING with no responder).
           maint="$(jq -cn --arg s "$MAINTAINER_LOGINS" '$s | split(" ") | map(select(length > 0))')"
@@ -170,6 +182,7 @@ jobs:
                 and ([.labels[].name] | (index("needs-human") | not) and (index("no-auto-resolve") | not))
                 and (
                   ((.author.is_bot == true) and ((.body // "") | test("[Cc]loses #[0-9]+")))
+                  or ((.author.is_bot == true) and (.headRefName == "chore/changelog-autofill"))
                   or (.author.login as $l | ($maint | index($l)) != null)
                 )
               )]')"
@@ -268,7 +281,9 @@ jobs:
       #     write access can `workflow_dispatch` this file with an arbitrary
       #     matrix), so the payload carries PR NUMBERS ONLY and this step
       #     re-checks the full discover contract for that number — same-repo,
-      #     bot-authored, `Closes #` body, not `needs-human` — and re-derives
+      #     not `needs-human`, and one of the three author arms (build-worker
+      #     bot with `Closes #`, changelog-autofill bot on its fixed branch,
+      #     or a MAINTAINER_LOGINS human) — and re-derives
       #     the branch from the PR itself. A hand-crafted dispatch therefore
       #     cannot aim the agent (and its push) at a human PR's branch or any
       #     branch the eligibility rules wouldn't have selected.
@@ -304,6 +319,7 @@ jobs:
             and ([.labels[].name] | (index("needs-human") | not) and (index("no-auto-resolve") | not))
             and (
               ((.author.is_bot == true) and ((.body // "") | test("[Cc]loses #[0-9]+")))
+              or ((.author.is_bot == true) and (.headRefName == "chore/changelog-autofill"))
               or (.author.login as $l | ($maint | index($l)) != null)
             )
           ' <<<"$info")"

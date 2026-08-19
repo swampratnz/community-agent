@@ -29,6 +29,7 @@
     "tests/agentModule.test.ts",
     "tests/agentRunActions.test.ts",
     "tests/backgroundJobCostAlert.test.ts",
+    "tests/conflictResolverEligibility.test.ts",
     "tests/dbCoverageCheck.test.ts",
     "tests/displayTime.test.ts",
     "tests/fetchPageTool.test.ts",
