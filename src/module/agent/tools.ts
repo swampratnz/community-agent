@@ -37,6 +37,7 @@ export {
   OTHER_CONFIGURED_KNOBS,
   formatOtherConfiguredKnobs,
   truncateForEcho,
+  SUGGESTION_RESOLUTION_ECHO_CHARS,
   DEV_TEAM_CHAT_CAP,
   devTeamScrub,
   formatDevTeamJobStatus,

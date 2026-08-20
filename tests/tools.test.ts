@@ -114,6 +114,7 @@ const {
   HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER,
   PROJECT_NOTE_RETENTION_NOTICE,
   TEAM_SETUP_MEMBER_CAP,
+  SUGGESTION_RESOLUTION_ECHO_CHARS,
 } = await import('../src/module/agent/tools.js');
 const { reserveVoiceTranscriptionSlot } = await import('@swampratnz/agent-base/agent/rateReservers.js');
 const { filterOutbound } = await import('@swampratnz/agent-base/agent/outbound.js');
@@ -1325,6 +1326,114 @@ test('notifyKnowledgeTipResolved truncates a long tip title in the echoed confir
   assert.match(calls[0], /x{100,140}\.\.\./, 'the echoed title is truncated with an ellipsis');
 });
 
+// decline_knowledge_candidate's optional `reason` (issue #1050): a distinct,
+// quoted, trailing clause on the declined branch only, byte-identical to
+// pre-#1050 when omitted.
+test('notifyKnowledgeTipResolved appends a quoted reason clause after the title clause when declining with a reason (issue #1050 acceptance criterion #1/#3)', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyKnowledgeTipResolved(
+    adapter,
+    'user-1',
+    'declined',
+    'how to reset your password',
+    'discord',
+    'this duplicates an existing entry',
+  );
+
+  assert.match(
+    calls[0],
+    /^Thanks for the knowledge tip — after review it wasn't added this time: "how to reset your password"\. Reason: "this duplicates an existing entry"$/,
+    'the title clause is preserved verbatim, followed by a distinct quoted reason clause',
+  );
+});
+
+test("notifyKnowledgeTipResolved's declined-with-reason wording stays neutral-to-supportive (issue #1050 acceptance criterion #3a)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyKnowledgeTipResolved(adapter, 'user-1', 'declined', 'title', 'discord', 'not really a tip');
+
+  assert.doesNotMatch(
+    calls[0],
+    /wrong|rejected|denied|bad/i,
+    'a reason clause must not make the decline copy read as punitive',
+  );
+});
+
+test('notifyKnowledgeTipResolved produces a decline DM byte-identical to the reasonless message when reason is omitted, undefined, or empty (issue #1050 acceptance criterion #2/#4)', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyKnowledgeTipResolved(adapter, 'user-1', 'declined', 'title', 'discord');
+  await notifyKnowledgeTipResolved(adapter, 'user-1', 'declined', 'title', 'discord', undefined);
+  await notifyKnowledgeTipResolved(adapter, 'user-1', 'declined', 'title', 'discord', '');
+
+  assert.equal(calls.length, 3);
+  assert.equal(calls[0], `Thanks for the knowledge tip — after review it wasn't added this time: "title"`);
+  assert.equal(calls[1], calls[0]);
+  assert.equal(calls[2], calls[0]);
+  calls.forEach((c) => {
+    assert.ok(!c.endsWith(' '), 'no trailing whitespace when reason is absent');
+    assert.ok(!c.includes('\n'), 'no extra newline when reason is absent');
+  });
+});
+
+test('notifyKnowledgeTipResolved ignores a reason on the accepted branch — the accepted DM is unaffected (issue #1050 acceptance criterion #3)', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyKnowledgeTipResolved(adapter, 'user-1', 'accepted', 'title', 'discord', 'this text must be ignored');
+
+  assert.equal(
+    calls[0],
+    `Your knowledge tip has been added to the knowledge base — thanks for the contribution! ("title")`,
+    'accepted-branch wording is byte-identical whether or not a reason is supplied',
+  );
+});
+
+test('notifyKnowledgeTipResolved truncates a long decline reason in the echoed clause (issue #1050 acceptance criterion #1)', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+  const longReason = 'y'.repeat(500);
+
+  await notifyKnowledgeTipResolved(adapter, 'user-1', 'declined', 'title', 'discord', longReason);
+
+  assert.ok(!calls[0].includes(longReason), 'the full 500-char reason must not appear verbatim');
+  assert.match(calls[0], /y{100,140}\.\.\./, 'the echoed reason is truncated with an ellipsis');
+});
+
+test("notifyKnowledgeTipResolved's reason clause renders in te reo Māori for a caller with a stored 'mi' preference, reason itself untranslated (issue #1050, issue #331)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyKnowledgeTipResolved(
+    adapter,
+    'user-1',
+    'declined',
+    'how to reset your password',
+    'discord',
+    'he tauriterite tēnei',
+    async () => 'mi',
+  );
+
+  assert.match(calls[0], /kāore i tāpirihia/);
+  assert.match(calls[0], /Take: "he tauriterite tēnei"/, 'the reason clause label is te reo, the reason text is not');
+});
+
 test('notifyKnowledgeTipResolved swallows a DM failure rather than throwing (resolution stays the source of truth)', async () => {
   const adapter = stubAdapter(async () => {
     throw new Error('DMs closed');
@@ -1345,6 +1454,7 @@ test("notifyKnowledgeTipResolved sends the te reo Māori variant for each status
     'accepted',
     'how to reset your password',
     'discord',
+    undefined,
     async () => 'mi',
   );
   await notifyKnowledgeTipResolved(
@@ -1353,6 +1463,7 @@ test("notifyKnowledgeTipResolved sends the te reo Māori variant for each status
     'declined',
     'how to reset your password',
     'discord',
+    undefined,
     async () => 'mi',
   );
 
@@ -1367,7 +1478,15 @@ test("notifyKnowledgeTipResolved sends the English default for the default 'auto
     calls.push(message);
   });
 
-  await notifyKnowledgeTipResolved(adapter, 'user-1', 'accepted', 'title', 'discord', async () => 'auto');
+  await notifyKnowledgeTipResolved(
+    adapter,
+    'user-1',
+    'accepted',
+    'title',
+    'discord',
+    undefined,
+    async () => 'auto',
+  );
 
   assert.match(calls[0], /added to the knowledge base/i);
 });
@@ -1378,7 +1497,7 @@ test("SECURITY: notifyKnowledgeTipResolved degrades to the English default, rath
     calls.push(message);
   });
 
-  await notifyKnowledgeTipResolved(adapter, 'user-1', 'accepted', 'title', 'discord', async () => {
+  await notifyKnowledgeTipResolved(adapter, 'user-1', 'accepted', 'title', 'discord', undefined, async () => {
     throw new Error('DB unreachable');
   });
 
@@ -19272,7 +19391,150 @@ test(
 );
 
 test(
-  'SECURITY: machine-drafted candidates (source_user_id IS NULL) never trigger a DM on accept OR decline, regardless of resolution outcome (issue #703 acceptance criterion #3/#7)',
+  'decline_knowledge_candidate forwards an optional reason to the resolution DM as a distinct clause (issue #1050 acceptance criterion #1)',
+  { skip },
+  async () => {
+    const tip = await createKnowledgeTip({
+      platform: 'discord',
+      userId: KNOWLEDGE_TIP_RESOLUTION_HANDLER_USER,
+      topic: `${RUN} kc-tip-resolution-decline-reason-topic`,
+      title: 'declined-with-reason tip title',
+      content: `${RUN} kc-tip-resolution-decline-reason content`,
+    });
+    assert.ok(tip);
+    const candidateId = tip.id;
+
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (_userId, message) => {
+      calls.push(message);
+    });
+
+    const tools = knowledgeCandidateHandlers({ platform: 'discord', adapter });
+    const result = await tools['decline_knowledge_candidate'].handler({
+      id: candidateId,
+      reason: 'this duplicates an existing entry',
+    });
+
+    assert.equal(result.isError, false);
+    assert.equal(calls.length, 1);
+    assert.match(calls[0], /declined-with-reason tip title/);
+    assert.match(calls[0], /Reason: "this duplicates an existing entry"/);
+
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [candidateId]);
+  },
+);
+
+test(
+  'SECURITY: decline_knowledge_candidate truncateForEcho-caps a reason longer than the echo bound before it reaches the member DM, never the raw payload (issue #1050 acceptance criterion #5)',
+  { skip },
+  async () => {
+    const tip = await createKnowledgeTip({
+      platform: 'discord',
+      userId: KNOWLEDGE_TIP_RESOLUTION_HANDLER_USER,
+      topic: `${RUN} kc-tip-resolution-decline-long-reason-topic`,
+      title: 'declined-with-long-reason tip title',
+      content: `${RUN} kc-tip-resolution-decline-long-reason content`,
+    });
+    assert.ok(tip);
+    const candidateId = tip.id;
+    const longReason = 'z'.repeat(500);
+
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (_userId, message) => {
+      calls.push(message);
+    });
+
+    const tools = knowledgeCandidateHandlers({ platform: 'discord', adapter });
+    const result = await tools['decline_knowledge_candidate'].handler({
+      id: candidateId,
+      reason: longReason,
+    });
+
+    assert.equal(result.isError, false);
+    assert.equal(calls.length, 1);
+    assert.ok(!calls[0].includes(longReason), 'the raw 500-char reason must never reach the member DM');
+    assert.match(calls[0], /z{100,140}\.\.\./, 'the reason reaching the DM is the truncateForEcho-capped form');
+
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [candidateId]);
+  },
+);
+
+test('SECURITY: decline_knowledge_candidate rejects a reason over SUGGESTION_RESOLUTION_ECHO_CHARS at the zod schema boundary (issue #1050 acceptance criterion #1)', () => {
+  const adapter = stubAdapter(async () => {});
+  const caller = {
+    platform: 'discord' as const,
+    userId: 'admin-1',
+    userName: 'Admin',
+    role: 'admin' as const,
+    conversationId: 'convo-1',
+  };
+  const server = buildToolServer(caller, adapter);
+  const registeredTool = (
+    server.instance as unknown as {
+      _registeredTools: Record<string, { inputSchema: { safeParse: (v: unknown) => { success: boolean } } }>;
+    }
+  )._registeredTools['decline_knowledge_candidate'];
+
+  assert.equal(
+    registeredTool.inputSchema.safeParse({ id: 1, reason: 'x'.repeat(SUGGESTION_RESOLUTION_ECHO_CHARS) }).success,
+    true,
+    'exactly the echo bound is allowed',
+  );
+  assert.equal(
+    registeredTool.inputSchema.safeParse({ id: 1, reason: 'x'.repeat(SUGGESTION_RESOLUTION_ECHO_CHARS + 1) })
+      .success,
+    false,
+    'one character over the echo bound must be rejected',
+  );
+  assert.equal(
+    registeredTool.inputSchema.safeParse({ id: 1 }).success,
+    true,
+    'the id-only call form (no reason) remains valid',
+  );
+});
+
+test(
+  "SECURITY: decline_knowledge_candidate's new reason argument changes neither its admin-tier requirement nor any role's tool surface — still exactly ADMIN_TOOLS membership, absent from MEMBER_TOOLS/SUPER_ADMIN_TOOLS is irrelevant since ADMIN_TOOLS is a superset a super_admin also gets (issue #1050 acceptance criterion #6)",
+  async () => {
+    assert.ok(
+      ADMIN_TOOLS.includes('mcp__community__decline_knowledge_candidate'),
+      'decline_knowledge_candidate must still be exactly in ADMIN_TOOLS',
+    );
+    assert.ok(
+      !MEMBER_TOOLS.includes('mcp__community__decline_knowledge_candidate'),
+      'the new reason argument must not have moved decline_knowledge_candidate into MEMBER_TOOLS',
+    );
+
+    const adapter = stubAdapter(async () => {});
+    for (const role of ['guest', 'member'] as const) {
+      const caller = {
+        platform: 'discord' as const,
+        userId: 'caller-1',
+        userName: 'Caller',
+        role,
+        conversationId: 'convo-1',
+      };
+      const server = buildToolServer(caller, adapter);
+      const registeredTool = (
+        server.instance as unknown as {
+          _registeredTools: Record<
+            string,
+            { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+          >;
+        }
+      )._registeredTools['decline_knowledge_candidate'];
+
+      await assert.rejects(
+        () => registeredTool.handler({ id: 1, reason: 'ignored' }),
+        /admin/i,
+        `a ${role} caller must be rejected by the assertAtLeast re-check even with reason set — the new param opens no lower-privilege path`,
+      );
+    }
+  },
+);
+
+test(
+  'SECURITY: machine-drafted candidates (source_user_id IS NULL) never trigger a DM on accept OR decline, regardless of resolution outcome or a supplied decline reason (issue #703 acceptance criterion #3/#7, issue #1050 acceptance criterion #7)',
   { skip },
   async () => {
     const digestId = await insertContextDigest({
@@ -19305,10 +19567,17 @@ test(
 
     const acceptResult = await tools['accept_knowledge_candidate'].handler({ id: acceptedCandidateId });
     assert.equal(acceptResult.isError, false);
-    const declineResult = await tools['decline_knowledge_candidate'].handler({ id: declinedCandidateId });
+    const declineResult = await tools['decline_knowledge_candidate'].handler({
+      id: declinedCandidateId,
+      reason: 'this reason must never be echoed anywhere — there is no member to send it to',
+    });
     assert.equal(declineResult.isError, false);
 
-    assert.equal(calls.length, 0, 'a machine-drafted candidate has no member to notify on either path');
+    assert.equal(
+      calls.length,
+      0,
+      'a machine-drafted candidate has no member to notify on either path, even with a decline reason supplied',
+    );
 
     const knowledgeRows = await pool.query(`SELECT id FROM knowledge WHERE content = $1`, [
       `${RUN} kc-tip-machine accept content`,
@@ -19373,6 +19642,55 @@ test(
       `${RUN} kc-tip-resolution-cross-platform content`,
     ]);
     await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [knowledgeRows.rows.map((r) => r.id)]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [candidateId]);
+  },
+);
+
+test(
+  "SECURITY: decline_knowledge_candidate routes a cross-platform DM through the tip's origin adapter, never the resolving admin's current-turn adapter, and the new reason argument cannot redirect it (issue #703 acceptance criterion #4/#7, issue #1050 acceptance criterion #7)",
+  { skip },
+  async () => {
+    const tip = await createKnowledgeTip({
+      platform: 'whatsapp',
+      userId: KNOWLEDGE_TIP_RESOLUTION_HANDLER_USER,
+      topic: `${RUN} kc-tip-resolution-decline-cross-platform-topic`,
+      title: 'decline cross-platform tip title',
+      content: `${RUN} kc-tip-resolution-decline-cross-platform content`,
+    });
+    assert.ok(tip);
+    const candidateId = tip.id;
+
+    const adminTurnCalls: string[] = [];
+    const adminTurnAdapter = stubAdapter(async (userId) => {
+      adminTurnCalls.push(userId);
+    });
+    const originCalls: Array<[string, string]> = [];
+    const originAdapter = stubAdapter(async (userId, text) => {
+      originCalls.push([userId, text]);
+    });
+
+    // Same shape as accept_knowledge_candidate's cross-platform test above:
+    // the tip was filed on whatsapp, the admin is resolving from discord, and
+    // decline_knowledge_candidate's own args (id, reason) carry no identity/
+    // platform field — the reason string in particular must not be usable to
+    // redirect the DM anywhere but the persisted row's own origin platform.
+    const tools = knowledgeCandidateHandlers({
+      platform: 'discord',
+      adapter: adminTurnAdapter,
+      getAdapter: (platform) => (platform === 'whatsapp' ? originAdapter : undefined),
+    });
+    const result = await tools['decline_knowledge_candidate'].handler({
+      id: candidateId,
+      reason: 'this is not a redirect vector',
+    });
+
+    assert.equal(result.isError, false, 'resolution itself still succeeds');
+    assert.equal(adminTurnCalls.length, 0, "never misaddressed through the resolving admin's own adapter");
+
+    const submitterCalls = originCalls.filter(([userId]) => userId === KNOWLEDGE_TIP_RESOLUTION_HANDLER_USER);
+    assert.equal(submitterCalls.length, 1, "the submitter is notified via the tip's origin platform");
+    assert.match(submitterCalls[0][1], /Reason: "this is not a redirect vector"/);
+
     await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [candidateId]);
   },
 );
