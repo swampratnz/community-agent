@@ -35,6 +35,15 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   real model turn to find who wants help. `!projects seeking` narrows the
   same showcase to matching projects only, rendered identically to the other
   two surfaces.
+- **Admins can now tell a member *why* their knowledge tip was declined.**
+  (#1050) `decline_knowledge_candidate`'s resolution DM previously named only
+  the tip's title — a member who contributed a `suggest_knowledge` tip that
+  was later declined learned *that* it wasn't added, but never *why*, so they
+  couldn't fix it and resubmit. Admins can now pass an optional, short
+  `reason`, which is appended as a distinct quoted clause to the existing
+  decline DM (English and te reo Māori both), so a duplicate/too-vague/
+  off-topic tip can be resubmitted with the actual problem fixed. Omitting
+  the reason produces the exact same DM as before.
 
 ## 2026-08-20
 
