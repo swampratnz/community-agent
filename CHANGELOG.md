@@ -45,6 +45,19 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   off-topic tip can be resubmitted with the actual problem fixed. Omitting
   the reason produces the exact same DM as before.
 
+### Fixed
+- **`knowledge_search` no longer leads with an entry whose source link the bot
+  already knows is dead.** (#1054) When two knowledge entries are near-tied
+  for relevance, the reply already broke the tie by preferring a low-rated
+  entry (#562) or a stale one (#308) — but it never considered
+  `source_unreachable`, the weekly link-rot checker's (#448) own confirmed
+  verdict, even though the reply already displays a "⚠️ link appears dead"
+  caveat on that exact entry (#465). The bot could rank a dead-link entry
+  first, then warn you not to trust its citation. Near-tied results now
+  prefer the entry with a live (or unchecked) source over one confirmed dead,
+  checked after the low-rated signal and before staleness. Deployments that
+  haven't enabled the link checker are unaffected.
+
 ## 2026-08-20
 
 ### Fixed
