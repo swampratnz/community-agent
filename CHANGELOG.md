@@ -54,6 +54,12 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   `community_info`/`!help`, moderation and approval DMs) already honours it.
   All three surfaces (the tool, `/mydata`, `!mydata`) now show a `Language
   preference:` line right under the response-style one.
+- **`!kbtopics` is now listed in WhatsApp's `!help` shortcut rundown** (#1044):
+  the free `!kbtopics` shortcut for browsing what the knowledge base covers
+  shipped in #1036, but was never added to the "zero-wait shortcuts" list
+  `!help` shows WhatsApp members — so it was effectively undiscoverable
+  unless you already knew the command. It's now listed alongside the other
+  free shortcuts.
 
 ### Added
 - **`list_top_knowledge` — admins can now rank knowledge entries by how often

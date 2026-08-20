@@ -447,7 +447,9 @@ const NOTICE_ENTRIES = {
    * `mi` variant — `commands.ts`'s regexes match those exact ASCII strings.
    * No `style` variant, matching `communityInfoMemberCapabilities`'s own
    * scope. Never interpolates caller or message data — same trust level as
-   * the member capabilities notice above.
+   * the member capabilities notice above. `!kbtopics` (issue #1036) was
+   * added to both variants by issue #1044/#1034, closing a gap where it
+   * shipped without ever being added to this list.
    */
   whatsappTextCommands: {
     base:
@@ -457,6 +459,7 @@ const NOTICE_ENTRIES = {
       '- `!guidelines` — community guidelines\n' +
       "- `!digest` — this week's digest\n" +
       '- `!status` — check for a known Anthropic outage\n' +
+      '- `!kbtopics` — browse what the knowledge base covers\n' +
       '- `!warnings` — your own active warning count\n' +
       '- `!mysubmissions` — status of your filed suggestions/reports\n' +
       '- `!mydata` — what the bot has stored about you\n' +
@@ -469,6 +472,7 @@ const NOTICE_ENTRIES = {
         '- `!guidelines` — ngā tikanga hapori\n' +
         '- `!digest` — te whakarāpopototanga o tēnei wiki\n' +
         '- `!status` — tirotiro mehemea he raru mōhiotia nā Anthropic\n' +
+        '- `!kbtopics` — tirotiro i ngā kaupapa e kapi ana e te pātengi mōhiotanga\n' +
         '- `!warnings` — te tatau o ō whakatūpato e mahi tonu ana\n' +
         '- `!mysubmissions` — te āhua o ō tono/pūrongo kua tukuna\n' +
         '- `!mydata` — he aha kua rongoātia e ahau mōu\n' +
