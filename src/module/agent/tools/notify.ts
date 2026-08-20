@@ -636,9 +636,7 @@ export async function notifyKnowledgeTipResolved(
       : status === 'declined'
         ? `Thanks for the knowledge tip — after review it wasn't added this time: "${echoed}"`
         : `Your knowledge tip has been added to the knowledge base — thanks for the contribution! ("${echoed}")`;
-  const message = echoedReason
-    ? `${base}. ${lang === 'mi' ? 'Take' : 'Reason'}: "${echoedReason}"`
-    : base;
+  const message = echoedReason ? `${base}. ${lang === 'mi' ? 'Take' : 'Reason'}: "${echoedReason}"` : base;
   await adapter.sendDirectMessage(userId, message).catch((err) => {
     if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
       adapter.queueForWindowReopen(userId, message, 'low');

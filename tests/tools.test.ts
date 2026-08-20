@@ -1392,7 +1392,14 @@ test('notifyKnowledgeTipResolved ignores a reason on the accepted branch — the
     calls.push(message);
   });
 
-  await notifyKnowledgeTipResolved(adapter, 'user-1', 'accepted', 'title', 'discord', 'this text must be ignored');
+  await notifyKnowledgeTipResolved(
+    adapter,
+    'user-1',
+    'accepted',
+    'title',
+    'discord',
+    'this text must be ignored',
+  );
 
   assert.equal(
     calls[0],
@@ -1431,7 +1438,11 @@ test("notifyKnowledgeTipResolved's reason clause renders in te reo Māori for a 
   );
 
   assert.match(calls[0], /kāore i tāpirihia/);
-  assert.match(calls[0], /Take: "he tauriterite tēnei"/, 'the reason clause label is te reo, the reason text is not');
+  assert.match(
+    calls[0],
+    /Take: "he tauriterite tēnei"/,
+    'the reason clause label is te reo, the reason text is not',
+  );
 });
 
 test('notifyKnowledgeTipResolved swallows a DM failure rather than throwing (resolution stays the source of truth)', async () => {
@@ -19453,7 +19464,11 @@ test(
     assert.equal(result.isError, false);
     assert.equal(calls.length, 1);
     assert.ok(!calls[0].includes(longReason), 'the raw 500-char reason must never reach the member DM');
-    assert.match(calls[0], /z{100,140}\.\.\./, 'the reason reaching the DM is the truncateForEcho-capped form');
+    assert.match(
+      calls[0],
+      /z{100,140}\.\.\./,
+      'the reason reaching the DM is the truncateForEcho-capped form',
+    );
 
     await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [candidateId]);
   },
@@ -19476,7 +19491,8 @@ test('SECURITY: decline_knowledge_candidate rejects a reason over SUGGESTION_RES
   )._registeredTools['decline_knowledge_candidate'];
 
   assert.equal(
-    registeredTool.inputSchema.safeParse({ id: 1, reason: 'x'.repeat(SUGGESTION_RESOLUTION_ECHO_CHARS) }).success,
+    registeredTool.inputSchema.safeParse({ id: 1, reason: 'x'.repeat(SUGGESTION_RESOLUTION_ECHO_CHARS) })
+      .success,
     true,
     'exactly the echo bound is allowed',
   );
@@ -19493,45 +19509,42 @@ test('SECURITY: decline_knowledge_candidate rejects a reason over SUGGESTION_RES
   );
 });
 
-test(
-  "SECURITY: decline_knowledge_candidate's new reason argument changes neither its admin-tier requirement nor any role's tool surface — still exactly ADMIN_TOOLS membership, absent from MEMBER_TOOLS/SUPER_ADMIN_TOOLS is irrelevant since ADMIN_TOOLS is a superset a super_admin also gets (issue #1050 acceptance criterion #6)",
-  async () => {
-    assert.ok(
-      ADMIN_TOOLS.includes('mcp__community__decline_knowledge_candidate'),
-      'decline_knowledge_candidate must still be exactly in ADMIN_TOOLS',
-    );
-    assert.ok(
-      !MEMBER_TOOLS.includes('mcp__community__decline_knowledge_candidate'),
-      'the new reason argument must not have moved decline_knowledge_candidate into MEMBER_TOOLS',
-    );
+test("SECURITY: decline_knowledge_candidate's new reason argument changes neither its admin-tier requirement nor any role's tool surface — still exactly ADMIN_TOOLS membership, absent from MEMBER_TOOLS/SUPER_ADMIN_TOOLS is irrelevant since ADMIN_TOOLS is a superset a super_admin also gets (issue #1050 acceptance criterion #6)", async () => {
+  assert.ok(
+    ADMIN_TOOLS.includes('mcp__community__decline_knowledge_candidate'),
+    'decline_knowledge_candidate must still be exactly in ADMIN_TOOLS',
+  );
+  assert.ok(
+    !MEMBER_TOOLS.includes('mcp__community__decline_knowledge_candidate'),
+    'the new reason argument must not have moved decline_knowledge_candidate into MEMBER_TOOLS',
+  );
 
-    const adapter = stubAdapter(async () => {});
-    for (const role of ['guest', 'member'] as const) {
-      const caller = {
-        platform: 'discord' as const,
-        userId: 'caller-1',
-        userName: 'Caller',
-        role,
-        conversationId: 'convo-1',
-      };
-      const server = buildToolServer(caller, adapter);
-      const registeredTool = (
-        server.instance as unknown as {
-          _registeredTools: Record<
-            string,
-            { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
-          >;
-        }
-      )._registeredTools['decline_knowledge_candidate'];
+  const adapter = stubAdapter(async () => {});
+  for (const role of ['guest', 'member'] as const) {
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'caller-1',
+      userName: 'Caller',
+      role,
+      conversationId: 'convo-1',
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['decline_knowledge_candidate'];
 
-      await assert.rejects(
-        () => registeredTool.handler({ id: 1, reason: 'ignored' }),
-        /admin/i,
-        `a ${role} caller must be rejected by the assertAtLeast re-check even with reason set — the new param opens no lower-privilege path`,
-      );
-    }
-  },
-);
+    await assert.rejects(
+      () => registeredTool.handler({ id: 1, reason: 'ignored' }),
+      /admin/i,
+      `a ${role} caller must be rejected by the assertAtLeast re-check even with reason set — the new param opens no lower-privilege path`,
+    );
+  }
+});
 
 test(
   'SECURITY: machine-drafted candidates (source_user_id IS NULL) never trigger a DM on accept OR decline, regardless of resolution outcome or a supplied decline reason (issue #703 acceptance criterion #3/#7, issue #1050 acceptance criterion #7)',
