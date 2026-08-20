@@ -26,6 +26,7 @@ import {
   formatFoundKnowledge,
   formatKnowledgeEntryLine,
   resolveSanitizedLabel,
+  SUGGESTION_RESOLUTION_ECHO_CHARS,
   text,
   untrusted,
 } from './helpers.js';
@@ -619,7 +620,18 @@ export const knowledgeAdminTools = [
       'needed), audited. Admin only.',
     minTier: 'admin',
     readOnlyHint: false,
-    schema: { id: z.number().describe('Candidate id (from list_knowledge_candidates)') },
+    schema: {
+      id: z.number().describe('Candidate id (from list_knowledge_candidates)'),
+      reason: z
+        .string()
+        .max(SUGGESTION_RESOLUTION_ECHO_CHARS)
+        .optional()
+        .describe(
+          'Optional, one-line, member-facing explanation (e.g. duplicate, too vague, off-topic) appended ' +
+            'verbatim to the resolution DM sent to the tip submitter, so they know why and can resubmit — ' +
+            'omit for the existing neutral decline message with no reason. Never persisted.',
+        ),
+    },
     handler: async (args, { caller, audited, adapterFor }) => {
       assertAtLeast(caller.role, 'admin', 'decline_knowledge_candidate');
       const state: { row: KnowledgeCandidate | null } = { row: null };
@@ -635,6 +647,8 @@ export const knowledgeAdminTools = [
       });
       // See the matching comment on accept_knowledge_candidate above — same
       // provenance-gated, origin-platform-routed DM, never caller-redirectable.
+      // args.reason is never persisted (not in the audited params above, not
+      // in declineKnowledgeCandidate) — it only ever reaches this one DM.
       if (success && state.row?.sourceUserId && state.row.sourcePlatform) {
         const target = adapterFor(state.row.sourcePlatform);
         if (target)
@@ -644,6 +658,7 @@ export const knowledgeAdminTools = [
             'declined',
             state.row.title,
             state.row.sourcePlatform,
+            args.reason,
           );
       }
       return text(success ? `Declined candidate #${args.id}.` : `Failed: ${result}`, !success);
