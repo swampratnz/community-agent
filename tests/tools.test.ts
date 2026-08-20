@@ -4033,6 +4033,137 @@ test(
   },
 );
 
+// --- issue #1056: community_info's admin/super-admin segments honour a
+// standing 'mi' language preference too, closing the mid-message language
+// mix #1028 left behind for exactly this caller shape.
+
+test(
+  'community_info/formatCommunityInfoText serve the te reo Māori admin-capabilities text to an admin ' +
+    "caller with a standing 'mi' language preference, distinct from the English base text (issue #1056 " +
+    'acceptance criterion 1)',
+  { skip },
+  async () => {
+    const miAdmin = `${RUN}-info-admin-mi-preference`;
+
+    await setLanguagePreferenceHandler({ platform: 'discord', userId: miAdmin }).handler({ language: 'mi' });
+
+    const miReply = (await communityInfoHandler('admin', 'discord', miAdmin)).content[0]?.text ?? '';
+
+    assert.match(
+      miReply,
+      /I a koe e noho kaiwhakahaere ana, kei a koe hoki/,
+      "an admin caller with a 'mi' preference must get the te reo Māori admin-capabilities text",
+    );
+    assert.doesNotMatch(
+      miReply,
+      /As an admin, you also have/,
+      'the mi reply must not also contain the English admin-capabilities text',
+    );
+    assert.equal(
+      await formatCommunityInfoText('admin', 'discord', miAdmin),
+      miReply,
+      "formatCommunityInfoText's own output must match the tool handler's (single source of truth)",
+    );
+  },
+);
+
+test(
+  'community_info/formatCommunityInfoText serve te reo Māori for BOTH the admin- and super-admin-capabilities ' +
+    "segments to a super_admin caller with a standing 'mi' language preference (issue #1056 acceptance " +
+    'criterion 2)',
+  { skip },
+  async () => {
+    const miSuperAdmin = `${RUN}-info-super-admin-mi-preference`;
+
+    await setLanguagePreferenceHandler({ platform: 'discord', userId: miSuperAdmin }).handler({
+      language: 'mi',
+    });
+
+    const miReply =
+      (await communityInfoHandler('super_admin', 'discord', miSuperAdmin)).content[0]?.text ?? '';
+
+    assert.match(
+      miReply,
+      /I a koe e noho kaiwhakahaere ana, kei a koe hoki/,
+      'must include the te reo admin segment',
+    );
+    assert.match(
+      miReply,
+      /I a koe e noho kaiwhakahaere matua \(super admin\) ana, kei a koe hoki/,
+      'must include the te reo super-admin segment',
+    );
+    assert.doesNotMatch(miReply, /As an admin, you also have/, 'must not contain the English admin text');
+    assert.doesNotMatch(
+      miReply,
+      /As a super admin, you also have/,
+      'must not contain the English super-admin text',
+    );
+    assert.equal(
+      await formatCommunityInfoText('super_admin', 'discord', miSuperAdmin),
+      miReply,
+      "formatCommunityInfoText's own output must match the tool handler's (single source of truth)",
+    );
+  },
+);
+
+test(
+  "SECURITY: community_info's admin- and super-admin-capabilities segments render byte-identical English " +
+    "text (today's ADMIN_CAPABILITIES_TEXT/SUPER_ADMIN_CAPABILITIES_TEXT content) for a caller whose " +
+    "language_preference is unset, 'en', or 'auto' — the default/majority-path regression guard, and role " +
+    'still gates which segments appear (issue #1056 acceptance criterion 5)',
+  { skip },
+  async () => {
+    const unsetAdmin = `${RUN}-info-admin-unset-preference`;
+    const enSuperAdmin = `${RUN}-info-super-admin-en-preference`;
+    const autoSuperAdmin = `${RUN}-info-super-admin-auto-preference`;
+
+    await setLanguagePreferenceHandler({ platform: 'discord', userId: enSuperAdmin }).handler({
+      language: 'en',
+    });
+    await setLanguagePreferenceHandler({ platform: 'discord', userId: autoSuperAdmin }).handler({
+      language: 'auto',
+    });
+
+    const adminReplyUnset =
+      (await communityInfoHandler('admin', 'discord', unsetAdmin)).content[0]?.text ?? '';
+    const superAdminReplyEn =
+      (await communityInfoHandler('super_admin', 'discord', enSuperAdmin)).content[0]?.text ?? '';
+    const superAdminReplyAuto =
+      (await communityInfoHandler('super_admin', 'discord', autoSuperAdmin)).content[0]?.text ?? '';
+    const superAdminReplyDefault = (await communityInfoHandler('super_admin')).content[0]?.text ?? '';
+
+    assert.match(adminReplyUnset, /As an admin, you also have/, 'unset preference must default to English');
+    assert.doesNotMatch(
+      adminReplyUnset,
+      /I a koe e noho kaiwhakahaere ana/,
+      'unset preference must never render the te reo admin text',
+    );
+    assert.equal(
+      superAdminReplyEn,
+      superAdminReplyDefault,
+      "an 'en'-preference super_admin caller must render byte-identical to a caller with no stored preference",
+    );
+    assert.equal(
+      superAdminReplyAuto,
+      superAdminReplyDefault,
+      "an 'auto'-preference super_admin caller must render byte-identical to a caller with no stored preference",
+    );
+    assert.match(superAdminReplyDefault, /As an admin, you also have/, 'must contain the English admin text');
+    assert.match(
+      superAdminReplyDefault,
+      /As a super admin, you also have/,
+      'must contain the English super-admin text',
+    );
+
+    // Role gating is unaffected by the language change: a member/guest never
+    // sees any admin content, even were they to hold a 'mi' preference.
+    const memberReply = (await communityInfoHandler('member')).content[0]?.text ?? '';
+    const guestReply = (await communityInfoHandler('guest')).content[0]?.text ?? '';
+    assert.doesNotMatch(memberReply, /As an admin, you also have|I a koe e noho kaiwhakahaere ana/);
+    assert.doesNotMatch(guestReply, /As an admin, you also have|I a koe e noho kaiwhakahaere ana/);
+  },
+);
+
 test('SECURITY: redeploy_bot registers a pending action instead of executing directly (issue #101)', async () => {
   const adapter = stubAdapter(async () => {});
   const caller = {
