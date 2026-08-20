@@ -1229,7 +1229,7 @@ export function isoInstantSchema(description: string) {
 }
 
 /** Truncation length for the suggestion text echoed back in a resolution DM. */
-const SUGGESTION_RESOLUTION_ECHO_CHARS = 120;
+export const SUGGESTION_RESOLUTION_ECHO_CHARS = 120;
 
 export function truncateForEcho(content: string): string {
   return content.length > SUGGESTION_RESOLUTION_ECHO_CHARS

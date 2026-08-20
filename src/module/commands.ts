@@ -5,12 +5,14 @@ import {
   countRepliesToUser,
   getLanguagePreference,
   getMyDataSummary,
+  getPublishedInterestsForOwners,
   listKnowledgeTopics,
   listOwnAppeals,
   listOwnKnowledgeCandidates,
   listOwnProjectConnectionRequests,
   listOwnReports,
   listOwnSuggestions,
+  listRecentProjects,
 } from '@swampratnz/agent-base/storage/repository.js';
 import {
   formatCommunityInfoText,
@@ -18,6 +20,7 @@ import {
   formatKnowledgeTopics,
   formatProjectResults,
   LIST_PROJECTS_DEFAULT_LIMIT,
+  WHO_IS_INTO_NO_PROFILE_HINT,
 } from './agent/tools.js';
 import { buildMemberDigestContent } from './memberDigest.js';
 import {
@@ -80,6 +83,24 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
           : await formatProjectResults(projects);
       }
 
+      // Same anchoring discipline as `mine` above (issue #1046 SECURITY
+      // criteria 3-4): checked BEFORE the general query regex so the literal
+      // word "seeking" is never swallowed as a searchProjectsFn query, and
+      // `!projects seeking <anything>` falls through instead of matching.
+      // Calls listRecentProjects directly (not deps.listRecentProjectsFn) —
+      // that dependency's type is agent-base's fixed, zero-opts
+      // WhatsAppTextCommandDeps shape and cannot carry seekingCollaboratorsOnly
+      // through, the same constraint `digest` above already hit and solved
+      // the same way.
+      if (/^!projects\s+seeking$/i.test(text)) {
+        if (!atLeast(role, 'member')) return null;
+        const opts = { seekingCollaboratorsOnly: true };
+        const projects = await listRecentProjects(LIST_PROJECTS_DEFAULT_LIMIT, opts);
+        return projects.length === 0
+          ? 'No projects are currently looking for collaborators.'
+          : await formatProjectResults(projects);
+      }
+
       const projectsMatch = /^!projects(?:\s+(.+))?$/i.exec(text);
       if (!projectsMatch) return TEXT_COMMAND_UNMATCHED;
       if (!atLeast(role, 'member')) return null;
@@ -98,6 +119,27 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
     name: 'whois',
     platforms: ['discord', 'whatsapp'],
     whatsapp: async (text, msg, role, deps) => {
+      // Checked BEFORE the general `!whois [query]` branch below so the
+      // literal word "mine" is never swallowed as a `searchMemberInterestsFn`
+      // query (issue #1048) — mirrors `!projects mine`'s (issue #916)
+      // ordering discipline and `who_is_into({ mine: true })`'s own
+      // ignore-query-when-mine behaviour rather than blending the two.
+      // Calls getPublishedInterestsForOwners directly (not via deps) — that
+      // dependency isn't part of agent-base's fixed, zero-opts
+      // WhatsAppTextCommandDeps shape, the same constraint `!projects seeking`
+      // (issue #1046) hit and solved the same way. This mirrors
+      // handleWhois's Discord `mine` branch (slashCommands.ts) byte-for-byte.
+      if (/^!whois\s+mine$/i.test(text)) {
+        if (!atLeast(role, 'member')) return null;
+        const interestsByOwner = await getPublishedInterestsForOwners([
+          { platform: msg.platform, userId: msg.userId },
+        ]);
+        const own = interestsByOwner.get(`${msg.platform}:${msg.userId}`);
+        return own
+          ? await formatInterestResults([{ platform: msg.platform, userId: msg.userId, interests: own }])
+          : WHO_IS_INTO_NO_PROFILE_HINT;
+      }
+
       const whoisMatch = /^!whois(?:\s+(.+))?$/i.exec(text);
       if (!whoisMatch) return TEXT_COMMAND_UNMATCHED;
       if (!atLeast(role, 'member')) return null;

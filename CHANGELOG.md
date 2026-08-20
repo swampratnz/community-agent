@@ -24,6 +24,27 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #963 #964 #965 #968 #971 #983 #988 #989 #991 #992 #994
 -->
 
+## 2026-08-21
+
+### Added
+- **`!projects seeking` — WhatsApp can now browse the project showcase for
+  people actively looking for collaborators** (#1046): `/projects
+  seeking_collaborators:true` (Discord) and the `list_projects` tool have
+  supported this filter since #854, but WhatsApp's zero-model-call `!projects`
+  shortcut never gained it — a member had to scroll the whole list or spend a
+  real model turn to find who wants help. `!projects seeking` narrows the
+  same showcase to matching projects only, rendered identically to the other
+  two surfaces.
+- **Admins can now tell a member *why* their knowledge tip was declined.**
+  (#1050) `decline_knowledge_candidate`'s resolution DM previously named only
+  the tip's title — a member who contributed a `suggest_knowledge` tip that
+  was later declined learned *that* it wasn't added, but never *why*, so they
+  couldn't fix it and resubmit. Admins can now pass an optional, short
+  `reason`, which is appended as a distinct quoted clause to the existing
+  decline DM (English and te reo Māori both), so a duplicate/too-vague/
+  off-topic tip can be resubmitted with the actual problem fixed. Omitting
+  the reason produces the exact same DM as before.
+
 ## 2026-08-20
 
 ### Fixed
