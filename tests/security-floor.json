@@ -133,7 +133,7 @@
   "securityGateWrite.test.ts": 7,
   "staleKnowledgeAlert.router.test.ts": 3,
   "statusCheckAlert.test.ts": 4,
-  "stringsCatalogue.test.ts": 2,
+  "stringsCatalogue.test.ts": 3,
   "suggestIssue.test.ts": 3,
   "systemPrompt.test.ts": 21,
   "systemPromptSlots.test.ts": 5,
