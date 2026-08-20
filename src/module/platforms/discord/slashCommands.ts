@@ -21,6 +21,7 @@ import {
   getMyDataSummary,
   getPublishedInterestsForOwners,
   hasConflictAmongIds,
+  listKnowledgeTopics,
   listOwnAppeals,
   listOwnKnowledgeCandidates,
   listOwnProjectConnectionRequests,
@@ -39,6 +40,7 @@ import {
   formatCommunityInfoText,
   formatInterestResults,
   formatKnowledgeSearchResults,
+  formatKnowledgeTopics,
   formatProjectResults,
   KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD,
   LIST_PROJECTS_DEFAULT_LIMIT,
@@ -407,6 +409,36 @@ async function handleMyData(interaction: ChatInputCommandInteraction, deps: Slas
 }
 
 /**
+ * `list_knowledge_topics` is structurally in MEMBER_TOOLS but adds its own
+ * runtime floor (`minTier: 'member'`), same shape as
+ * `/warnings`/`/mysubmissions`/`/mydata` above — mirrored here via
+ * `toolsForRole` + `atLeast`. No options: scope is always the
+ * adapter-resolved `interaction.channelId`, never a model-/interaction-
+ * supplied value (issue #1036).
+ */
+async function handleKbTopics(
+  interaction: ChatInputCommandInteraction,
+  deps: SlashCommandDeps,
+): Promise<void> {
+  await deferEphemeral(interaction);
+  const role = await resolveRole('discord', interaction.user.id);
+  if (
+    !toolsForRole(role, 'discord').includes('mcp__community__list_knowledge_topics') ||
+    !atLeast(role, 'member')
+  ) {
+    await replyEphemeral(interaction, NOT_AUTHORIZED_TEXT, deps);
+    return;
+  }
+  const { titles, totalCount } = await listKnowledgeTopics(
+    { platform: 'discord', conversationId: interaction.channelId },
+    config.behaviour.knowledgeTopicsListLimit,
+  );
+  const message = formatKnowledgeTopics(titles, totalCount);
+  recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
+  await replyEphemeral(interaction, message, deps);
+}
+
+/**
  * `list_events` is structurally in MEMBER_TOOLS with no extra runtime floor
  * beyond `toolsForRole` (unlike `/warnings`/`/whois`/`/projects`/`/digest`
  * above) — mirrored here exactly like `/kb`'s gate (issue #1004). Takes no
@@ -570,6 +602,14 @@ export function bindCommunitySlashCommands(adapter: PlatformAdapter): void {
         .setDescription('See a summary of what the bot has stored about you.')
         .toJSON(),
     handle: handleMyData,
+  });
+  bindDiscordCommand('kbtopics', {
+    build: () =>
+      new SlashCommandBuilder()
+        .setName('kbtopics')
+        .setDescription('Browse the titles of what the community knowledge base covers.')
+        .toJSON(),
+    handle: handleKbTopics,
   });
   bindDiscordCommand('events', {
     build: () =>

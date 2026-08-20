@@ -72,7 +72,7 @@
   "discordAdapter.test.ts": 62,
   "discordEditModerationScan.test.ts": 3,
   "discordImageInput.test.ts": 7,
-  "discordSlashCommands.test.ts": 33,
+  "discordSlashCommands.test.ts": 36,
   "discordThreadArchive.test.ts": 2,
   "docsIngest.test.ts": 2,
   "embeddingHealthCheck.test.ts": 2,
@@ -153,6 +153,6 @@
   "whatsappCloudImageInputSystemPromptEnabled.test.ts": 1,
   "whatsappCloudVoiceInput.test.ts": 9,
   "whatsappImageInputSystemPromptEnabled.test.ts": 1,
-  "whatsappTextCommandsRouter.test.ts": 19,
+  "whatsappTextCommandsRouter.test.ts": 22,
   "whoIsIntoBrowseEmbedCount.test.ts": 1
 }
