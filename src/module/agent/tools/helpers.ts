@@ -273,6 +273,20 @@ export const KNOWLEDGE_TIE_MARGIN = 0.03;
  * (default) `lowRatedIds`, this branch never fires and ordering stays
  * byte-identical to pre-#562 behaviour.
  *
+ * `sourceUnreachable` (issue #1054) adds a third rung, checked *after*
+ * low-rated and *before* staleness: within `KNOWLEDGE_TIE_MARGIN`, if exactly
+ * one of the pair has `sourceUnreachable === true` (the weekly link-rot
+ * checker, #448, has confirmed the citation is dead), the reachable hit sorts
+ * first. It sits below low-rated (direct human judgement on the answer
+ * itself beats a fact about the citation) and above staleness (the checker
+ * *observed* the URL; staleness is only *inferred* from timestamps).
+ * Both-dead and neither-dead pairs fall through to the staleness check
+ * unchanged. `null` (never checked) and `false` are strictly not `=== true`,
+ * so this branch never fires unless the checker has actually confirmed the
+ * link dead — with `KNOWLEDGE_LINK_CHECK_ENABLED` off (the default), every
+ * hit carries `null` and ordering stays byte-identical to pre-#1054
+ * behaviour.
+ *
  * `lang` (issue #1038) defaults to `'auto'` and is threaded straight into
  * `formatKnowledgeCitationNote`'s own `lang` parameter, so a caller that
  * knows the invoking member's stored `language_preference` (today, `/kb`'s
@@ -316,6 +330,9 @@ export function formatKnowledgeSearchResults(
       const aLowRated = lowRatedIds.has(a.h.id);
       const bLowRated = lowRatedIds.has(b.h.id);
       if (aLowRated !== bLowRated) return aLowRated ? 1 : -1;
+      const aDead = a.h.sourceUnreachable === true;
+      const bDead = b.h.sourceUnreachable === true;
+      if (aDead !== bDead) return aDead ? 1 : -1;
       const aStale = isKnowledgeStale(
         { updatedAt: a.h.updatedAt, lastRetrievedAt: a.h.lastRetrievedAt ?? null },
         staleDays,
