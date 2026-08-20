@@ -5,6 +5,7 @@ import {
   countRepliesToUser,
   getLanguagePreference,
   getMyDataSummary,
+  listKnowledgeTopics,
   listOwnAppeals,
   listOwnKnowledgeCandidates,
   listOwnProjectConnectionRequests,
@@ -14,6 +15,7 @@ import {
 import {
   formatCommunityInfoText,
   formatInterestResults,
+  formatKnowledgeTopics,
   formatProjectResults,
   LIST_PROJECTS_DEFAULT_LIMIT,
 } from './agent/tools.js';
@@ -35,9 +37,9 @@ import { formatStatusMessage, getStatusCache } from './status/anthropicStatus.js
  * homes; registry order is the previous `buildSlashCommands()` order (kb,
  * projects, whois, guidelines, digest), with `events` (issue #1004),
  * `status` (issue #995), `warnings` (issue #1000), `mysubmissions`/`mydata`
- * (issue #1018), and `help` (issue #993) appended — also safe for the
- * WhatsApp side because every `!` matcher is anchored and mutually
- * exclusive.
+ * (issue #1018), `help` (issue #993), and `kbtopics` (issue #1036) appended
+ * — also safe for the WhatsApp side because every `!` matcher is anchored
+ * and mutually exclusive.
  *
  * The Discord halves are BOUND by `bindCommunitySlashCommands()`
  * (slashCommands.ts), which `createConfiguredAdapters()` calls — never at
@@ -232,6 +234,26 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
     whatsapp: async (text, msg, role) => {
       if (!/^!help$/i.test(text)) return TEXT_COMMAND_UNMATCHED;
       return await formatCommunityInfoText(role, msg.platform, msg.userId);
+    },
+  },
+  {
+    // Anchored, argument-rejecting matcher, same discipline as `warnings`/
+    // `mysubmissions`/`mydata` above (issue #1036 SECURITY criterion 3):
+    // `!kbtopics anything` falls through to TEXT_COMMAND_UNMATCHED rather
+    // than matching, so no message-supplied text can ever reach the scope
+    // predicate — the conversationId passed below is always the
+    // adapter-resolved (msg.platform, msg.conversationId), never parsed
+    // from `text`.
+    name: 'kbtopics',
+    platforms: ['discord', 'whatsapp'],
+    whatsapp: async (text, msg, role) => {
+      if (!/^!kbtopics$/i.test(text)) return TEXT_COMMAND_UNMATCHED;
+      if (!atLeast(role, 'member')) return null;
+      const { titles, totalCount } = await listKnowledgeTopics(
+        { platform: msg.platform, conversationId: msg.conversationId },
+        config.behaviour.knowledgeTopicsListLimit,
+      );
+      return formatKnowledgeTopics(titles, totalCount);
     },
   },
 ];

@@ -48,6 +48,15 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   every entry's retrieval count by hand. `list_top_knowledge` ranks the whole
   scope by retrieval count (an entry never retrieved is still shown, ranked
   last, not hidden), same admin-only, read-only tier as its siblings.
+- **`/kbtopics` (Discord) and `!kbtopics` (WhatsApp) — a zero-wait shortcut
+  browsing what the community knowledge base covers** (#1036): every other
+  read-only, zero-argument member tool with a "just show me" shape already had
+  a deterministic shortcut (`/warnings`, `/mysubmissions`+`/mydata`, `/status`,
+  `/events`, `/help`) — `list_knowledge_topics`, the proactive titles-only
+  counterpart to `knowledge_search` for a member who doesn't yet know the
+  right words to search for, was the one left out (`/kb`'s `query` option is
+  required, so it can only search, never browse). Same output
+  `list_knowledge_topics` already gives, without spending an agent turn.
 
 ### Fixed
 - **`community_info`/`/help`/`!help` now honour a standing te reo Māori
