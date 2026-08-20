@@ -289,6 +289,35 @@ function mockPoolRoleAndProjects(
   return calls;
 }
 
+/**
+ * Stubs `pool.query`'s role branch plus `FROM member_interests`, returning
+ * every `{ sql, params }` call so a test can assert on what was queried. The
+ * `!whois mine` branch (issue #1048) calls `getPublishedInterestsForOwners`
+ * DIRECTLY — never through a `deps.*Fn` — so it is invisible to
+ * `RouterOpts`/`makeRouter` the way every other `!whois` form is; asserting
+ * its behaviour needs the raw pool mock, the same technique
+ * `mockPoolRoleAndProjects` above uses for the identical `!projects seeking`
+ * (issue #1046) direct call.
+ */
+function mockPoolRoleAndInterests(
+  t: { mock: { method: typeof import('node:test').mock.method } },
+  role: 'admin' | 'member' | null,
+  interestRows: Array<Record<string, unknown>> = [],
+): Array<{ sql: string; params: unknown[] }> {
+  const calls: Array<{ sql: string; params: unknown[] }> = [];
+  t.mock.method(pool, 'query', (async (sql: string, params: unknown[] = []) => {
+    calls.push({ sql, params });
+    if (sql.includes('SELECT role FROM community_users')) {
+      return { rows: role ? [{ role }] : [], rowCount: 0 };
+    }
+    if (sql.includes('FROM member_interests')) {
+      return { rows: interestRows, rowCount: 0 };
+    }
+    return { rows: [], rowCount: 0 };
+  }) as typeof pool.query);
+  return calls;
+}
+
 test('config: WHATSAPP_TEXT_COMMANDS_ENABLED=true is reflected in config.behaviour.whatsappTextCommandsEnabled', () => {
   assert.equal(config.behaviour.whatsappTextCommandsEnabled, true);
 });
@@ -527,6 +556,143 @@ test('a bare "!whois" with only trailing whitespace still takes the no-argument 
 
   assert.equal(callCount, 1);
   assert.match(sent[0].text, /haven't published interests yet/);
+});
+
+// --- !whois mine (issue #1048) ----------------------------------------------
+
+test('acceptance criterion 1: "!Whois Mine" (case-insensitive) from a member with published interests calls getPublishedInterestsForOwners keyed on msg.platform/msg.userId, rendered through formatInterestResults, never searchMemberInterestsFn', async (t) => {
+  const calls = mockPoolRoleAndInterests(t, 'member', [
+    { platform: 'whatsapp', user_id: 'member-1', interests: 'rust and distributed systems' },
+  ]);
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    searchMemberInterestsFn: async () => {
+      throw new Error('searchMemberInterestsFn must never be called for "!whois mine"');
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!Whois Mine', userId: 'member-1' }));
+
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /rust and distributed systems/);
+  const interestsCall = calls.find((c) => c.sql.includes('FROM member_interests'));
+  assert.ok(interestsCall, 'getPublishedInterestsForOwners must have run');
+  assert.deepEqual(interestsCall.params, [['whatsapp'], ['member-1']]);
+});
+
+test('acceptance criterion 2: "!whois mine" from a member with no published interests returns WHO_IS_INTO_NO_PROFILE_HINT verbatim, not an empty string or the no-profile browse fallback', async (t) => {
+  mockPoolRoleAndInterests(t, 'member', []);
+  const { WHO_IS_INTO_NO_PROFILE_HINT } = await import('../src/module/agent/tools.js');
+  const router = makeRouter({ runTurn: throwingRunTurn });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!whois mine', userId: 'member-1' }));
+
+  assert.equal(sent[0].text, WHO_IS_INTO_NO_PROFILE_HINT);
+});
+
+test('acceptance criterion 3: "!whois mine" is checked before the general !whois [query] branch — "mine" as a literal interest search term never reaches searchMemberInterestsFn as the query "mine"', async (t) => {
+  mockPoolRoleAndInterests(t, 'member', [
+    { platform: 'whatsapp', user_id: 'member-1', interests: 'gardening' },
+  ]);
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    searchMemberInterestsFn: async (query) => {
+      assert.notEqual(
+        query,
+        'mine',
+        'searchMemberInterestsFn must never be called with the literal query "mine"',
+      );
+      return [];
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!whois mine', userId: 'member-1' }));
+
+  assert.match(sent[0].text, /gardening/);
+});
+
+test('acceptance criterion 4: "!whois mine trailing" (trailing text) does not match the anchored mine branch — falls through to the general query path with "mine trailing" as the search query', async (t) => {
+  mockPoolRoleAndInterests(t, 'member');
+  let searchCalledWith: string | undefined;
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    searchMemberInterestsFn: async (query) => {
+      searchCalledWith = query;
+      return [];
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!whois mine trailing', userId: 'member-1' }));
+
+  assert.equal(searchCalledWith, 'mine trailing');
+  assert.equal(sent[0].text, 'No members have published interests matching that yet.');
+});
+
+test('SECURITY: a sub-member caller\'s "!whois mine" falls through to the normal turn silently — getPublishedInterestsForOwners (direct call) is never invoked (issue #1048)', async (t) => {
+  const calls = mockPoolRoleAndInterests(t, null);
+  const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!whois mine', userId: 'guest-1' }));
+
+  assert.equal(sent.length, 1);
+  assert.equal(
+    sent[0].text,
+    REAL_TURN_REPLY,
+    'a sub-member caller must get the normal turn reply, never a distinguishing "not authorized" text',
+  );
+  assert.ok(
+    !calls.some((c) => c.sql.includes('FROM member_interests')),
+    'getPublishedInterestsForOwners must never run for a rejected caller — the gate runs before any repository read',
+  );
+});
+
+test('SECURITY: "!whois mine" for caller A never returns caller B\'s interests — only the caller\'s own resolved msg.platform/msg.userId is wired into getPublishedInterestsForOwners (issue #1048)', async (t) => {
+  const calls = mockPoolRoleAndInterests(t, 'member', [
+    { platform: 'whatsapp', user_id: 'caller-a', interests: "caller A's own interests" },
+  ]);
+  const router = makeRouter({ runTurn: throwingRunTurn });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  // userName spoofs caller B's identity — the implicit "mine" scope must
+  // come only from msg.platform/msg.userId, never from any other message
+  // field, and a message-body-supplied identifier must never reach the
+  // lookup either (there is none to parse here — the matcher is anchored).
+  await trigger(makeMessage({ text: '!whois mine', userId: 'caller-a', userName: 'caller-b-impersonation' }));
+
+  assert.match(sent[0].text, /caller A's own interests/);
+  const interestsCall = calls.find((c) => c.sql.includes('FROM member_interests'));
+  assert.ok(interestsCall);
+  assert.deepEqual(interestsCall.params, [['whatsapp'], ['caller-a']]);
+});
+
+test('SECURITY: "!whois mine 12345" (a message-body-supplied identifier) never reaches getPublishedInterestsForOwners — the anchored matcher rejects it and it falls through to the search path instead', async (t) => {
+  mockPoolRoleAndInterests(t, 'member');
+  let searchCalledWith: string | undefined;
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    searchMemberInterestsFn: async (query) => {
+      searchCalledWith = query;
+      return [];
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!whois mine 12345', userId: 'member-1' }));
+
+  assert.equal(searchCalledWith, 'mine 12345');
+  assert.equal(sent[0].text, 'No members have published interests matching that yet.');
 });
 
 // --- !projects ------------------------------------------------------------------
