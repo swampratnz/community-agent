@@ -77,6 +77,18 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   `community_guidelines`'s existing behaviour; a caller with no preference (or
   `'en'`/`'auto'`) sees byte-identical English to before. Admin/super-admin
   content and the WhatsApp `!`-shortcuts block stay English-only for now.
+- **The on-demand community digest (`community_digest`, `/digest`, `!digest`)
+  now honours a standing te reo Māori preference too** (#1042): this was the
+  last per-caller digest pull left out of the `mi` series `community_info`
+  (#1028) and `community_guidelines` completed — pulling it on demand always
+  answered in English regardless of `set_language_preference`. A caller with
+  `language_preference = 'mi'` now gets every present section (this week's
+  topics, new-in-the-knowledge-base, project showcase, platform updates,
+  interests, connections) with its label rendered in te reo Māori; the
+  underlying counts, titles and lists are unchanged. A caller with no
+  preference (or `'en'`/`'auto'`) sees byte-identical English to before. The
+  weekly scheduled channel post — one message to a shared channel, not a
+  reply to one member — stays English-only, unaffected either way.
 
 ## 2026-08-19
 
