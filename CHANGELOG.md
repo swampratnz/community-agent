@@ -37,6 +37,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   'mi'` and the WhatsApp text-commands feature on now gets that block in te
   reo Māori too; a caller with no preference (or `'en'`/`'auto'`) sees
   byte-identical English to before.
+- **The admin-promotion DM no longer silently vanishes when your WhatsApp
+  window is closed.** (#1040) If a super admin ran `grant_admin` on a
+  WhatsApp Cloud user whose 24-hour customer-service window happened to be
+  closed at that moment, the orientation DM telling them what tools they now
+  have used to just disappear — no retry, no record — even though every
+  other approval/resolution DM in this bot (member approvals, suggestion/
+  report/appeal/knowledge-tip resolutions) already queues and delivers as
+  soon as that window reopens. It now gets the same recovery.
 - **`my_data` (and its `/mydata`/`!mydata` mirrors) now reports your language
   preference, not just your response-style preference** (#1030): `my_data`'s
   whole job is telling you what the bot has stored about you, and it already
@@ -58,6 +66,15 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   every entry's retrieval count by hand. `list_top_knowledge` ranks the whole
   scope by retrieval count (an entry never retrieved is still shown, ranked
   last, not hidden), same admin-only, read-only tier as its siblings.
+- **`/kbtopics` (Discord) and `!kbtopics` (WhatsApp) — a zero-wait shortcut
+  browsing what the community knowledge base covers** (#1036): every other
+  read-only, zero-argument member tool with a "just show me" shape already had
+  a deterministic shortcut (`/warnings`, `/mysubmissions`+`/mydata`, `/status`,
+  `/events`, `/help`) — `list_knowledge_topics`, the proactive titles-only
+  counterpart to `knowledge_search` for a member who doesn't yet know the
+  right words to search for, was the one left out (`/kb`'s `query` option is
+  required, so it can only search, never browse). Same output
+  `list_knowledge_topics` already gives, without spending an agent turn.
 
 ### Fixed
 - **`community_info`/`/help`/`!help` now honour a standing te reo Māori

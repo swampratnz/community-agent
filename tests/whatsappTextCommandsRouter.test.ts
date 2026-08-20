@@ -1327,6 +1327,149 @@ test('acceptance criterion 9: !mysubmissions and !mydata each record exactly one
   assert.deepEqual(hits, ['whatsapp_text_command', 'whatsapp_text_command']);
 });
 
+// --- !kbtopics (issue #1036) --------------------------------------------------
+
+test('!kbtopics returns the same content formatKnowledgeTopics renders for the given titles/totalCount (issue #1036 acceptance criterion 2)', async (t) => {
+  const { formatKnowledgeTopics } = await import('../src/module/agent/tools.js');
+  t.mock.method(pool, 'query', (async (sql: string) => {
+    if (sql.includes('SELECT role FROM community_users')) return { rows: [{ role: 'member' }], rowCount: 0 };
+    if (sql.includes('COUNT(*) OVER()')) {
+      return {
+        rows: [
+          { title: 'Getting started', total_count: 2 },
+          { title: 'Code of conduct', total_count: 2 },
+        ],
+        rowCount: 0,
+      };
+    }
+    return { rows: [], rowCount: 0 };
+  }) as typeof pool.query);
+  const router = makeRouter({ runTurn: throwingRunTurn });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!kbtopics', userId: 'member-1' }));
+
+  assert.equal(sent[0].text, formatKnowledgeTopics(['Getting started', 'Code of conduct'], 2));
+});
+
+test("!kbtopics on an empty KB returns formatKnowledgeTopics([], 0)'s output (issue #1036 acceptance criterion 5)", async (t) => {
+  mockPoolRole(t, 'member');
+  const router = makeRouter({ runTurn: throwingRunTurn });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!kbtopics', userId: 'member-1' }));
+
+  assert.equal(sent[0].text, 'No knowledge topics have been added yet.');
+});
+
+test('a bare "!kbtopicsx" (no space, unrecognised) is not matched as the !kbtopics command — anchored matcher (issue #1036 SECURITY criterion 3)', async (t) => {
+  mockPoolRole(t, 'member');
+  const router = makeRouter({});
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!kbtopicsx', userId: 'member-1' }));
+
+  assert.equal(sent[0].text, REAL_TURN_REPLY);
+});
+
+test(
+  'SECURITY: "!kbtopics <anything>" is never matched — the anchored matcher rejects any argument, so no ' +
+    'message-supplied text can ever reach listKnowledgeTopics (issue #1036 SECURITY criterion 3)',
+  async (t) => {
+    let topicsQueried = false;
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users'))
+        return { rows: [{ role: 'member' }], rowCount: 0 };
+      if (sql.includes('COUNT(*) OVER()')) {
+        topicsQueried = true;
+        return { rows: [], rowCount: 0 };
+      }
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!kbtopics; DROP TABLE knowledge', userId: 'member-1' }));
+
+    assert.equal(sent[0].text, REAL_TURN_REPLY, 'an argument must fall through to a normal turn');
+    assert.equal(topicsQueried, false, 'listKnowledgeTopics must never run when an argument is present');
+  },
+);
+
+test(
+  'SECURITY: a guest caller\'s "!kbtopics" falls through to the normal turn — listKnowledgeTopics is never ' +
+    'invoked (issue #1036 acceptance criterion 4)',
+  async (t) => {
+    let topicsQueried = false;
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users')) return { rows: [], rowCount: 0 };
+      if (sql.includes('COUNT(*) OVER()')) {
+        topicsQueried = true;
+        return { rows: [], rowCount: 0 };
+      }
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!kbtopics', userId: 'guest-1' }));
+
+    assert.equal(sent.length, 1);
+    assert.equal(
+      sent[0].text,
+      REAL_TURN_REPLY,
+      'a guest gets no distinguishing denial reply, per the family norm',
+    );
+    assert.equal(topicsQueried, false, 'listKnowledgeTopics must never run for a rejected caller');
+  },
+);
+
+test(
+  "SECURITY: !kbtopics' scope predicate is always the adapter-resolved (msg.platform, msg.conversationId) " +
+    '— never anything parsed from the message text (issue #1036 acceptance criterion 2)',
+  async (t) => {
+    const calls: Array<{ sql: string; params: unknown[] }> = [];
+    t.mock.method(pool, 'query', (async (sql: string, params: unknown[] = []) => {
+      calls.push({ sql, params });
+      if (sql.includes('SELECT role FROM community_users'))
+        return { rows: [{ role: 'member' }], rowCount: 0 };
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: throwingRunTurn });
+    const { adapter, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!kbtopics', userId: 'member-1', conversationId: 'wa-conv-scoped' }));
+
+    const topicsQuery = calls.find((c) => c.sql.includes('COUNT(*) OVER()'));
+    assert.ok(topicsQuery, '!kbtopics must call listKnowledgeTopics');
+    assert.deepEqual(topicsQuery?.params.slice(0, 2), ['whatsapp', 'wa-conv-scoped']);
+  },
+);
+
+test("a successful !kbtopics invocation calls recordShortcutHit('whatsapp_text_command') exactly once (issue #1036)", async (t) => {
+  mockPoolRole(t, 'member');
+  const hits: string[] = [];
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    recordShortcutHitFn: async (kind) => {
+      hits.push(kind);
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!kbtopics', userId: 'member-1' }));
+
+  assert.equal(sent.length, 1);
+  assert.deepEqual(hits, ['whatsapp_text_command']);
+});
+
 // --- shortcut_hits tracking (issue #874, acceptance criterion 1) ------------
 
 test('acceptance criterion 1: each of !whois/!projects/!guidelines/!digest/!status/!warnings records exactly one whatsapp_text_command shortcut hit via the shared send path (issue #1000)', async (t) => {
