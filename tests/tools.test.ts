@@ -10055,6 +10055,61 @@ test("SECURITY: formatKnowledgeSearchResults keeps an auto-researched hit's quar
   assert.match(autoLineFirst ?? '', /Unreviewed auto content\./);
 });
 
+// lang (issue #1038): formatKnowledgeSearchResults threads its trailing lang
+// argument straight into formatKnowledgeCitationNote, so /kb (the only
+// caller that passes it) can render the stale/low-rated caveats in the
+// caller's stored language preference. knowledge_search's own call site
+// (knowledgeMember.ts) never passes it — the model composes that reply
+// in-language already — so it, and every other omitted-argument caller,
+// must stay byte-identical.
+test('formatKnowledgeSearchResults renders the stale and low-rated caveats in te reo Māori when lang is "mi" (issue #1038 acceptance criterion 2)', () => {
+  const hit = {
+    id: 1,
+    title: 'Stale low-rated entry',
+    content: 'Some content.',
+    similarity: 0.9,
+    updatedAt: ancientDate,
+    lastRetrievedAt: null,
+  };
+  const text = formatKnowledgeSearchResults([hit], 30, 0, false, new Set([1]), 'mi');
+  assert.ok(
+    text.includes(notice('knowledgeStaleNote', { language: 'mi' })),
+    'the mi staleness caveat must render when lang is mi',
+  );
+  assert.ok(
+    text.includes(notice('knowledgeLowRatedCaveat', { language: 'mi' })),
+    'the mi low-rated caveat must render when lang is mi',
+  );
+  assert.ok(!text.includes('may be outdated'), 'the English staleness caveat must not render alongside mi');
+  assert.ok(
+    !text.includes('other members found this unhelpful'),
+    'the English low-rated caveat must not render alongside mi',
+  );
+});
+
+test(
+  "formatKnowledgeSearchResults is byte-identical whether lang is omitted or explicitly 'auto' " +
+    '(issue #1038 regression guard — stale/low-rated caveats stay English)',
+  () => {
+    const hit = {
+      id: 1,
+      title: 'Stale low-rated entry',
+      content: 'Some content.',
+      similarity: 0.9,
+      updatedAt: ancientDate,
+      lastRetrievedAt: null,
+    };
+    const omitted = formatKnowledgeSearchResults([hit], 30, 0, false, new Set([1]));
+    const explicitAuto = formatKnowledgeSearchResults([hit], 30, 0, false, new Set([1]), 'auto');
+    assert.equal(omitted, explicitAuto);
+    assert.ok(omitted.includes('may be outdated'), 'sanity check: the English staleness caveat is present');
+    assert.ok(
+      omitted.includes('other members found this unhelpful'),
+      'sanity check: the English low-rated caveat is present',
+    );
+  },
+);
+
 // formatKnowledgeCitationNote (issue #214): deterministic, send-path-only
 // citation + freshness formatting shared by knowledge_search
 // (formatKnowledgeSearchResults) and the router's zero-token knowledge

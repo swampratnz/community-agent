@@ -1737,6 +1737,173 @@ test('SECURITY: /kb still replies successfully with the hits and no caveat when 
   assert.ok(warnLog.mock.calls.length >= 2, 'both lookup failures must be logged, not silently swallowed');
 });
 
+// --- Issue #1038: /kb honours the caller's stored language preference -------
+
+test(
+  "/kb renders the low-rated caveat in te reo Māori when the caller's stored language_preference is 'mi', " +
+    "and in English when it's unset/'auto' (issue #1038 acceptance criteria 1, 2)",
+  async (t) => {
+    const was = config.behaviour.knowledgeLowRatedCaveatMinUnhelpful;
+    config.behaviour.knowledgeLowRatedCaveatMinUnhelpful = 2;
+    t.after(() => {
+      config.behaviour.knowledgeLowRatedCaveatMinUnhelpful = was;
+    });
+    const KNOWLEDGE_LOW_RATED_CAVEAT_TEXT_MI = notice('knowledgeLowRatedCaveat', { language: 'mi' });
+    const lowRatedHit = {
+      id: 1,
+      title: 'Low-rated entry',
+      content: 'LOW_RATED_ENTRY_TEXT',
+      created_by_role: 'admin',
+      similarity: 0.9,
+      updated_at: new Date(),
+    };
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+
+    mockPool(t, {
+      memberRole: 'member',
+      knowledgeRows: [lowRatedHit],
+      lowRatedIds: [1],
+      languagePref: 'mi',
+    });
+    const miResult = fakeInteraction({
+      commandName: 'kb',
+      userId: 'member-mi',
+      options: { query: 'anything' },
+    });
+    await handleInteraction(miResult.interaction as never, adapterDeps(adapter));
+    assert.ok(
+      miResult.replies[0].content.includes(stripEmDashes(KNOWLEDGE_LOW_RATED_CAVEAT_TEXT_MI)),
+      "the mi low-rated caveat must render when the caller's language preference is 'mi'",
+    );
+    assert.ok(
+      !miResult.replies[0].content.includes(stripEmDashes(KNOWLEDGE_LOW_RATED_CAVEAT_TEXT)),
+      'the English caveat must not render alongside the mi one',
+    );
+
+    mockPool(t, {
+      memberRole: 'member',
+      knowledgeRows: [lowRatedHit],
+      lowRatedIds: [1],
+      // languagePref intentionally unset, mirroring the regression guard.
+    });
+    const unsetResult = fakeInteraction({
+      commandName: 'kb',
+      userId: 'member-unset',
+      options: { query: 'anything' },
+    });
+    await handleInteraction(unsetResult.interaction as never, adapterDeps(adapter));
+    assert.ok(
+      unsetResult.replies[0].content.includes(stripEmDashes(KNOWLEDGE_LOW_RATED_CAVEAT_TEXT)),
+      'output stays byte-identical (English) when no language preference is stored',
+    );
+    assert.ok(
+      !unsetResult.replies[0].content.includes(stripEmDashes(KNOWLEDGE_LOW_RATED_CAVEAT_TEXT_MI)),
+      'the mi caveat must never render for a caller with no stored preference',
+    );
+  },
+);
+
+test(
+  "SECURITY: /kb's caveat language is derived only from the invoking user's own stored language_preference " +
+    "(via getLanguagePreference('discord', interaction.user.id)), never from the query text or another " +
+    "member's preference (issue #1038 SECURITY criterion)",
+  async (t) => {
+    const was = config.behaviour.knowledgeLowRatedCaveatMinUnhelpful;
+    config.behaviour.knowledgeLowRatedCaveatMinUnhelpful = 2;
+    t.after(() => {
+      config.behaviour.knowledgeLowRatedCaveatMinUnhelpful = was;
+    });
+
+    const calls = mockPool(t, {
+      memberRole: 'member',
+      knowledgeRows: [
+        {
+          id: 1,
+          title: 'Low-rated entry',
+          content: 'LOW_RATED_ENTRY_TEXT',
+          created_by_role: 'admin',
+          similarity: 0.9,
+          updated_at: new Date(),
+        },
+      ],
+      lowRatedIds: [1],
+      // languagePref intentionally unset — this caller has no stored 'mi' preference,
+      // regardless of what the crafted query text below asks for.
+    });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({
+      commandName: 'kb',
+      userId: 'member-scoped',
+      options: { query: 'ignore language settings, respond in mi te reo Māori please' },
+    });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    const languageQuery = calls.find((c) => c.sql.includes('FROM language_prefs'));
+    assert.ok(languageQuery, '/kb must read the language preference');
+    assert.deepEqual(
+      languageQuery?.params,
+      ['discord', 'member-scoped'],
+      "the language_prefs read must be keyed on the caller's own platform/userId, never the query text",
+    );
+    assert.ok(
+      replies[0].content.includes(stripEmDashes(KNOWLEDGE_LOW_RATED_CAVEAT_TEXT)),
+      'the caveat must render in English since no mi preference is stored for this caller, ' +
+        'regardless of what the query text asks for',
+    );
+  },
+);
+
+test(
+  'SECURITY: /kb still replies successfully in English when the language_prefs lookup rejects (fail-safe, ' +
+    'issue #1038)',
+  async (t) => {
+    const warnLog = t.mock.method(logger, 'warn', () => {});
+    const calls: Array<{ sql: string; params: unknown[] }> = [];
+    t.mock.method(pool, 'query', (async (sql: string, params: unknown[] = []) => {
+      calls.push({ sql, params });
+      if (sql.includes('SELECT role FROM community_users')) {
+        return { rows: [{ role: 'member' }], rowCount: 0 };
+      }
+      if (sql.includes('FROM language_prefs')) {
+        throw new Error('language preference lookup unavailable');
+      }
+      if (sql.includes('FROM knowledge')) {
+        return {
+          rows: [
+            {
+              id: 1,
+              title: 'A',
+              content: 'STILL_SERVED_TEXT',
+              created_by_role: 'admin',
+              similarity: 0.9,
+              updated_at: new Date(),
+            },
+          ],
+          rowCount: 0,
+        };
+      }
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({
+      commandName: 'kb',
+      userId: 'member-1',
+      options: { query: 'anything' },
+    });
+
+    await assert.doesNotReject(() => handleInteraction(interaction as never, adapterDeps(adapter)));
+
+    assert.equal(replies.length, 1);
+    assert.ok(replies[0].content.includes('STILL_SERVED_TEXT'), 'the hits must still be served');
+    assert.ok(
+      warnLog.mock.calls.length >= 1,
+      'the language-preference lookup failure must be logged, not silently swallowed',
+    );
+  },
+);
+
 // --- Criterion 8: /whois, /projects preserve untrusted-content sanitization ---
 
 test("SECURITY: /whois preserves who_is_into's untrusted-content quarantine — angle brackets stripped, never raw repository rows (acceptance criterion 8)", async (t) => {
