@@ -24,6 +24,18 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #963 #964 #965 #968 #971 #983 #988 #989 #991 #992 #994
 -->
 
+## 2026-08-21
+
+### Added
+- **`!projects seeking` — WhatsApp can now browse the project showcase for
+  people actively looking for collaborators** (#1046): `/projects
+  seeking_collaborators:true` (Discord) and the `list_projects` tool have
+  supported this filter since #854, but WhatsApp's zero-model-call `!projects`
+  shortcut never gained it — a member had to scroll the whole list or spend a
+  real model turn to find who wants help. `!projects seeking` narrows the
+  same showcase to matching projects only, rendered identically to the other
+  two surfaces.
+
 ## 2026-08-20
 
 ### Fixed
