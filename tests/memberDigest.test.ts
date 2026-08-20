@@ -3,6 +3,11 @@ import assert from 'node:assert/strict';
 import type { OutgoingMessage, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 import type { ContextDigest } from '@swampratnz/agent-base/storage/repository.js';
 import type { MemberDigestContentDeps, MemberDigestRunDeps } from '../src/module/memberDigest.js';
+// formatMemberDigestMessage/buildMemberDigestContent render notice() text for
+// their six section labels (issue #1042) — the pack is registered by
+// createAgent in production; tests opt in explicitly, same convention as
+// tools.test.ts.
+import './support/registerNotices.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -83,6 +88,7 @@ function throwingContentDeps(): MemberDigestContentDeps {
     getNewInterestCount: unexpected('getNewInterestCount'),
     getHelperMatchesCount: unexpected('getHelperMatchesCount'),
     getProjectConnectionsCount: unexpected('getProjectConnectionsCount'),
+    getLanguagePreference: unexpected('getLanguagePreference'),
   };
 }
 
@@ -550,6 +556,94 @@ test('SECURITY: formatMemberDigestMessage: the connections section is exactly th
   }
 });
 
+// --- formatMemberDigestMessage: language preference (issue #1042) ----------
+
+test('formatMemberDigestMessage: language "mi" renders all six section labels in te reo Māori, every interpolated count/list/pluralisation unchanged', () => {
+  const message = formatMemberDigestMessage(
+    [{ topic: 'MCP server auth', questionCount: 4 }],
+    ['Setting up MCP auth'],
+    1,
+    [{ title: 'docs: release-notes/overview', url: 'https://platform.claude.com/a' }],
+    0,
+    2,
+    3,
+    'mi',
+  );
+  assert.equal(
+    message,
+    '📅 Ngā kaupapa o tēnei wiki:\n• MCP server auth (4 questions)\n\n' +
+      '📚 Ngā mea hōu i te pātengi mōhiotanga (1): Setting up MCP auth\n\n' +
+      '🚀 1 kaupapa hōu kua tāpirihia ki te whakaaturanga kaupapa i tēnei wiki — pātai mai kia whakaaturia ' +
+      'te whakaaturanga kaupapa hei tirotiro.\n\n' +
+      '🆕 Ngā whakahoutanga o te pae Anthropic i tēnei wiki: ' +
+      '[docs: release-notes/overview](https://platform.claude.com/a)\n\n' +
+      '🔍 2 mema kua whakaputa, kua whakahou rānei i ō rātou hiahia i tēnei wiki — pātai mai "ko wai kei te ' +
+      'hiahia ki a X?" kia kitea ai rātou.\n\n' +
+      '🤝 3 mema kua hono ki tētahi āwhina, hoa mahi rānei i tēnei wiki.',
+  );
+});
+
+test('formatMemberDigestMessage: language "en" (not a registered axis value) renders byte-identical to the default/omitted-language output (issue #1042 acceptance criterion 2)', () => {
+  const withDefault = formatMemberDigestMessage(
+    [{ topic: 'MCP server auth', questionCount: 1 }],
+    ['Setting up MCP auth'],
+    1,
+  );
+  const withEn = formatMemberDigestMessage(
+    [{ topic: 'MCP server auth', questionCount: 1 }],
+    ['Setting up MCP auth'],
+    1,
+    [],
+    0,
+    0,
+    0,
+    'en',
+  );
+  assert.equal(withDefault, withEn);
+});
+
+// --- buildMemberDigestContent: caller-identity language threading (issue #1042) --
+
+test('buildMemberDigestContent: with a caller supplied, deps.getLanguagePreference is called with exactly that (platform, userId), and a "mi" result renders the mi section labels', async () => {
+  let received: [string, string] | undefined;
+  const message = await buildMemberDigestContent(
+    {
+      ...throwingContentDeps(),
+      getDigests: async () => [makeDigest({ topic: 'MCP server auth', questionCount: 1 })],
+      getNewKnowledgeTitles: async () => [],
+      getNewProjectCount: async () => 0,
+      getMemberTipCount: async () => 0,
+      getNewInterestCount: async () => 0,
+      getHelperMatchesCount: async () => 0,
+      getProjectConnectionsCount: async () => 0,
+      getLanguagePreference: async (platform, userId) => {
+        received = [platform, userId];
+        return 'mi';
+      },
+    },
+    { platform: 'discord', userId: 'member-1' },
+  );
+  assert.deepEqual(received, ['discord', 'member-1']);
+  assert.equal(message, '📅 Ngā kaupapa o tēnei wiki:\n• MCP server auth (1 question)');
+});
+
+test('SECURITY: buildMemberDigestContent never invokes deps.getLanguagePreference when no caller is supplied (issue #1042 acceptance criterion 5)', async () => {
+  const message = await buildMemberDigestContent({
+    ...throwingContentDeps(),
+    getDigests: async () => [makeDigest({ topic: 'MCP server auth', questionCount: 1 })],
+    getNewKnowledgeTitles: async () => [],
+    getNewProjectCount: async () => 0,
+    getMemberTipCount: async () => 0,
+    getNewInterestCount: async () => 0,
+    getHelperMatchesCount: async () => 0,
+    getProjectConnectionsCount: async () => 0,
+    // getLanguagePreference is left as throwingContentDeps()'s throwing stub —
+    // a call here would fail this test, proving the caller-less path never
+    // reads a language preference at all.
+  });
+  assert.equal(message, "📅 This week's topics:\n• MCP server auth (1 question)");
+});
+
 // --- makeDefaultMemberDigestRun (injected deps, no real DB) ----------------
 
 test('makeDefaultMemberDigestRun: MEMBER_DIGEST_CHANNEL_ID unset, runOnce is a no-op — no send, no freshness read', async () => {
@@ -679,6 +773,36 @@ test('makeDefaultMemberDigestRun: past the freshness window with content, posts 
   );
   assert.equal(recordCalled, true, 'a real send stamps the freshness guard');
 });
+
+test(
+  'SECURITY: makeDefaultMemberDigestRun renders byte-identical to today regardless of a stubbed ' +
+    "getLanguagePreference — the scheduled weekly push must never branch on any single recipient's " +
+    'preference (issue #1042 acceptance criterion 5)',
+  async () => {
+    const { adapter, sent } = makeAdapter();
+    const runOnce = makeDefaultMemberDigestRun([adapter], {
+      ...throwingRunDeps(),
+      wasSentRecently: async () => false,
+      getDigests: async () => [makeDigest({ topic: 'MCP server auth', questionCount: 4 })],
+      getNewKnowledgeTitles: async () => ['Setting up MCP auth'],
+      getNewInterestCount: async () => 0,
+      getNewProjectCount: async () => 0,
+      getMemberTipCount: async () => 0,
+      getHelperMatchesCount: async () => 0,
+      getProjectConnectionsCount: async () => 0,
+      getLanguagePreference: async () => 'mi',
+      recordSent: async () => {},
+    });
+    await runOnce();
+    assert.equal(sent.length, 1);
+    assert.equal(
+      sent[0].text,
+      "📅 This week's topics:\n• MCP server auth (4 questions)\n\n📚 New in the knowledge base (1): Setting up MCP auth",
+      'the broadcast renders in English even though getLanguagePreference is stubbed to "mi" — it is never ' +
+        'called at all without a caller identity',
+    );
+  },
+);
 
 test('makeDefaultMemberDigestRun: getMemberTipCount is called with the exact same `since` instant as getNewKnowledgeTitles/getNewProjectCount, and a nonzero result reaches the sent message (issue #837)', async () => {
   const { adapter, sent } = makeAdapter();

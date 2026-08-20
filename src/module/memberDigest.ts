@@ -2,21 +2,24 @@ import { config } from '@swampratnz/agent-base/config.js';
 import { logger } from '@swampratnz/agent-base/logger.js';
 import { startTrackedJob } from '@swampratnz/agent-base/jobs/trackedJob.js';
 import { scrubPII } from './context/export.js';
+import { notice } from './strings/notices.js';
 import {
   countAcceptedMemberKnowledgeTipsSince,
   countHelperMatchesSince,
   countInterestsPublishedSince,
   countProjectConnectionsSince,
   countProjectsSharedSince,
+  getLanguagePreference,
   listContextDigests,
   listCuratedKnowledgeCreatedSince,
   listReleaseWatchUpdatesSince,
   recordMemberDigestSent,
   wasMemberDigestSentRecently,
   type ContextDigest,
+  type LanguagePreference,
 } from '@swampratnz/agent-base/storage/repository.js';
 import type { JobSpec } from '@swampratnz/agent-base/jobs/types.js';
-import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
+import type { Platform, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
 /** Same weekly window as `adminDigest.ts`'s `FRESHNESS_DAYS` — this signal targets the same ~7-day cadence. */
 const FRESHNESS_DAYS = 7;
@@ -99,6 +102,16 @@ const MAX_RELEASE_WATCH_PAGES = 10;
  * document above), so this parameter's `number` type makes leaking either
  * party's identity through this surface structurally impossible. Defaults
  * to 0 so every existing call site is unaffected.
+ *
+ * `language` (issue #1042) defaults to `'auto'` (not a registered notice
+ * axis value, so it renders the base/English text — byte-identical to every
+ * pre-#1042 call site) and selects the `mi` variant of the six section
+ * label/frame fragments below via `notice()`. Every interpolated count,
+ * title list, comma-join and English singular/plural choice stays exactly
+ * where it already lived in this function; only the static label wording
+ * around them comes from the notice pack now. The scheduled weekly push
+ * (`makeDefaultMemberDigestRun`) never passes anything but the default here
+ * — see that function's own comment for why.
  */
 export function formatMemberDigestMessage(
   topics: ReadonlyArray<{ topic: string; questionCount: number }>,
@@ -108,6 +121,7 @@ export function formatMemberDigestMessage(
   memberTipCount = 0,
   newInterestCount = 0,
   connectionCount = 0,
+  language: LanguagePreference = 'auto',
 ): string | null {
   if (
     topics.length === 0 &&
@@ -122,7 +136,7 @@ export function formatMemberDigestMessage(
   const sections: string[] = [];
   if (topics.length > 0) {
     sections.push(
-      "📅 This week's topics:\n" +
+      `${notice('memberDigestTopicsHeading', { language })}\n` +
         topics
           .map(
             (t) => `• ${scrubPII(t.topic)} (${t.questionCount} question${t.questionCount === 1 ? '' : 's'})`,
@@ -139,30 +153,25 @@ export function formatMemberDigestMessage(
           ? ` — ${clampedTipCount} suggested by members like you 💡`
           : '';
     sections.push(
-      `📚 New in the knowledge base (${newKnowledgeTitles.length}): ${newKnowledgeTitles.join(', ')}${tipClause}`,
+      `${notice('memberDigestKnowledgeHeading', { language })(newKnowledgeTitles.length)}` +
+        `${newKnowledgeTitles.join(', ')}${tipClause}`,
     );
   }
   if (newProjectCount > 0) {
-    sections.push(
-      `🚀 ${newProjectCount} new project${newProjectCount === 1 ? '' : 's'} added to the showcase this week — ask me to show the project showcase to browse.`,
-    );
+    sections.push(notice('memberDigestProjectShowcase', { language })(newProjectCount));
   }
   if (releaseWatchPages.length > 0) {
     sections.push(
-      `🆕 Anthropic platform updates this week: ${releaseWatchPages
+      `${notice('memberDigestPlatformUpdatesHeading', { language })} ${releaseWatchPages
         .map((p) => (p.url ? `[${p.title}](${p.url})` : p.title))
         .join(', ')}`,
     );
   }
   if (newInterestCount > 0) {
-    sections.push(
-      `🔍 ${newInterestCount} member${newInterestCount === 1 ? '' : 's'} published or updated their interests this week — ask me "who's into X?" to find them.`,
-    );
+    sections.push(notice('memberDigestInterestsUpdate', { language })(newInterestCount));
   }
   if (connectionCount > 0) {
-    sections.push(
-      `🤝 ${connectionCount} member${connectionCount === 1 ? '' : 's'} connected with help or a collaborator this week.`,
-    );
+    sections.push(notice('memberDigestConnectionsUpdate', { language })(connectionCount));
   }
   return sections.join('\n\n');
 }
@@ -185,6 +194,12 @@ export function formatMemberDigestMessage(
  * `async () => 0` stubs would re-create this footgun in a quieter form: a newly
  * added signal would silently acquire a plausible zero nobody chose, and the
  * test that was supposed to cover it would pass vacuously.
+ *
+ * `getLanguagePreference` (issue #1042) is invoked only when
+ * {@link buildMemberDigestContent}'s own `caller` parameter is supplied —
+ * every OTHER field here is unconditional, so this is the one field a test
+ * exercising a caller-less call (the scheduled weekly push) never needs to
+ * stub even via `throwingContentDeps`.
  */
 export type MemberDigestContentDeps = {
   getDigests: (days: number, limit: number) => Promise<ContextDigest[]>;
@@ -199,6 +214,7 @@ export type MemberDigestContentDeps = {
   getNewInterestCount: (since: Date) => Promise<number>;
   getHelperMatchesCount: (since: Date) => Promise<number>;
   getProjectConnectionsCount: (since: Date) => Promise<number>;
+  getLanguagePreference: (platform: Platform, userId: string) => Promise<LanguagePreference>;
 };
 
 /**
@@ -237,8 +253,23 @@ export type MemberDigestRunDeps = MemberDigestContentDeps & {
  * The deps parameter is ALL-OR-NOTHING by type ({@link MemberDigestContentDeps}
  * has no optional fields) — see that type's own comment for why a partial
  * object is a footgun rather than a convenience.
+ *
+ * `caller` (issue #1042) is a SEPARATE, genuinely optional parameter — not
+ * part of the all-or-nothing deps object, because it is not a stubbable read
+ * but the identity of whoever is pulling this on demand. When supplied (every
+ * on-demand pull: `community_digest`'s handler, `/digest`, `!digest`), the
+ * caller's own stored `language_preference` is read via
+ * `deps.getLanguagePreference` and threaded into
+ * {@link formatMemberDigestMessage} so the six section labels render in the
+ * caller's language. When omitted — `makeDefaultMemberDigestRun`'s scheduled
+ * weekly push, which has no single reader whose preference should win — no
+ * language read happens at all and the digest renders exactly as before
+ * #1042, regardless of any recipient's stored preference.
  */
-export async function buildMemberDigestContent(deps?: MemberDigestContentDeps): Promise<string | null> {
+export async function buildMemberDigestContent(
+  deps?: MemberDigestContentDeps,
+  caller?: { platform: Platform; userId: string },
+): Promise<string | null> {
   const getDigests = deps?.getDigests ?? listContextDigests;
   const getNewKnowledgeTitles = deps?.getNewKnowledgeTitles ?? listCuratedKnowledgeCreatedSince;
   const getNewProjectCount = deps?.getNewProjectCount ?? countProjectsSharedSince;
@@ -256,12 +287,15 @@ export async function buildMemberDigestContent(deps?: MemberDigestContentDeps): 
   // — called unconditionally, mirroring adminDigest.ts's own
   // countProjectConnectionsSince call site (issue #870).
   const getProjectConnectionsCount = deps?.getProjectConnectionsCount ?? countProjectConnectionsSince;
+  const getLangPref = deps?.getLanguagePreference ?? getLanguagePreference;
 
   const since = new Date(Date.now() - FRESHNESS_DAYS * 24 * 3_600_000);
   // RELEASE_WATCH_ENABLED gates the read itself, not just its output — when
   // off, getReleaseWatchUpdates must never be invoked (issue #733's
   // byte-identical-when-disabled contract), so this is a conditional
-  // Promise, not a post-hoc empty-array filter.
+  // Promise, not a post-hoc empty-array filter. Same shape for the language
+  // read (issue #1042): a caller-less call (the scheduled weekly push) must
+  // never invoke getLanguagePreference at all, not just discard its result.
   const [
     digests,
     newKnowledgeTitles,
@@ -271,6 +305,7 @@ export async function buildMemberDigestContent(deps?: MemberDigestContentDeps): 
     newInterestCount,
     helperMatchesCount,
     projectConnectionsCount,
+    language,
   ] = await Promise.all([
     getDigests(FRESHNESS_DAYS, MAX_TOPICS),
     getNewKnowledgeTitles(since, MAX_NEW_KNOWLEDGE_TITLES),
@@ -282,6 +317,7 @@ export async function buildMemberDigestContent(deps?: MemberDigestContentDeps): 
     getNewInterestCount(since),
     getHelperMatchesCount(since),
     getProjectConnectionsCount(since),
+    caller ? getLangPref(caller.platform, caller.userId) : Promise.resolve(undefined),
   ]);
   // Two independent floors before a digest topic reaches this public
   // surface (PR #651 review):
@@ -307,6 +343,7 @@ export async function buildMemberDigestContent(deps?: MemberDigestContentDeps): 
     memberTipCount,
     newInterestCount,
     helperMatchesCount + projectConnectionsCount,
+    language,
   );
 }
 
@@ -349,6 +386,12 @@ export function makeDefaultMemberDigestRun(
     // is a superset of MemberDigestContentDeps, so a new content signal needs no
     // change here. The old explicit list was a second place to forget one, which
     // is how #822's and #839's new deps reached the gather as `undefined`.
+    //
+    // SECURITY (issue #1042): deliberately no second (`caller`) argument — this
+    // is a single broadcast to a shared channel, not a reply to one member, so
+    // no recipient's stored `language_preference` may ever select which
+    // language it renders in. Passing one here would make the scheduled push
+    // silently branch on whichever member's preference happened to be read.
     const message = await buildMemberDigestContent(deps);
     // Quiet week — nothing to post. Deliberately leaves the freshness row
     // untouched (same convention as adminDigest.ts's quiet-week skip) so a

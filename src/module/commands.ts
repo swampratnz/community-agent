@@ -19,6 +19,7 @@ import {
   formatProjectResults,
   LIST_PROJECTS_DEFAULT_LIMIT,
 } from './agent/tools.js';
+import { buildMemberDigestContent } from './memberDigest.js';
 import {
   formatMyDataText,
   formatMySubmissionsText,
@@ -145,10 +146,22 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
   {
     name: 'digest',
     platforms: ['discord', 'whatsapp'],
-    whatsapp: async (text, _msg, role, deps) => {
+    whatsapp: async (text, msg, role, deps) => {
       if (!/^!digest$/i.test(text)) return TEXT_COMMAND_UNMATCHED;
       if (!atLeast(role, 'member')) return null;
-      const message = await deps.buildDigestContentFn();
+      // deps.buildDigestContentFn (agent-base's WhatsAppTextCommandDeps) is
+      // fixed zero-arg — base owns that type, so it cannot carry the caller's
+      // identity through to buildMemberDigestContent for localisation
+      // (issue #1042). It stays the default/English-preference path (same
+      // DI-tested call as before); a standing 'mi' preference calls
+      // buildMemberDigestContent directly instead, exactly as /digest and
+      // community_digest already do, so its rendering is real (DB-backed)
+      // rather than the deps-stubbed fixture.
+      const language = await deps.getLangPref(msg.platform, msg.userId);
+      const message =
+        language === 'mi'
+          ? await buildMemberDigestContent(undefined, { platform: msg.platform, userId: msg.userId })
+          : await deps.buildDigestContentFn();
       return message ?? 'Nothing to report right now.';
     },
   },

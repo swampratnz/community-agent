@@ -475,6 +475,60 @@ const NOTICE_ENTRIES = {
         '- `!help` — tēnei whakarāpopototanga pūkenga',
     },
   },
+  // --- member digest section labels (memberDigest.ts) ----------------------
+  /**
+   * The fixed label/frame fragments behind `formatMemberDigestMessage`'s six
+   * sections (issue #1042) — the last per-caller digest pull surface left
+   * without `mi` awareness (`community_digest`/`/digest`/`!digest`; the
+   * weekly scheduled channel push stays English-only on purpose, since it has
+   * no single reader whose preference should win). Every interpolated count,
+   * title list, comma-join and English singular/plural choice stays exactly
+   * where it already lived in `memberDigest.ts` — these entries carry only
+   * the static wording around them, mirroring `communityInfoMemberCapabilities`'s
+   * own base-moved-verbatim, mi-added-fresh shape. `memberDigestKnowledgeHeading`
+   * is a template so its own "(N): " frame renders byte-identical to the
+   * pre-#1042 literal; the other project/interests/connections lines are
+   * full-sentence templates (same shape as `warnDm`/`codeTruncatedNote`
+   * above) because te reo Māori needs no singular/plural inflection, so the
+   * mi variant needs no equivalent to the English ternary.
+   */
+  memberDigestTopicsHeading: {
+    base: "📅 This week's topics:",
+    language: { mi: '📅 Ngā kaupapa o tēnei wiki:' },
+  },
+  memberDigestKnowledgeHeading: {
+    base: (count: number) => `📚 New in the knowledge base (${count}): `,
+    language: {
+      mi: (count: number) => `📚 Ngā mea hōu i te pātengi mōhiotanga (${count}): `,
+    },
+  },
+  memberDigestProjectShowcase: {
+    base: (count: number) =>
+      `🚀 ${count} new project${count === 1 ? '' : 's'} added to the showcase this week — ask me to show the project showcase to browse.`,
+    language: {
+      mi: (count: number) =>
+        `🚀 ${count} kaupapa hōu kua tāpirihia ki te whakaaturanga kaupapa i tēnei wiki — pātai mai kia whakaaturia te whakaaturanga kaupapa hei tirotiro.`,
+    },
+  },
+  memberDigestPlatformUpdatesHeading: {
+    base: '🆕 Anthropic platform updates this week:',
+    language: { mi: '🆕 Ngā whakahoutanga o te pae Anthropic i tēnei wiki:' },
+  },
+  memberDigestInterestsUpdate: {
+    base: (count: number) =>
+      `🔍 ${count} member${count === 1 ? '' : 's'} published or updated their interests this week — ask me "who's into X?" to find them.`,
+    language: {
+      mi: (count: number) =>
+        `🔍 ${count} mema kua whakaputa, kua whakahou rānei i ō rātou hiahia i tēnei wiki — pātai mai "ko wai kei te hiahia ki a X?" kia kitea ai rātou.`,
+    },
+  },
+  memberDigestConnectionsUpdate: {
+    base: (count: number) =>
+      `🤝 ${count} member${count === 1 ? '' : 's'} connected with help or a collaborator this week.`,
+    language: {
+      mi: (count: number) => `🤝 ${count} mema kua hono ki tētahi āwhina, hoa mahi rānei i tēnei wiki.`,
+    },
+  },
   // --- knowledge citation-note fragments (agent/tools/helpers.ts) ----------
   knowledgeLowRatedCaveat: {
     base: 'other members found this unhelpful — you can flag it too with rate_answer',
