@@ -130,6 +130,10 @@ async function handleKb(interaction: ChatInputCommandInteraction, deps: SlashCom
           return new Set<number>();
         })
       : new Set<number>();
+  // getLanguagePreference (issue #1038) already fails safe to 'auto' on a DB
+  // hiccup — same accessor handleGuidelines/handleMyData already call for
+  // this command's own caller, scoped to their own discord user id.
+  const lang = await getLanguagePreference('discord', interaction.user.id);
   recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
   await replyEphemeral(
     interaction,
@@ -139,6 +143,7 @@ async function handleKb(interaction: ChatInputCommandInteraction, deps: SlashCom
       config.adminDigest.knowledgeStaleMaxAgeDays,
       hasConflict,
       lowRatedIds,
+      lang,
     ),
     deps,
   );
