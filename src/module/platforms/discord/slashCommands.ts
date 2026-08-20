@@ -30,6 +30,8 @@ import {
   listOwnSuggestions,
   listRecentInterests,
   listRecentProjects,
+  recordKnowledgeGap,
+  recordKnowledgeRetrieval,
   recordShortcutHit,
   searchKnowledge,
   searchMemberInterests,
@@ -113,6 +115,24 @@ async function handleKb(interaction: ChatInputCommandInteraction, deps: SlashCom
   const relevantIds = trusted
     .filter((h) => h.similarity >= KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD)
     .map((h) => h.id);
+  // Feed the same curation signals knowledge_search's own handler records
+  // (issue #1052) — /kb exists to divert lookups off the model path for cost
+  // (#744/#1036), so every diverted lookup was previously invisible to both
+  // list_top_knowledge's retrieval_count ranking and list_knowledge_gaps'
+  // below-floor-miss clustering. Both calls key off the same trusted/
+  // relevantIds sets already computed above, fire-and-forget with a
+  // swallowed rejection so a write failure can never delay or change this
+  // reply. Unlike the chat path, /kb has no lexical fallback, so the gap
+  // guard below fires before any lexical rescue would — accepted as a
+  // deliberate, marginally noisier v1 rather than in-scope for this PR.
+  recordKnowledgeRetrieval(relevantIds).catch((err) =>
+    logger.warn({ err }, 'Knowledge retrieval count update failed'),
+  );
+  if (hits.length > 0 && relevantIds.length === 0) {
+    recordKnowledgeGap('discord', interaction.channelId, interaction.user.id, query).catch((err) =>
+      logger.warn({ err }, 'Knowledge gap recording failed'),
+    );
+  }
   const hasConflict =
     relevantIds.length >= 2
       ? await hasConflictAmongIds(relevantIds).catch((err) => {

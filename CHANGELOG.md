@@ -44,6 +44,13 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   decline DM (English and te reo Māori both), so a duplicate/too-vague/
   off-topic tip can be resubmitted with the actual problem fixed. Omitting
   the reason produces the exact same DM as before.
+- **`/kb` now feeds the knowledge base's curation signals, same as asking in
+  chat.** (#1052) `/kb` is a zero-model-call shortcut for looking things up in
+  the knowledge base, but it previously left both curation signals dark:
+  entries you found only via `/kb` didn't count toward `list_top_knowledge`'s
+  "which entries earn their keep" ranking, and a `/kb` search that came up
+  empty wasn't recorded as a knowledge gap for admins to see. `/kb` now
+  records both, exactly as asking the same question in chat already does.
 
 ## 2026-08-20
 

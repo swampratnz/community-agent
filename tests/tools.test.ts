@@ -139,6 +139,7 @@ const {
   listKnowledgeCandidates,
   acceptKnowledgeCandidate,
   declineKnowledgeCandidate,
+  recordKnowledgeGap,
   recordKnowledgeRetrieval,
   addWarning,
   addMemberNote,
@@ -212,6 +213,7 @@ const { COMMUNITY_COMMANDS } = await import('../src/module/commands.js');
 const RUN = `t${Date.now()}${Math.floor(Math.random() * 1e6)}`;
 const KNOWLEDGE_SEARCH_HANDLER_SCOPE = `${RUN}-knowledge-search-handler`;
 const KNOWLEDGE_GAP_HANDLER_SCOPE = `${RUN}-knowledge-gap-handler`;
+const KB_KNOWLEDGE_GAP_PURGE_USER = `${RUN}-kb-knowledge-gap-purge`;
 const KNOWLEDGE_ENTRY_ID_TURN_STATE_SCOPE = `${RUN}-knowledge-entry-id-turn-state`;
 const KNOWLEDGE_ENTRY_ID_SCOPE_LEAK_SCOPE_A = `${RUN}-knowledge-entry-id-scope-leak-a`;
 const KNOWLEDGE_ENTRY_ID_SCOPE_LEAK_SCOPE_B = `${RUN}-knowledge-entry-id-scope-leak-b`;
@@ -255,6 +257,9 @@ after(async () => {
       `${REPORT_CONTENT_ACK_HANDLER_CONVO}%`,
     ]);
     await pool.query(`DELETE FROM knowledge WHERE scope = $1`, [KNOWLEDGE_SEARCH_HANDLER_SCOPE]);
+    // Safety net for the /kb-shaped knowledge_gaps purge-coherence test (issue
+    // #1052) — only needed if the test fails before its own purgeUserData call.
+    await pool.query(`DELETE FROM knowledge_gaps WHERE user_id = $1`, [KB_KNOWLEDGE_GAP_PURGE_USER]);
     // The scope-leak test (issue #411 acceptance criterion 6) inserts a
     // knowledge row directly via saveKnowledge and never removed it — a
     // stray row left behind here previously survived across runs and, since
@@ -18033,6 +18038,59 @@ test(
       after.rows.length,
       0,
       "SECURITY: the drafted candidate is deleted by the asking member's own purge",
+    );
+  },
+);
+
+test(
+  'SECURITY: purge_user_data/forget_me deletes a /kb-originated knowledge_gaps row exactly as a chat-path knowledge_search gap row, and the row it deletes is schema-identical (no new identifier column) (issue #1052 acceptance criterion 5)',
+  { skip },
+  async () => {
+    // handleKb (src/module/platforms/discord/slashCommands.ts) calls this
+    // exact repository function, with this exact argument shape, on a
+    // genuine below-floor miss — so this exercises the real row a /kb query
+    // produces, not a hand-rolled INSERT. There is no separate table or
+    // mechanism for a /kb-originated gap: it lands in the same `knowledge_gaps`
+    // row the chat-path `knowledge_search` tool already writes, purged by the
+    // same generic `(platform, user_id)`-keyed purge contributor.
+    const gapResult = await recordKnowledgeGap(
+      'discord',
+      `${KB_KNOWLEDGE_GAP_PURGE_USER}-convo`,
+      KB_KNOWLEDGE_GAP_PURGE_USER,
+      'a /kb-shaped below-floor miss query',
+    );
+    assert.notEqual(gapResult, 'rate_limited', 'fixture: the gap row must be recorded before purging');
+
+    const before = await pool.query(`SELECT * FROM knowledge_gaps WHERE user_id = $1`, [
+      KB_KNOWLEDGE_GAP_PURGE_USER,
+    ]);
+    assert.equal(before.rows.length, 1, 'fixture: the /kb-shaped gap row must exist before purging');
+    assert.deepEqual(
+      Object.keys(before.rows[0]).sort(),
+      [
+        'alerted_at',
+        'conversation_id',
+        'created_at',
+        'embedding',
+        'escalated',
+        'id',
+        'platform',
+        'query_text',
+        'resolved_at',
+        'user_id',
+      ],
+      'a /kb-originated gap row must be schema-identical to a knowledge_search gap row — this PR introduces no new identifier column',
+    );
+
+    await purgeUserData('discord', KB_KNOWLEDGE_GAP_PURGE_USER);
+
+    const after = await pool.query(`SELECT 1 FROM knowledge_gaps WHERE user_id = $1`, [
+      KB_KNOWLEDGE_GAP_PURGE_USER,
+    ]);
+    assert.equal(
+      after.rows.length,
+      0,
+      "SECURITY: a /kb-originated knowledge_gaps row is deleted by the asking member's own purge, exactly as a chat-path gap row is",
     );
   },
 );
