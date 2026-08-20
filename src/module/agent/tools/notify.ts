@@ -273,7 +273,11 @@ export async function notifyMemberApproved(
  * (`wasAlreadyAdmin` false) so re-running `grant_admin` on an existing admin
  * doesn't re-send it, and a failed DM (closed DMs, WhatsApp 24h window, etc.)
  * is logged and swallowed — the grant itself is the source of truth, never
- * blocked on this. Exported separately from the `grant_admin` tool so it's
+ * blocked on this. A `WindowClosedError` rejection is queued via
+ * `queueForWindowReopen` at `'low'` priority instead of logged-and-dropped
+ * (issue #1040 — the last function in the #644/#888/#922/#998
+ * WindowClosedError-parity series for this file; any other rejection is
+ * unaffected). Exported separately from the `grant_admin` tool so it's
  * unit-testable without the MCP tool-call transport. Honours the target's
  * standing `'mi'` language preference identically to `notifyMemberApproved`
  * above (issue #331).
@@ -300,6 +304,14 @@ export async function notifyAdminApproved(
     .sendDirectMessage(userId, message)
     .then(() => true)
     .catch((err) => {
+      if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+        adapter.queueForWindowReopen(userId, message, 'low');
+        logger.warn(
+          { userId, platform },
+          "Admin promotion DM: recipient's window is closed, queued for reopen",
+        );
+        return true;
+      }
       logger.warn({ err, userId }, 'Admin promotion DM failed');
       return false;
     });
