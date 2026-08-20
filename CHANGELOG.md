@@ -27,6 +27,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-08-20
 
 ### Fixed
+- **The admin-promotion DM no longer silently vanishes when your WhatsApp
+  window is closed.** (#1040) If a super admin ran `grant_admin` on a
+  WhatsApp Cloud user whose 24-hour customer-service window happened to be
+  closed at that moment, the orientation DM telling them what tools they now
+  have used to just disappear — no retry, no record — even though every
+  other approval/resolution DM in this bot (member approvals, suggestion/
+  report/appeal/knowledge-tip resolutions) already queues and delivers as
+  soon as that window reopens. It now gets the same recovery.
 - **`my_data` (and its `/mydata`/`!mydata` mirrors) now reports your language
   preference, not just your response-style preference** (#1030): `my_data`'s
   whole job is telling you what the bot has stored about you, and it already
