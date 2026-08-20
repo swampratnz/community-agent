@@ -260,6 +260,35 @@ function mockPoolRoleAndWarnings(
   return ref;
 }
 
+/**
+ * Stubs `pool.query`'s role branch plus `FROM member_projects`, returning
+ * every `{ sql, params }` call so a test can assert on the exact SQL text.
+ * The `!projects seeking` branch (issue #1046) calls `listRecentProjects`
+ * DIRECTLY — never through `deps.listRecentProjectsFn` — so it is invisible
+ * to `RouterOpts`/`makeRouter` the way every other `!projects` form is;
+ * asserting its behaviour needs the raw pool mock, same technique
+ * `discordSlashCommands.test.ts`'s `mockPool` uses for the identical
+ * `/projects seeking_collaborators:true` call.
+ */
+function mockPoolRoleAndProjects(
+  t: { mock: { method: typeof import('node:test').mock.method } },
+  role: 'admin' | 'member' | null,
+  projectRows: Array<Record<string, unknown>> = [],
+): Array<{ sql: string; params: unknown[] }> {
+  const calls: Array<{ sql: string; params: unknown[] }> = [];
+  t.mock.method(pool, 'query', (async (sql: string, params: unknown[] = []) => {
+    calls.push({ sql, params });
+    if (sql.includes('SELECT role FROM community_users')) {
+      return { rows: role ? [{ role }] : [], rowCount: 0 };
+    }
+    if (sql.includes('FROM member_projects')) {
+      return { rows: projectRows, rowCount: 0 };
+    }
+    return { rows: [], rowCount: 0 };
+  }) as typeof pool.query);
+  return calls;
+}
+
 test('config: WHATSAPP_TEXT_COMMANDS_ENABLED=true is reflected in config.behaviour.whatsappTextCommandsEnabled', () => {
   assert.equal(config.behaviour.whatsappTextCommandsEnabled, true);
 });
@@ -644,6 +673,110 @@ test('"!projects mine" is checked before the general !projects [query] branch �
   assert.equal(searchCalledWith, 'mine field');
   assert.equal(sent[0].text, 'No shared projects match that.');
 });
+
+// --- !projects seeking (issue #1046) ----------------------------------------
+
+test('AC1: "!projects seeking" (case-insensitive) from a member calls listRecentProjects with seekingCollaboratorsOnly:true, rendered through formatProjectResults (issue #1046)', async (t) => {
+  const projects = [
+    {
+      id: 1,
+      platform: 'whatsapp',
+      user_id: 'owner-1',
+      name: 'Seeking Project',
+      description: 'wants collaborators',
+      link: null,
+      seeking_collaborators: true,
+      created_at: new Date(),
+    },
+  ];
+  const calls = mockPoolRoleAndProjects(t, 'member', projects);
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    listRecentProjectsFn: async () => {
+      throw new Error(
+        'deps.listRecentProjectsFn must never be called for "!projects seeking" (issue #1046 AC1)',
+      );
+    },
+    searchProjectsFn: async () => {
+      throw new Error('searchProjectsFn must never be called for "!projects seeking"');
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!Projects Seeking', userId: 'member-1' }));
+
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /Seeking Project/);
+  const projectCall = calls.find((c) => c.sql.includes('FROM member_projects'));
+  assert.ok(projectCall, 'listRecentProjects must have run');
+  assert.match(
+    projectCall.sql,
+    /AND seeking_collaborators/,
+    'the seeking branch must narrow the SQL exactly as list_projects/`/projects seeking_collaborators:true` do',
+  );
+});
+
+test('AC2: "!projects seeking" with no matching projects replies with the exact filtered empty-state string, byte-identical to the Discord/tool surfaces (issue #1046)', async (t) => {
+  mockPoolRoleAndProjects(t, 'member', []);
+  const router = makeRouter({ runTurn: throwingRunTurn });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!projects seeking', userId: 'member-1' }));
+
+  assert.equal(sent[0].text, 'No projects are currently looking for collaborators.');
+});
+
+test(
+  'SECURITY: "!projects seeking foo" (trailing text) never matches the seeking branch — it falls through to the ' +
+    'general searchProjectsFn query branch with the whole trailing text as the query (issue #1046 AC3)',
+  async (t) => {
+    mockPoolRole(t, 'member');
+    let searchCalledWith: string | undefined;
+    const router = makeRouter({
+      runTurn: throwingRunTurn,
+      searchProjectsFn: async (query) => {
+        searchCalledWith = query;
+        return [];
+      },
+      listRecentProjectsFn: async () => {
+        throw new Error('deps.listRecentProjectsFn must never be called for "!projects seeking foo"');
+      },
+    });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!projects seeking foo', userId: 'member-1' }));
+
+    assert.equal(searchCalledWith, 'seeking foo');
+    assert.equal(sent[0].text, 'No shared projects match that.');
+  },
+);
+
+test(
+  'SECURITY: a sub-member caller\'s "!projects seeking" falls through to the normal turn silently — listRecentProjects ' +
+    '(direct call) is never invoked (issue #1046 AC4)',
+  async (t) => {
+    const calls = mockPoolRoleAndProjects(t, null);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!projects seeking', userId: 'guest-1' }));
+
+    assert.equal(sent.length, 1);
+    assert.equal(
+      sent[0].text,
+      REAL_TURN_REPLY,
+      'a sub-member caller must get the normal turn reply, never a distinguishing "not authorized" text',
+    );
+    assert.ok(
+      !calls.some((c) => c.sql.includes('FROM member_projects')),
+      'listRecentProjects must never run for a rejected caller',
+    );
+  },
+);
 
 test('acceptance criterion 4: a default `new Router(makeRouterDeps())` with no listOwnProjectsFn override still constructs, and an unrelated existing command (!guidelines) behaves unchanged (trailing defaulted field)', async (t) => {
   mockPoolRole(t, null);

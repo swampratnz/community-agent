@@ -11,6 +11,7 @@ import {
   listOwnProjectConnectionRequests,
   listOwnReports,
   listOwnSuggestions,
+  listRecentProjects,
 } from '@swampratnz/agent-base/storage/repository.js';
 import {
   formatCommunityInfoText,
@@ -77,6 +78,24 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
         const projects = await deps.listOwnProjectsFn(msg.platform, msg.userId);
         return projects.length === 0
           ? "You haven't shared any projects yet."
+          : await formatProjectResults(projects);
+      }
+
+      // Same anchoring discipline as `mine` above (issue #1046 SECURITY
+      // criteria 3-4): checked BEFORE the general query regex so the literal
+      // word "seeking" is never swallowed as a searchProjectsFn query, and
+      // `!projects seeking <anything>` falls through instead of matching.
+      // Calls listRecentProjects directly (not deps.listRecentProjectsFn) —
+      // that dependency's type is agent-base's fixed, zero-opts
+      // WhatsAppTextCommandDeps shape and cannot carry seekingCollaboratorsOnly
+      // through, the same constraint `digest` above already hit and solved
+      // the same way.
+      if (/^!projects\s+seeking$/i.test(text)) {
+        if (!atLeast(role, 'member')) return null;
+        const opts = { seekingCollaboratorsOnly: true };
+        const projects = await listRecentProjects(LIST_PROJECTS_DEFAULT_LIMIT, opts);
+        return projects.length === 0
+          ? 'No projects are currently looking for collaborators.'
           : await formatProjectResults(projects);
       }
 
