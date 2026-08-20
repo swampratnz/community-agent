@@ -67,7 +67,8 @@ await import('./support/registerCommands.js');
 await import('./support/registerPolicyKeys.js');
 const { Router } = await import('@swampratnz/agent-base/router.js');
 const { makeRouterDeps } = await import('../src/module/routerWiring.js');
-const { countRepliesToUser } = await import('@swampratnz/agent-base/storage/repository.js');
+const { countRepliesToUser, upsertMember, insertContextDigest, setLanguagePreference } =
+  await import('@swampratnz/agent-base/storage/repository.js');
 const { formatStatusMessage, getStatusCache, pollAnthropicStatus, resetStatusCacheForTests } =
   await import('../src/module/status/anthropicStatus.js');
 const { formatMyDataText, formatMySubmissionsText, formatMyWarningsText } =
@@ -729,6 +730,75 @@ test('!digest replies with the fixed "Nothing to report" text when buildDigestCo
 
   assert.equal(sent[0].text, 'Nothing to report right now.');
 });
+
+test('!digest for a member with a default/unset language preference still uses deps.buildDigestContentFn — the mi bypass path never triggers for the common case', async (t) => {
+  let buildDigestCalled = false;
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    getLangPref: async () => 'auto',
+    buildDigestContentFn: async () => {
+      buildDigestCalled = true;
+      return 'This week: 2 new projects.';
+    },
+  });
+  mockPoolRole(t, 'member');
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!digest', userId: 'member-1' }));
+
+  assert.equal(buildDigestCalled, true);
+  assert.equal(sent[0].text, 'This week: 2 new projects.');
+});
+
+test(
+  "issue #1042: !digest for a caller with a stored 'mi' language preference renders the mi section " +
+    'labels (DB-backed) — deps.buildDigestContentFn is base-owned and fixed zero-arg, so it cannot carry ' +
+    'caller identity through for localisation; the handler calls buildMemberDigestContent directly instead',
+  { skip: !hasDb },
+  async () => {
+    const userId = `${RUN}-digest-mi`;
+    const topic = `${RUN}-digest-mi-topic`;
+    await upsertMember({ platform: 'whatsapp', userId, role: 'member', addedBy: `${RUN}-actor` });
+    await setLanguagePreference('whatsapp', userId, 'mi');
+    const digestId = await insertContextDigest({
+      periodStart: new Date(),
+      periodEnd: new Date(),
+      platform: 'discord',
+      topic,
+      summary: 'aggregate summary',
+      exampleRefs: [],
+      distinctUsers: config.memberDigest.minDistinctUsers,
+      questionCount: 2,
+    });
+    try {
+      const router = new Router(
+        makeRouterDeps({
+          runTurn: throwingRunTurn,
+          typingRefireMs: 20,
+          checkPaused: async () => false,
+        }),
+      );
+      const { adapter, sent, trigger } = makeAdapter();
+      router.register(adapter);
+
+      await trigger(makeMessage({ text: '!digest', userId, conversationId: `${RUN}-digest-mi-convo` }));
+
+      assert.equal(sent.length, 1);
+      assert.match(
+        sent[0].text,
+        /Ngā kaupapa o tēnei wiki/,
+        'the mi topics-heading label must appear — proves the DB-backed buildMemberDigestContent path rendered in te reo, not the fixed English deps.buildDigestContentFn stub some other test in this file left behind',
+      );
+    } finally {
+      await pool.query('DELETE FROM context_digests WHERE id = $1', [digestId]);
+      await pool.query(`DELETE FROM language_prefs WHERE platform = 'whatsapp' AND user_id = $1`, [userId]);
+      await pool.query(`DELETE FROM community_users WHERE platform = 'whatsapp' AND platform_user_id = $1`, [
+        userId,
+      ]);
+    }
+  },
+);
 
 // --- !help (issue #993): zero-cost command counterpart to community_info ---
 

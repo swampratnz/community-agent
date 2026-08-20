@@ -2114,6 +2114,35 @@ read data they can already see individually via `/kb`/`/projects`/`/whois`
 (identical reasoning to `admin_digest`'s independence from
 `ADMIN_DIGEST_ENABLED`).
 
+A third on-demand surface, the WhatsApp `!digest` shortcut
+(`src/module/commands.ts`, issue #859), calls `buildMemberDigestContent()`
+the same way, but through `RegisteredCommand`'s `whatsapp` handler instead of
+directly — see `docs/agents/module-map.md`'s `commands.ts` entry.
+
+**Language awareness (issue #1042) — the on-demand-pull/scheduled-push split
+now differs on it.** `formatMemberDigestMessage`'s six section labels (the
+`📅`/`📚`/`🚀`/`🆕`/`🔍`/`🤝` frame text — every interpolated count, title
+list and comma-join stays assembled in code exactly as before) render via the
+module notice pack (`notice(id, { language })`, `src/module/strings/
+notices.ts`), the same `mi`-variant mechanism `community_info`/
+`community_guidelines` already use. All three on-demand pulls thread the
+caller's identity into `buildMemberDigestContent(deps?, caller?)`'s new
+second parameter, which reads the caller's own stored `language_preference`
+only when `caller` is supplied — `community_digest`'s handler and `/digest`
+pass it directly; `!digest` cannot, because `deps.buildDigestContentFn`
+(agent-base's `WhatsAppTextCommandDeps`) is a fixed, base-owned, zero-argument
+function type, so it structurally cannot carry a caller through. Its handler
+resolves the language via the already-available `deps.getLangPref` first and,
+only for a standing `'mi'` preference, calls `buildMemberDigestContent`
+directly instead of `deps.buildDigestContentFn()` — the common (unset/`en`/
+`auto`) case is untouched, still served through the original DI-tested
+zero-arg path. **The scheduled weekly channel push never gains this** —
+`makeDefaultMemberDigestRun`'s closure calls `buildMemberDigestContent(deps)`
+with no second argument, on purpose: it is one post to a shared channel, not
+a reply to one member, so no single recipient's preference may select which
+language it renders in. Pinned by a `SECURITY:` test asserting the push
+renders byte-identical regardless of a stubbed `getLanguagePreference`.
+
 ## Anthropic status check
 
 `src/module/status/anthropicStatus.ts` (issue #206, off unless

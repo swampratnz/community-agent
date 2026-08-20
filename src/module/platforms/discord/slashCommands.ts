@@ -296,7 +296,12 @@ async function handleDigest(interaction: ChatInputCommandInteraction, deps: Slas
   // Calls buildMemberDigestContent directly (not through the tool/model, and
   // never wrapped in untrusted()) — like /kb/whois/projects/guidelines, this
   // reply never re-enters model context, so there is nothing to quarantine.
-  const message = await buildMemberDigestContent();
+  // Threads the caller's identity (issue #1042) so a standing 'mi' preference
+  // renders the digest's section labels in te reo Māori.
+  const message = await buildMemberDigestContent(undefined, {
+    platform: 'discord',
+    userId: interaction.user.id,
+  });
   recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
   await replyEphemeral(interaction, message ?? 'Nothing to report right now.', deps);
 }
