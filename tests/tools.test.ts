@@ -203,6 +203,7 @@ const { formatMyDataText, formatMySubmissionsText } =
   await import('../src/module/agent/tools/selfService.js');
 const { getPendingAlertsForTests, resetPendingAlertsForTests } =
   await import('@swampratnz/agent-base/pendingAlertQueue.js');
+const { COMMUNITY_COMMANDS } = await import('../src/module/commands.js');
 
 // Unique per test-run scope so the knowledge_search handler test's fixture
 // row never collides across runs, mirroring the RUN-tag convention in
@@ -3719,6 +3720,7 @@ test('SECURITY: community_info for a WhatsApp caller with whatsappTextCommandsEn
         '- `!guidelines` — community guidelines\n' +
         "- `!digest` — this week's digest\n" +
         '- `!status` — check for a known Anthropic outage\n' +
+        '- `!kbtopics` — browse what the knowledge base covers\n' +
         '- `!warnings` — your own active warning count\n' +
         '- `!mysubmissions` — status of your filed suggestions/reports\n' +
         '- `!mydata` — what the bot has stored about you\n' +
@@ -3729,6 +3731,66 @@ test('SECURITY: community_info for a WhatsApp caller with whatsappTextCommandsEn
     config.behaviour.whatsappTextCommandsEnabled = original;
   }
 });
+
+test(
+  'SECURITY: the WhatsApp shortcut-discovery block appended for a WhatsApp caller contains no template ' +
+    'placeholders/interpolation tokens — fixed, human-authored text only (issue #1044 acceptance criterion 3)',
+  async () => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    try {
+      config.behaviour.whatsappTextCommandsEnabled = true;
+      const flagOnReply = (await communityInfoHandler('member', 'whatsapp')).content[0]?.text ?? '';
+      const placeholderPattern = /\$\{|\{\{|%s|%d|\{[0-9a-zA-Z_]*\}/;
+      assert.doesNotMatch(
+        flagOnReply,
+        placeholderPattern,
+        'the WhatsApp shortcut-discovery block must be fixed text with no interpolation markers',
+      );
+    } finally {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    }
+  },
+);
+
+test(
+  'every command in COMMUNITY_COMMANDS whose platforms include "whatsapp" appears as a `!name` bullet in the ' +
+    'WhatsApp shortcut-discovery block, or is on the explicit WHATSAPP_DISCOVERY_EXEMPT_COMMANDS allowlist — so ' +
+    'a future WhatsApp shortcut that skips this file fails CI instead of shipping silently undiscoverable ' +
+    '(issue #1044 acceptance criterion 2)',
+  async () => {
+    // No command is currently exempt: every command whose platforms include
+    // 'whatsapp' is reachable by a member-tier-or-below caller (member-gated
+    // or ungated), so it must be discoverable via !help. Mirrors the
+    // documented `!kb` exemption from WHATSAPP_TEXT_COMMANDS_TEXT's own doc
+    // comment (`!kb` is excluded by its Discord-only `platforms`, not this
+    // list) — a future flag-gated beta shortcut would go here, named and
+    // explained, rather than silently vanishing from the discovery block.
+    const WHATSAPP_DISCOVERY_EXEMPT_COMMANDS: readonly string[] = [];
+
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    try {
+      config.behaviour.whatsappTextCommandsEnabled = true;
+      const discoveryText = (await communityInfoHandler('member', 'whatsapp')).content[0]?.text ?? '';
+
+      const whatsappCommandNames = COMMUNITY_COMMANDS.filter((c) => c.platforms.includes('whatsapp')).map(
+        (c) => c.name,
+      );
+      assert.ok(whatsappCommandNames.length > 0, 'sanity: at least one command targets whatsapp');
+
+      for (const name of whatsappCommandNames) {
+        if (WHATSAPP_DISCOVERY_EXEMPT_COMMANDS.includes(name)) continue;
+        assert.match(
+          discoveryText,
+          new RegExp('`!' + name + '[ `]'),
+          `!${name} is a WhatsApp-reachable command missing a bullet in WHATSAPP_TEXT_COMMANDS_TEXT ` +
+            '(add one, or add it to WHATSAPP_DISCOVERY_EXEMPT_COMMANDS with a documented reason)',
+        );
+      }
+    } finally {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    }
+  },
+);
 
 test('SECURITY: community_info for a guest-tier WhatsApp caller never advertises the member-gated shortcuts, even with whatsappTextCommandsEnabled on (issue #872)', async () => {
   const original = config.behaviour.whatsappTextCommandsEnabled;

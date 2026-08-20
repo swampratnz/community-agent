@@ -19,10 +19,12 @@ import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
  * `/` picker (`SlashCommandBuilder.setDescription`,
  * `src/platforms/discord/slashCommands.ts`), which WhatsApp has no
  * client-native equivalent of. No `!kb`: the existing KNOWLEDGE_SHORTCUT_ENABLED
- * shortcut already covers WhatsApp for that one (#859's own decision). Never
- * interpolates caller or message data — same trust level as the member
- * capabilities notice, and (unlike it) English-only: issue #1028 scoped the
- * `mi` variant to the member-capabilities segment alone.
+ * shortcut already covers WhatsApp for that one (#859's own decision). `!kbtopics`
+ * (issue #1036) was added here by issue #1044, closing a gap where it shipped
+ * without ever being added to this list. Never interpolates caller or message
+ * data — same trust level as the member capabilities notice, and (unlike it)
+ * English-only: issue #1028 scoped the `mi` variant to the member-capabilities
+ * segment alone.
  */
 const WHATSAPP_TEXT_COMMANDS_TEXT =
   "You're on WhatsApp, so you can also use these zero-wait shortcuts:\n" +
@@ -31,6 +33,7 @@ const WHATSAPP_TEXT_COMMANDS_TEXT =
   '- `!guidelines` — community guidelines\n' +
   "- `!digest` — this week's digest\n" +
   '- `!status` — check for a known Anthropic outage\n' +
+  '- `!kbtopics` — browse what the knowledge base covers\n' +
   '- `!warnings` — your own active warning count\n' +
   '- `!mysubmissions` — status of your filed suggestions/reports\n' +
   '- `!mydata` — what the bot has stored about you\n' +
