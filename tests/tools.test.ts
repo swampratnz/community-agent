@@ -11744,6 +11744,163 @@ test("SECURITY: formatKnowledgeSearchResults keeps a low-rated hit's own content
   assert.match(lowRatedLineFirst ?? '', /\(95% match\).*Unique low-rated content marker\./);
 });
 
+// formatKnowledgeSearchResults' near-tie comparator also considering
+// sourceUnreachable (issue #1054) — a third rung, checked AFTER lowRatedIds
+// and BEFORE staleness, keying on the weekly link-rot checker's (#448)
+// verdict. deadLinkTieHit mirrors lowRatedTieHit's shape so only the
+// reachability signal varies.
+const deadLinkTieHit = (
+  similarity: number,
+  title: string,
+  id: number,
+  sourceUnreachable: boolean | null,
+) => ({
+  id,
+  title,
+  content: `Content for ${title}.`,
+  similarity,
+  updatedAt: new Date(),
+  lastRetrievedAt: null,
+  sourceUnreachable,
+});
+
+test('formatKnowledgeSearchResults near-tie (issue #1054): the reachable hit sorts before an equally-relevant dead-link hit even when the dead-link hit has marginally higher raw similarity', () => {
+  const dead = deadLinkTieHit(0.8, 'Dead-link entry', 1, true);
+  const reachable = deadLinkTieHit(0.8 - (KNOWLEDGE_TIE_MARGIN - 0.01), 'Reachable entry', 2, null);
+  const text = formatKnowledgeSearchResults([dead, reachable]);
+  assert.ok(
+    text.indexOf('Reachable entry') < text.indexOf('Dead-link entry'),
+    'the reachable hit must sort first despite the dead-link hit having the marginally higher raw similarity',
+  );
+});
+
+test('formatKnowledgeSearchResults near-tie (issue #1054): order is unchanged when both near-tied hits are dead-linked (no reachability signal to act on)', () => {
+  const higher = deadLinkTieHit(0.8, 'Higher-scored dead-link entry', 1, true);
+  const lower = deadLinkTieHit(0.8 - (KNOWLEDGE_TIE_MARGIN - 0.01), 'Lower-scored dead-link entry', 2, true);
+  const text = formatKnowledgeSearchResults([higher, lower]);
+  assert.ok(
+    text.indexOf('Higher-scored dead-link entry') < text.indexOf('Lower-scored dead-link entry'),
+    'both-dead-link near-ties fall through to the staleness/index tie-break, keeping similarity-descending order',
+  );
+});
+
+test('formatKnowledgeSearchResults near-tie (issue #1054): order is unchanged when neither near-tied hit is dead-linked', () => {
+  const higher = deadLinkTieHit(0.8, 'Higher-scored reachable entry', 1, null);
+  const lower = deadLinkTieHit(0.8 - (KNOWLEDGE_TIE_MARGIN - 0.01), 'Lower-scored reachable entry', 2, null);
+  const text = formatKnowledgeSearchResults([higher, lower]);
+  assert.ok(
+    text.indexOf('Higher-scored reachable entry') < text.indexOf('Lower-scored reachable entry'),
+    'neither-dead-link near-ties fall through to the staleness/index tie-break, unchanged',
+  );
+});
+
+test('formatKnowledgeSearchResults (issue #1054): a real relevance gap (more than KNOWLEDGE_TIE_MARGIN) always wins, even when the higher-scored hit is the dead-link one', () => {
+  const dead = deadLinkTieHit(0.9, 'Dead-link but clearly more relevant', 1, true);
+  const reachable = deadLinkTieHit(
+    0.9 - (KNOWLEDGE_TIE_MARGIN + 0.01),
+    'Reachable but clearly less relevant',
+    2,
+    null,
+  );
+  const text = formatKnowledgeSearchResults([dead, reachable]);
+  assert.ok(
+    text.indexOf('Dead-link but clearly more relevant') < text.indexOf('Reachable but clearly less relevant'),
+    'a genuine relevance gap must never be overridden by the dead-link tie-break',
+  );
+});
+
+test('formatKnowledgeSearchResults near-tie (issue #1054, acceptance criterion 2a): low-rated dominates dead-link — a reachable-but-low-rated hit still sorts after a dead-link-but-not-low-rated hit', () => {
+  const reachableLowRated = deadLinkTieHit(0.8, 'Reachable low-rated entry', 1, null);
+  const deadNotLowRated = deadLinkTieHit(
+    0.8 - (KNOWLEDGE_TIE_MARGIN - 0.01),
+    'Dead-link healthy-rated entry',
+    2,
+    true,
+  );
+  const text = formatKnowledgeSearchResults(
+    [reachableLowRated, deadNotLowRated],
+    undefined,
+    undefined,
+    false,
+    new Set([1]),
+  );
+  assert.ok(
+    text.indexOf('Dead-link healthy-rated entry') < text.indexOf('Reachable low-rated entry'),
+    'the low-rated rung must dominate the dead-link rung — a low-rated hit sorts last even though its source is reachable',
+  );
+});
+
+test('formatKnowledgeSearchResults near-tie (issue #1054, acceptance criterion 2b): dead-link dominates staleness — a stale-but-reachable hit still sorts before a fresh-but-dead-link hit', () => {
+  const staleReachable = { ...deadLinkTieHit(0.8, 'Stale reachable entry', 1, null), updatedAt: ancientDate };
+  const freshDead = deadLinkTieHit(0.8 - (KNOWLEDGE_TIE_MARGIN - 0.01), 'Fresh dead-link entry', 2, true);
+  const text = formatKnowledgeSearchResults([staleReachable, freshDead], 30);
+  assert.ok(
+    text.indexOf('Stale reachable entry') < text.indexOf('Fresh dead-link entry'),
+    'the dead-link rung must dominate staleness — a dead-link hit sorts last even though it is fresher',
+  );
+});
+
+test('SECURITY: formatKnowledgeSearchResults near-tie ordering is byte-identical whether sourceUnreachable is null, false, or omitted entirely — a never-checked or confirmed-live entry is never demoted (issue #1054)', () => {
+  const stale = staleHit(0.8, 'Stale entry');
+  const fresh = freshHit(0.8 - (KNOWLEDGE_TIE_MARGIN - 0.01), 'Fresh entry');
+  const omitted = formatKnowledgeSearchResults([stale, fresh], 30);
+  const withNull = formatKnowledgeSearchResults(
+    [
+      { ...stale, sourceUnreachable: null },
+      { ...fresh, sourceUnreachable: null },
+    ],
+    30,
+  );
+  const withFalse = formatKnowledgeSearchResults(
+    [
+      { ...stale, sourceUnreachable: false },
+      { ...fresh, sourceUnreachable: false },
+    ],
+    30,
+  );
+  assert.equal(
+    withNull,
+    omitted,
+    'sourceUnreachable: null must be byte-identical to the field being omitted',
+  );
+  assert.equal(
+    withFalse,
+    omitted,
+    'sourceUnreachable: false must be byte-identical to the field being omitted',
+  );
+});
+
+test('SECURITY: formatKnowledgeSearchResults introduces no new string and no new disclosure for the dead-link rung — a same-ordered pair renders byte-identical text whether or not sourceUnreachable is set (issue #1054)', () => {
+  const a = {
+    id: 1,
+    title: 'A',
+    content: 'Content A',
+    similarity: 0.8,
+    updatedAt: new Date(),
+    lastRetrievedAt: null,
+  };
+  const b = {
+    id: 2,
+    title: 'B',
+    content: 'Content B',
+    similarity: 0.8 - (KNOWLEDGE_TIE_MARGIN - 0.01),
+    updatedAt: new Date(),
+    lastRetrievedAt: null,
+  };
+  // Neither hit carries a sourceUrl, so #465's display caveat never fires
+  // either way — this isolates the ordering rung from the display rung.
+  const withoutSignal = formatKnowledgeSearchResults([a, b]);
+  const withSignalButSameOrder = formatKnowledgeSearchResults([
+    { ...a, sourceUnreachable: true },
+    { ...b, sourceUnreachable: true },
+  ]);
+  assert.equal(
+    withoutSignal,
+    withSignalButSameOrder,
+    'a same-ordered pair must render byte-identical text regardless of sourceUnreachable — reordering must never leak which entry was (or would be) demoted',
+  );
+});
+
 test('formatKnowledgeSearchResults (issue #465): the knowledge_search tool reply surfaces the dead-link caveat for a hit whose source_unreachable is true', () => {
   const checkedAt = new Date(Date.now() - 2 * 86_400_000);
   const a = {
