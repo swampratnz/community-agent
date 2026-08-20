@@ -23,7 +23,6 @@ const KNOWLEDGE_STALE_NOTE_MI = notice('knowledgeStaleNote', { language: 'mi' })
 // src/module/platforms/factories.ts, so these constructions pass the same pack.
 import { DISCORD_TEXT_PACK, WHATSAPP_CLOUD_TEXT_PACK } from '../src/module/platforms/textPacks.js';
 import { ENABLED_SKILLS } from '../src/module/agent/enabledSkills.js';
-import { COMMUNITY_COMMANDS } from '../src/module/commands.js';
 import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type {
@@ -204,6 +203,7 @@ const { formatMyDataText, formatMySubmissionsText } =
   await import('../src/module/agent/tools/selfService.js');
 const { getPendingAlertsForTests, resetPendingAlertsForTests } =
   await import('@swampratnz/agent-base/pendingAlertQueue.js');
+const { COMMUNITY_COMMANDS } = await import('../src/module/commands.js');
 
 // Unique per test-run scope so the knowledge_search handler test's fixture
 // row never collides across runs, mirroring the RUN-tag convention in
