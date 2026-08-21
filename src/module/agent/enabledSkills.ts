@@ -32,6 +32,7 @@ export const ENABLED_SKILLS = [
   'knowledge-contribution',
   'debug-claude-api-error',
   'member-connection',
+  'api-cost-and-latency',
 ] as const;
 
 /**
