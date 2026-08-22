@@ -105,19 +105,45 @@ function pctTrendSuffix(key: string, current: number, previous: Record<string, n
 const REPORT_RESOLUTION_SCAN_LIMIT = 200;
 
 /**
+ * Median of `(resolvedAt - createdAt)` in hours over `rows` filtered to
+ * `resolvedAt >= since` — pure so it can be unit-tested against
+ * hand-computed fixtures without touching the DB (issue #1081). `null` when
+ * no row falls in the window. An even row count averages the two middle
+ * elements after sorting; an odd row count takes the exact middle element.
+ */
+export function medianReportResolutionHours(
+  rows: readonly { createdAt: Date; resolvedAt: Date | null }[],
+  since: number,
+): number | null {
+  const hours = rows
+    .filter((row) => row.resolvedAt !== null && row.resolvedAt.getTime() >= since)
+    .map((row) => ((row.resolvedAt as Date).getTime() - row.createdAt.getTime()) / 3_600_000)
+    .sort((a, b) => a - b);
+  if (hours.length === 0) return null;
+  const mid = Math.floor(hours.length / 2);
+  return hours.length % 2 === 0 ? (hours[mid - 1] + hours[mid]) / 2 : hours[mid];
+}
+
+/**
  * Outcome mix of reports closed within the last `days` days, scoped exactly
  * like `countOpenReports`/`listReports` (`conversationIds` +
  * linked-identity-aware `viewerUserIds` accused-admin exclusion) — the
  * still-missing resolved-vs-dismissed complement to `openReports`/
  * `oldestOpenReportAgeDays`'s backlog-size/-age signals, mirroring
  * `appealResolutionBreakdown`'s role for appeals (issue #844) for the
- * reports queue (issue #1075).
+ * reports queue (issue #1075). Also returns `medianResolutionHours`, the
+ * median hours-to-close over the same combined resolved+dismissed rows,
+ * `null` when zero rows fall in the window (issue #1081) — a genuinely
+ * distinct throughput/speed signal, not a restatement of the resolved/
+ * dismissed counts.
  *
  * Built module-side rather than as a new `@swampratnz/agent-base` repository
  * aggregate (unlike `appealResolutionBreakdown`, which already exists
  * upstream): a real `GROUP BY` aggregate with no row-count ceiling would
  * need a framework change, out of scope here. This reuses the already-
- * exported, already-scoped `listReports` and aggregates in JS instead.
+ * exported, already-scoped `listReports` and aggregates in JS instead —
+ * `medianResolutionHours` needs no new query either, since `listReports`
+ * already returns each row's `createdAt` alongside `resolvedAt`.
  *
  * KNOWN APPROXIMATION, the same tradeoff `appealStaleAlert.ts` documents for
  * `listAppeals`: `listReports` orders by `created_at DESC`, not
@@ -128,13 +154,13 @@ const REPORT_RESOLUTION_SCAN_LIMIT = 200;
  * volume of newer reports. Bounded, not unbounded — and report volume is
  * already low (`REPORT_RATE_LIMIT_PER_DAY = 5`/reporter) — so this is
  * accepted as a documented approximation, not a correctness gap in
- * practice.
+ * practice. `medianResolutionHours` inherits the same bounded-scan caveat.
  */
 async function reportResolutionBreakdown(
   conversationIds: readonly string[] | null,
   days: number,
   viewerUserIds?: readonly string[],
-): Promise<{ resolved: number; dismissed: number }> {
+): Promise<{ resolved: number; dismissed: number; medianResolutionHours: number | null }> {
   const since = Date.now() - days * 24 * 3_600_000;
   const countRecentlyResolved = (rows: readonly { resolvedAt: Date | null }[]) =>
     rows.filter((row) => row.resolvedAt !== null && row.resolvedAt.getTime() >= since).length;
@@ -156,7 +182,11 @@ async function reportResolutionBreakdown(
     REPORT_RESOLUTION_SCAN_LIMIT,
     viewerUserIds,
   );
-  return { resolved: countRecentlyResolved(resolvedRows), dismissed: countRecentlyResolved(dismissedRows) };
+  return {
+    resolved: countRecentlyResolved(resolvedRows),
+    dismissed: countRecentlyResolved(dismissedRows),
+    medianResolutionHours: medianReportResolutionHours([...resolvedRows, ...dismissedRows], since),
+  };
 }
 
 /**
@@ -570,6 +600,21 @@ export function buildAdminDigestMessage(
   // render bare, exactly like a signal on its first-ever digest.
   resolvedReportsCount: number = 0,
   dismissedReportsCount: number = 0,
+  // Median hours-to-close over the same closed-report rows as
+  // resolvedReportsCount/dismissedReportsCount (`reportResolutionBreakdown`'s
+  // `medianResolutionHours`, issue #1081) — the still-missing throughput/
+  // speed complement to the outcome-mix counts above: a shrinking backlog can
+  // coexist with individual reports sitting for days, which the mix alone
+  // can't distinguish. Append-only trailing param, `null` by default, so
+  // every existing call site is unaffected. Only ever appended to the
+  // already-nonzero closed-reports line above and only when non-null (no
+  // closed reports in the window has no meaningful median), so the quiet
+  // case and every caller that hasn't wired this through are byte-identical
+  // to the pre-#1081 form. Bare integer (rounded hours) only — no
+  // reporterName/reporterUserId/targetUserId/reason/resolvedBy ever reaches
+  // the DM, same privacy convention as resolvedReportsCount/
+  // dismissedReportsCount.
+  reportMedianResolutionHours: number | null = null,
 ): string | null {
   if (
     clusters.length === 0 &&
@@ -640,11 +685,20 @@ export function buildAdminDigestMessage(
   }
   if (resolvedReportsCount + dismissedReportsCount > 0) {
     // Bare integers only — no reporterName/reporterUserId/targetUserId/
-    // reason/resolvedBy ever reaches the DM (#1075).
+    // reason/resolvedBy ever reaches the DM (#1075, extended by #1081's
+    // median-hours fragment below, itself a bare rounded integer).
     const closedReportsTotal = resolvedReportsCount + dismissedReportsCount;
+    // Median-hours fragment only when the aggregate resolved to a real value
+    // — zero closed reports in the window (or a caller that hasn't wired the
+    // new param through) renders the line exactly as before #1081 (issue
+    // #1081).
+    const medianFragment =
+      reportMedianResolutionHours !== null
+        ? ` (median ${Math.round(reportMedianResolutionHours)}h to close)`
+        : '';
     sections.push(
       `🚩📈 ${closedReportsTotal} report(s) closed this period: ${resolvedReportsCount} resolved, ` +
-        `${dismissedReportsCount} dismissed.` +
+        `${dismissedReportsCount} dismissed${medianFragment}.` +
         trendSuffix('resolvedReportsCount', resolvedReportsCount, previousCounts) +
         trendSuffix('dismissedReportsCount', dismissedReportsCount, previousCounts),
     );
@@ -1156,6 +1210,10 @@ export async function buildAdminDigestForAdmin(
     // would be stripped at the write boundary
     // (tests/adminDigest.test.ts's "EVERY integer signal ... survives the
     // sanitizeDigestCounts whitelist" pin, issue #820 review).
+    // `reportMedianResolutionHours` (issue #1081) is excluded from this
+    // object for the identical reason, on top of not being an unconditional
+    // integer (it's `number | null`) — no new agent-base allowlist entry, no
+    // trend persistence, same "renders bare" first-ever-digest behaviour.
   };
   // Only added when there's at least one auto-answer rating this week (issue
   // #629) — mirrors the render block's own `autoAnswerHelpful +
@@ -1217,6 +1275,7 @@ export async function buildAdminDigestForAdmin(
     projectConnectionsCount,
     reportBreakdown.resolved,
     reportBreakdown.dismissed,
+    reportBreakdown.medianResolutionHours,
   );
   return { message, currentCounts };
 }

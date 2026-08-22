@@ -65,8 +65,13 @@ const {
   recordHelperNotificationIfUnderCap,
   recordProjectConnectionIfUnderCap,
 } = await import('@swampratnz/agent-base/storage/repository.js');
-const { buildAdminDigestMessage, buildAdminDigestForAdmin, runAdminDigestOnce, startAdminDigest } =
-  await import('../src/module/adminDigest.js');
+const {
+  buildAdminDigestMessage,
+  buildAdminDigestForAdmin,
+  runAdminDigestOnce,
+  startAdminDigest,
+  medianReportResolutionHours,
+} = await import('../src/module/adminDigest.js');
 const { readFileSync } = await import('node:fs');
 const pgvector = (await import('pgvector/pg')).default;
 const { config } = await import('@swampratnz/agent-base/config.js');
@@ -4757,8 +4762,8 @@ test(
     const breakdownLine = result.message.split('\n').find((l) => l.includes('🚩📈'));
     assert.match(
       breakdownLine ?? '',
-      /^🚩📈 2 report\(s\) closed this period: 1 resolved, 1 dismissed\.$/,
-      'the breakdown line renders the seeded resolved + dismissed reports',
+      /^🚩📈 2 report\(s\) closed this period: 1 resolved, 1 dismissed \(median \d+h to close\)\.$/,
+      'the breakdown line renders the seeded resolved + dismissed reports, plus the median-hours fragment (issue #1081)',
     );
     for (const secret of [secretReason, secretTargetId, secretResolver, reporter]) {
       assert.ok(
@@ -4820,7 +4825,7 @@ test(
     assert.ok(result.message, 'the in-scope resolved report alone still produces a DM');
     assert.match(
       result.message,
-      /🚩📈 1 report\(s\) closed this period: 1 resolved, 0 dismissed\./,
+      /🚩📈 1 report\(s\) closed this period: 1 resolved, 0 dismissed \(median \d+h to close\)\./,
       'only the in-scope resolved report is counted — the out-of-scope report and the DM report filed against ' +
         "the admin's own identity are both excluded",
     );
@@ -4828,6 +4833,164 @@ test(
     await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [
       [inScope.id, outOfScope.id, dmAgainstSelf.id],
     ]);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+  },
+);
+
+// --- issue #1081: reportResolutionBreakdown's median-hours-to-close signal --
+
+test('medianReportResolutionHours: empty window -> null; odd row count -> exact middle element; even row count -> mean of the two middle elements (issue #1081 acceptance criterion 1)', () => {
+  const since = new Date('2026-01-01T00:00:00Z').getTime();
+  const row = (createdAt: string, resolvedAt: string | null) => ({
+    createdAt: new Date(createdAt),
+    resolvedAt: resolvedAt === null ? null : new Date(resolvedAt),
+  });
+
+  assert.equal(medianReportResolutionHours([], since), null, 'no rows at all -> null');
+  assert.equal(
+    medianReportResolutionHours([row('2026-01-01T00:00:00Z', '2025-12-31T00:00:00Z')], since),
+    null,
+    'a row resolved before the window start is excluded, leaving zero in-window rows -> null',
+  );
+  assert.equal(
+    medianReportResolutionHours([row('2026-01-01T00:00:00Z', null)], since),
+    null,
+    'a still-open row (resolvedAt null) is excluded -> null',
+  );
+
+  // Odd row count (3): deltas in hours = 9, 1, 5 -> sorted [1, 5, 9] -> median = 5 (exact middle).
+  const oddRows = [
+    row('2026-01-05T00:00:00Z', '2026-01-05T09:00:00Z'), // 9h
+    row('2026-01-05T00:00:00Z', '2026-01-05T01:00:00Z'), // 1h
+    row('2026-01-05T00:00:00Z', '2026-01-05T05:00:00Z'), // 5h
+  ];
+  assert.equal(
+    medianReportResolutionHours(oddRows, since),
+    5,
+    'odd row count takes the exact middle element after sorting',
+  );
+
+  // Even row count (4): deltas = 9, 1, 5, 3 -> sorted [1, 3, 5, 9] -> median = mean(3, 5) = 4.
+  const evenRows = [...oddRows, row('2026-01-05T00:00:00Z', '2026-01-05T03:00:00Z')]; // 3h
+  assert.equal(
+    medianReportResolutionHours(evenRows, since),
+    4,
+    'even row count is the mean of the two middle elements',
+  );
+});
+
+test('buildAdminDigestMessage: reportMedianResolutionHours renders a "(median Nh to close)" fragment on the closed-reports line only when non-null, and omitting it is byte-identical to the pre-#1081 form (issue #1081 acceptance criterion 2)', () => {
+  const withoutParam = buildAdminDigestMessage(...REPORT_BREAKDOWN_ZERO_PREFIX, 3, 2);
+  const withExplicitNull = buildAdminDigestMessage(...REPORT_BREAKDOWN_ZERO_PREFIX, 3, 2, null);
+  assert.equal(
+    withoutParam,
+    withExplicitNull,
+    'omitting the new trailing param is byte-identical to passing null explicitly',
+  );
+  assert.equal(
+    withoutParam?.split('\n').find((l) => l.includes('🚩📈')),
+    '🚩📈 5 report(s) closed this period: 3 resolved, 2 dismissed.',
+    'the quiet-median case is byte-identical to the pre-#1081 line',
+  );
+
+  const withMedian = buildAdminDigestMessage(...REPORT_BREAKDOWN_ZERO_PREFIX, 3, 2, 26.4);
+  assert.ok(withMedian);
+  const medianLine = withMedian.split('\n').find((l) => l.includes('🚩📈'));
+  assert.equal(
+    medianLine,
+    '🚩📈 5 report(s) closed this period: 3 resolved, 2 dismissed (median 26h to close).',
+    'a non-null median renders the rounded-hours fragment exactly once, before the trailing period',
+  );
+  assert.equal(
+    medianLine?.match(/median \d+h to close/g)?.length,
+    1,
+    'the median fragment appears exactly once',
+  );
+});
+
+test('SECURITY: buildAdminDigestMessage: the closed-reports line with a median fragment is a deterministic function of (resolvedReportsCount, dismissedReportsCount, reportMedianResolutionHours) only, and never carries a reporterName/reporterUserId/targetUserId/reason/resolvedBy identifier (issue #1081 acceptance criterion 3)', () => {
+  const secretReporterName = 'a very identifiable reporter display name that must never leak';
+  const secretReporterId = 'reporter-user-id-192837465';
+  const secretTargetId = 'target-user-id-564738291';
+  const secretReason = 'a very identifiable report reason that must never leak';
+  const secretResolverId = 'resolver-user-id-102938475';
+
+  const message = buildAdminDigestMessage(...REPORT_BREAKDOWN_ZERO_PREFIX, 3, 2, 26.4);
+  assert.ok(message);
+  const line = message.split('\n').find((l) => l.includes('🚩📈'));
+  assert.ok(line);
+  for (const secret of [
+    secretReporterName,
+    secretReporterId,
+    secretTargetId,
+    secretReason,
+    secretResolverId,
+  ]) {
+    assert.ok(
+      !line.includes(secret),
+      `SECURITY: the closed-reports line must never carry "${secret}" — it takes no such input, only the two integer counts and the bare median-hours integer`,
+    );
+  }
+  assert.equal(
+    line,
+    '🚩📈 5 report(s) closed this period: 3 resolved, 2 dismissed (median 26h to close).',
+    'the line is a pure function of the two integer counts and the median-hours integer — bare numbers and fixed template text only',
+  );
+});
+
+test(
+  'SECURITY: buildAdminDigestForAdmin renders the report-breakdown median-hours fragment without ever leaking reporterName/reporterUserId/targetUserId/reason/resolvedBy, even when every closed report row carries identifiable values (issue #1081 acceptance criterion 3)',
+  { skip },
+  async () => {
+    const adminId = `${RUN}-reportmedian-admin`;
+    const conversationId = `${RUN}-c-reportmedian`;
+    const secretReporterName = 'a very identifiable reporter display name that must never leak';
+    const secretReporter = `${RUN}-reportmedian-reporter-secret`;
+    const secretTargetId = `${RUN}-reportmedian-target-secret`;
+    const secretReason = 'a very identifiable report reason that must never leak';
+    const secretResolver = `${RUN}-reportmedian-resolver-secret`;
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    const toResolve = await createContentReport({
+      platform: 'discord',
+      reporterUserId: secretReporter,
+      reporterName: secretReporterName,
+      conversationId,
+      targetUserId: secretTargetId,
+      reason: secretReason,
+    });
+    const toDismiss = await createContentReport({
+      platform: 'discord',
+      reporterUserId: secretReporter,
+      reporterName: secretReporterName,
+      conversationId,
+      targetUserId: secretTargetId,
+      reason: secretReason,
+    });
+    assert.ok(toResolve && toDismiss);
+    await resolveContentReport(toResolve.id, 'resolved', secretResolver);
+    await resolveContentReport(toDismiss.id, 'dismissed', secretResolver);
+
+    const adapter = fakeAdapter({ platform: 'discord', conversationIds: [conversationId], sent: [] });
+    const result = await buildAdminDigestForAdmin('discord', adminId, adapter);
+
+    assert.ok(result.message, 'a nonzero report-breakdown count alone still produces a DM');
+    const breakdownLine = result.message.split('\n').find((l) => l.includes('🚩📈'));
+    assert.match(
+      breakdownLine ?? '',
+      /^🚩📈 2 report\(s\) closed this period: 1 resolved, 1 dismissed \(median \d+h to close\)\.$/,
+      'the breakdown line renders the seeded counts plus a median-hours fragment',
+    );
+    for (const secret of [secretReporterName, secretReporter, secretTargetId, secretReason, secretResolver]) {
+      assert.ok(
+        !result.message.includes(secret),
+        `SECURITY: "${secret}" must never reach the rendered digest — only the two integer counts plus the bare median-hours integer do (issue #1081 acceptance criterion 3)`,
+      );
+    }
+
+    await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [[toResolve.id, toDismiss.id]]);
     await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
       adminId,
     ]);
