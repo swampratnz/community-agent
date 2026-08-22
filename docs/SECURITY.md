@@ -3277,9 +3277,10 @@ call.
   gated the same way the router gates the shortcuts themselves.
 - **Fixed literal, never interpolated.** The appended block
   (`WHATSAPP_TEXT_COMMANDS_TEXT`) is a hand-written string naming the four
-  §23 shortcuts, authored with the same discipline as
-  `MEMBER_CAPABILITIES_TEXT`/`ADMIN_CAPABILITIES_TEXT` — no caller or message
-  data ever reaches it.
+  §23 shortcuts, authored with the same discipline as the member/admin
+  capability text blocks (`communityInfoMemberCapabilities`/
+  `communityInfoAdminCapabilities`, §26/§27) — no caller or message data ever
+  reaches it.
 - **SECURITY: platform isolation.** A `SECURITY:`-prefixed test asserts a
   Discord caller's `community_info` output is byte-identical regardless of
   `whatsappTextCommandsEnabled`'s value — the WhatsApp branch structurally
@@ -3544,9 +3545,11 @@ while always rendering that answer itself in English.
   other `NOTICE_ENTRIES` value has; `selectNoticeVariant` (the base catalogue
   mechanism) is the only place that chooses between them, and it never
   interpolates caller or message data into either variant.
-- **Scoped to the member-tier segment only.** `ADMIN_CAPABILITIES_TEXT`,
-  `SUPER_ADMIN_CAPABILITIES_TEXT` and the WhatsApp `!`-shortcuts block (§24)
-  stay English-only and unchanged — named growth, not this issue's scope.
+- **Scoped to the member-tier segment only, at the time.** The admin/
+  super-admin segments and the WhatsApp `!`-shortcuts block (§24) stayed
+  English-only — named growth, not this issue's scope. §27 closes the
+  admin/super-admin half of that gap; the WhatsApp shortcuts block remains
+  English-only (issue #1034).
 - **SECURITY: no template placeholders.** A test asserts the
   `communityInfoMemberCapabilities` entry's `base` and `mi` values contain no
   interpolation markers, consistent with `tests/stringsCatalogue.test.ts`'s
@@ -3561,6 +3564,39 @@ while always rendering that answer itself in English.
   before this issue — `selectNoticeVariant` falls back to `base` for any
   unregistered axis value, which is what `'en'`/`'auto'` are by convention
   throughout this catalogue.
+
+### 27. `community_info` extends the `'mi'` preference to the admin/super-admin segments (issue #1056)
+
+§26 closed the member-tier gap but left one behind: an admin or super-admin
+caller with a standing `'mi'` preference got the now-te-reo member segment
+immediately followed by an untranslated English admin/super-admin segment,
+mixing languages mid-message. This closes that gap the same way §26 closed
+its own.
+
+- **Same mechanism, same accessor, no new boundary.** `formatCommunityInfoText`
+  reads the single `language` value already resolved via
+  `getLanguagePreference` (§26) and passes it into `notice()` for two new
+  module notice-pack entries, `communityInfoAdminCapabilities` and
+  `communityInfoSuperAdminCapabilities` (`strings/notices.ts`), which replace
+  the old `ADMIN_CAPABILITIES_TEXT`/`SUPER_ADMIN_CAPABILITIES_TEXT` raw string
+  constants that used to live in `agent/tools/info.ts`. No new table, tool,
+  tier, or read — role gating (`role === 'admin' | 'super_admin'`) is
+  untouched; this is purely a rendering-language change on already-authorized
+  content.
+- **Fixed, human-authored text — no model call, no runtime translation,
+  byte-identical relocation of the English.** Both entries' `base` values are
+  a verified byte-neutral relocation of the old constants; the `mi` variant of
+  each is a literal in the notice pack, same trust level as every other
+  `NOTICE_ENTRIES` value.
+- **The WhatsApp `!`-shortcuts block (§24) is unaffected and stays
+  English-only** — out of this issue's scope; a WhatsApp-specific `mi` variant
+  is separate follow-up territory (issue #1034).
+- **SECURITY: no template placeholders.** A test asserts both new entries'
+  `base` and `mi` values contain no interpolation markers, same discipline as
+  §26's `communityInfoMemberCapabilities` check.
+- **Regression safety for the common case.** A caller with no stored
+  preference (or `'en'`/`'auto'`) renders byte-identical English output to
+  before this issue, for both the admin and super-admin segments.
 
 ## Platform-specific notes
 

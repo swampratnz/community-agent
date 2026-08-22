@@ -57,6 +57,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   prefer the entry with a live (or unchecked) source over one confirmed dead,
   checked after the low-rated signal and before staleness. Deployments that
   haven't enabled the link checker are unaffected.
+- **`community_info`/`/help`/`!help`'s admin and super-admin capability
+  rundowns now honour a standing te reo Māori preference too** (#1056): since
+  #1028, a member-tier caller with `language_preference = 'mi'` got the
+  member-capabilities segment in te reo Māori — but an admin or super admin
+  with the same standing preference saw that te reo segment immediately
+  followed by an untranslated English admin/super-admin segment, mixing
+  languages mid-message. Both segments now render in te reo Māori for a
+  `'mi'`-preference admin/super-admin caller, matching the member segment's
+  existing behaviour; a caller with no preference (or `'en'`/`'auto'`) sees
+  byte-identical English to before.
 
 ## 2026-08-20
 
