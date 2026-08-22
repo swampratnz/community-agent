@@ -17,10 +17,19 @@ import { fileURLToPath } from 'node:url';
 // that would catch it: `pull_request` CI runs the workflow FROM THE PR BRANCH,
 // so a PR can neuter a gate and still show that named check "passing". That is
 // true of `.github/`, `scripts/`, and the lint/typecheck config. It is not
-// true of this file. Nothing loads it — not CI, not any agent prompt. The
-// build worker is pointed at CLAUDE.md and docs/PIPELINE.md; the review
-// worker's rubric names the word "security", not the document. Editing it
-// cannot change what runs, what an agent believes, or what "green" means.
+// true of this file: no workflow or check reads it, so editing it cannot
+// change what runs or what "green" means.
+//
+// It is NOT inert, and an earlier draft of this comment wrongly said so.
+// CLAUDE.md:10 tells every agent to start with README.md, "then
+// docs/ARCHITECTURE.md and docs/SECURITY.md", and both the build worker and
+// the review worker are told to read CLAUDE.md — so an agent following that
+// pointer does read this document, and a wrong edit could mislead one. That
+// pointer is shared with docs/ARCHITECTURE.md, docs/STANDARDS.md and
+// docs/agents/*, none of which are governed either; and the rules an agent
+// must not regress live in CLAUDE.md's own security-posture section, which
+// stays governed. So the belief-channel is real but not unique to this file,
+// and the snapshot below does not close it — it pins structure, not content.
 //
 // What it CAN do is drift — stop describing the controls that actually exist —
 // and losing the gate lost the guaranteed human read that would notice. This

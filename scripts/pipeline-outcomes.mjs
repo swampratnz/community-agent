@@ -259,6 +259,7 @@ console.log(
     '`docs/PIPELINE.md`, `docs/VISION.md`) and handing it to a person exactly as policy requires. ' +
     'Every path on that list is one a PR editing it could use to weaken the check that would catch ' +
     'it, so a Routed row is the guardrail working, not the loop struggling. `docs/SECURITY.md` used ' +
-    'to be on the list and came off: nothing loads it, so it could not do that — it was costing 64% ' +
-    'of the Routed rows for a risk it did not carry.',
+    'to be on the list and came off: no workflow or check reads it, so it could not do that, and it ' +
+    'was costing 64% of the Routed rows. (It is not inert — `CLAUDE.md` points agents at it — but so ' +
+    'are `docs/ARCHITECTURE.md` and `docs/agents/*`, which were never governed.)',
 );

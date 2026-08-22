@@ -170,10 +170,15 @@ Create them once: **Actions → "Setup pipeline labels" → Run workflow**, or
   cost. `docs/SECURITY.md` came OFF the list for the same reason plus a
   stronger one: measured over 40 merges it appeared in 7 and was the only
   governed path in all seven — 64% of the list's human presses — and unlike
-  every other entry it is descriptive rather than causal. Nothing loads it:
-  not CI, not any agent prompt. Its drift risk is held by
-  `tests/securityDocSections.test.ts`, which found a duplicate section number
-  that had survived the gate for many merges.) Because the pipeline's
+  every other entry it is descriptive rather than causal: no workflow or check
+  reads it, so editing it cannot weaken a gate. It is not inert — `CLAUDE.md`
+  points every agent at it, so a wrong edit can mislead one — but that pointer
+  is shared with `docs/ARCHITECTURE.md`, `docs/STANDARDS.md` and
+  `docs/agents/*`, none governed, and the imperatives an agent must obey live
+  in `CLAUDE.md`'s own security-posture section, which stays governed. Its
+  structural drift risk is held by `tests/securityDocSections.test.ts`, which
+  found a duplicate section number that had survived the gate for many merges;
+  content correctness is now carried by review, not by a human press.) Because the pipeline's
   own acceptance criteria push feature work through CI and check config, a
   governance hit is still common and is NOT a silent skip: a
   governance-path PR that passes **every other** gate (green, mergeable, fresh

@@ -357,10 +357,16 @@ ownership rules:
   never auto-merge a change to its own guardrails or to what "green" means.
   `docs/SECURITY.md` is deliberately NOT on that list: every other entry can
   weaken the check that would catch it (PR-branch CI runs the PR's own
-  workflows), whereas nothing loads that document at all, so it is descriptive
-  where the rest are causal. It cost 64% of the list's human presses for that
-  non-risk; `tests/securityDocSections.test.ts` now pins its section list
-  instead, the same trade `tests/toolTierMap.test.ts` makes for the tier map.
+  workflows), whereas no workflow or check reads that document, so it is
+  descriptive where the rest are causal. It is not inert — line 10 above
+  points every agent at it, so a wrong edit can mislead one — but that pointer
+  is shared with `docs/ARCHITECTURE.md`, `docs/STANDARDS.md` and
+  `docs/agents/*`, none of them governed either, and the rules an agent must
+  obey live in this file's security-posture section, which stays governed. It
+  cost 64% of the list's human presses; `tests/securityDocSections.test.ts`
+  now pins its section list instead, the same trade
+  `tests/toolTierMap.test.ts` makes for the tier map — structural drift only,
+  not content correctness.
   A governance-path PR that passes every other gate is not skipped silently:
   it gets a `human-merge-ready` label plus one marker-guarded comment asking
   a maintainer to merge (pipeline work routinely edits `.github/` or

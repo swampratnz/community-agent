@@ -218,12 +218,33 @@ jobs:
             # addition. Every other entry earns its place the same way: a PR
             # editing it can weaken the check that would catch it, because
             # `pull_request` CI runs the workflow FROM THE PR BRANCH. That does
-            # not reach docs/SECURITY.md. Nothing loads it — not CI, not any
-            # agent prompt (the build worker is pointed at CLAUDE.md and
-            # docs/PIPELINE.md; the review worker's rubric names the word
-            # "security", not the file). Editing it cannot change what runs,
-            # what an agent believes, or what "green" means. It is DESCRIPTIVE,
-            # where everything else here is CAUSAL.
+            # not reach docs/SECURITY.md: no workflow or check reads it —
+            # there is no readFileSync/gh-api load of that path anywhere — so
+            # editing it cannot change what runs or what "green" means. It is
+            # DESCRIPTIVE, where everything else here is CAUSAL.
+            #
+            # It is NOT inert, and an earlier version of this comment wrongly
+            # said so. CLAUDE.md:10 tells every agent to start with README.md,
+            # "then docs/ARCHITECTURE.md and docs/SECURITY.md", and both the
+            # build worker and the review worker are told to read CLAUDE.md —
+            # so an agent that follows the pointer does read this file, and a
+            # subtly wrong edit could mislead one. Two things bound that, and
+            # neither is "the auto-merge gate":
+            #   - The pointer is shared. CLAUDE.md points the same way at
+            #     docs/ARCHITECTURE.md, docs/STANDARDS.md and docs/agents/*,
+            #     none of which are on this list and none of which anyone has
+            #     proposed adding. Governing a file because CLAUDE.md names it
+            #     would pull in every orientation doc in the repo.
+            #   - The imperatives are elsewhere. The "do not regress" rules an
+            #     agent must obey live in CLAUDE.md's own security-posture
+            #     section, which STAYS governed — the build worker's prompt
+            #     points there for exactly that ("conventions + security
+            #     posture you must not regress"). docs/SECURITY.md carries the
+            #     threat model and rationale behind those rules.
+            # Residual risk, accepted knowingly: a wrong edit here now reaches
+            # main on an automated LGTM, and the structural pin below catches
+            # renumbering, not wrong content. That is the same exposure every
+            # other orientation doc already carries.
             #
             # It was also, by a distance, the most expensive entry: measured
             # over the last 40 merges it appeared in 7, and was the ONLY
