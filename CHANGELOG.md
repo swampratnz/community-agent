@@ -21,7 +21,7 @@ shows it to members. Append numbers; never remove them.
 Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #775 #784 #804 #807 #809 #810 #812 #814 #816 #817 #818 #819 #821 #824 #825
 #868 #896 #899 #904 #949 #950 #951 #952 #953 #954 #955 #956 #957 #958 #961
-#963 #964 #965 #968 #971 #983 #988 #989 #991 #992 #994
+#963 #964 #965 #968 #971 #983 #988 #989 #991 #992 #994 #1017
 -->
 
 ## 2026-08-22
@@ -227,6 +227,17 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   `mine` option, mirroring `list_projects({ mine: true })`, returns exactly
   your own stored interests text, self-scoped by your identity — or the
   familiar "you haven't published interests yet" guidance if you have none.
+- **New Agent Skill: `member-connection`** (#1026): coaches the
+  member-discovery tool family — `set_my_interests`, `who_is_into`,
+  `set_helper_availability`, `find_helper` — the one major member-facing
+  tool group that had no dedicated skill, unlike `project-showcase` and
+  `knowledge-contribution`. Frames publishing interests as offer-then-
+  explicit-consent only, never inferred from chat; sets honest expectations
+  for `find_helper` (at most one DM, to a single opted-in best match, and
+  the requester never learns who — if anyone — was contacted); and names
+  the `set_my_interests`-first prerequisite for `set_helper_availability`
+  and `who_is_into`'s self-match path. Loads only when `AGENT_SKILLS_ENABLED`
+  is on, same as every other bundled skill.
 
 ## 2026-08-18
 
