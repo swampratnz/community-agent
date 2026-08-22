@@ -176,7 +176,11 @@ test('SECURITY: the crossing-tick alert DM contains no candidate id, title, cont
     }),
   ];
   const listAdminIdentities = async () => admins([{}]);
-  const runOnce = makeDefaultKnowledgeCandidateStaleAlertRun([adapter], listOpenCandidates, listAdminIdentities);
+  const runOnce = makeDefaultKnowledgeCandidateStaleAlertRun(
+    [adapter],
+    listOpenCandidates,
+    listAdminIdentities,
+  );
 
   await runOnce();
 
@@ -202,7 +206,11 @@ test('makeDefaultKnowledgeCandidateStaleAlertRun: a pending-candidate set with n
     candidate({ ageHours: KNOWLEDGE_CANDIDATE_STALE_ALERT_THRESHOLD_HOURS - 1 }),
   ];
   const listAdminIdentities = async () => admins([{}]);
-  const runOnce = makeDefaultKnowledgeCandidateStaleAlertRun([adapter], listOpenCandidates, listAdminIdentities);
+  const runOnce = makeDefaultKnowledgeCandidateStaleAlertRun(
+    [adapter],
+    listOpenCandidates,
+    listAdminIdentities,
+  );
 
   await runOnce();
 
@@ -215,7 +223,11 @@ test('makeDefaultKnowledgeCandidateStaleAlertRun: alerts exactly once on the tic
   const listOpenCandidates = async () =>
     Array.from({ length: staleCount }, (_, i) => candidate({ ageHours: 200, id: i }));
   const listAdminIdentities = async () => admins([{}]);
-  const runOnce = makeDefaultKnowledgeCandidateStaleAlertRun([adapter], listOpenCandidates, listAdminIdentities);
+  const runOnce = makeDefaultKnowledgeCandidateStaleAlertRun(
+    [adapter],
+    listOpenCandidates,
+    listAdminIdentities,
+  );
 
   await runOnce(); // 0 -> no alert
   assert.equal(dms.length, 0);
@@ -239,7 +251,11 @@ test('makeDefaultKnowledgeCandidateStaleAlertRun: the latch re-arms once the sta
   const listOpenCandidates = async () =>
     Array.from({ length: staleCount }, (_, i) => candidate({ ageHours: 200, id: i }));
   const listAdminIdentities = async () => admins([{}]);
-  const runOnce = makeDefaultKnowledgeCandidateStaleAlertRun([adapter], listOpenCandidates, listAdminIdentities);
+  const runOnce = makeDefaultKnowledgeCandidateStaleAlertRun(
+    [adapter],
+    listOpenCandidates,
+    listAdminIdentities,
+  );
 
   await runOnce(); // 0 -> 2, crosses
   assert.equal(dms.length, 1);
@@ -263,7 +279,11 @@ test('SECURITY: a WindowClosedError for one admin is queued via queueForWindowRe
       { platform: 'whatsapp', platformUserId: 'admin-open' },
       { platform: 'whatsapp', platformUserId: 'admin-closed' },
     ]);
-  const runOnce = makeDefaultKnowledgeCandidateStaleAlertRun([adapter], listOpenCandidates, listAdminIdentities);
+  const runOnce = makeDefaultKnowledgeCandidateStaleAlertRun(
+    [adapter],
+    listOpenCandidates,
+    listAdminIdentities,
+  );
 
   await runOnce();
 
@@ -285,28 +305,25 @@ test('startKnowledgeCandidateStaleAlert: always-on, no enable flag — creates a
 
 // --- the scan bound ---------------------------------------------------------
 
-test(
-  'the default listOpenCandidates asks listKnowledgeCandidates for KNOWLEDGE_CANDIDATE_STALE_ALERT_SCAN_LIMIT, oldest-first',
-  async () => {
-    // Asserted against the SOURCE, deliberately — same technique as
-    // tests/appealStaleAlert.test.ts's own scan-bound test: the argument only
-    // exists inside a default parameter, so the sole runtime observation
-    // point is the real `listKnowledgeCandidates` binding, resolved at
-    // import time. Every other test in this file injects `listOpenCandidates`
-    // and therefore bypasses the limit entirely.
-    const source = await readFile(
-      fileURLToPath(new URL('../src/module/knowledgeCandidateStaleAlert.ts', import.meta.url)),
-      'utf8',
-    );
-    assert.match(
-      source,
-      /listKnowledgeCandidates\('pending',\s*KNOWLEDGE_CANDIDATE_STALE_ALERT_SCAN_LIMIT,\s*true\)/,
-      "the job must scan with the explicit constant and oldestFirst:true — a bare call would silently miss the oldest rows",
-    );
-    assert.equal(
-      KNOWLEDGE_CANDIDATE_STALE_ALERT_SCAN_LIMIT,
-      200,
-      "200 is listKnowledgeCandidates' own hard clamp — a larger value here would be a claim the repository does not honour",
-    );
-  },
-);
+test('the default listOpenCandidates asks listKnowledgeCandidates for KNOWLEDGE_CANDIDATE_STALE_ALERT_SCAN_LIMIT, oldest-first', async () => {
+  // Asserted against the SOURCE, deliberately — same technique as
+  // tests/appealStaleAlert.test.ts's own scan-bound test: the argument only
+  // exists inside a default parameter, so the sole runtime observation
+  // point is the real `listKnowledgeCandidates` binding, resolved at
+  // import time. Every other test in this file injects `listOpenCandidates`
+  // and therefore bypasses the limit entirely.
+  const source = await readFile(
+    fileURLToPath(new URL('../src/module/knowledgeCandidateStaleAlert.ts', import.meta.url)),
+    'utf8',
+  );
+  assert.match(
+    source,
+    /listKnowledgeCandidates\('pending',\s*KNOWLEDGE_CANDIDATE_STALE_ALERT_SCAN_LIMIT,\s*true\)/,
+    'the job must scan with the explicit constant and oldestFirst:true — a bare call would silently miss the oldest rows',
+  );
+  assert.equal(
+    KNOWLEDGE_CANDIDATE_STALE_ALERT_SCAN_LIMIT,
+    200,
+    "200 is listKnowledgeCandidates' own hard clamp — a larger value here would be a claim the repository does not honour",
+  );
+});
