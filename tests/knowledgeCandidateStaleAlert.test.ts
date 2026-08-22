@@ -164,7 +164,13 @@ test('SECURITY: the crossing-tick alert DM contains no candidate id, title, cont
   const secretTitle = 'secret-candidate-title';
   const secretContent = 'secret-candidate-content-text';
   const secretTopic = 'secret-candidate-topic';
-  const listOpenCandidates = async () => [
+  // Built EAGERLY, before runOnce() captures its clock — see
+  // tests/appealStaleAlert.test.ts's identical comment (issue #1071): the job
+  // reads `Date.now()` first and only then awaits listOpenCandidates(), so a
+  // fixture dated INSIDE that lazy callback stamps createdAt later than
+  // `now`, undershooting the intended age by a hair and flooring "200h" to
+  // "199h" often enough on a loaded CI runner to redden this exact assertion.
+  const staleCandidates = [
     candidate({
       ageHours: 200,
       id: 999,
@@ -175,6 +181,7 @@ test('SECURITY: the crossing-tick alert DM contains no candidate id, title, cont
       sourceUserId: secretUserId,
     }),
   ];
+  const listOpenCandidates = async () => staleCandidates;
   const listAdminIdentities = async () => admins([{}]);
   const runOnce = makeDefaultKnowledgeCandidateStaleAlertRun(
     [adapter],
