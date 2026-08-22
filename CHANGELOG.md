@@ -27,6 +27,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-08-23
 
 ### Added
+- **Members can now ask what's most relied on in the knowledge base.** (#1070)
+  Until now, a member could only search the knowledge base with a specific
+  question (`knowledge_search`) or browse an unranked list of titles
+  (`list_knowledge_topics`) — there was no way to ask "what does everyone
+  actually rely on?". The new `most_helpful_knowledge` tool ranks
+  community-wide knowledge entries by how often they've actually answered a
+  member's question, mirroring the admin-only `list_top_knowledge` (#1024)
+  but scoped to what a member can already see.
 - **Admins now get a proactive nudge when a member-suggested knowledge tip
   has been sitting unreviewed for a week.** (#1074) Previously the only
   signal for a stale pending knowledge candidate was a bare count on the
@@ -45,6 +53,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   line whenever at least one report closed, scoped to the same conversations
   and admin-exclusion rules as the rest of the digest; nothing changes when
   the count is zero.
+- **The closed-reports line on the weekly admin digest now also shows how
+  fast reports are getting closed, not just how many.** (#1081) A shrinking
+  report backlog can hide individual reports still sitting for days before
+  anyone acts — the resolved/dismissed counts alone (#1076) can't tell
+  "closed fast" from "closed slow but eventually." The line now appends a
+  "(median Nh to close)" fragment whenever at least one report closed this
+  period, computed from the same rows the counts already use; nothing
+  changes when no reports closed.
 - **`my_warnings` and `my_submissions` (and their `/warnings`/`!warnings`,
   `/mysubmissions`/`!mysubmissions` mirrors) now render in te reo Māori for a
   member with a standing `'mi'` language preference.** (#1077) Previously

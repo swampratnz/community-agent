@@ -24,6 +24,8 @@ export {
   formatKnowledgeSearchResults,
   formatFoundKnowledge,
   formatKnowledgeTopics,
+  formatMostHelpfulKnowledge,
+  rankKnowledgeByRetrieval,
   formatInterestResults,
   formatProjectResults,
   parseIsoInstant,
