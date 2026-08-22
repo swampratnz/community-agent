@@ -21019,7 +21019,7 @@ test(
 );
 
 test(
-  "suggest_knowledge refuses (without inserting) when an existing knowledge entry already covers the topic, naming the covering entry's title (issue #633 AC4)",
+  "suggest_knowledge QUEUES (rather than discards) a tip whose topic already matches an existing knowledge entry, naming the covering entry's title as a possible-update signal instead of a flat refusal (issue #1066 AC1-2)",
   { skip },
   async () => {
     const { id: knowledgeId } = await saveKnowledge({
@@ -21035,20 +21035,167 @@ test(
       content: 'my own tip about the same thing',
     });
     assert.equal(result.isError, false);
-    assert.match(result.content[0]?.text ?? '', /already covered/i);
-    assert.match(result.content[0]?.text ?? '', /Ozvantriclorix upgrade guide/);
+    const replyText = result.content[0]?.text ?? '';
+    assert.match(replyText, /Ozvantriclorix upgrade guide/, 'the covering entry is named in the reply');
+    assert.match(replyText, /queued for admin review/i, 'the reply states the tip is queued, not refused');
+    assert.doesNotMatch(
+      replyText,
+      /already covered/i,
+      'the old flat-refusal wording must be gone (issue #1066 AC2)',
+    );
+    const match = /Tip #(\d+)/.exec(replyText);
+    assert.ok(match, 'the reply names the new candidate id, same as the no-match branch');
+    const candidateId = Number(match[1]);
+
+    const row = await pool.query(
+      `SELECT status, source_user_id, topic FROM knowledge_candidates WHERE id = $1`,
+      [candidateId],
+    );
+    assert.equal(row.rows.length, 1, 'a coverage-matched tip IS queued as a candidate (issue #1066 AC1)');
+    assert.equal(row.rows[0].status, 'pending');
+    assert.equal(row.rows[0].source_user_id, memberUser);
+
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [candidateId]);
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [knowledgeId]);
+  },
+);
+
+test(
+  'suggest_knowledge still blocks a SECOND coverage-matched correction on the same topic via the existing candidateTopicAlreadyReviewed guard, once the first correction is itself a pending candidate row — no unbounded repeat noise (issue #1066 AC4)',
+  { skip },
+  async () => {
+    const { id: knowledgeId } = await saveKnowledge({
+      title: 'Quaddlebrix pricing page',
+      content: 'Quaddlebrix pricing page: the plan URL is /pricing/legacy.',
+      scope: 'global',
+    });
+
+    const memberUser = `${RUN}-suggest-knowledge-covered-repeat-member`;
+    const memberTools = knowledgeToolsFor('member', memberUser);
+    const title = 'quaddlebrix pricing page correction';
+
+    const first = await memberTools['suggest_knowledge'].handler({
+      title,
+      content: 'the plan URL actually changed to /pricing/current',
+    });
+    assert.equal(first.isError, false);
+    const match = /Tip #(\d+)/.exec(first.content[0]?.text ?? '');
+    assert.ok(match, 'the first correction is queued');
+    const firstCandidateId = Number(match[1]);
+
+    const second = await memberTools['suggest_knowledge'].handler({
+      title,
+      content: 'reiterating: the URL is /pricing/current now',
+    });
+    assert.equal(second.isError, false, 'the existing guard refusal is not an error result');
+    assert.match(
+      second.content[0]?.text ?? '',
+      /already queued|already.*reviewed/i,
+      'the second submission on the same topic hits candidateTopicAlreadyReviewed, not a fresh queue',
+    );
 
     const countRow = await pool.query(
-      `SELECT count(*)::int AS n FROM knowledge_candidates WHERE source_user_id = $1`,
-      [memberUser],
+      `SELECT count(*)::int AS n FROM knowledge_candidates WHERE topic = $1`,
+      [title],
     );
-    assert.equal(
-      countRow.rows[0].n,
-      0,
-      'no candidate row is inserted when an existing entry already covers it',
+    assert.equal(countRow.rows[0].n, 1, 'exactly one candidate row exists — no second row from the repeat');
+
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [firstCandidateId]);
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [knowledgeId]);
+  },
+);
+
+test(
+  "SECURITY: suggest_knowledge's KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY cap applies identically to coverage-matched submissions as to ordinary ones — the coverage branch cannot be used to exceed the per-member/day cap (issue #1066 AC5)",
+  { skip },
+  async () => {
+    // Four DISTINCT covered entries (rather than four corrections to ONE
+    // entry): a correction's title is deliberately near-identical to the
+    // entry it corrects to reliably clear KNOWLEDGE_COVERAGE_SIMILARITY_
+    // THRESHOLD (0.6) against it — same recipe as the AC1-2 test above — but
+    // near-identical corrections of the SAME entry would then also risk
+    // clearing candidateTopicAlreadyReviewed's much higher 0.92 dedup floor
+    // against EACH OTHER, which would block submission 2 as "already
+    // queued" before the rate cap ever got a chance to fire. Four unrelated
+    // subjects sidesteps that: each correction is only near-duplicate of
+    // its OWN entry, never of a sibling correction.
+    const ENTRIES = [
+      {
+        title: `${RUN} Blorvintak scheduling steps`,
+        correction: `${RUN} blorvintak scheduling steps update`,
+      },
+      { title: `${RUN} Nallowyrn export process`, correction: `${RUN} nallowyrn export process update` },
+      { title: `${RUN} Trestleglade admin panel`, correction: `${RUN} trestleglade admin panel update` },
+      { title: `${RUN} Quixolane billing cycle`, correction: `${RUN} quixolane billing cycle update` },
+    ];
+    assert.ok(
+      ENTRIES.length > KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY,
+      'fixture must supply strictly more distinct covered entries than the rate cap',
     );
 
-    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [knowledgeId]);
+    const memberUser = `${RUN}-suggest-knowledge-covered-rate-member`;
+    const memberTools = knowledgeToolsFor('member', memberUser);
+    const knowledgeIds: number[] = [];
+    const candidateIds: number[] = [];
+    try {
+      for (let i = 0; i < ENTRIES.length; i++) {
+        const { id } = await saveKnowledge({
+          title: ENTRIES[i].title,
+          content: `${ENTRIES[i].title}: full details for this fixture entry.`,
+          scope: 'global',
+        });
+        knowledgeIds.push(id);
+      }
+
+      for (let i = 0; i < KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY; i++) {
+        const result = await memberTools['suggest_knowledge'].handler({
+          title: ENTRIES[i].correction,
+          content: `corrected content ${i} for this fixture entry`,
+        });
+        assert.equal(
+          result.isError,
+          false,
+          `coverage-matched tip ${i} under the cap must succeed, got: ${JSON.stringify(result)}`,
+        );
+        const replyText = result.content[0]?.text ?? '';
+        assert.match(
+          replyText,
+          /This looks related to existing knowledge entry/i,
+          `tip ${i} must actually exercise the coverage-matched branch, got: ${replyText}`,
+        );
+        const match = /Tip #(\d+)/.exec(replyText);
+        assert.ok(match, `expected a "Tip #" reply for coverage-matched tip ${i}, got: ${replyText}`);
+        candidateIds.push(Number(match[1]));
+      }
+
+      const overCap = await memberTools['suggest_knowledge'].handler({
+        title: ENTRIES[KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY].correction,
+        content: 'over-cap corrected content for this fixture entry',
+      });
+      assert.equal(
+        overCap.isError,
+        true,
+        'SECURITY: the 4th coverage-matched submission must hit the rate limit, not queue a 4th row',
+      );
+      assert.match(overCap.content[0]?.text ?? '', new RegExp(`${KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY}`));
+      assert.match(overCap.content[0]?.text ?? '', /24 hours/i);
+
+      const countRow = await pool.query(
+        `SELECT count(*)::int AS n FROM knowledge_candidates WHERE source_user_id = $1`,
+        [memberUser],
+      );
+      assert.equal(
+        countRow.rows[0].n,
+        KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY,
+        'SECURITY: exactly the capped number of rows exist — the 4th over-cap attempt inserted nothing',
+      );
+    } finally {
+      if (candidateIds.length > 0) {
+        await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [candidateIds]);
+      }
+      if (knowledgeIds.length > 0)
+        await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [knowledgeIds]);
+    }
   },
 );
 

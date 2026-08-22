@@ -1622,18 +1622,28 @@ and review flow above, rather than a separate table or a privileged surface:
   `status = 'pending'`. It can only reach `knowledge` through the same
   admin-tier `accept_knowledge_candidate` call machine candidates go through
   — nothing about the write path itself is privileged.
-- **Same dedup guard, reused verbatim**: `candidateTopicAlreadyReviewed`
-  (exact + semantic match against already-queued/reviewed topics) and
-  `findKnowledgeCoveringTopic` (an existing `knowledge` entry that already
-  covers it, above `KNOWLEDGE_COVERAGE_SIMILARITY_THRESHOLD` — its own knob
-  since agent-base 0.5.x, default 0.6; it used to borrow the much looser
-  retrieval floor `KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD`, which refused
-  same-product/different-topic tips as duplicates) both run BEFORE
-  insert; a blocked tip is never queued and the reply tells the member why
-  (naming the covering entry's title when that's the reason).
-  `findKnowledgeCoveringTopic` is a thin wrapper `knowledgeCoversTopic` (the
-  builder's own boolean check) now delegates to, so the builder's behaviour
-  and its own tests are unchanged.
+- **Same dedup guard, reused verbatim, but only ONE branch still refuses**:
+  `candidateTopicAlreadyReviewed` (exact + semantic match against
+  already-queued/reviewed topics) still runs BEFORE insert and still blocks
+  outright — a blocked tip is never queued and the reply tells the member
+  why. `findKnowledgeCoveringTopic` (an existing `knowledge` entry that
+  already covers it, above `KNOWLEDGE_COVERAGE_SIMILARITY_THRESHOLD` — its
+  own knob since agent-base 0.5.x, default 0.6; it used to borrow the much
+  looser retrieval floor `KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD`, which
+  refused same-product/different-topic tips as duplicates) instead QUEUES
+  the tip (issue #1066): a genuine correction to an entry is, by
+  construction, highly similar to the entry it corrects, so this guard
+  cannot tell "true duplicate" from "stale/wrong entry" — surfacing it to an
+  admin (naming the covering entry in the reply) is the only way to stop
+  discarding real corrections, and `candidateTopicAlreadyReviewed` above
+  still stops a second correction on the same topic once the first is
+  itself a pending candidate row. `findKnowledgeCoveringTopic` is a thin
+  wrapper `knowledgeCoversTopic` (the builder's own boolean check) now
+  delegates to, so the builder's behaviour and its own tests are unchanged
+  — as is `feedback.ts`'s separate `rate_answer` auto-draft use of the same
+  function, which still silently skips drafting on a coverage match (a
+  fire-and-forget inference from a rating, not a deliberate member
+  statement).
 - **Own rate/length caps**: `KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY` (3/24h per
   member, DB-backed `COUNT(*)`-inside-the-insert, same restart-proof pattern
   as `SUGGESTION_RATE_LIMIT_PER_DAY`) and `KNOWLEDGE_TIP_TITLE_MAX_CHARS` /
