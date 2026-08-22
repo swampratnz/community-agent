@@ -24,6 +24,18 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #963 #964 #965 #968 #971 #983 #988 #989 #991 #992 #994 #1017
 -->
 
+## 2026-08-23
+
+### Added
+- **Admins now get a proactive nudge when a member-suggested knowledge tip
+  has been sitting unreviewed for a week.** Previously the only signal for a
+  stale pending knowledge candidate was a bare count on the weekly digest or
+  the `review_queue` pull — easy to miss if it slipped past. Now, once any
+  pending candidate has waited more than 7 days for review, every admin gets
+  a one-time DM nudge (re-arming only after the backlog clears), pointing at
+  `list_knowledge_candidates` to review it. No candidate content is included
+  in the alert — only the count and how long the oldest has waited.
+
 ## 2026-08-22
 
 ### Fixed
