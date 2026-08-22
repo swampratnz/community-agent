@@ -381,6 +381,51 @@ test('SECURITY: a WindowClosedError for one admin is queued via queueForWindowRe
   assert.equal(queued[0].priority, 'low');
 });
 
+test(
+  'SECURITY: a throwing per-admin read (conversationsForUser/resolveViewerIds/listOpenReportsForAdmin) for one ' +
+    "admin never aborts the tick — every other admin is still scanned and alerted, matching adminDigest.ts's " +
+    'whole-sequence per-admin isolation rather than a send-only try/catch',
+  async () => {
+    const dms: Array<{ userId: string; text: string }> = [];
+    const adapter: PlatformAdapter = {
+      platform: 'discord',
+      adminCapabilities: new Set(),
+      async start() {},
+      async stop() {},
+      isConnected: () => true,
+      onMessage() {},
+      async sendMessage(_out: OutgoingMessage) {},
+      async sendDirectMessage(userId: string, text: string) {
+        dms.push({ userId, text });
+      },
+      async conversationsForUser(userId: string) {
+        if (userId === 'admin-broken') throw new Error('transient DB blip');
+        return ['convo-1'];
+      },
+      async performAdminAction() {
+        return '';
+      },
+    };
+    const listOpenReportsForAdmin = async () => [report({ ageHours: 60 })];
+    const listAdminIdentities = async () =>
+      admins([{ platformUserId: 'admin-broken' }, { platformUserId: 'admin-fine' }]);
+    const runOnce = makeDefaultReportStaleAlertRun(
+      [adapter],
+      listAdminIdentities,
+      listOpenReportsForAdmin,
+      async () => [],
+    );
+
+    await assert.doesNotReject(runOnce());
+
+    assert.deepEqual(
+      dms.map((d) => d.userId),
+      ['admin-fine'],
+      "the broken admin's read failure must not suppress the alert to the other, healthy admin",
+    );
+  },
+);
+
 test('alertReportStale: an admin with no adapter matching its platform (or a disconnected one) is silently skipped, never throws', async () => {
   const { adapter, dms } = makeAdapter(false);
   const listOpenReportsForAdmin = async () => [report({ ageHours: 60 })];

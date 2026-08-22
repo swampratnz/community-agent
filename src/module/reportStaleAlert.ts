@@ -79,6 +79,17 @@ function staleOpenReports(reports: readonly ContentReport[], now: number): Conte
  * `listOpenReportsForAdmin`/`resolveViewerIds` are injectable so tests can
  * drive the latch across ticks and across admins with no real DB and no
  * timers.
+ *
+ * Per-admin isolation covers the WHOLE gather+send sequence, not just the
+ * send: `adapter.conversationsForUser`/`resolveViewerIds`/
+ * `listOpenReportsForAdmin` are wrapped in the same try/catch as the send
+ * step, mirroring `adminDigest.ts`'s `runAdminDigestOnce` rather than
+ * `appealStaleAlert.ts`/`knowledgeCandidateStaleAlert.ts`'s narrower
+ * send-only try/catch (safe there only because those two queues have no
+ * per-admin read step). Given `content_reports` is billed as the most
+ * safety-sensitive queue, one admin's transient read failure (a DB blip, a
+ * disconnected-adapter quirk) must never suppress the signal to every other
+ * admin for the tick.
  */
 export function makeDefaultReportStaleAlertRun(
   adapters: readonly PlatformAdapter[],
@@ -102,42 +113,54 @@ export function makeDefaultReportStaleAlertRun(
       const adapter = adapters.find((a) => a.platform === admin.platform && a.isConnected());
       if (!adapter) continue;
 
-      const scope = await adapter.conversationsForUser(admin.platformUserId);
-      // Accused-admin exclusion (issue #197): every identity linked to this
-      // admin, not just their current-platform id, matching list_reports.
-      const viewerIds = await resolveViewerIds(admin.platform, admin.platformUserId);
-      const reports = await listOpenReportsForAdmin(scope, viewerIds);
-      const stale = staleOpenReports(reports, now);
-
-      const key = `${admin.platform}:${admin.platformUserId}`;
-      const tracker = trackers.get(key) ?? initialUsageAlertTracker();
-      const step = stepUsageAlertTracker(tracker, stale.length, 1);
-      trackers.set(key, step.tracker);
-      if (!step.shouldAlert) continue;
-
-      const oldestAgeHours = Math.floor(
-        Math.max(...stale.map((report) => now - report.createdAt.getTime())) / 3_600_000,
-      );
-      const message = formatReportStaleAlertMessage(stale.length, oldestAgeHours);
-      logger.warn(
-        { platform: admin.platform, id: admin.platformUserId, count: stale.length, oldestAgeHours },
-        'Report stale alert: stale open-report count crossed zero for admin',
-      );
       try {
-        await adapter.sendDirectMessage(admin.platformUserId, message);
-      } catch (err) {
-        if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
-          adapter.queueForWindowReopen(admin.platformUserId, message, 'low');
-          logger.warn(
-            { platform: admin.platform, id: admin.platformUserId },
-            "Report stale alert: recipient's window is closed, queued for reopen",
-          );
-        } else {
-          logger.warn(
-            { err, platform: admin.platform, id: admin.platformUserId },
-            'Report stale alert: per-admin send failed',
-          );
+        const scope = await adapter.conversationsForUser(admin.platformUserId);
+        // Accused-admin exclusion (issue #197): every identity linked to this
+        // admin, not just their current-platform id, matching list_reports.
+        const viewerIds = await resolveViewerIds(admin.platform, admin.platformUserId);
+        const reports = await listOpenReportsForAdmin(scope, viewerIds);
+        const stale = staleOpenReports(reports, now);
+
+        const key = `${admin.platform}:${admin.platformUserId}`;
+        const tracker = trackers.get(key) ?? initialUsageAlertTracker();
+        const step = stepUsageAlertTracker(tracker, stale.length, 1);
+        trackers.set(key, step.tracker);
+        if (!step.shouldAlert) continue;
+
+        const oldestAgeHours = Math.floor(
+          Math.max(...stale.map((report) => now - report.createdAt.getTime())) / 3_600_000,
+        );
+        const message = formatReportStaleAlertMessage(stale.length, oldestAgeHours);
+        logger.warn(
+          { platform: admin.platform, id: admin.platformUserId, count: stale.length, oldestAgeHours },
+          'Report stale alert: stale open-report count crossed zero for admin',
+        );
+        try {
+          await adapter.sendDirectMessage(admin.platformUserId, message);
+        } catch (err) {
+          if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+            adapter.queueForWindowReopen(admin.platformUserId, message, 'low');
+            logger.warn(
+              { platform: admin.platform, id: admin.platformUserId },
+              "Report stale alert: recipient's window is closed, queued for reopen",
+            );
+          } else {
+            logger.warn(
+              { err, platform: admin.platform, id: admin.platformUserId },
+              'Report stale alert: per-admin send failed',
+            );
+          }
         }
+      } catch (err) {
+        // Mirrors adminDigest.ts's runAdminDigestOnce: the per-admin scope
+        // reads (conversationsForUser/resolveViewerIds/listOpenReportsForAdmin)
+        // are NOT covered by the send-only try/catch above, so a throw there
+        // (a transient DB blip, a disconnected-adapter quirk) must not abort
+        // the whole tick — every other admin still gets scanned/alerted.
+        logger.warn(
+          { err, platform: admin.platform, id: admin.platformUserId },
+          'Report stale alert: per-admin read failed',
+        );
       }
     }
   };
