@@ -27,6 +27,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-08-23
 
 ### Added
+- **Members can now ask what's most relied on in the knowledge base.** (#1070)
+  Until now, a member could only search the knowledge base with a specific
+  question (`knowledge_search`) or browse an unranked list of titles
+  (`list_knowledge_topics`) — there was no way to ask "what does everyone
+  actually rely on?". The new `most_helpful_knowledge` tool ranks
+  community-wide knowledge entries by how often they've actually answered a
+  member's question, mirroring the admin-only `list_top_knowledge` (#1024)
+  but scoped to what a member can already see.
 - **Admins now get a proactive nudge when a member-suggested knowledge tip
   has been sitting unreviewed for a week.** (#1074) Previously the only
   signal for a stale pending knowledge candidate was a bare count on the
