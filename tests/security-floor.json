@@ -72,7 +72,7 @@
   "discordAdapter.test.ts": 62,
   "discordEditModerationScan.test.ts": 3,
   "discordImageInput.test.ts": 7,
-  "discordSlashCommands.test.ts": 38,
+  "discordSlashCommands.test.ts": 41,
   "discordThreadArchive.test.ts": 2,
   "docsIngest.test.ts": 2,
   "embeddingHealthCheck.test.ts": 2,

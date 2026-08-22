@@ -2821,6 +2821,20 @@ gaps an adversarial review pass flagged in the underlying proposal:
   model turn to apply that quarantine framing, so it mirrors the existing
   knowledge shortcut's (`tryKnowledgeShortcut`) own exclusion instead —
   unreviewed machine-researched content is never served at full trust here.
+  The exclusion also applies to a lexical-fallback hit (below), never only
+  the semantic ones.
+
+`/kb` carries `knowledge_search`'s own #362 lexical fallback (issue #1061):
+on a genuine below-floor miss (`hits.length > 0 && relevantIds.length ===
+0`), `handleKb` retries with `searchKnowledgeLexical` — the same trigram
+`word_similarity()` match `knowledgeMember.ts` already uses — before
+answering "No matching knowledge entries.", so an exact SNAKE_CASE/camelCase
+identifier or error code that a member pastes verbatim isn't lost to dense
+sentence embeddings on this surface either. A lexical hit is tagged
+`viaLexical: true` and merged into the same `formatKnowledgeSearchResults`
+call `/kb` already makes; a `searchKnowledgeLexical` rejection degrades to
+the semantic-only result (or the existing no-match text), same fail-safe
+shape as the conflict/low-rated lookups below.
 - **Every slash-command reply is passed through the adapter's existing
   outbound filter** (`this.filtered()` → `filterOutbound()`: secret redaction
   + code-answers policy), via a small `SlashCommandDeps` interface
