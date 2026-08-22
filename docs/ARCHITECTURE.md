@@ -2863,6 +2863,22 @@ via `/kb` carries the same conflict/low-rated caveat an identical chat-path
 answer would, rather than always rendering with both arguments at their
 `false`/empty defaults.
 
+`/kb` also feeds the two curation signals `knowledge_search`'s own handler
+records (issue #1052): `recordKnowledgeRetrieval(relevantIds)` on the same
+`relevantIds` set computed above, and `recordKnowledgeGap('discord',
+interaction.channelId, interaction.user.id, query)` on a genuine below-floor
+miss (`hits.length > 0 && relevantIds.length === 0`), so an entry served only
+via `/kb` no longer looks unused to `list_top_knowledge` and a `/kb` miss no
+longer goes dark to `list_knowledge_gaps`. Both calls are fire-and-forget with
+a swallowed rejection, identical in shape to `recordShortcutHit` above.
+`/kb` has no lexical fallback (unlike `knowledge_search`'s post-fallback
+`else if` branch), so this gap guard fires on the pre-fallback condition — a
+deliberately accepted, marginally noisier v1 rather than in scope for adding
+one. The real-time gap-cluster admin DM (issue #650) is not wired here: that
+needs per-turn `turnState` a slash-command handler doesn't have, so a `/kb`
+miss only ever reaches the periodic `list_knowledge_gaps` read path, never an
+instantaneous alert.
+
 `/whois`/`/projects` replies keep their handlers' existing untrusted-content
 quarantine (`untrustedEntryContent` bracket/whitespace stripping,
 `sanitizeName`'d attribution) since they call the same render helpers as the

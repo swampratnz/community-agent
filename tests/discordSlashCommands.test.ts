@@ -1551,7 +1551,7 @@ test('SECURITY: /kb never direct-serves an unreviewed auto-provenance knowledge 
 });
 
 test('/kb replies with the no-match text when every hit is auto-provenance (all excluded, none quarantined-and-shown)', async (t) => {
-  mockPool(t, {
+  const calls = mockPool(t, {
     memberRole: 'member',
     knowledgeRows: [
       {
@@ -1574,6 +1574,10 @@ test('/kb replies with the no-match text when every hit is auto-provenance (all 
   await handleInteraction(interaction as never, adapterDeps(adapter));
 
   assert.equal(replies[0].content, 'No matching knowledge entries.');
+  // All-auto-provenance is also a genuine below-floor miss (issue #1052) —
+  // drain that fire-and-forget recordKnowledgeGap write here (see waitFor's
+  // doc comment below) so it can never land in the NEXT test's mockPool.
+  await waitFor(() => knowledgeGapInsertCalls(calls).length > 0);
 });
 
 // --- Lexical fallback, issue #1061 (mirrors knowledge_search's own #362) -----
@@ -2016,6 +2020,342 @@ test('SECURITY: /kb still replies successfully with the hits and no caveat when 
     'a lookup failure must degrade to no low-rated caveat, never an error',
   );
   assert.ok(warnLog.mock.calls.length >= 2, 'both lookup failures must be logged, not silently swallowed');
+});
+
+// --- Issue #1052: /kb feeds the same curation signals knowledge_search's own
+// handler records (retrieval counts + below-floor gaps), so a lookup diverted
+// off the model path via /kb no longer goes dark to list_top_knowledge/
+// list_knowledge_gaps. ---------------------------------------------------
+
+/** Every `UPDATE knowledge ... retrieval_count` call (recordKnowledgeRetrieval) recorded across a set of pool.query calls. */
+function retrievalCountCalls(
+  calls: Array<{ sql: string; params: unknown[] }>,
+): Array<{ sql: string; params: unknown[] }> {
+  return calls.filter((c) => c.sql.includes('UPDATE knowledge') && c.sql.includes('retrieval_count'));
+}
+
+/** Every `INSERT INTO knowledge_gaps` call (recordKnowledgeGap) recorded across a set of pool.query calls. */
+function knowledgeGapInsertCalls(
+  calls: Array<{ sql: string; params: unknown[] }>,
+): Array<{ sql: string; params: unknown[] }> {
+  return calls.filter((c) => c.sql.includes('INSERT INTO knowledge_gaps'));
+}
+
+/**
+ * Poll `predicate` until it's true or `timeoutMs` elapses. recordKnowledgeGap
+ * (unlike recordKnowledgeRetrieval) calls the real embed() before its INSERT,
+ * so its fire-and-forget write can still be in flight when handleInteraction
+ * resolves — awaiting it here (mirroring tools.test.ts's own
+ * waitForGapCount/waitForRetrievalCount polling for the same fire-and-forget
+ * race against a real DB) is what keeps a still-pending call from landing in
+ * mockPool's NEXT test instead of this one's.
+ */
+async function waitFor(predicate: () => boolean, timeoutMs = 3000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate() && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+test('/kb calls recordKnowledgeRetrieval exactly once with precisely the trusted, floor-clearing entry ids (issue #1052 acceptance criterion 1)', async (t) => {
+  const calls = mockPool(t, {
+    memberRole: 'member',
+    knowledgeRows: [
+      {
+        id: 1,
+        title: 'A',
+        content: 'ABOVE_FLOOR',
+        created_by_role: 'admin',
+        similarity: 0.9,
+        updated_at: new Date(),
+      },
+      {
+        id: 2,
+        title: 'B',
+        content: 'BELOW_FLOOR',
+        created_by_role: 'admin',
+        similarity: 0.1,
+        updated_at: new Date(),
+      },
+      {
+        id: 3,
+        title: 'C',
+        content: 'AUTO_ENTRY',
+        created_by_role: 'auto',
+        similarity: 0.95,
+        updated_at: new Date(),
+      },
+    ],
+  });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction } = fakeInteraction({
+    commandName: 'kb',
+    userId: 'member-1',
+    options: { query: 'anything' },
+  });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  const updates = retrievalCountCalls(calls);
+  assert.equal(updates.length, 1, 'recordKnowledgeRetrieval must fire exactly once');
+  assert.deepEqual(
+    updates[0].params,
+    [[1]],
+    'only the trusted, floor-clearing hit id may be recorded — never the below-floor or auto-provenance hits',
+  );
+});
+
+test('/kb records zero recordKnowledgeRetrieval writes when no trusted hit clears the relevance floor (issue #1052 acceptance criterion 1)', async (t) => {
+  const calls = mockPool(t, {
+    memberRole: 'member',
+    knowledgeRows: [
+      {
+        id: 1,
+        title: 'A',
+        content: 'BELOW_FLOOR',
+        created_by_role: 'admin',
+        similarity: 0.1,
+        updated_at: new Date(),
+      },
+    ],
+  });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction } = fakeInteraction({
+    commandName: 'kb',
+    userId: 'member-1',
+    options: { query: 'anything' },
+  });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(
+    retrievalCountCalls(calls).length,
+    0,
+    'no retrieval-count write may fire when no trusted hit clears the relevance floor',
+  );
+  // This fixture (a single below-floor hit) also satisfies the genuine-miss
+  // gap condition — drain that fire-and-forget write here (its embed() call
+  // can outlive this test) so it can never land in the NEXT test's mockPool
+  // instead of this one's.
+  await waitFor(() => knowledgeGapInsertCalls(calls).length > 0);
+});
+
+test('/kb records exactly one knowledge_gaps row, keyed on (discord, channelId, userId, query), on a genuine below-floor miss, and never drives the real-time cluster DM (issue #1052 acceptance criteria 2, 7)', async (t) => {
+  const calls = mockPool(t, {
+    memberRole: 'member',
+    knowledgeRows: [
+      {
+        id: 1,
+        title: 'A',
+        content: 'BELOW_FLOOR',
+        created_by_role: 'admin',
+        similarity: 0.1,
+        updated_at: new Date(),
+      },
+    ],
+  });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction } = fakeInteraction({
+    commandName: 'kb',
+    userId: 'member-1',
+    channelId: 'chan-42',
+    options: { query: 'a genuine miss query' },
+  });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+  await waitFor(() => knowledgeGapInsertCalls(calls).length > 0);
+
+  const gaps = knowledgeGapInsertCalls(calls);
+  assert.equal(
+    gaps.length,
+    1,
+    'exactly one knowledge_gaps row must be recorded on a genuine below-floor miss',
+  );
+  assert.deepEqual(
+    [gaps[0].params[0], gaps[0].params[1], gaps[0].params[2], gaps[0].params[3]],
+    ['discord', 'member-1', 'chan-42', 'a genuine miss query'],
+    'the gap row must carry (platform, userId, conversationId, query) exactly as the chat path records them',
+  );
+  assert.ok(
+    !calls.some((c) => c.sql.includes('FROM knowledge_gaps') && c.sql.includes('resolved_at IS NULL')),
+    'the real-time gap-cluster DM (issue #650) must never be triggered from the slash-command path — no turnState/notifyAdmins wiring here',
+  );
+});
+
+test('/kb records zero knowledge_gaps rows on an empty hit set — indistinguishable from a searchKnowledge embed() outage (issue #1052 acceptance criterion 2)', async (t) => {
+  const calls = mockPool(t, { memberRole: 'member', knowledgeRows: [] });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction } = fakeInteraction({
+    commandName: 'kb',
+    userId: 'member-1',
+    options: { query: 'anything' },
+  });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(
+    knowledgeGapInsertCalls(calls).length,
+    0,
+    'an empty hit set must never be recorded as a gap — it is indistinguishable from a searchKnowledge embed() outage',
+  );
+});
+
+// The name says ORDERING, not gating, deliberately — see the automated review
+// of PR #1053. This pins that the role SELECT precedes the knowledge search,
+// which precedes the retrieval write: real regression coverage for the
+// sequence. It does NOT exercise a caller the gate rejects, because under this
+// RBAC scheme no resolved role fails /kb's gate — `toolsForRole` returns
+// member-tools-inclusive results for super_admin/admin/member/guest alike (the
+// sibling "a guest CAN use /kb" test pins exactly that). A test claiming to
+// prove gated behaviour on a rejection path would be claiming to exercise a
+// path that does not currently exist.
+test('SECURITY: /kb resolves the caller role BEFORE it searches knowledge, and searches BEFORE it writes either the retrieval count or the gap row — the write path can never precede identity resolution (issue #1052 acceptance criterion 6)', async (t) => {
+  const calls = mockPool(t, {
+    memberRole: 'member',
+    knowledgeRows: [
+      {
+        id: 1,
+        title: 'A',
+        content: 'ABOVE_FLOOR',
+        created_by_role: 'admin',
+        similarity: 0.9,
+        updated_at: new Date(),
+      },
+    ],
+  });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction } = fakeInteraction({
+    commandName: 'kb',
+    userId: 'member-1',
+    options: { query: 'anything' },
+  });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  // /kb's authorization gate is toolsForRole(role, 'discord').includes(...) alone
+  // (no extra runtime floor — see the criteria-4/12 test above proving a guest
+  // reaches /kb exactly like knowledge_search itself), so there is no role this
+  // RBAC scheme resolves for which that gate currently fails. What IS pinned
+  // here, and would catch a future reordering, is that the role read is always
+  // the first DB call, strictly before the search read, which is strictly
+  // before either recording write — the same sequencing the gate's early
+  // `return` depends on.
+  const roleIdx = calls.findIndex((c) => c.sql.includes('SELECT role FROM community_users'));
+  const searchIdx = calls.findIndex(
+    (c) => c.sql.includes('FROM knowledge') && !c.sql.includes('knowledge_gaps'),
+  );
+  const retrievalIdx = calls.findIndex(
+    (c) => c.sql.includes('UPDATE knowledge') && c.sql.includes('retrieval_count'),
+  );
+  assert.ok(roleIdx === 0, 'the role must be resolved before any other DB call');
+  assert.ok(searchIdx > roleIdx, 'searchKnowledge must run only after role resolution');
+  assert.ok(retrievalIdx > searchIdx, 'recordKnowledgeRetrieval must run only after searchKnowledge');
+});
+
+test('/kb still replies successfully, byte-identical to the write-failure-free case, when recordKnowledgeRetrieval rejects (issue #1052 acceptance criterion 4)', async (t) => {
+  const warnLog = t.mock.method(logger, 'warn', () => {});
+  t.mock.method(pool, 'query', (async (sql: string) => {
+    if (sql.includes('SELECT role FROM community_users')) {
+      return { rows: [{ role: 'member' }], rowCount: 0 };
+    }
+    if (sql.includes('UPDATE knowledge') && sql.includes('retrieval_count')) {
+      throw new Error('retrieval-count write unavailable');
+    }
+    if (sql.includes('FROM knowledge')) {
+      return {
+        rows: [
+          {
+            id: 1,
+            title: 'A',
+            content: 'STILL_SERVED_TEXT',
+            created_by_role: 'admin',
+            similarity: 0.9,
+            updated_at: new Date(),
+          },
+        ],
+        rowCount: 0,
+      };
+    }
+    return { rows: [], rowCount: 0 };
+  }) as typeof pool.query);
+
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({
+    commandName: 'kb',
+    userId: 'member-1',
+    options: { query: 'anything' },
+  });
+
+  await assert.doesNotReject(() => handleInteraction(interaction as never, adapterDeps(adapter)));
+
+  assert.equal(replies.length, 1);
+  assert.ok(
+    replies[0].content.includes('STILL_SERVED_TEXT'),
+    'the reply must be unaffected by the retrieval-count write failing',
+  );
+  assert.ok(
+    warnLog.mock.calls.length >= 1,
+    'a forced recordKnowledgeRetrieval failure must be logged, not silently swallowed',
+  );
+});
+
+test('/kb still replies successfully, byte-identical to the write-failure-free case, when recordKnowledgeGap rejects (issue #1052 acceptance criterion 4)', async (t) => {
+  const warnLog = t.mock.method(logger, 'warn', () => {});
+  t.mock.method(pool, 'query', (async (sql: string) => {
+    if (sql.includes('SELECT role FROM community_users')) {
+      return { rows: [{ role: 'member' }], rowCount: 0 };
+    }
+    if (sql.includes('INSERT INTO knowledge_gaps')) {
+      throw new Error('gap write unavailable');
+    }
+    // The lexical fallback (issue #1061) runs whenever semantic search returns
+    // nothing above the floor, and its hits bypass that floor via `viaLexical`.
+    // Without this branch the one below-floor row below would be returned for
+    // the lexical query too and surface as a 10%-match hit, so the fixture
+    // would stop being the "genuine miss" this test needs to reach the gap
+    // write at all. Matched on the same `word_similarity` fragment the sibling
+    // lexical tests key off.
+    if (sql.includes("word_similarity($1, COALESCE(title, '')")) {
+      return { rows: [], rowCount: 0 };
+    }
+    if (sql.includes('FROM knowledge')) {
+      return {
+        rows: [
+          {
+            id: 1,
+            title: 'A',
+            content: 'BELOW_FLOOR',
+            created_by_role: 'admin',
+            similarity: 0.1,
+            updated_at: new Date(),
+          },
+        ],
+        rowCount: 0,
+      };
+    }
+    return { rows: [], rowCount: 0 };
+  }) as typeof pool.query);
+
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({
+    commandName: 'kb',
+    userId: 'member-1',
+    options: { query: 'a genuine miss query' },
+  });
+
+  await assert.doesNotReject(() => handleInteraction(interaction as never, adapterDeps(adapter)));
+
+  assert.equal(replies.length, 1);
+  assert.equal(
+    replies[0].content,
+    'No matching knowledge entries.',
+    'the below-floor-miss reply must be unaffected by the gap write failing',
+  );
+  await waitFor(() => warnLog.mock.calls.length >= 1);
+  assert.ok(
+    warnLog.mock.calls.length >= 1,
+    'a forced recordKnowledgeGap failure must be logged, not silently swallowed',
+  );
 });
 
 // --- Issue #1038: /kb honours the caller's stored language preference -------
