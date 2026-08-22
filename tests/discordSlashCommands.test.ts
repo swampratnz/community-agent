@@ -130,6 +130,8 @@ function mockPool(
     knowledgeTopicTitles?: string[];
     /** `listKnowledgeTopics`' `COUNT(*) OVER()` total — defaults to `knowledgeTopicTitles.length` (no truncation). */
     knowledgeTopicTotalCount?: number;
+    /** `searchKnowledgeLexical`'s rows (issue #1061) — distinct from `knowledgeRows` (searchKnowledge's semantic hits); defaults to no lexical hits. */
+    knowledgeLexicalRows?: PoolRow[];
   } = {},
 ): Array<{ sql: string; params: unknown[] }> {
   const calls: Array<{ sql: string; params: unknown[] }> = [];
@@ -163,6 +165,12 @@ function mockPool(
       const titles = opts.knowledgeTopicTitles ?? [];
       const totalCount = opts.knowledgeTopicTotalCount ?? titles.length;
       return { rows: titles.map((title) => ({ title, total_count: totalCount })), rowCount: 0 };
+    }
+    // searchKnowledgeLexical's word_similarity() ranking is unique to its own
+    // query text — matched BEFORE the generic 'FROM knowledge' branch below
+    // for the same reason as every other knowledge-table variant above.
+    if (sql.includes("word_similarity($1, COALESCE(title, '')")) {
+      return { rows: opts.knowledgeLexicalRows ?? [], rowCount: 0 };
     }
     if (sql.includes('FROM knowledge')) {
       return { rows: opts.knowledgeRows ?? [], rowCount: 0 };
@@ -1572,6 +1580,160 @@ test('/kb replies with the no-match text when every hit is auto-provenance (all 
   await waitFor(() => knowledgeGapInsertCalls(calls).length > 0);
 });
 
+// --- Lexical fallback, issue #1061 (mirrors knowledge_search's own #362) -----
+
+test('SECURITY: /kb serves a lexical-fallback hit when semantic search misses the relevance floor but searchKnowledgeLexical finds the query text verbatim (acceptance criterion 1)', async (t) => {
+  mockPool(t, {
+    memberRole: 'member',
+    knowledgeRows: [
+      {
+        id: 1,
+        title: 'Unrelated',
+        content: 'a distant semantic neighbour',
+        created_by_role: 'admin',
+        similarity: 0.1,
+        updated_at: new Date(),
+      },
+    ],
+    knowledgeLexicalRows: [
+      {
+        id: 2,
+        title: 'Error code entry',
+        content: 'LEXICAL_RESCUED_TEXT',
+        created_by_role: 'admin',
+        similarity: 0.4,
+        updated_at: new Date(),
+      },
+    ],
+  });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({
+    commandName: 'kb',
+    userId: 'member-1',
+    options: { query: 'SOME_ERROR_CODE' },
+  });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies.length, 1);
+  assert.ok(
+    replies[0].content.includes('LEXICAL_RESCUED_TEXT'),
+    'the lexically-matched entry must render via the viaLexical branch instead of "No matching knowledge entries."',
+  );
+});
+
+test('SECURITY: /kb never calls searchKnowledgeLexical when semantic search already clears the relevance floor (acceptance criterion 2)', async (t) => {
+  const calls = mockPool(t, {
+    memberRole: 'member',
+    knowledgeRows: [
+      {
+        id: 1,
+        title: 'FAQ',
+        content: 'ALREADY_RELEVANT_TEXT',
+        created_by_role: 'admin',
+        similarity: 0.9,
+        updated_at: new Date(),
+      },
+    ],
+  });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({
+    commandName: 'kb',
+    userId: 'member-1',
+    options: { query: 'faq' },
+  });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.ok(replies[0].content.includes('ALREADY_RELEVANT_TEXT'));
+  assert.ok(
+    !calls.some((c) => c.sql.includes("word_similarity($1, COALESCE(title, '')")),
+    'searchKnowledgeLexical must never run once semantic search already cleared the floor — the happy path stays byte-identical',
+  );
+});
+
+test('/kb still replies with "No matching knowledge entries." when both semantic and lexical search miss (acceptance criterion 3)', async (t) => {
+  mockPool(t, {
+    memberRole: 'member',
+    knowledgeRows: [
+      {
+        id: 1,
+        title: 'Unrelated',
+        content: 'a distant semantic neighbour',
+        created_by_role: 'admin',
+        similarity: 0.1,
+        updated_at: new Date(),
+      },
+    ],
+    // knowledgeLexicalRows intentionally unset — searchKnowledgeLexical returns no rows.
+  });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({
+    commandName: 'kb',
+    userId: 'member-1',
+    options: { query: 'nothing matches' },
+  });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies[0].content, 'No matching knowledge entries.');
+});
+
+test('SECURITY: /kb still replies successfully with the existing no-match output when searchKnowledgeLexical rejects, and logs the failure rather than swallowing it (acceptance criterion 4)', async (t) => {
+  const warnLog = t.mock.method(logger, 'warn', () => {});
+  const calls: Array<{ sql: string; params: unknown[] }> = [];
+  t.mock.method(pool, 'query', (async (sql: string, params: unknown[] = []) => {
+    calls.push({ sql, params });
+    if (sql.includes('SELECT role FROM community_users')) {
+      return { rows: [{ role: 'member' }], rowCount: 0 };
+    }
+    if (sql.includes("word_similarity($1, COALESCE(title, '')")) {
+      throw new Error('lexical lookup unavailable');
+    }
+    if (sql.includes('FROM knowledge')) {
+      return {
+        rows: [
+          {
+            id: 1,
+            title: 'Below floor',
+            content: 'BELOW_FLOOR_TEXT',
+            created_by_role: 'admin',
+            similarity: 0.1,
+            updated_at: new Date(),
+          },
+        ],
+        rowCount: 0,
+      };
+    }
+    return { rows: [], rowCount: 0 };
+  }) as typeof pool.query);
+
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({
+    commandName: 'kb',
+    userId: 'member-1',
+    options: { query: 'anything' },
+  });
+
+  await assert.doesNotReject(() => handleInteraction(interaction as never, adapterDeps(adapter)));
+
+  assert.equal(replies.length, 1);
+  assert.equal(
+    replies[0].content,
+    'No matching knowledge entries.',
+    'a rejected lexical fallback must degrade to the existing no-match output, never a thrown error reaching the member',
+  );
+  assert.doesNotMatch(
+    replies[0].content,
+    /lexical lookup unavailable/,
+    'the raw driver error must never reach the member',
+  );
+  assert.ok(
+    warnLog.mock.calls.some((c) => /Knowledge lexical fallback failed/.test(String(c.arguments[1]))),
+    'the failure must be logged via logger.warn, not silently swallowed',
+  );
+});
+
 // --- Criteria 1/2 (conflict/low-rated caveats), issue #802 --------------------
 
 test('SECURITY: /kb reply includes KNOWLEDGE_CONFLICT_CAVEAT_TEXT when hasConflictAmongIds resolves true for >=2 relevant hits, and omits it when false', async (t) => {
@@ -1919,7 +2081,16 @@ test('/kb records zero knowledge_gaps rows on an empty hit set — indistinguish
   );
 });
 
-test('SECURITY: neither recordKnowledgeRetrieval nor recordKnowledgeGap may run before /kb resolves the caller role and passes the toolsForRole reachability gate (issue #1052 acceptance criterion 6)', async (t) => {
+// The name says ORDERING, not gating, deliberately — see the automated review
+// of PR #1053. This pins that the role SELECT precedes the knowledge search,
+// which precedes the retrieval write: real regression coverage for the
+// sequence. It does NOT exercise a caller the gate rejects, because under this
+// RBAC scheme no resolved role fails /kb's gate — `toolsForRole` returns
+// member-tools-inclusive results for super_admin/admin/member/guest alike (the
+// sibling "a guest CAN use /kb" test pins exactly that). A test claiming to
+// prove gated behaviour on a rejection path would be claiming to exercise a
+// path that does not currently exist.
+test('SECURITY: /kb resolves the caller role BEFORE it searches knowledge, and searches BEFORE it writes either the retrieval count or the gap row — the write path can never precede identity resolution (issue #1052 acceptance criterion 6)', async (t) => {
   const calls = mockPool(t, {
     memberRole: 'member',
     knowledgeRows: [

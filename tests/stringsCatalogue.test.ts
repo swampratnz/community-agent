@@ -159,6 +159,48 @@ test(
 );
 
 test(
+  "SECURITY: communityInfoAdminCapabilities' and communityInfoSuperAdminCapabilities' base and mi values " +
+    'contain no template placeholders/interpolation tokens — fixed, human-authored text only, no ' +
+    'interpolation of caller or message content (issue #1056 acceptance criterion 6)',
+  () => {
+    const placeholderPattern = /\$\{|\{\{|%s|%d|\{[0-9a-zA-Z_]*\}/;
+    for (const id of ['communityInfoAdminCapabilities', 'communityInfoSuperAdminCapabilities'] as const) {
+      const entry = NOTICE_ENTRIES[id];
+      assert.doesNotMatch(
+        entry.base,
+        placeholderPattern,
+        `${id} base must be fixed text with no interpolation markers`,
+      );
+      assert.doesNotMatch(
+        entry.language.mi,
+        placeholderPattern,
+        `${id} mi variant must be fixed text with no interpolation markers`,
+      );
+    }
+  },
+);
+
+test(
+  "SECURITY: whatsappTextCommands' base and mi values contain no template placeholders/interpolation " +
+    "tokens — fixed, human-authored text only, mirroring communityInfoMemberCapabilities' own check above " +
+    '(issue #1034 acceptance criterion 6)',
+  () => {
+    const entry = NOTICE_ENTRIES.whatsappTextCommands;
+    const placeholderPattern = /\$\{|\{\{|%s|%d|\{[0-9a-zA-Z_]*\}/;
+    assert.doesNotMatch(
+      entry.base,
+      placeholderPattern,
+      'base must be fixed text with no interpolation markers',
+    );
+    assert.doesNotMatch(
+      entry.language.mi,
+      placeholderPattern,
+      'the mi variant must be fixed text with no interpolation markers',
+    );
+  },
+);
+
+test(
   'SECURITY: the six memberDigest section-label catalogue entries contain no template placeholders/' +
     'interpolation tokens in their static wording — checked on the RENDERED output for the four ' +
     'count-taking templates, so a leftover placeholder in the surrounding fixed text would still be ' +

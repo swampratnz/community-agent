@@ -24,6 +24,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #963 #964 #965 #968 #971 #983 #988 #989 #991 #992 #994
 -->
 
+## 2026-08-22
+
+### Fixed
+- **`/kb` now finds exact technical strings it used to miss.** An error code,
+  env var name, or SNAKE_CASE identifier pasted into `/kb` could return "No
+  matching knowledge entries" even when the exact same text asked in chat
+  found it via `knowledge_search` — `/kb` now falls back to the same
+  substring-robust lexical match `knowledge_search` has used since #362, so
+  both surfaces find the same entries.
+
 ## 2026-08-21
 
 ### Added
@@ -52,9 +62,42 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   empty wasn't recorded as a knowledge gap for admins to see. `/kb` now
   records both, exactly as asking the same question in chat already does.
 
+### Fixed
+- **`knowledge_search` no longer leads with an entry whose source link the bot
+  already knows is dead.** (#1054) When two knowledge entries are near-tied
+  for relevance, the reply already broke the tie by preferring a low-rated
+  entry (#562) or a stale one (#308) — but it never considered
+  `source_unreachable`, the weekly link-rot checker's (#448) own confirmed
+  verdict, even though the reply already displays a "⚠️ link appears dead"
+  caveat on that exact entry (#465). The bot could rank a dead-link entry
+  first, then warn you not to trust its citation. Near-tied results now
+  prefer the entry with a live (or unchecked) source over one confirmed dead,
+  checked after the low-rated signal and before staleness. Deployments that
+  haven't enabled the link checker are unaffected.
+- **`community_info`/`/help`/`!help`'s admin and super-admin capability
+  rundowns now honour a standing te reo Māori preference too** (#1056): since
+  #1028, a member-tier caller with `language_preference = 'mi'` got the
+  member-capabilities segment in te reo Māori — but an admin or super admin
+  with the same standing preference saw that te reo segment immediately
+  followed by an untranslated English admin/super-admin segment, mixing
+  languages mid-message. Both segments now render in te reo Māori for a
+  `'mi'`-preference admin/super-admin caller, matching the member segment's
+  existing behaviour; a caller with no preference (or `'en'`/`'auto'`) sees
+  byte-identical English to before.
+
 ## 2026-08-20
 
 ### Fixed
+- **The WhatsApp `!`-shortcuts discovery block in `community_info`/`!help` now
+  honours a standing te reo Māori preference too** (#1034): #1028 (below)
+  fixed the member-capabilities rundown but left the WhatsApp-only
+  `!`-shortcuts list immediately below it as a named follow-up — a
+  `language_preference = 'mi'` WhatsApp member got eight lines of te reo
+  Māori, then an abrupt flip to English for the one part of the reply most
+  specific to them. A WhatsApp member-tier caller with `language_preference =
+  'mi'` and the WhatsApp text-commands feature on now gets that block in te
+  reo Māori too; a caller with no preference (or `'en'`/`'auto'`) sees
+  byte-identical English to before.
 - **The admin-promotion DM no longer silently vanishes when your WhatsApp
   window is closed.** (#1040) If a super admin ran `grant_admin` on a
   WhatsApp Cloud user whose 24-hour customer-service window happened to be
@@ -110,7 +153,9 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   'mi'` now gets the member-capabilities rundown in te reo Māori, matching
   `community_guidelines`'s existing behaviour; a caller with no preference (or
   `'en'`/`'auto'`) sees byte-identical English to before. Admin/super-admin
-  content and the WhatsApp `!`-shortcuts block stay English-only for now.
+  content stays English-only for now; the WhatsApp `!`-shortcuts block
+  immediately below this segment got the same te reo Māori treatment in #1034
+  (above).
 - **The on-demand community digest (`community_digest`, `/digest`, `!digest`)
   now honours a standing te reo Māori preference too** (#1042): this was the
   last per-caller digest pull left out of the `mi` series `community_info`

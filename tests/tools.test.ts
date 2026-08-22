@@ -4038,6 +4038,310 @@ test(
   },
 );
 
+// --- issue #1056: community_info's admin/super-admin segments honour a
+// standing 'mi' language preference too, closing the mid-message language
+// mix #1028 left behind for exactly this caller shape.
+
+test(
+  'community_info/formatCommunityInfoText serve the te reo Māori admin-capabilities text to an admin ' +
+    "caller with a standing 'mi' language preference, distinct from the English base text (issue #1056 " +
+    'acceptance criterion 1)',
+  { skip },
+  async () => {
+    const miAdmin = `${RUN}-info-admin-mi-preference`;
+
+    await setLanguagePreferenceHandler({ platform: 'discord', userId: miAdmin }).handler({ language: 'mi' });
+
+    const miReply = (await communityInfoHandler('admin', 'discord', miAdmin)).content[0]?.text ?? '';
+
+    assert.match(
+      miReply,
+      /I a koe e noho kaiwhakahaere ana, kei a koe hoki/,
+      "an admin caller with a 'mi' preference must get the te reo Māori admin-capabilities text",
+    );
+    assert.doesNotMatch(
+      miReply,
+      /As an admin, you also have/,
+      'the mi reply must not also contain the English admin-capabilities text',
+    );
+    assert.equal(
+      await formatCommunityInfoText('admin', 'discord', miAdmin),
+      miReply,
+      "formatCommunityInfoText's own output must match the tool handler's (single source of truth)",
+    );
+  },
+);
+
+// --- issue #1034: the WhatsApp `!`-shortcuts discovery block honours the
+// caller's standing 'mi' language preference too, matching #1028's treatment
+// of the member-capabilities segment immediately above it.
+
+test(
+  'community_info/formatCommunityInfoText serve the te reo Māori WhatsApp shortcuts block, immediately ' +
+    'following the te reo Māori member-capabilities text, to a WhatsApp member-tier caller with a standing ' +
+    "'mi' language preference and whatsappTextCommandsEnabled on (issue #1034 acceptance criterion 3)",
+  { skip },
+  async () => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    const miUser = `${RUN}-info-whatsapp-mi-preference`;
+    try {
+      config.behaviour.whatsappTextCommandsEnabled = true;
+      await setLanguagePreferenceHandler({ platform: 'whatsapp', userId: miUser }).handler({
+        language: 'mi',
+      });
+
+      const miReply = (await communityInfoHandler('member', 'whatsapp', miUser)).content[0]?.text ?? '';
+
+      assert.match(
+        miReply,
+        /Anei ngā mea ka taea e koe te tono mai ki ahau/,
+        'must contain the te reo Māori member-capabilities text',
+      );
+      assert.match(
+        miReply,
+        /Kei runga koe i WhatsApp, nō reira ka taea hoki e koe te whakamahi i ēnei pokatata tere/,
+        'must contain the te reo Māori WhatsApp shortcuts block, not an English fallback',
+      );
+      assert.doesNotMatch(
+        miReply,
+        /You're on WhatsApp, so you can also use these zero-wait shortcuts/,
+        'must not also contain the English shortcuts block',
+      );
+      assert.ok(
+        miReply.indexOf('Anei ngā mea ka taea e koe te tono mai ki ahau') <
+          miReply.indexOf('Kei runga koe i WhatsApp'),
+        'the shortcuts block must follow the member-capabilities segment, not precede it',
+      );
+      assert.equal(
+        await formatCommunityInfoText('member', 'whatsapp', miUser),
+        miReply,
+        "formatCommunityInfoText's own output must match the tool handler's (single source of truth)",
+      );
+    } finally {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    }
+  },
+);
+
+test(
+  'community_info/formatCommunityInfoText serve te reo Māori for BOTH the admin- and super-admin-capabilities ' +
+    "segments to a super_admin caller with a standing 'mi' language preference (issue #1056 acceptance " +
+    'criterion 2)',
+  { skip },
+  async () => {
+    const miSuperAdmin = `${RUN}-info-super-admin-mi-preference`;
+
+    await setLanguagePreferenceHandler({ platform: 'discord', userId: miSuperAdmin }).handler({
+      language: 'mi',
+    });
+
+    const miReply =
+      (await communityInfoHandler('super_admin', 'discord', miSuperAdmin)).content[0]?.text ?? '';
+
+    assert.match(
+      miReply,
+      /I a koe e noho kaiwhakahaere ana, kei a koe hoki/,
+      'must include the te reo admin segment',
+    );
+    assert.match(
+      miReply,
+      /I a koe e noho kaiwhakahaere matua \(super admin\) ana, kei a koe hoki/,
+      'must include the te reo super-admin segment',
+    );
+    assert.doesNotMatch(miReply, /As an admin, you also have/, 'must not contain the English admin text');
+    assert.doesNotMatch(
+      miReply,
+      /As a super admin, you also have/,
+      'must not contain the English super-admin text',
+    );
+    assert.equal(
+      await formatCommunityInfoText('super_admin', 'discord', miSuperAdmin),
+      miReply,
+      "formatCommunityInfoText's own output must match the tool handler's (single source of truth)",
+    );
+  },
+);
+
+test(
+  "community_info/formatCommunityInfoText render the WhatsApp shortcuts block byte-identical to today's " +
+    "English literal for a WhatsApp member-tier caller with no stored language preference, an 'en' " +
+    "preference, or an 'auto' preference (issue #1034 acceptance criterion 4)",
+  { skip },
+  async () => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    const enUser = `${RUN}-info-whatsapp-en-preference`;
+    const autoUser = `${RUN}-info-whatsapp-auto-preference`;
+    const expected =
+      "You're on WhatsApp, so you can also use these zero-wait shortcuts:\n" +
+      '- `!whois <topic>` — find members into a topic\n' +
+      '- `!projects [query]` — browse the project showcase\n' +
+      '- `!guidelines` — community guidelines\n' +
+      "- `!digest` — this week's digest\n" +
+      '- `!status` — check for a known Anthropic outage\n' +
+      '- `!kbtopics` — browse what the knowledge base covers\n' +
+      '- `!warnings` — your own active warning count\n' +
+      '- `!mysubmissions` — status of your filed suggestions/reports\n' +
+      '- `!mydata` — what the bot has stored about you\n' +
+      '- `!help` — this capability rundown';
+    try {
+      config.behaviour.whatsappTextCommandsEnabled = true;
+      await setLanguagePreferenceHandler({ platform: 'whatsapp', userId: enUser }).handler({
+        language: 'en',
+      });
+      await setLanguagePreferenceHandler({ platform: 'whatsapp', userId: autoUser }).handler({
+        language: 'auto',
+      });
+
+      const unsetReply = (await communityInfoHandler('member', 'whatsapp')).content[0]?.text ?? '';
+      const enReply = (await communityInfoHandler('member', 'whatsapp', enUser)).content[0]?.text ?? '';
+      const autoReply = (await communityInfoHandler('member', 'whatsapp', autoUser)).content[0]?.text ?? '';
+
+      for (const [label, reply] of [
+        ['unset', unsetReply],
+        ['en', enReply],
+        ['auto', autoReply],
+      ] as const) {
+        assert.ok(
+          reply.endsWith(expected),
+          `${label}-preference caller's reply must end with today's byte-identical English shortcuts literal`,
+        );
+      }
+      assert.equal(enReply, unsetReply, "'en' preference must render byte-identical to no stored preference");
+      assert.equal(
+        autoReply,
+        unsetReply,
+        "'auto' preference must render byte-identical to no stored preference",
+      );
+    } finally {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    }
+  },
+);
+
+test(
+  "SECURITY: community_info's admin- and super-admin-capabilities segments render byte-identical English " +
+    "text (today's ADMIN_CAPABILITIES_TEXT/SUPER_ADMIN_CAPABILITIES_TEXT content) for a caller whose " +
+    "language_preference is unset, 'en', or 'auto' — the default/majority-path regression guard, and role " +
+    'still gates which segments appear (issue #1056 acceptance criterion 5)',
+  { skip },
+  async () => {
+    const unsetAdmin = `${RUN}-info-admin-unset-preference`;
+    const enSuperAdmin = `${RUN}-info-super-admin-en-preference`;
+    const autoSuperAdmin = `${RUN}-info-super-admin-auto-preference`;
+
+    await setLanguagePreferenceHandler({ platform: 'discord', userId: enSuperAdmin }).handler({
+      language: 'en',
+    });
+    await setLanguagePreferenceHandler({ platform: 'discord', userId: autoSuperAdmin }).handler({
+      language: 'auto',
+    });
+
+    const adminReplyUnset =
+      (await communityInfoHandler('admin', 'discord', unsetAdmin)).content[0]?.text ?? '';
+    const superAdminReplyEn =
+      (await communityInfoHandler('super_admin', 'discord', enSuperAdmin)).content[0]?.text ?? '';
+    const superAdminReplyAuto =
+      (await communityInfoHandler('super_admin', 'discord', autoSuperAdmin)).content[0]?.text ?? '';
+    const superAdminReplyDefault = (await communityInfoHandler('super_admin')).content[0]?.text ?? '';
+
+    assert.match(adminReplyUnset, /As an admin, you also have/, 'unset preference must default to English');
+    assert.doesNotMatch(
+      adminReplyUnset,
+      /I a koe e noho kaiwhakahaere ana/,
+      'unset preference must never render the te reo admin text',
+    );
+    assert.equal(
+      superAdminReplyEn,
+      superAdminReplyDefault,
+      "an 'en'-preference super_admin caller must render byte-identical to a caller with no stored preference",
+    );
+    assert.equal(
+      superAdminReplyAuto,
+      superAdminReplyDefault,
+      "an 'auto'-preference super_admin caller must render byte-identical to a caller with no stored preference",
+    );
+    assert.match(superAdminReplyDefault, /As an admin, you also have/, 'must contain the English admin text');
+    assert.match(
+      superAdminReplyDefault,
+      /As a super admin, you also have/,
+      'must contain the English super-admin text',
+    );
+
+    // Role gating is unaffected by the language change: a member/guest never
+    // sees any admin content, even were they to hold a 'mi' preference.
+    const memberReply = (await communityInfoHandler('member')).content[0]?.text ?? '';
+    const guestReply = (await communityInfoHandler('guest')).content[0]?.text ?? '';
+    assert.doesNotMatch(memberReply, /As an admin, you also have|I a koe e noho kaiwhakahaere ana/);
+    assert.doesNotMatch(guestReply, /As an admin, you also have|I a koe e noho kaiwhakahaere ana/);
+  },
+);
+
+test(
+  'community_info/formatCommunityInfoText never render the WhatsApp shortcuts block, in either language, ' +
+    'for a Discord caller (any language preference) or a WhatsApp caller with whatsappTextCommandsEnabled ' +
+    'off — regression pin for issue #1034 (acceptance criterion 5)',
+  { skip },
+  async () => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    const discordMiUser = `${RUN}-info-shortcuts-discord-mi`;
+    try {
+      await setLanguagePreferenceHandler({ platform: 'discord', userId: discordMiUser }).handler({
+        language: 'mi',
+      });
+
+      config.behaviour.whatsappTextCommandsEnabled = true;
+      const discordMiReply =
+        (await communityInfoHandler('member', 'discord', discordMiUser)).content[0]?.text ?? '';
+      assert.doesNotMatch(discordMiReply, /!whois/, 'a Discord caller must never see the WhatsApp shortcuts');
+      assert.doesNotMatch(
+        discordMiReply,
+        /Kei runga koe i WhatsApp/,
+        'a Discord caller must never see the te reo Māori WhatsApp shortcuts either',
+      );
+
+      config.behaviour.whatsappTextCommandsEnabled = false;
+      const whatsappFlagOffReply = (await communityInfoHandler('member', 'whatsapp')).content[0]?.text ?? '';
+      assert.doesNotMatch(
+        whatsappFlagOffReply,
+        /!whois|Kei runga koe i WhatsApp/,
+        'a WhatsApp caller with the flag off must never see either language of the shortcuts block',
+      );
+    } finally {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    }
+  },
+);
+
+test(
+  "SECURITY: the WhatsApp shortcuts block's language selection is driven solely by the caller's own " +
+    "(platform, userId) stored language preference plus whatsappTextCommandsEnabled — a 'mi'-preference " +
+    "caller's language never leaks into a distinct caller's reply (issue #1034 acceptance criterion 7)",
+  { skip },
+  async () => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    const miUser = `${RUN}-info-shortcuts-sec-mi`;
+    const otherUser = `${RUN}-info-shortcuts-sec-other`;
+    try {
+      config.behaviour.whatsappTextCommandsEnabled = true;
+      await setLanguagePreferenceHandler({ platform: 'whatsapp', userId: miUser }).handler({
+        language: 'mi',
+      });
+
+      const miReply = (await communityInfoHandler('member', 'whatsapp', miUser)).content[0]?.text ?? '';
+      const otherReply = (await communityInfoHandler('member', 'whatsapp', otherUser)).content[0]?.text ?? '';
+
+      assert.match(miReply, /Kei runga koe i WhatsApp/);
+      assert.match(
+        otherReply,
+        /You're on WhatsApp, so you can also use these zero-wait shortcuts/,
+        "a distinct caller with no stored preference must never inherit another caller's 'mi' preference",
+      );
+    } finally {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    }
+  },
+);
+
 test('SECURITY: redeploy_bot registers a pending action instead of executing directly (issue #101)', async () => {
   const adapter = stubAdapter(async () => {});
   const caller = {
@@ -11747,6 +12051,163 @@ test("SECURITY: formatKnowledgeSearchResults keeps a low-rated hit's own content
     'low-rated entry stays first when its relevance gap is real',
   );
   assert.match(lowRatedLineFirst ?? '', /\(95% match\).*Unique low-rated content marker\./);
+});
+
+// formatKnowledgeSearchResults' near-tie comparator also considering
+// sourceUnreachable (issue #1054) — a third rung, checked AFTER lowRatedIds
+// and BEFORE staleness, keying on the weekly link-rot checker's (#448)
+// verdict. deadLinkTieHit mirrors lowRatedTieHit's shape so only the
+// reachability signal varies.
+const deadLinkTieHit = (
+  similarity: number,
+  title: string,
+  id: number,
+  sourceUnreachable: boolean | null,
+) => ({
+  id,
+  title,
+  content: `Content for ${title}.`,
+  similarity,
+  updatedAt: new Date(),
+  lastRetrievedAt: null,
+  sourceUnreachable,
+});
+
+test('formatKnowledgeSearchResults near-tie (issue #1054): the reachable hit sorts before an equally-relevant dead-link hit even when the dead-link hit has marginally higher raw similarity', () => {
+  const dead = deadLinkTieHit(0.8, 'Dead-link entry', 1, true);
+  const reachable = deadLinkTieHit(0.8 - (KNOWLEDGE_TIE_MARGIN - 0.01), 'Reachable entry', 2, null);
+  const text = formatKnowledgeSearchResults([dead, reachable]);
+  assert.ok(
+    text.indexOf('Reachable entry') < text.indexOf('Dead-link entry'),
+    'the reachable hit must sort first despite the dead-link hit having the marginally higher raw similarity',
+  );
+});
+
+test('formatKnowledgeSearchResults near-tie (issue #1054): order is unchanged when both near-tied hits are dead-linked (no reachability signal to act on)', () => {
+  const higher = deadLinkTieHit(0.8, 'Higher-scored dead-link entry', 1, true);
+  const lower = deadLinkTieHit(0.8 - (KNOWLEDGE_TIE_MARGIN - 0.01), 'Lower-scored dead-link entry', 2, true);
+  const text = formatKnowledgeSearchResults([higher, lower]);
+  assert.ok(
+    text.indexOf('Higher-scored dead-link entry') < text.indexOf('Lower-scored dead-link entry'),
+    'both-dead-link near-ties fall through to the staleness/index tie-break, keeping similarity-descending order',
+  );
+});
+
+test('formatKnowledgeSearchResults near-tie (issue #1054): order is unchanged when neither near-tied hit is dead-linked', () => {
+  const higher = deadLinkTieHit(0.8, 'Higher-scored reachable entry', 1, null);
+  const lower = deadLinkTieHit(0.8 - (KNOWLEDGE_TIE_MARGIN - 0.01), 'Lower-scored reachable entry', 2, null);
+  const text = formatKnowledgeSearchResults([higher, lower]);
+  assert.ok(
+    text.indexOf('Higher-scored reachable entry') < text.indexOf('Lower-scored reachable entry'),
+    'neither-dead-link near-ties fall through to the staleness/index tie-break, unchanged',
+  );
+});
+
+test('formatKnowledgeSearchResults (issue #1054): a real relevance gap (more than KNOWLEDGE_TIE_MARGIN) always wins, even when the higher-scored hit is the dead-link one', () => {
+  const dead = deadLinkTieHit(0.9, 'Dead-link but clearly more relevant', 1, true);
+  const reachable = deadLinkTieHit(
+    0.9 - (KNOWLEDGE_TIE_MARGIN + 0.01),
+    'Reachable but clearly less relevant',
+    2,
+    null,
+  );
+  const text = formatKnowledgeSearchResults([dead, reachable]);
+  assert.ok(
+    text.indexOf('Dead-link but clearly more relevant') < text.indexOf('Reachable but clearly less relevant'),
+    'a genuine relevance gap must never be overridden by the dead-link tie-break',
+  );
+});
+
+test('formatKnowledgeSearchResults near-tie (issue #1054, acceptance criterion 2a): low-rated dominates dead-link — a reachable-but-low-rated hit still sorts after a dead-link-but-not-low-rated hit', () => {
+  const reachableLowRated = deadLinkTieHit(0.8, 'Reachable low-rated entry', 1, null);
+  const deadNotLowRated = deadLinkTieHit(
+    0.8 - (KNOWLEDGE_TIE_MARGIN - 0.01),
+    'Dead-link healthy-rated entry',
+    2,
+    true,
+  );
+  const text = formatKnowledgeSearchResults(
+    [reachableLowRated, deadNotLowRated],
+    undefined,
+    undefined,
+    false,
+    new Set([1]),
+  );
+  assert.ok(
+    text.indexOf('Dead-link healthy-rated entry') < text.indexOf('Reachable low-rated entry'),
+    'the low-rated rung must dominate the dead-link rung — a low-rated hit sorts last even though its source is reachable',
+  );
+});
+
+test('formatKnowledgeSearchResults near-tie (issue #1054, acceptance criterion 2b): dead-link dominates staleness — a stale-but-reachable hit still sorts before a fresh-but-dead-link hit', () => {
+  const staleReachable = { ...deadLinkTieHit(0.8, 'Stale reachable entry', 1, null), updatedAt: ancientDate };
+  const freshDead = deadLinkTieHit(0.8 - (KNOWLEDGE_TIE_MARGIN - 0.01), 'Fresh dead-link entry', 2, true);
+  const text = formatKnowledgeSearchResults([staleReachable, freshDead], 30);
+  assert.ok(
+    text.indexOf('Stale reachable entry') < text.indexOf('Fresh dead-link entry'),
+    'the dead-link rung must dominate staleness — a dead-link hit sorts last even though it is fresher',
+  );
+});
+
+test('SECURITY: formatKnowledgeSearchResults near-tie ordering is byte-identical whether sourceUnreachable is null, false, or omitted entirely — a never-checked or confirmed-live entry is never demoted (issue #1054)', () => {
+  const stale = staleHit(0.8, 'Stale entry');
+  const fresh = freshHit(0.8 - (KNOWLEDGE_TIE_MARGIN - 0.01), 'Fresh entry');
+  const omitted = formatKnowledgeSearchResults([stale, fresh], 30);
+  const withNull = formatKnowledgeSearchResults(
+    [
+      { ...stale, sourceUnreachable: null },
+      { ...fresh, sourceUnreachable: null },
+    ],
+    30,
+  );
+  const withFalse = formatKnowledgeSearchResults(
+    [
+      { ...stale, sourceUnreachable: false },
+      { ...fresh, sourceUnreachable: false },
+    ],
+    30,
+  );
+  assert.equal(
+    withNull,
+    omitted,
+    'sourceUnreachable: null must be byte-identical to the field being omitted',
+  );
+  assert.equal(
+    withFalse,
+    omitted,
+    'sourceUnreachable: false must be byte-identical to the field being omitted',
+  );
+});
+
+test('SECURITY: formatKnowledgeSearchResults introduces no new string and no new disclosure for the dead-link rung — a same-ordered pair renders byte-identical text whether or not sourceUnreachable is set (issue #1054)', () => {
+  const a = {
+    id: 1,
+    title: 'A',
+    content: 'Content A',
+    similarity: 0.8,
+    updatedAt: new Date(),
+    lastRetrievedAt: null,
+  };
+  const b = {
+    id: 2,
+    title: 'B',
+    content: 'Content B',
+    similarity: 0.8 - (KNOWLEDGE_TIE_MARGIN - 0.01),
+    updatedAt: new Date(),
+    lastRetrievedAt: null,
+  };
+  // Neither hit carries a sourceUrl, so #465's display caveat never fires
+  // either way — this isolates the ordering rung from the display rung.
+  const withoutSignal = formatKnowledgeSearchResults([a, b]);
+  const withSignalButSameOrder = formatKnowledgeSearchResults([
+    { ...a, sourceUnreachable: true },
+    { ...b, sourceUnreachable: true },
+  ]);
+  assert.equal(
+    withoutSignal,
+    withSignalButSameOrder,
+    'a same-ordered pair must render byte-identical text regardless of sourceUnreachable — reordering must never leak which entry was (or would be) demoted',
+  );
 });
 
 test('formatKnowledgeSearchResults (issue #465): the knowledge_search tool reply surfaces the dead-link caveat for a hit whose source_unreachable is true', () => {

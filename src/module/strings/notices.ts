@@ -353,11 +353,12 @@ const NOTICE_ENTRIES = {
    * The member-tier segment of `community_info`/`/help`/`!help`'s capability
    * rundown (issue #1028) — `base` moved VERBATIM from the old
    * `MEMBER_CAPABILITIES_TEXT` constant in info.ts, so this is a byte-neutral
-   * relocation, not a rewrite. Scope is deliberately member-tier only: the
-   * admin/super-admin segments and the WhatsApp `!`-shortcuts segment
-   * (`ADMIN_CAPABILITIES_TEXT`/`SUPER_ADMIN_CAPABILITIES_TEXT`/
-   * `WHATSAPP_TEXT_COMMANDS_TEXT`, still in info.ts) stay English-only,
-   * named growth in the issue rather than folded into this entry.
+   * relocation, not a rewrite. Both follow-ups its original scope named have
+   * since landed: the admin/super-admin segments got the same treatment in
+   * `communityInfoAdminCapabilities`/`communityInfoSuperAdminCapabilities`
+   * below (issue #1056), and the WhatsApp `!`-shortcuts segment got its own
+   * `mi` variant in `whatsappTextCommands` below (issue #1034). No segment of
+   * this rundown is English-only any more.
    */
   communityInfoMemberCapabilities: {
     base:
@@ -432,6 +433,156 @@ const NOTICE_ENTRIES = {
         '- Tuhi whakatau i roto i tētahi kaupapa e uru ana koe, rapu anō i ngā mahara tiritahi o taua ' +
         'kaupapa ā muri ake, rārangi rānei i ō kaupapa\n' +
         '- Muku i katoa āu raraunga kua rongoātia i ngā wā katoa ("forget me")',
+    },
+  },
+  /**
+   * The admin-tier segment of `community_info`/`/help`/`!help`'s capability
+   * rundown (issue #1056) — `base` moved VERBATIM from the old
+   * `ADMIN_CAPABILITIES_TEXT` constant in info.ts (byte-neutral relocation,
+   * same discipline `communityInfoMemberCapabilities` used for #1028), plus a
+   * fresh `mi` translation. Closes the mid-message language mix #1028 itself
+   * introduced: before this entry existed, an admin/super-admin caller with a
+   * standing `'mi'` preference got a te reo member segment immediately
+   * followed by an untranslated English admin segment.
+   */
+  communityInfoAdminCapabilities: {
+    base:
+      'As an admin, you also have:\n' +
+      "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread, review the moderation history log, pull one member's full warning history, list everyone who's currently muted, list who's currently blocked on WhatsApp, or review and resolve filed appeals\n" +
+      "- Manage membership: add a new member, remove a member, link a member's cross-platform identity, or unlink a member's cross-platform identity\n" +
+      '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, check which knowledge entries are rated poorly, and review recurring unhelpful-answer themes across all answers\n' +
+      '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
+      "- Curate the knowledge base: save a new knowledge entry, browse knowledge entries, semantically find a knowledge entry's id by what it says, edit a knowledge entry, delete a knowledge entry, or merge two entries together, check for near-duplicate entries or conflicting entries, or rank entries by how often they're retrieved\n" +
+      "- Review knowledge candidates, accept a candidate or decline a candidate, track knowledge gaps (questions I couldn't answer), recurring question clusters, raw context digests, pull your own admin-digest snapshot on demand, get a review-queue roll-up of all five review queues at once, or check how quickly I've been answering members (response latency)\n" +
+      '- See who is waiting for access, decline a pending access request without granting it, or see who ' +
+      'has joined or left the server\n' +
+      "- Add a note about a member, review notes on a member, delete a note, or look up a member's history across conversations\n" +
+      '- Set the community guidelines or the welcome message shown to new members\n' +
+      '- Assign a Discord role, remove a Discord role, or list which roles are available to assign\n' +
+      "- Set up team projects: create one, give a member access, take a member's access away, allow or " +
+      'stop it being discussed here, review who has access, or archive a finished project and bring it ' +
+      'back again, or batch-create a whole team (project, roster, and this channel) in one confirmed call\n' +
+      '- Generate an image, read a web page from an allowlisted host, or check recent changes to the ' +
+      'bot and community (the changelog)',
+    language: {
+      mi:
+        'I a koe e noho kaiwhakahaere ana, kei a koe hoki:\n' +
+        '- Whakahaere i te hapori: whakatūpato, aukati mō tētahi wā (mute), pana, tango karere rānei, ' +
+        'ūkui i ngā whakatūpato o tētahi mema, pupuri i tētahi kōrero (thread) Discord, arotake i te ' +
+        'pukapuka hītori whakahaere, tiki i te hītori whakatūpato katoa o tētahi mema, whakarārangi i te ' +
+        'hunga e aukatia ana ināianei, whakarārangi i te hunga kua ārairia i runga i WhatsApp ināianei, ' +
+        'arotake me te whakatau rānei i ngā pīra (appeal) kua tukuna\n' +
+        '- Whakahaere i te whakaurunga mema: tāpiri mema hōu, tango mema, hono i te tuakiri-ā-papa-rārangi-' +
+        'maha o tētahi mema, wetewete rānei i taua hononga\n' +
+        '- Arotake i ngā pūrongo tohu tuhinga kua tukuna, ā, whakatau i ia pūrongo, arotake i ngā ' +
+        'taunakitanga kua tukuna e ngā mema, ā, whakatau i ia taunakitanga, tiro i te pehea o te whakatau ' +
+        'a ngā mema mō aku whakautu, tirotiro i ngā whakaurunga mōhiotanga e iti ana te whakatau, ā, ' +
+        'arotake i ngā kaupapa e hoki mai tonu ana mō ngā whakautu kāore i āwhina\n' +
+        '- Tuku pānui ki te hapori: hanga pānui, hanga pōti (poll) rānei, whakamutu wawe i tētahi pōti, ' +
+        'tuwhera i tētahi kōrero (thread) Discord, whakarite/whakakore rānei i tētahi hui\n' +
+        '- Tiaki i te pātengi mōhiotanga: tiaki whakaurunga hōu, tirotiro whakaurunga, kimi-a-tikanga ' +
+        '(semantic search) i te tuhinga ID o tētahi whakaurunga mā tāna kōrero, whakatika i tētahi ' +
+        'whakaurunga, muku i tētahi whakaurunga, kōpui rānei i ētahi whakaurunga e rua, tirotiro mō ngā ' +
+        'whakaurunga rite tonu, whakatau taupatupatu rānei, tātari rānei i ngā whakaurunga e ai ki te maha ' +
+        'o ā rātou tikinga\n' +
+        '- Arotake i ngā kaupapa mōhiotanga tūmataiti, whakaae rānei whakakore i tētahi, whāia ngā āputa ' +
+        'mōhiotanga (ngā pātai kāore au i taea te whakautu), ngā kāhui pātai e hoki mai tonu ana, ngā ' +
+        'rīpoata horopaki mata, tiki i tō ake whārangi whakarāpopototanga ā-kaiwhakahaere i ngā wā katoa e ' +
+        'hiahiatia ana, whiwhi i te whakarāpopototanga o ngā ratonga arotake e rima katoa i te wā kotahi, ' +
+        'tirotiro rānei i te tere o aku whakautu ki ngā mema (wā tatari)\n' +
+        '- Tiro i te hunga e tatari ana mō te urunga, whakakore i tētahi tono urunga kāore e whakaaehia ana, ' +
+        'tiro rānei i te hunga kua uru mai, kua wehe rānei i te tūmau\n' +
+        '- Tāpiri i tētahi tuhinga mō tētahi mema, arotake i ngā tuhinga mō tētahi mema, muku i tētahi ' +
+        'tuhinga, rapu rānei i te hītori o tētahi mema puta noa i ngā kōrerorero\n' +
+        '- Whakarite i ngā tikanga hapori, i te karere pōwhiri rānei e whakaatuhia ana ki ngā mema hōu\n' +
+        '- Tuku tūranga (role) Discord, tango tūranga Discord, whakarārangi rānei i ngā tūranga e wātea ana ' +
+        'mō te tuku\n' +
+        '- Whakarite kaupapa mō te tīma: hanga i tētahi, tuku urunga ki tētahi mema, tango i te urunga a ' +
+        'tētahi mema, whakaae kia kōrerohia i konei, kāti rānei i tērā, arotake i te hunga whai urunga, ' +
+        'whakahoki mai rānei i tētahi kaupapa kua mutu, kua oti rānei, tae atu ki te hanga pukuhohe i tētahi ' +
+        'tīma katoa (kaupapa, rārangi ingoa, me tēnei ipurangi kōrero) i roto i te tono whakaū kotahi\n' +
+        '- Hanga whakaahua, pānui i tētahi whārangi ipurangi nō roto i te rārangi whitinga (allowlist), ' +
+        'tirotiro rānei i ngā panonitanga hōu ki te pouaka me te hapori (te rārangi panonitanga)',
+    },
+  },
+  /**
+   * The super-admin-tier segment of `community_info`/`/help`/`!help`'s
+   * capability rundown (issue #1056), sibling to
+   * `communityInfoAdminCapabilities` above — `base` moved VERBATIM from the
+   * old `SUPER_ADMIN_CAPABILITIES_TEXT` constant in info.ts, plus a fresh
+   * `mi` translation.
+   */
+  communityInfoSuperAdminCapabilities: {
+    base:
+      'As a super admin, you also have:\n' +
+      '- Grant or revoke admin status for a member\n' +
+      '- Pause or resume the bot, view audit logs, review admin activity, list current admins, ' +
+      'or check usage/engagement stats\n' +
+      '- Erase all of a user\'s stored data on request ("purge their data")\n' +
+      '- Change bot-wide policy settings, or trigger a redeploy of the bot\n' +
+      '- See which optional feature flags are currently on or off\n' +
+      '- File a GitHub issue suggesting an improvement\n' +
+      '- Dispatch a remote dev-team job to assess or deliver a change, check its status, fetch its result, ' +
+      "turn a completed assessment into a tracked backlog, list an assessment's findings, or re-check one finding",
+    language: {
+      mi:
+        'I a koe e noho kaiwhakahaere matua (super admin) ana, kei a koe hoki:\n' +
+        '- Tuku, tango rānei i te tūnga kaiwhakahaere mō tētahi mema\n' +
+        '- Whakatārewa, whakahoki anō rānei i te pouaka, tiro i ngā pukapuka arotake (audit log), arotake ' +
+        'i ngā mahi a ngā kaiwhakahaere, whakarārangi i ngā kaiwhakahaere o nāianei, tirotiro rānei i ngā ' +
+        'tatauranga whakamahi/whakaurunga\n' +
+        '- Muku i katoa ngā raraunga kua rongoātia mō tētahi kaiwhakamahi, i runga i te tono ("purge their ' +
+        'data")\n' +
+        '- Whakarerekē i ngā tautuhinga kaupapahere o te pouaka whānui, whakaoho rānei i te whakatū anō ' +
+        '(redeploy) o te pouaka\n' +
+        '- Tiro he aha ngā haki (feature flags) kōwhiringa e mahi ana, kāore rānei, i tēnei wā\n' +
+        '- Tuku pūrongo (issue) ki GitHub e whakaaro ana mō tētahi whakapainga\n' +
+        '- Tuku mahi ki te tīma whanaketanga mamao hei arotake, hei tuku rānei i tētahi panonitanga, ' +
+        'tirotiro i tōna tūnga, tiki i tōna hua, huri i tētahi arotake kua oti hei rārangi mahi e whāia ' +
+        'ana, whakarārangi i ngā kitenga o tētahi arotake, tirotiro anō rānei i tētahi kitenga',
+    },
+  },
+  // --- community_info WhatsApp `!`-shortcuts discovery block (agent/tools/info.ts) ---
+  /**
+   * The WhatsApp-only `!`-shortcuts discovery block appended to the member
+   * capabilities segment above (issue #872) — `base` moved VERBATIM from the
+   * old `WHATSAPP_TEXT_COMMANDS_TEXT` constant in info.ts, so this is a
+   * byte-neutral relocation, not a rewrite (issue #1034, the follow-up
+   * `communityInfoMemberCapabilities`'s own doc comment named as scoped
+   * out). The `!`-prefixed command tokens stay literal/untranslated in the
+   * `mi` variant — `commands.ts`'s regexes match those exact ASCII strings.
+   * No `style` variant, matching `communityInfoMemberCapabilities`'s own
+   * scope. Never interpolates caller or message data — same trust level as
+   * the member capabilities notice above. `!kbtopics` (issue #1036) was
+   * added to both variants by issue #1044/#1034, closing a gap where it
+   * shipped without ever being added to this list.
+   */
+  whatsappTextCommands: {
+    base:
+      "You're on WhatsApp, so you can also use these zero-wait shortcuts:\n" +
+      '- `!whois <topic>` — find members into a topic\n' +
+      '- `!projects [query]` — browse the project showcase\n' +
+      '- `!guidelines` — community guidelines\n' +
+      "- `!digest` — this week's digest\n" +
+      '- `!status` — check for a known Anthropic outage\n' +
+      '- `!kbtopics` — browse what the knowledge base covers\n' +
+      '- `!warnings` — your own active warning count\n' +
+      '- `!mysubmissions` — status of your filed suggestions/reports\n' +
+      '- `!mydata` — what the bot has stored about you\n' +
+      '- `!help` — this capability rundown',
+    language: {
+      mi:
+        'Kei runga koe i WhatsApp, nō reira ka taea hoki e koe te whakamahi i ēnei pokatata tere:\n' +
+        '- `!whois <topic>` — rapu mema e pā ana ki tētahi kaupapa\n' +
+        '- `!projects [query]` — tirotiro i te whakaaturanga kaupapa\n' +
+        '- `!guidelines` — ngā tikanga hapori\n' +
+        '- `!digest` — te whakarāpopototanga o tēnei wiki\n' +
+        '- `!status` — tirotiro mehemea he raru mōhiotia nā Anthropic\n' +
+        '- `!kbtopics` — tirotiro i ngā kaupapa e kapi ana e te pātengi mōhiotanga\n' +
+        '- `!warnings` — te tatau o ō whakatūpato e mahi tonu ana\n' +
+        '- `!mysubmissions` — te āhua o ō tono/pūrongo kua tukuna\n' +
+        '- `!mydata` — he aha kua rongoātia e ahau mōu\n' +
+        '- `!help` — tēnei whakarāpopototanga pūkenga',
     },
   },
   // --- member digest section labels (memberDigest.ts) ----------------------

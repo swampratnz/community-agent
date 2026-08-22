@@ -434,13 +434,22 @@ memory**:
    on demand mid-turn. Cross-conversation search is admin-only.
    `knowledge_search`'s result ordering is similarity-descending except for a
    narrow tie-break (issue #308): when two relevant hits land within
-   `KNOWLEDGE_TIE_MARGIN` of each other, the tie is broken first by low-rated
-   status (issue #562) — if exactly one hit has been flagged unhelpful by
-   ≥2 distinct members (per `areKnowledgeEntriesLowRated`), the non-low-rated
-   hit is listed first — and only then, if that doesn't decide it, by
-   staleness (per `isKnowledgeStale`/`KNOWLEDGE_STALE_DAYS`), where the
-   fresher one is listed first — a real relevance gap always wins regardless
-   of rating or staleness.
+   `KNOWLEDGE_TIE_MARGIN` of each other, a three-rung ladder decides the
+   order. First, low-rated status (issue #562) — if exactly one hit has been
+   flagged unhelpful by ≥2 distinct members (per `areKnowledgeEntriesLowRated`),
+   the non-low-rated hit is listed first. Next, if that doesn't decide it,
+   confirmed source reachability (issue #1054) — if exactly one hit has
+   `source_unreachable === true` (the weekly link-rot checker, issue #448,
+   has actually observed the cited URL and confirmed it dead), the hit whose
+   source is live or unchecked is listed first; `null` (never checked) and
+   `false` never demote a hit, so this rung is a no-op unless the link
+   checker is enabled. Finally, if still undecided, staleness (per
+   `isKnowledgeStale`/`KNOWLEDGE_STALE_DAYS`), where the fresher one is
+   listed first — a real relevance gap always wins regardless of rating,
+   reachability, or staleness. The ladder is ordered by strength of evidence:
+   a member's direct "not helpful" rating outranks a dead-link observation,
+   which in turn outranks staleness, which is only *inferred* from
+   timestamps.
    `isKnowledgeStale` also honors an optional absolute content-age ceiling,
    `KNOWLEDGE_STALE_MAX_AGE_DAYS` (issue #380, off unless set), OR-ed into the
    same predicate: it fires on a hit's edit age alone, closing the gap where a
@@ -1431,13 +1440,19 @@ weakening it:
    `community_info` tool (issue #92) answers "what can you do?" with
    `MEMBER_CAPABILITIES_TEXT`, a plain-language line for every `MEMBER_TOOLS`
    entry, pinned against drift by an anti-drift coverage test (issue #311).
-   An admin caller additionally gets `ADMIN_CAPABILITIES_TEXT` (issue #367) —
-   the same discipline applied to `ADMIN_TOOLS`, replacing the old one-line
-   "ask what's new" pointer the grant DM (`ADMIN_APPROVED_MESSAGE`, issue
-   #201) had promised would give "a rundown, including your new admin tools"
-   but never did. A super_admin caller gets both of those plus
-   `SUPER_ADMIN_CAPABILITIES_TEXT` (issue #582) — the same discipline applied
-   to `SUPER_ADMIN_TOOLS`, its own anti-drift coverage test. #367 had
+   An admin caller additionally gets the admin capabilities text (issue
+   #367) — the same discipline applied to `ADMIN_TOOLS`, replacing the old
+   one-line "ask what's new" pointer the grant DM (`ADMIN_APPROVED_MESSAGE`,
+   issue #201) had promised would give "a rundown, including your new admin
+   tools" but never did. A super_admin caller gets both of those plus the
+   super-admin capabilities text (issue #582) — the same discipline applied
+   to `SUPER_ADMIN_TOOLS`, its own anti-drift coverage test. Both used to be
+   raw string constants (`ADMIN_CAPABILITIES_TEXT`/
+   `SUPER_ADMIN_CAPABILITIES_TEXT`) in `agent/tools/info.ts`; issue #1056
+   relocated them into the module notice pack as
+   `communityInfoAdminCapabilities`/`communityInfoSuperAdminCapabilities`
+   (see below) so they could gain a `mi` variant the same way the member
+   segment already had. #367 had
    explicitly deferred the `SUPER_ADMIN_TOOLS` case as a named, separate
    growth path ("no evidenced complaint... left as an explicit, separate
    growth path"); #582 is that follow-up, closing the one tier `community_info`
@@ -1465,8 +1480,13 @@ weakening it:
    behind `community_info`/`/help`/`!help`, issue #993) is async precisely
    for this read, and resolves the segment via the module notice pack's
    `communityInfoMemberCapabilities` entry rather than a raw string constant.
-   Admin/super_admin segments and the WhatsApp shortcuts block stay
-   English-only, an explicit growth path rather than this issue's scope.
+   Issue #1056 extended the same `language` value to the admin/super-admin
+   segments via the `communityInfoAdminCapabilities`/
+   `communityInfoSuperAdminCapabilities` notice entries, and issue #1034 did
+   the same for the WhatsApp shortcuts block via `whatsappTextCommands` —
+   between them closing every mid-reply language flip a `'mi'`-preference
+   caller could see, at any tier and on either platform. No segment of this
+   rundown is English-only any more.
 7. **Opt-in auto-enroll** (issue #605, off unless
    `DISCORD_AUTO_ENROLL_MEMBERS=true`). Removes the manual per-person
    `add_member` step: on every non-bot Discord join, `onGuildMemberAdd` calls
@@ -2801,6 +2821,20 @@ gaps an adversarial review pass flagged in the underlying proposal:
   model turn to apply that quarantine framing, so it mirrors the existing
   knowledge shortcut's (`tryKnowledgeShortcut`) own exclusion instead —
   unreviewed machine-researched content is never served at full trust here.
+  The exclusion also applies to a lexical-fallback hit (below), never only
+  the semantic ones.
+
+`/kb` carries `knowledge_search`'s own #362 lexical fallback (issue #1061):
+on a genuine below-floor miss (`hits.length > 0 && relevantIds.length ===
+0`), `handleKb` retries with `searchKnowledgeLexical` — the same trigram
+`word_similarity()` match `knowledgeMember.ts` already uses — before
+answering "No matching knowledge entries.", so an exact SNAKE_CASE/camelCase
+identifier or error code that a member pastes verbatim isn't lost to dense
+sentence embeddings on this surface either. A lexical hit is tagged
+`viaLexical: true` and merged into the same `formatKnowledgeSearchResults`
+call `/kb` already makes; a `searchKnowledgeLexical` rejection degrades to
+the semantic-only result (or the existing no-match text), same fail-safe
+shape as the conflict/low-rated lookups below.
 - **Every slash-command reply is passed through the adapter's existing
   outbound filter** (`this.filtered()` → `filterOutbound()`: secret redaction
   + code-answers policy), via a small `SlashCommandDeps` interface
