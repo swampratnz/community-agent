@@ -32,7 +32,8 @@ const BASE_ENV: NodeJS.ProcessEnv = {
  *
  * `on` is the env that turns the job's gate on (numeric gates use their
  * config minimums; dev-team's flag refinement requires its endpoint+token);
- * `null` marks the two always-on jobs that have no enable flag by design.
+ * `null` marks the always-on jobs that have no enable flag by design (three
+ * as of the appeal-stale-alert job, issue #1020).
  */
 const JOBS: ReadonlyArray<{ name: string; on: NodeJS.ProcessEnv | null }> = [
   { name: 'interaction-retention-purge', on: { INTERACTION_RETENTION_DAYS: '7' } },
@@ -70,6 +71,7 @@ const JOBS: ReadonlyArray<{ name: string; on: NodeJS.ProcessEnv | null }> = [
       DEV_TEAM_AUTH_TOKEN: 'test-token',
     },
   },
+  { name: 'appeal-stale-alert', on: null },
 ];
 
 test('registry: every JobSpec name is unique', () => {
@@ -86,7 +88,7 @@ test('registry: start order matches the pinned pre-registry index.ts order, entr
   );
 });
 
-test('SECURITY: with a minimal env (no opt-in flag set) only the two always-on jobs are enabled — a registry gate can never turn on a job the deployment has not opted into', () => {
+test('SECURITY: with a minimal env (no opt-in flag set) only the always-on jobs are enabled — a registry gate can never turn on a job the deployment has not opted into', () => {
   const cfg = loadConfig(BASE_ENV);
   for (const row of JOBS) {
     const spec = JOB_REGISTRY.find((s) => s.name === row.name)!;
