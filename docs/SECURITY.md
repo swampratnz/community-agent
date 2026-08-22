@@ -3589,9 +3589,9 @@ its own.
   a verified byte-neutral relocation of the old constants; the `mi` variant of
   each is a literal in the notice pack, same trust level as every other
   `NOTICE_ENTRIES` value.
-- **The WhatsApp `!`-shortcuts block (§24) is unaffected and stays
-  English-only** — out of this issue's scope; a WhatsApp-specific `mi` variant
-  is separate follow-up territory (issue #1034).
+- **The WhatsApp `!`-shortcuts block (§24) is unaffected by this issue** — out
+  of this issue's scope; its own `mi` variant landed separately in §28 (issue
+  #1034).
 - **SECURITY: no template placeholders.** A test asserts both new entries'
   `base` and `mi` values contain no interpolation markers, same discipline as
   §26's `communityInfoMemberCapabilities` check.

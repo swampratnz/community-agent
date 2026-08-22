@@ -136,8 +136,8 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   'mi'` now gets the member-capabilities rundown in te reo Māori, matching
   `community_guidelines`'s existing behaviour; a caller with no preference (or
   `'en'`/`'auto'`) sees byte-identical English to before. Admin/super-admin
-  content stays English-only for now; the WhatsApp `!`-shortcuts block
-  immediately below this segment got the same te reo Māori treatment in #1034
+  content got the same te reo Māori treatment in #1056 (above), and the
+  WhatsApp `!`-shortcuts block immediately below this segment got it in #1034
   (above).
 - **The on-demand community digest (`community_digest`, `/digest`, `!digest`)
   now honours a standing te reo Māori preference too** (#1042): this was the
