@@ -29,6 +29,7 @@ import {
   countUnreachableSourceKnowledge,
   getLastDigestCounts,
   listAdmins,
+  listReports,
   oldestAccessRequestAgeDays,
   oldestOpenAppealAgeDays,
   oldestOpenReportAgeDays,
@@ -93,6 +94,69 @@ function pctTrendSuffix(key: string, current: number, previous: Record<string, n
   return diff > 0
     ? ` ▲ ${diff.toFixed(1)}pp since last week.`
     : ` ▼ ${Math.abs(diff).toFixed(1)}pp since last week.`;
+}
+
+/**
+ * `listReports`' own hard clamp (`Math.min(Math.max(trunc(limit) || 50, 1),
+ * 200)`) — the widest single-status scan available from here, same constant
+ * `appealStaleAlert.ts`'s `APPEAL_STALE_ALERT_SCAN_LIMIT` uses for the
+ * identical reason.
+ */
+const REPORT_RESOLUTION_SCAN_LIMIT = 200;
+
+/**
+ * Outcome mix of reports closed within the last `days` days, scoped exactly
+ * like `countOpenReports`/`listReports` (`conversationIds` +
+ * linked-identity-aware `viewerUserIds` accused-admin exclusion) — the
+ * still-missing resolved-vs-dismissed complement to `openReports`/
+ * `oldestOpenReportAgeDays`'s backlog-size/-age signals, mirroring
+ * `appealResolutionBreakdown`'s role for appeals (issue #844) for the
+ * reports queue (issue #1075).
+ *
+ * Built module-side rather than as a new `@swampratnz/agent-base` repository
+ * aggregate (unlike `appealResolutionBreakdown`, which already exists
+ * upstream): a real `GROUP BY` aggregate with no row-count ceiling would
+ * need a framework change, out of scope here. This reuses the already-
+ * exported, already-scoped `listReports` and aggregates in JS instead.
+ *
+ * KNOWN APPROXIMATION, the same tradeoff `appealStaleAlert.ts` documents for
+ * `listAppeals`: `listReports` orders by `created_at DESC`, not
+ * `resolved_at`, and each status scan is capped at
+ * `REPORT_RESOLUTION_SCAN_LIMIT` rows. A report resolved recently but filed
+ * long ago could in principle fall outside a single admin's 200-row,
+ * `created_at`-ordered scan if that admin's scope has an unusually large
+ * volume of newer reports. Bounded, not unbounded — and report volume is
+ * already low (`REPORT_RATE_LIMIT_PER_DAY = 5`/reporter) — so this is
+ * accepted as a documented approximation, not a correctness gap in
+ * practice.
+ */
+async function reportResolutionBreakdown(
+  conversationIds: readonly string[] | null,
+  days: number,
+  viewerUserIds?: readonly string[],
+): Promise<{ resolved: number; dismissed: number }> {
+  const since = Date.now() - days * 24 * 3_600_000;
+  const countRecentlyResolved = (rows: readonly { resolvedAt: Date | null }[]) =>
+    rows.filter((row) => row.resolvedAt !== null && row.resolvedAt.getTime() >= since).length;
+  // Sequential rather than a parallel combinator — this repo's own
+  // buildAdminDigestForAdmin (this function's sole caller) pins its single
+  // signal-gathering fan-out call as a no-drift invariant
+  // (tests/adminDigest.test.ts, issue #499); a second one here would trip
+  // that pin for no real benefit, since these two bounded, differently-
+  // statused reads are cheap regardless of ordering.
+  const resolvedRows = await listReports(
+    conversationIds,
+    'resolved',
+    REPORT_RESOLUTION_SCAN_LIMIT,
+    viewerUserIds,
+  );
+  const dismissedRows = await listReports(
+    conversationIds,
+    'dismissed',
+    REPORT_RESOLUTION_SCAN_LIMIT,
+    viewerUserIds,
+  );
+  return { resolved: countRecentlyResolved(resolvedRows), dismissed: countRecentlyResolved(dismissedRows) };
 }
 
 /**
@@ -486,6 +550,26 @@ export function buildAdminDigestMessage(
   // site is unaffected and the quiet case (all four flywheel sub-signals 0)
   // is byte-identical to the pre-#870 form.
   projectConnectionsCount: number = 0,
+  // Outcome mix of reports closed in the last FRESHNESS_DAYS days
+  // (`reportResolutionBreakdown`, issue #1075) — the still-missing
+  // resolved-vs-dismissed complement to `openReports`/
+  // `oldestOpenReportAgeDays`'s backlog-size/-age signals above, the reports
+  // sibling of `resolvedAppealsCount`/`dismissedAppealsCount` (#844). Counts
+  // CLOSED rows, disjoint from `openReports`' open-only scope, so it gets
+  // its own entry in the all-signals-zero gate below rather than riding as
+  // a sub-count of an already-gated signal. Rendered as ONE line only when
+  // `resolvedReportsCount + dismissedReportsCount > 0`. Bare integers
+  // only — no reporterName/reporterUserId/targetUserId/reason/resolvedBy
+  // ever reaches the DM, same privacy convention as `openReports` (#450).
+  // Two append-only trailing params, default 0, so every existing call site
+  // is unaffected and the quiet case is byte-identical to the pre-#1075
+  // form. Unlike resolvedAppealsCount/dismissedAppealsCount/
+  // projectConnectionsCount, buildAdminDigestForAdmin deliberately never
+  // writes these into currentCounts (see its own comment) — the trendSuffix
+  // calls below still fire, but with no persisted `previous` entry they
+  // render bare, exactly like a signal on its first-ever digest.
+  resolvedReportsCount: number = 0,
+  dismissedReportsCount: number = 0,
 ): string | null {
   if (
     clusters.length === 0 &&
@@ -516,7 +600,9 @@ export function buildAdminDigestMessage(
     helperMatchesCount === 0 &&
     resolvedAppealsCount === 0 &&
     dismissedAppealsCount === 0 &&
-    projectConnectionsCount === 0
+    projectConnectionsCount === 0 &&
+    resolvedReportsCount === 0 &&
+    dismissedReportsCount === 0
   )
     return null;
 
@@ -550,6 +636,17 @@ export function buildAdminDigestMessage(
     sections.push(
       `🚩 ${openReports} open report(s) in your conversations${ageFragment} — run \`list_reports\`.` +
         trendSuffix('openReports', openReports, previousCounts),
+    );
+  }
+  if (resolvedReportsCount + dismissedReportsCount > 0) {
+    // Bare integers only — no reporterName/reporterUserId/targetUserId/
+    // reason/resolvedBy ever reaches the DM (#1075).
+    const closedReportsTotal = resolvedReportsCount + dismissedReportsCount;
+    sections.push(
+      `🚩📈 ${closedReportsTotal} report(s) closed this period: ${resolvedReportsCount} resolved, ` +
+        `${dismissedReportsCount} dismissed.` +
+        trendSuffix('resolvedReportsCount', resolvedReportsCount, previousCounts) +
+        trendSuffix('dismissedReportsCount', dismissedReportsCount, previousCounts),
     );
   }
   if (pendingSuggestions > 0) {
@@ -868,6 +965,7 @@ export async function buildAdminDigestForAdmin(
     helperMatchesCount,
     appealBreakdown,
     projectConnectionsCount,
+    reportBreakdown,
   ] = await Promise.all([
     recentQuestionClusters(scope, FRESHNESS_DAYS, CLUSTER_LIMIT),
     countAccessRequests(),
@@ -996,6 +1094,12 @@ export async function buildAdminDigestForAdmin(
     // find_helper, request_project_connection has no feature flag (verified
     // none exists in config.ts), so there is no gate to mirror here.
     countProjectConnectionsSince(since),
+    // Outcome mix of reports closed over the same FRESHNESS_DAYS window as
+    // every other rolling-window trend line here, scoped exactly like
+    // openReports/oldestOpenReportAge above — the still-missing resolved-
+    // vs-dismissed complement to countOpenReports/oldestOpenReportAgeDays
+    // (issue #1075).
+    reportResolutionBreakdown(scope, FRESHNESS_DAYS, viewerIds),
   ]);
   // Onboarding-queue count only means anything in 'gated' mode — an
   // 'open'-mode not_members row already has full member-tool access
@@ -1037,6 +1141,21 @@ export async function buildAdminDigestForAdmin(
     resolvedAppealsCount: appealBreakdown.resolved,
     dismissedAppealsCount: appealBreakdown.dismissed,
     projectConnectionsCount,
+    // Deliberately NOT added here, unlike every sibling signal above:
+    // `resolvedReportsCount`/`dismissedReportsCount` would be immediately
+    // dropped by `sanitizeDigestCounts`'s `ADMIN_DIGEST_SIGNAL_KEYS`
+    // allowlist (`@swampratnz/agent-base`'s `digestAlerts.js`) — unlike
+    // `resolvedAppealsCount`/`dismissedAppealsCount` (#844) and
+    // `projectConnectionsCount` (#870), which shipped in the SAME diff as
+    // their own upstream allowlist entry, adding one here would need an
+    // agent-base change, out of scope for this repo (VISION guardrail; see
+    // `reportResolutionBreakdown`'s own doc comment). The trend suffix on
+    // the rendered line below therefore never fires in practice — the same
+    // "renders bare, no arrow" behaviour every signal has on its first-ever
+    // digest — rather than silently pretending to persist a value that
+    // would be stripped at the write boundary
+    // (tests/adminDigest.test.ts's "EVERY integer signal ... survives the
+    // sanitizeDigestCounts whitelist" pin, issue #820 review).
   };
   // Only added when there's at least one auto-answer rating this week (issue
   // #629) — mirrors the render block's own `autoAnswerHelpful +
@@ -1096,6 +1215,8 @@ export async function buildAdminDigestForAdmin(
     appealBreakdown.resolved,
     appealBreakdown.dismissed,
     projectConnectionsCount,
+    reportBreakdown.resolved,
+    reportBreakdown.dismissed,
   );
   return { message, currentCounts };
 }
