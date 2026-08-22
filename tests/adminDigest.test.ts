@@ -43,6 +43,7 @@ const {
   countPendingKnowledgeCandidates,
   countProjectConnectionsSince,
   createContentReport,
+  resolveContentReport,
   createSuggestion,
   createAnswerFeedback,
   recordInteraction,
@@ -4543,6 +4544,293 @@ test(
       adminId,
     ]);
     await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
+
+// --- issue #1075: reportResolutionBreakdown + its digest line --------------
+
+// Full 43-element positional prefix for buildAdminDigestMessage at its
+// quiet-week default — every signal through projectConnectionsCount
+// (position 43) zero/null. The two new trailing params under test
+// (resolvedReportsCount/dismissedReportsCount) are appended by each test
+// below, matching the APPEAL_BREAKDOWN_ZERO_PREFIX convention above.
+const REPORT_BREAKDOWN_ZERO_PREFIX = [...PROJECT_CONNECTIONS_ZERO_PREFIX, 0] as const;
+
+test('buildAdminDigestMessage: the report-breakdown line renders only when resolvedReportsCount + dismissedReportsCount > 0, with independent wording for resolved-only, dismissed-only, and both (issue #1075 acceptance criteria 2, 3)', () => {
+  assert.equal(
+    buildAdminDigestMessage(...REPORT_BREAKDOWN_ZERO_PREFIX, 0, 0),
+    null,
+    'both counts zero, with every other signal already zero, is a quiet week',
+  );
+
+  const resolvedOnly = buildAdminDigestMessage(...REPORT_BREAKDOWN_ZERO_PREFIX, 3, 0);
+  assert.ok(resolvedOnly, 'resolved reports alone still produce a DM');
+  const resolvedLine = resolvedOnly.split('\n').find((l) => l.includes('🚩📈'));
+  assert.equal(
+    resolvedLine,
+    '🚩📈 3 report(s) closed this period: 3 resolved, 0 dismissed.',
+    'resolved-only still renders both sub-counts in the fixed template',
+  );
+
+  const dismissedOnly = buildAdminDigestMessage(...REPORT_BREAKDOWN_ZERO_PREFIX, 0, 2);
+  assert.ok(dismissedOnly, 'dismissed reports alone still produce a DM');
+  const dismissedLine = dismissedOnly.split('\n').find((l) => l.includes('🚩📈'));
+  assert.equal(
+    dismissedLine,
+    '🚩📈 2 report(s) closed this period: 0 resolved, 2 dismissed.',
+    'dismissed-only still renders both sub-counts in the fixed template',
+  );
+
+  const both = buildAdminDigestMessage(...REPORT_BREAKDOWN_ZERO_PREFIX, 8, 4);
+  assert.ok(both);
+  const bothLine = both.split('\n').find((l) => l.includes('🚩📈'));
+  assert.equal(
+    bothLine,
+    '🚩📈 12 report(s) closed this period: 8 resolved, 4 dismissed.',
+    'the total is the sum of both sub-counts',
+  );
+
+  // Rendered as its own line, distinct from the openReports backlog line —
+  // asserted alongside a nonzero openReports so both lines coexist without
+  // the open-report line's rendering changing (issue #1075 acceptance
+  // criterion 3). Full 43-element positional prefix, same shape as
+  // REPORT_BREAKDOWN_ZERO_PREFIX with only openReports (position 3) nonzero.
+  const busyOpenReportsPrefix = [
+    [], // 1  clusters
+    0, // 2  pendingAccessRequests
+    5, // 3  openReports
+    0, // 4  pendingSuggestions
+    0, // 5  staleKnowledgeCount
+    0, // 6  knowledgeStaleDays
+    0, // 7  knowledgeGapsCount
+    0, // 8  pendingKnowledgeCandidates
+    0, // 9  lowRatedKnowledgeCount
+    0, // 10 joinedThisWeek
+    0, // 11 leftThisWeek
+    0, // 12 mutedMembersCount
+    0, // 13 maxTurnsFailuresCount
+    0, // 14 duplicateKnowledgeCount
+    0, // 15 conflictCandidateCount
+    0, // 16 knowledgeStaleMaxAgeDays
+    0, // 17 pendingKnowledgeCandidatesStaleCount
+    0, // 18 knowledgeCandidateStaleDays
+    0, // 19 staleMutedMembersCount
+    0, // 20 notMembersCount
+    0, // 21 escalatedKnowledgeGapsCount
+    undefined, // 22 previousCounts
+    null, // 23 oldestAccessRequestAgeDays
+    null, // 24 oldestOpenReportAgeDays
+    null, // 25 oldestPendingSuggestionAgeDays
+    0, // 26 generalUnhelpfulCount
+    0, // 27 autoAnswerHelpful
+    0, // 28 autoAnswerUnhelpful
+    0, // 29 addressedHelpful
+    0, // 30 addressedUnhelpful
+    0, // 31 openAppealsCount
+    0, // 32 unreachableSourceKnowledgeCount
+    0, // 33 overallAnswerHelpful
+    0, // 34 overallAnswerTotal
+    0, // 35 unhelpfulThemeCount
+    null, // 36 oldestOpenAppealAgeDays
+    0, // 37 acceptedKnowledgeCandidatesCount
+    0, // 38 projectsSharedCount
+    null, // 39 oldestPendingCandidateAgeDays
+    0, // 40 helperMatchesCount
+    0, // 41 resolvedAppealsCount
+    0, // 42 dismissedAppealsCount
+    0, // 43 projectConnectionsCount
+  ] as const;
+  const withOpen = buildAdminDigestMessage(...busyOpenReportsPrefix, 3, 0);
+  assert.ok(withOpen);
+  const lines = withOpen.split('\n');
+  assert.ok(
+    lines.some((l) => l.startsWith('🚩 5 open report(s)')),
+    'the existing openReports line is unchanged alongside the new closed-reports line',
+  );
+  assert.ok(
+    lines.some((l) => l.startsWith('🚩📈 3 report(s) closed this period: 3 resolved, 0 dismissed.')),
+    'the new report-breakdown line renders as its own line beside openReports',
+  );
+});
+
+test('SECURITY: buildAdminDigestMessage: omitting resolvedReportsCount/dismissedReportsCount is byte-identical to passing explicit zeros — the pre-#1075 quiet case is unaffected (issue #1075 acceptance criterion 2)', () => {
+  const withoutNewParams = buildAdminDigestMessage(...REPORT_BREAKDOWN_ZERO_PREFIX);
+  const withExplicitZeros = buildAdminDigestMessage(...REPORT_BREAKDOWN_ZERO_PREFIX, 0, 0);
+  assert.equal(
+    withoutNewParams,
+    withExplicitZeros,
+    'a caller that has not wired the new trailing params through renders byte-identical output',
+  );
+  assert.equal(withExplicitZeros, null, 'still a quiet week');
+});
+
+test('buildAdminDigestMessage: the report-breakdown line trends resolvedReportsCount and dismissedReportsCount independently via trendSuffix (issue #1075)', () => {
+  const prefixWithTrend = [
+    ...REPORT_BREAKDOWN_ZERO_PREFIX.slice(0, 21),
+    { resolvedReportsCount: 1, dismissedReportsCount: 5 },
+    ...REPORT_BREAKDOWN_ZERO_PREFIX.slice(22),
+  ] as const;
+  const message = buildAdminDigestMessage(...prefixWithTrend, 3, 2);
+  assert.ok(message);
+  const line = message.split('\n').find((l) => l.includes('🚩📈'));
+  assert.equal(
+    line,
+    '🚩📈 5 report(s) closed this period: 3 resolved, 2 dismissed. (▲+2 since last week) (▼-3 since last week)',
+    'each sub-count carries its own independent trendSuffix, same one-call-per-signal convention as the appeal-breakdown line',
+  );
+
+  const noTrend = buildAdminDigestMessage(...REPORT_BREAKDOWN_ZERO_PREFIX, 3, 2);
+  assert.ok(noTrend);
+  const noTrendLine = noTrend.split('\n').find((l) => l.includes('🚩📈'));
+  assert.equal(
+    noTrendLine,
+    '🚩📈 5 report(s) closed this period: 3 resolved, 2 dismissed.',
+    'no previousCounts -> no suffix on either sub-count',
+  );
+});
+
+test('SECURITY: buildAdminDigestMessage: the report-breakdown line is a deterministic function of (resolvedReportsCount, dismissedReportsCount) only, and never carries a reporterName/reporterUserId/targetUserId/reason/resolvedBy identifier (issue #1075 acceptance criterion 4)', () => {
+  const secretReporterName = 'a very identifiable reporter display name that must never leak';
+  const secretReporterId = 'reporter-user-id-192837465';
+  const secretTargetId = 'target-user-id-564738291';
+  const secretReason = 'a very identifiable report reason that must never leak';
+  const secretResolverId = 'resolver-user-id-102938475';
+
+  const message = buildAdminDigestMessage(...REPORT_BREAKDOWN_ZERO_PREFIX, 3, 2);
+  assert.ok(message);
+  const line = message.split('\n').find((l) => l.includes('🚩📈'));
+  assert.ok(line);
+  for (const secret of [
+    secretReporterName,
+    secretReporterId,
+    secretTargetId,
+    secretReason,
+    secretResolverId,
+  ]) {
+    assert.ok(
+      !line.includes(secret),
+      `SECURITY: the report-breakdown line must never carry "${secret}" — it takes no such input, only the two integer counts`,
+    );
+  }
+  assert.equal(
+    line,
+    '🚩📈 5 report(s) closed this period: 3 resolved, 2 dismissed.',
+    'the line is a pure function of the two integer counts — bare numbers and fixed template text only',
+  );
+});
+
+test(
+  'buildAdminDigestForAdmin: reportResolutionBreakdown is wired over the same FRESHNESS_DAYS window and rendered on the digest, and no reporterName/reporterUserId/targetUserId/reason/resolvedBy ever reaches the message (issue #1075 acceptance criteria 1, 2, 4)',
+  { skip },
+  async () => {
+    const adminId = `${RUN}-reportbreakdown-admin`;
+    const conversationId = `${RUN}-c-reportbreakdown`;
+    const reporter = `${RUN}-reportbreakdown-reporter`;
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    const secretReason = 'a very identifiable report reason that must never leak';
+    const secretTargetId = `${RUN}-reportbreakdown-target-secret`;
+    const secretResolver = `${RUN}-reportbreakdown-resolver-secret`;
+
+    const toResolve = await createContentReport({
+      platform: 'discord',
+      reporterUserId: reporter,
+      conversationId,
+      targetUserId: secretTargetId,
+      reason: secretReason,
+    });
+    const toDismiss = await createContentReport({
+      platform: 'discord',
+      reporterUserId: reporter,
+      conversationId,
+      targetUserId: secretTargetId,
+      reason: secretReason,
+    });
+    assert.ok(toResolve && toDismiss);
+    await resolveContentReport(toResolve.id, 'resolved', secretResolver);
+    await resolveContentReport(toDismiss.id, 'dismissed', secretResolver);
+
+    const adapter = fakeAdapter({ platform: 'discord', conversationIds: [conversationId], sent: [] });
+    const result = await buildAdminDigestForAdmin('discord', adminId, adapter);
+
+    assert.ok(result.message, 'a nonzero report-breakdown count alone still produces a DM');
+    const breakdownLine = result.message.split('\n').find((l) => l.includes('🚩📈'));
+    assert.match(
+      breakdownLine ?? '',
+      /^🚩📈 2 report\(s\) closed this period: 1 resolved, 1 dismissed\.$/,
+      'the breakdown line renders the seeded resolved + dismissed reports',
+    );
+    for (const secret of [secretReason, secretTargetId, secretResolver, reporter]) {
+      assert.ok(
+        !result.message.includes(secret),
+        `SECURITY: "${secret}" must never reach the rendered digest — only the two integer counts do (issue #1075 acceptance criterion 4)`,
+      );
+    }
+
+    await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [[toResolve.id, toDismiss.id]]);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+  },
+);
+
+test(
+  "SECURITY: buildAdminDigestForAdmin's reportResolutionBreakdown scoping matches listReports/countOpenReports exactly — a report resolved in a conversation the admin is not in, and a DM report filed against the admin's own identity, are both excluded from the counts (issue #1075 acceptance criterion 1)",
+  { skip },
+  async () => {
+    const adminId = `${RUN}-reportbreakdown-scope-admin`;
+    const inScopeConvo = `${RUN}-c-reportbreakdown-scope-in`;
+    const outOfScopeConvo = `${RUN}-c-reportbreakdown-scope-out`;
+    const reporter = `${RUN}-reportbreakdown-scope-reporter`;
+    const resolver = `${RUN}-reportbreakdown-scope-resolver`;
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    const inScope = await createContentReport({
+      platform: 'discord',
+      reporterUserId: reporter,
+      conversationId: inScopeConvo,
+      reason: 'in-scope report resolved — must be counted',
+    });
+    const outOfScope = await createContentReport({
+      platform: 'discord',
+      reporterUserId: reporter,
+      conversationId: outOfScopeConvo,
+      reason: 'out-of-scope report resolved — must NOT be counted',
+    });
+    // DM-originated, filed against the admin's own identity — must be
+    // excluded from their own closed-report count (issue #197 parity),
+    // exactly like the openReports backlog count.
+    const dmAgainstSelf = await createContentReport({
+      platform: 'discord',
+      reporterUserId: reporter,
+      conversationId: `${RUN}-c-reportbreakdown-scope-dm-self`,
+      targetUserId: adminId,
+      reason: 'DM report filed against the admin themselves — must be excluded from their own count',
+      isDirect: true,
+    });
+    assert.ok(inScope && outOfScope && dmAgainstSelf);
+
+    await resolveContentReport(inScope.id, 'resolved', resolver);
+    await resolveContentReport(outOfScope.id, 'resolved', resolver);
+    await resolveContentReport(dmAgainstSelf.id, 'dismissed', resolver);
+
+    const adapter = fakeAdapter({ platform: 'discord', conversationIds: [inScopeConvo], sent: [] });
+    const result = await buildAdminDigestForAdmin('discord', adminId, adapter);
+
+    assert.ok(result.message, 'the in-scope resolved report alone still produces a DM');
+    assert.match(
+      result.message,
+      /🚩📈 1 report\(s\) closed this period: 1 resolved, 0 dismissed\./,
+      'only the in-scope resolved report is counted — the out-of-scope report and the DM report filed against ' +
+        "the admin's own identity are both excluded",
+    );
+
+    await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [
+      [inScope.id, outOfScope.id, dmAgainstSelf.id],
+    ]);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
   },
 );
 
