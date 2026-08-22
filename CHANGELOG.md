@@ -53,6 +53,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   line whenever at least one report closed, scoped to the same conversations
   and admin-exclusion rules as the rest of the digest; nothing changes when
   the count is zero.
+- **The closed-reports line on the weekly admin digest now also shows how
+  fast reports are getting closed, not just how many.** (#1081) A shrinking
+  report backlog can hide individual reports still sitting for days before
+  anyone acts — the resolved/dismissed counts alone (#1076) can't tell
+  "closed fast" from "closed slow but eventually." The line now appends a
+  "(median Nh to close)" fragment whenever at least one report closed this
+  period, computed from the same rows the counts already use; nothing
+  changes when no reports closed.
 
 ## 2026-08-22
 
