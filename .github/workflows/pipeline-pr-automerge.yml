@@ -415,7 +415,7 @@ jobs:
                 gh pr edit "$n" --repo "$REPO" --add-label human-merge-ready \
                   || echo "::warning::Could not add the human-merge-ready label to PR #$n."
                 gh pr comment "$n" --repo "$REPO" --body "${READY_MARKER}
-          🤖 Auto-merge evaluated this PR as **fully vetted** — every check green, \`MERGEABLE\`, and a fresh automated \`LGTM\` — but it touches a governance/CI/config path (\`.github/\`, \`scripts/\`, \`package.json\`, check config, or the \`CLAUDE.md\`/\`docs/PIPELINE.md\`/\`docs/SECURITY.md\` governance docs), which always requires a **human merge** (see docs/PIPELINE.md, auto-merge loop). Labelled \`human-merge-ready\` — a maintainer just needs to press merge." \
+          🤖 Auto-merge evaluated this PR as **fully vetted** — every check green, \`MERGEABLE\`, and a fresh automated \`LGTM\` — but it touches a governance/CI/config path (\`.github/\`, \`scripts/\`, \`package.json\`, check config, or the \`CLAUDE.md\`/\`docs/PIPELINE.md\`/\`docs/VISION.md\` governance docs), which always requires a **human merge** (see docs/PIPELINE.md, auto-merge loop). Labelled \`human-merge-ready\` — a maintainer just needs to press merge." \
                   || echo "::warning::Could not post the human-merge-ready comment on PR #$n."
               else
                 echo "PR #$n: fully vetted but governance-path — already flagged human-merge-ready, nothing to do."

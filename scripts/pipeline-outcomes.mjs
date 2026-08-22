@@ -82,7 +82,7 @@ const LOOPS = [
     // the loop wanted to merge and could not.
     escalation: '<!-- pipeline-automerge-blocked -->',
     // A governance-path PR (.github/**, scripts/**, CLAUDE.md, docs/PIPELINE.md,
-    // docs/SECURITY.md, …) that passed every other gate and was deliberately
+    // docs/VISION.md, …) that passed every other gate and was deliberately
     // handed to a human with a `human-merge-ready` label. This is the loop
     // working exactly as designed, NOT a failure — see `routed` below.
     routed: '<!-- pipeline-automerge-human-ready -->',
@@ -256,8 +256,9 @@ console.log(
     '> **Routed to human (by design)** is NOT a failure, and is deliberately left out of the ' +
     '"did not finish on its own" list: it is ' +
     'auto-merge meeting a governance-path PR (`.github/**`, `scripts/**`, `CLAUDE.md`, ' +
-    '`docs/PIPELINE.md`, `docs/SECURITY.md`) and handing it to a person exactly as policy requires. ' +
-    'Because the pipeline asks most feature PRs to document themselves in `docs/SECURITY.md`, this ' +
-    'is the common case rather than the exception — a high Routed number means the guardrail is ' +
-    'working, not that the loop is struggling.',
+    '`docs/PIPELINE.md`, `docs/VISION.md`) and handing it to a person exactly as policy requires. ' +
+    'Every path on that list is one a PR editing it could use to weaken the check that would catch ' +
+    'it, so a Routed row is the guardrail working, not the loop struggling. `docs/SECURITY.md` used ' +
+    'to be on the list and came off: nothing loads it, so it could not do that — it was costing 64% ' +
+    'of the Routed rows for a risk it did not carry.',
 );
