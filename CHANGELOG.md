@@ -70,6 +70,18 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   whether they're one warning from a mute, or whether their appeal/report is
   still pending, now gets that answer in their preferred language. Everyone
   else sees byte-identical English output, exactly as before.
+- **Admins now get a proactive nudge when an open content report has been
+  sitting unaddressed for too long.** (#1084) Moderation appeals (#1021) and
+  pending knowledge candidates (#1074) already got a one-time DM nudge once
+  their backlog went stale — content reports, arguably the most
+  safety-sensitive queue since it's the "someone needs help with abuse or
+  harassment" signal, had no equivalent. Because reports are scoped to each
+  admin's own conversations (with reports filed against the admin themselves
+  excluded), the nudge is per-admin: once any admin's own open reports have
+  waited more than 48 hours, they get a one-time DM (re-arming only after
+  their own backlog clears) pointing at `list_reports` to review it. No
+  report content is included — only the count and how long the oldest has
+  waited, and only for that admin's own scope.
 
 ## 2026-08-22
 
