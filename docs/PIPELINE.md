@@ -158,7 +158,9 @@ Create them once: **Actions → "Setup pipeline labels" → Run workflow**, or
   `src/module/agentModule.ts` — THE manifest the agent-base split turned into a
   rules file, since every extension point this deployment registers passes
   through it — so the pipeline can never auto-merge a
-  change to its own guardrails or to what "green" means. (`docs/VISION.md` is
+  change to its own guardrails or to what "green" means (and since
+  `pull_request` CI runs the workflow version from the PR branch, a PR could
+  otherwise weaken a check and still show it "passing"). (`docs/VISION.md` is
   on the list because it is the rubric research proposes against and
   adversarial judges by: editing it changes what the pipeline builds next.
   `src/module/agent/tools/index.ts`, which defines the tier map, is
@@ -171,9 +173,7 @@ Create them once: **Actions → "Setup pipeline labels" → Run workflow**, or
   every other entry it is descriptive rather than causal. Nothing loads it:
   not CI, not any agent prompt. Its drift risk is held by
   `tests/securityDocSections.test.ts`, which found a duplicate section number
-  that had survived the gate for many merges.) (and since
-  `pull_request` CI runs the workflow version from the PR branch, a PR could
-  otherwise weaken a check and still show it "passing"). Because the pipeline's
+  that had survived the gate for many merges.) Because the pipeline's
   own acceptance criteria push feature work through CI and check config, a
   governance hit is still common and is NOT a silent skip: a
   governance-path PR that passes **every other** gate (green, mergeable, fresh

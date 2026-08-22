@@ -4253,7 +4253,7 @@ number could reach an unrelated person).
       governance/CI/config path to a human merge** — `.github/**` (workflows/CI,
       including the auto-merge loop itself), `scripts/**` (the check machinery),
       `package.json`, typecheck/lint/format config, and the
-      `CLAUDE.md`/`docs/PIPELINE.md`/`docs/SECURITY.md` docs — so the loop can
+      `CLAUDE.md`/`docs/PIPELINE.md`/`docs/VISION.md` docs — so the loop can
       never auto-merge a change to its *own* gates or to what "green" means (which
       matters because `pull_request` CI runs the workflow version from the PR
       branch). A governance-path PR that passes every *other* gate is escalated

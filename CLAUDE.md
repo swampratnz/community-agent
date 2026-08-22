@@ -363,8 +363,9 @@ ownership rules:
   instead, the same trade `tests/toolTierMap.test.ts` makes for the tier map.
   A governance-path PR that passes every other gate is not skipped silently:
   it gets a `human-merge-ready` label plus one marker-guarded comment asking
-  a maintainer to merge (a PR touching `.github/` or the check machinery to
-  document themselves, so this is the common case, not the exception).
+  a maintainer to merge (pipeline work routinely edits `.github/` or
+  `scripts/` to fix the machinery itself, so this stays a well-trodden path
+  even with `docs/SECURITY.md` off the list).
   Never one labelled `needs-human`/`no-auto-merge`. Exactly ONE merge per run:
   afterwards `main` has advanced, so it dispatches the conflict resolver to
   rebase the rest, and the next PR only re-qualifies once it is green against
