@@ -25,6 +25,7 @@ import {
 import {
   formatFoundKnowledge,
   formatKnowledgeEntryLine,
+  rankKnowledgeByRetrieval,
   resolveSanitizedLabel,
   SUGGESTION_RESOLUTION_ECHO_CHARS,
   text,
@@ -177,15 +178,7 @@ export const knowledgeAdminTools = [
         offset: 0,
         limit: TOP_KNOWLEDGE_FETCH_CAP,
       });
-      const ranked = [...entries]
-        .sort((a, b) => {
-          if (b.retrievalCount !== a.retrievalCount) return b.retrievalCount - a.retrievalCount;
-          const aTime = a.lastRetrievedAt?.getTime() ?? 0;
-          const bTime = b.lastRetrievedAt?.getTime() ?? 0;
-          if (bTime !== aTime) return bTime - aTime;
-          return a.id - b.id;
-        })
-        .slice(0, limit);
+      const ranked = rankKnowledgeByRetrieval(entries, limit);
       if (ranked.length === 0) return text('No knowledge entries found.');
       return text(
         untrusted(

@@ -24,6 +24,18 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #963 #964 #965 #968 #971 #983 #988 #989 #991 #992 #994 #1017
 -->
 
+## 2026-08-23
+
+### Added
+- **Members can now ask what's most relied on in the knowledge base.** (#1070)
+  Until now, a member could only search the knowledge base with a specific
+  question (`knowledge_search`) or browse an unranked list of titles
+  (`list_knowledge_topics`) — there was no way to ask "what does everyone
+  actually rely on?". The new `most_helpful_knowledge` tool ranks
+  community-wide knowledge entries by how often they've actually answered a
+  member's question, mirroring the admin-only `list_top_knowledge` (#1024)
+  but scoped to what a member can already see.
+
 ## 2026-08-22
 
 ### Fixed

@@ -15,6 +15,7 @@ import {
   KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY,
   KNOWLEDGE_TIP_TITLE_MAX_CHARS,
   type KnowledgeSearchHit,
+  listKnowledge,
   listKnowledgeTopics,
   recordKnowledgeGap,
   recordKnowledgeRetrieval,
@@ -22,8 +23,24 @@ import {
   searchKnowledgeLexical,
   withdrawOwnKnowledgeTips,
 } from '@swampratnz/agent-base/storage/repository.js';
-import { formatKnowledgeSearchResults, formatKnowledgeTopics, text } from './helpers.js';
+import {
+  formatKnowledgeSearchResults,
+  formatKnowledgeTopics,
+  formatMostHelpfulKnowledge,
+  rankKnowledgeByRetrieval,
+  text,
+} from './helpers.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
+
+// most_helpful_knowledge's internal fetch cap (issue #1070) — same bounded-
+// fetch-then-sort shape and same-sized cap as knowledgeAdmin.ts's own
+// TOP_KNOWLEDGE_FETCH_CAP (list_top_knowledge, issue #1024): comfortably
+// above this community's expected KB size, so ranking the full 'global'
+// scope stays one bounded read rather than paging. Kept as this file's own
+// constant rather than importing the admin one — the two tools are
+// independent read paths over the same repository call, not a shared
+// admin/member dependency.
+const MOST_HELPFUL_KNOWLEDGE_FETCH_CAP = 500;
 
 export const knowledgeMemberTools = [
   defineTool({
@@ -211,6 +228,46 @@ export const knowledgeMemberTools = [
         config.behaviour.knowledgeTopicsListLimit,
       );
       return text(formatKnowledgeTopics(titles, totalCount));
+    },
+  }),
+
+  // Member-facing positive-signal browse (issue #1070) — the member-tier
+  // counterpart to the admin-only list_top_knowledge (issue #1024), which
+  // this reuses the exact bounded-fetch-then-module-sort shape of. `scope`
+  // is hardcoded to 'global', never a caller argument (SECURITY: unlike
+  // list_top_knowledge's free-text `scope`, so a member can never request a
+  // platform/conversation/project scope they aren't part of) — 'global'
+  // entries are already member-visible via knowledge_search/
+  // list_knowledge_topics, so this only changes ranking/discoverability,
+  // never what content a member can read. Rendered via the new
+  // formatMostHelpfulKnowledge, never formatKnowledgeEntryLine (SECURITY:
+  // that renderer's leading `#id [scope] [createdByRole]` tags are
+  // admin-internal and must never reach a member).
+  defineTool({
+    name: 'most_helpful_knowledge',
+    description:
+      'Show which community knowledge entries are most relied on — ranked by how often other members have ' +
+      'had this exact entry served to them by knowledge_search. The proactive "what does everyone actually ' +
+      'trust?" counterpart to list_knowledge_topics (unranked titles) and knowledge_search (reactive, needs ' +
+      'a query). An entry nobody has hit yet still appears (ranked last), never hidden. Read-only.',
+    minTier: 'member',
+    readOnlyHint: true,
+    schema: {
+      limit: z.number().optional().describe('Max entries to return (default 10, hard-capped at 25)'),
+    },
+    handler: async (args, { caller }) => {
+      // SECURITY: tier is re-asserted here, not merely surface-gated by
+      // MEMBER_TOOLS — same defensive-double-check discipline every
+      // privileged/self-service tool in this file follows.
+      assertAtLeast(caller.role, 'member', 'most_helpful_knowledge');
+      const limit = Math.min(args.limit ?? 10, 25);
+      const entries = await listKnowledge({
+        scope: 'global',
+        offset: 0,
+        limit: MOST_HELPFUL_KNOWLEDGE_FETCH_CAP,
+      });
+      const ranked = rankKnowledgeByRetrieval(entries, limit);
+      return text(formatMostHelpfulKnowledge(ranked));
     },
   }),
 

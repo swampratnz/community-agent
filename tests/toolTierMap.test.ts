@@ -48,6 +48,7 @@ const EXPECTED: Record<string, readonly string[]> = {
     'list_events',
     'list_knowledge_topics',
     'list_projects',
+    'most_helpful_knowledge',
     'my_data',
     'my_submissions',
     'my_warnings',
