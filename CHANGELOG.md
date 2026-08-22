@@ -24,6 +24,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #963 #964 #965 #968 #971 #983 #988 #989 #991 #992 #994
 -->
 
+## 2026-08-22
+
+### Fixed
+- **`/kb` now finds exact technical strings it used to miss.** An error code,
+  env var name, or SNAKE_CASE identifier pasted into `/kb` could return "No
+  matching knowledge entries" even when the exact same text asked in chat
+  found it via `knowledge_search` — `/kb` now falls back to the same
+  substring-robust lexical match `knowledge_search` has used since #362, so
+  both surfaces find the same entries.
+
 ## 2026-08-21
 
 ### Added
