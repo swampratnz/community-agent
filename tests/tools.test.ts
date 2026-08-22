@@ -134,6 +134,7 @@ const {
   listReports,
   getResponseStyle,
   getLanguagePreference,
+  setLanguagePreference,
   setResponseStyle,
   REPORT_RATE_LIMIT_PER_DAY,
   RATE_ANSWER_DAILY_LIMIT,
@@ -205,7 +206,7 @@ const { WhatsAppCloudAdapter, WindowClosedError } =
   await import('@swampratnz/agent-base/platforms/whatsapp/cloudAdapter.js');
 const { buildAdminDigestForAdmin } = await import('../src/module/adminDigest.js');
 const { buildMemberDigestContent } = await import('../src/module/memberDigest.js');
-const { formatMyDataText, formatMySubmissionsText } =
+const { formatMyDataText, formatMySubmissionsText, formatMyWarningsText } =
   await import('../src/module/agent/tools/selfService.js');
 const { getPendingAlertsForTests, resetPendingAlertsForTests } =
   await import('@swampratnz/agent-base/pendingAlertQueue.js');
@@ -21407,7 +21408,7 @@ test(
     });
     assert.ok(suggestion && report, 'fixtures recorded');
 
-    const [handlerResult, suggestions, reports, appeals, knowledgeTips, connectionRequests] =
+    const [handlerResult, suggestions, reports, appeals, knowledgeTips, connectionRequests, language] =
       await Promise.all([
         mySubmissionsHandler(userId).handler(),
         listOwnSuggestions('whatsapp', userId, 10),
@@ -21415,11 +21416,12 @@ test(
         listOwnAppeals('whatsapp', userId, 10),
         listOwnKnowledgeCandidates('whatsapp', userId, 10),
         listOwnProjectConnectionRequests('whatsapp', userId, 10),
+        getLanguagePreference('whatsapp', userId),
       ]);
 
     assert.equal(
       handlerResult.content[0]?.text ?? '',
-      formatMySubmissionsText(suggestions, reports, appeals, knowledgeTips, connectionRequests),
+      formatMySubmissionsText(suggestions, reports, appeals, knowledgeTips, connectionRequests, language),
     );
   },
 );
@@ -22075,6 +22077,176 @@ test(
   },
 );
 
+test(
+  'SECURITY: formatMySubmissionsText renders te reo Māori headers/labels for language "mi" — the empty state ' +
+    'and all five populated categories (including the accepted-tip retrieval-count suffix and the ' +
+    'null-project connection request) — byte-identical English text for "en"/"auto", and the "mi"/"en" ' +
+    'renders carry the identical underlying data set (every id/status/preview/count) — proving the language ' +
+    'branch changes only surrounding text, never which fields are included or whose data is shown (issue ' +
+    '#1077 acceptance criteria 2, 5)',
+  { skip },
+  async () => {
+    // Empty state.
+    assert.equal(
+      formatMySubmissionsText([], [], [], [], [], 'en'),
+      "You haven't filed any suggestions or reports yet.",
+    );
+    assert.equal(
+      formatMySubmissionsText([], [], [], [], [], 'auto'),
+      formatMySubmissionsText([], [], [], [], [], 'en'),
+    );
+    assert.match(formatMySubmissionsText([], [], [], [], [], 'mi'), /Kāore anō koe kia tuku taunakitanga/);
+
+    const userId = `${MY_SUBMISSIONS_HANDLER_USER}-mi-render`;
+    const suggestion = await createSuggestion({
+      platform: 'whatsapp',
+      userId,
+      content: 'mi render suggestion',
+    });
+    const report = await createContentReport({
+      platform: 'whatsapp',
+      reporterUserId: userId,
+      conversationId: 'convo-1',
+      reason: 'mi render report',
+    });
+    const appeal = await createModerationAppeal({
+      platform: 'whatsapp',
+      userId,
+      userName: 'Submitting Member',
+      reason: 'mi render appeal',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    const tip = await createKnowledgeTip({
+      platform: 'whatsapp',
+      userId,
+      topic: `${MY_SUBMISSIONS_HANDLER_USER} mi render tip topic`,
+      title: 'mi render tip title',
+      content: 'mi render tip content',
+    });
+    assert.ok(suggestion && report && appeal && tip, 'fixtures recorded');
+    const accepted = await acceptKnowledgeCandidate({ id: tip.id, reviewedBy: 'admin-1' });
+    assert.ok(accepted);
+    await recordKnowledgeRetrieval([accepted.knowledgeId]);
+    await recordKnowledgeRetrieval([accepted.knowledgeId]);
+
+    const [suggestions, reports, appeals, knowledgeTips] = await Promise.all([
+      listOwnSuggestions('whatsapp', userId, 10),
+      listOwnReports('whatsapp', userId, 10),
+      listOwnAppeals('whatsapp', userId, 10),
+      listOwnKnowledgeCandidates('whatsapp', userId, 10),
+    ]);
+    // Hand-built rather than a real member_projects/project_connection_requests
+    // row (issue #908's null-project placeholder branch, already exercised
+    // end-to-end by the DB-backed test above) — a real row here would be
+    // visible, while live, to the broad/unscoped project-count and
+    // list_projects queries other concurrently-running test files issue
+    // against the same shared DB, matching this exact shape:
+    // listOwnProjectConnectionRequests's mapped row.
+    const connectionRequests = [
+      { id: 4242, projectId: 4343, projectName: null, createdAt: new Date('2026-08-01T00:00:00Z') },
+    ];
+
+    const en = formatMySubmissionsText(
+      suggestions,
+      reports,
+      appeals,
+      knowledgeTips,
+      connectionRequests,
+      'en',
+    );
+    const auto = formatMySubmissionsText(
+      suggestions,
+      reports,
+      appeals,
+      knowledgeTips,
+      connectionRequests,
+      'auto',
+    );
+    const mi = formatMySubmissionsText(
+      suggestions,
+      reports,
+      appeals,
+      knowledgeTips,
+      connectionRequests,
+      'mi',
+    );
+    assert.equal(auto, en, 'the "auto" render must be byte-identical to "en"');
+
+    assert.match(mi, /Āu taunakitanga:/);
+    assert.match(mi, /Āu pūrongo:/);
+    assert.match(mi, /Āu pīra:/);
+    assert.match(mi, /Āu tohutohu mōhiotanga:/);
+    assert.match(mi, /Āu tono hononga:/);
+    assert.match(mi, /kua whakamahia 2 tāima/, 'the te reo retrieval-count suffix carries the exact count');
+    assert.match(
+      mi,
+      /tētahi kaupapa kua kore e whakarārangihia/,
+      'the te reo null-project placeholder renders',
+    );
+
+    // SECURITY: the "mi" and "en" renders must carry the identical underlying
+    // data set — every id/status/preview/count, never just the surrounding
+    // text — proving the language branch can never change which fields are
+    // included or whose data is shown (acceptance criterion 5).
+    for (const s of suggestions) {
+      const marker = new RegExp(`#${s.id} \\[${s.status}\\] ${s.content}`);
+      assert.match(en, marker, 'English render must carry this suggestion');
+      assert.match(mi, marker, 'te reo render must carry the SAME suggestion data');
+    }
+    for (const r of reports) {
+      const marker = new RegExp(`#${r.id} \\[${r.status}\\] ${r.reason}`);
+      assert.match(en, marker);
+      assert.match(mi, marker);
+    }
+    for (const a of appeals) {
+      const marker = new RegExp(`#${a.id} \\[${a.status}\\]`);
+      assert.match(en, marker);
+      assert.match(mi, marker);
+      if (a.reason) {
+        assert.ok(en.includes(a.reason));
+        assert.ok(mi.includes(a.reason));
+      }
+    }
+    for (const k of knowledgeTips) {
+      const marker = new RegExp(`#${k.id} \\[${k.status}\\] ${k.title}`);
+      assert.match(en, marker);
+      assert.match(mi, marker);
+      if (k.status === 'accepted' && k.retrievalCount && k.retrievalCount > 0) {
+        assert.ok(en.includes(String(k.retrievalCount)));
+        assert.ok(mi.includes(String(k.retrievalCount)));
+      }
+    }
+    for (const c of connectionRequests) {
+      assert.match(en, new RegExp(`#${c.id} — `));
+      assert.match(mi, new RegExp(`#${c.id} — `));
+    }
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [accepted.knowledgeId]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [tip.id]);
+  },
+);
+
+test(
+  "my_submissions' handler renders te reo Māori for a caller with a standing 'mi' language preference, and " +
+    'the fixed English default for a caller with none (issue #1077 acceptance criterion 3)',
+  { skip },
+  async () => {
+    const miUser = `${MY_SUBMISSIONS_HANDLER_USER}-mi-pref`;
+    await setLanguagePreference('whatsapp', miUser, 'mi');
+    const miResult = await mySubmissionsHandler(miUser).handler();
+    assert.equal(miResult.isError, true);
+    assert.match(miResult.content[0]?.text ?? '', /Kāore anō koe kia tuku taunakitanga/);
+
+    const enUser = `${MY_SUBMISSIONS_HANDLER_USER}-no-pref`;
+    const enResult = await mySubmissionsHandler(enUser).handler();
+    assert.equal(enResult.isError, true);
+    assert.match(enResult.content[0]?.text ?? '', /haven't filed any/i);
+
+    await pool.query(`DELETE FROM language_prefs WHERE platform = 'whatsapp' AND user_id = $1`, [miUser]);
+  },
+);
+
 // my_warnings (issue #182): a member-tier, read-only pull of the caller's OWN
 // active auto-moderation warning count vs. the configured limit, filling the
 // gap left by the one-time warn/block DMs (moderator.ts's warnDmText /
@@ -22283,6 +22455,74 @@ test(
       /no active warnings/i,
       "SECURITY: my_warnings must reflect only the real caller's own count, never another user's warnings",
     );
+  },
+);
+
+test(
+  'SECURITY: formatMyWarningsText renders te reo Māori for language "mi" across all three branches ' +
+    '(including the windowed sub-branch), byte-identical English text for "en"/"auto", and carries the same ' +
+    'active/limit/windowed numerics in both the "mi" and "en" renders — the language branch only swaps ' +
+    'surrounding text, never the underlying data (issue #1077 acceptance criteria 1, 5)',
+  () => {
+    // Branch 1: zero warnings.
+    assert.equal(formatMyWarningsText(0, 3, null, 'en'), 'You have no active warnings.');
+    assert.equal(formatMyWarningsText(0, 3, null, 'auto'), formatMyWarningsText(0, 3, null, 'en'));
+    assert.match(formatMyWarningsText(0, 3, null, 'mi'), /whakatūpato/);
+
+    // Branch 2: under the limit, no windowed sub-branch.
+    const en1 = formatMyWarningsText(1, 3, null, 'en');
+    assert.match(en1, /You have 1 active warning \(limit 3\)/);
+    assert.equal(formatMyWarningsText(1, 3, null, 'auto'), en1);
+    const mi1 = formatMyWarningsText(1, 3, null, 'mi');
+    assert.match(mi1, /whakatūpato/);
+    assert.match(mi1, /\b1\b/);
+    assert.match(mi1, /\b3\b/);
+
+    // Branch 2, windowed sub-branch (some strikes aged out).
+    const en2 = formatMyWarningsText(2, 3, 1, 'en');
+    assert.match(en2, /1 of these are old enough not to count toward a new mute/);
+    assert.equal(formatMyWarningsText(2, 3, 1, 'auto'), en2);
+    const mi2 = formatMyWarningsText(2, 3, 1, 'mi');
+    assert.match(mi2, /whakatūpato/);
+    assert.match(mi2, /\b2\b.*\b3\b/s, 'the active/limit numerics appear in the te reo headline');
+    assert.match(mi2, /\b1\b/, 'the aged-out count (active - windowed) appears in the te reo caveat');
+
+    // Branch 3: at/over the limit.
+    const en3 = formatMyWarningsText(3, 3, null, 'en');
+    assert.match(en3, /reached the warning limit \(3\/3\)/);
+    assert.equal(formatMyWarningsText(3, 3, null, 'auto'), en3);
+    const mi3 = formatMyWarningsText(3, 3, null, 'mi');
+    assert.match(mi3, /whakatūpato/);
+    assert.match(mi3, /3\/3/);
+  },
+);
+
+test(
+  "my_warnings' handler renders te reo Māori for a caller with a standing 'mi' language preference, and the " +
+    'fixed English default for a caller with none (issue #1077 acceptance criterion 3)',
+  { skip },
+  async () => {
+    const miUser = `${MY_WARNINGS_HANDLER_USER}-mi-pref`;
+    await addWarning({
+      platform: 'whatsapp',
+      userId: miUser,
+      reason: 'test',
+      excerpt: null,
+      source: 'auto',
+      issuedBy: null,
+    });
+    await setLanguagePreference('whatsapp', miUser, 'mi');
+
+    const miResult = await myWarningsHandler(miUser).handler();
+    assert.equal(miResult.isError, false);
+    assert.match(miResult.content[0]?.text ?? '', /whakatūpato/);
+
+    const enUser = `${MY_WARNINGS_HANDLER_USER}-no-pref`;
+    const enResult = await myWarningsHandler(enUser).handler();
+    assert.equal(enResult.isError, false);
+    assert.match(enResult.content[0]?.text ?? '', /no active warnings/i);
+
+    await pool.query(`DELETE FROM language_prefs WHERE platform = 'whatsapp' AND user_id = $1`, [miUser]);
   },
 );
 

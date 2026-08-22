@@ -1295,14 +1295,14 @@ test(
     let { adapter, sent, trigger } = makeAdapter();
     router.register(adapter);
     await trigger(makeMessage({ text: '!warnings', userId: 'member-1' }));
-    assert.equal(sent[0].text, formatMyWarningsText(0, 3, null));
+    assert.equal(sent[0].text, formatMyWarningsText(0, 3, null, 'auto'));
 
     ref.active = 1;
     router = makeRouter({ runTurn: throwingRunTurn });
     ({ adapter, sent, trigger } = makeAdapter());
     router.register(adapter);
     await trigger(makeMessage({ text: '!warnings', userId: 'member-1' }));
-    assert.equal(sent[0].text, formatMyWarningsText(1, 3, null));
+    assert.equal(sent[0].text, formatMyWarningsText(1, 3, null, 'auto'));
 
     config.moderation.strikeWindowDays = 30;
     ref.active = 2;
@@ -1311,7 +1311,7 @@ test(
     ({ adapter, sent, trigger } = makeAdapter());
     router.register(adapter);
     await trigger(makeMessage({ text: '!warnings', userId: 'member-1' }));
-    assert.equal(sent[0].text, formatMyWarningsText(2, 3, 1));
+    assert.equal(sent[0].text, formatMyWarningsText(2, 3, 1, 'auto'));
 
     config.moderation.strikeWindowDays = undefined;
     ref.active = 3;
@@ -1319,7 +1319,7 @@ test(
     ({ adapter, sent, trigger } = makeAdapter());
     router.register(adapter);
     await trigger(makeMessage({ text: '!warnings', userId: 'member-1' }));
-    assert.equal(sent[0].text, formatMyWarningsText(3, 3, null));
+    assert.equal(sent[0].text, formatMyWarningsText(3, 3, null, 'auto'));
   },
 );
 
@@ -1398,7 +1398,7 @@ test('!mysubmissions returns the same content the shared formatter renders for t
 
   await trigger(makeMessage({ text: '!mysubmissions', userId: 'member-1' }));
 
-  assert.equal(sent[0].text, formatMySubmissionsText([], [], [], [], []));
+  assert.equal(sent[0].text, formatMySubmissionsText([], [], [], [], [], 'auto'));
 });
 
 test('!mysubmissions returns the same content the shared formatter renders for a populated suggestions section (issue #1018 acceptance criterion 2)', async (t) => {
@@ -1445,7 +1445,7 @@ test('!mysubmissions returns the same content the shared formatter renders for a
       reviewedAt: null,
     },
   ];
-  assert.equal(sent[0].text, formatMySubmissionsText(expectedSuggestions, [], [], [], []));
+  assert.equal(sent[0].text, formatMySubmissionsText(expectedSuggestions, [], [], [], [], 'auto'));
 });
 
 test('a bare "!mysubmissionsx" (no space, unrecognised) is not matched as the !mysubmissions command — anchored matcher (issue #1018 SECURITY criterion 5)', async (t) => {
