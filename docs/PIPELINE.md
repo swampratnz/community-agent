@@ -154,7 +154,7 @@ Create them once: **Actions → "Setup pipeline labels" → Run workflow**, or
   config path to a human merge** — `.github/**` (workflows/CI, including this
   loop itself), `scripts/**` (the check machinery), `package.json`,
   typecheck/lint/format config, the `CLAUDE.md`/`docs/PIPELINE.md`/
-  `docs/SECURITY.md`/`docs/VISION.md` governance docs, and
+  `docs/VISION.md` governance docs, and
   `src/module/agentModule.ts` — THE manifest the agent-base split turned into a
   rules file, since every extension point this deployment registers passes
   through it — so the pipeline can never auto-merge a
@@ -165,11 +165,17 @@ Create them once: **Actions → "Setup pipeline labels" → Run workflow**, or
   deliberately **not** — every new tool registers a tier there, so it appears
   in 62% of recent merges and governing it would gut auto-merge; the tier-map
   snapshot in `tests/toolTierMap.test.ts` covers it instead, at no throughput
-  cost.) (and since
+  cost. `docs/SECURITY.md` came OFF the list for the same reason plus a
+  stronger one: measured over 40 merges it appeared in 7 and was the only
+  governed path in all seven — 64% of the list's human presses — and unlike
+  every other entry it is descriptive rather than causal. Nothing loads it:
+  not CI, not any agent prompt. Its drift risk is held by
+  `tests/securityDocSections.test.ts`, which found a duplicate section number
+  that had survived the gate for many merges.) (and since
   `pull_request` CI runs the workflow version from the PR branch, a PR could
   otherwise weaken a check and still show it "passing"). Because the pipeline's
-  own acceptance criteria make most feature PRs document themselves in
-  `docs/SECURITY.md`, a governance hit is common and is NOT a silent skip: a
+  own acceptance criteria push feature work through CI and check config, a
+  governance hit is still common and is NOT a silent skip: a
   governance-path PR that passes **every other** gate (green, mergeable, fresh
   LGTM, no stop labels) is labelled `human-merge-ready` and gets one
   marker-guarded comment asking a maintainer to press merge — the loop still

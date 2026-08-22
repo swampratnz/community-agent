@@ -353,11 +353,17 @@ ownership rules:
   the review worker's identity) newer than the head commit, and does NOT touch
   any governance/CI/config path (`.github/`, `scripts/`, `package.json`,
   typecheck/lint/format config, `CLAUDE.md`, `docs/PIPELINE.md`,
-  `docs/SECURITY.md`) — those always require a human merge, so the loop can
+  `docs/VISION.md`) — those always require a human merge, so the loop can
   never auto-merge a change to its own guardrails or to what "green" means.
+  `docs/SECURITY.md` is deliberately NOT on that list: every other entry can
+  weaken the check that would catch it (PR-branch CI runs the PR's own
+  workflows), whereas nothing loads that document at all, so it is descriptive
+  where the rest are causal. It cost 64% of the list's human presses for that
+  non-risk; `tests/securityDocSections.test.ts` now pins its section list
+  instead, the same trade `tests/toolTierMap.test.ts` makes for the tier map.
   A governance-path PR that passes every other gate is not skipped silently:
   it gets a `human-merge-ready` label plus one marker-guarded comment asking
-  a maintainer to merge (most feature PRs touch `docs/SECURITY.md` to
+  a maintainer to merge (a PR touching `.github/` or the check machinery to
   document themselves, so this is the common case, not the exception).
   Never one labelled `needs-human`/`no-auto-merge`. Exactly ONE merge per run:
   afterwards `main` has advanced, so it dispatches the conflict resolver to

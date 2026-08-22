@@ -43,6 +43,7 @@
     "tests/reusableWorkflows.test.ts",
     "tests/routerInterceptChain.test.ts",
     "tests/schemaConstraintIdempotency.test.ts",
+    "tests/securityDocSections.test.ts",
     "tests/toolTierMap.test.ts",
     "tests/stringsCatalogue.test.ts",
     "tests/systemPromptByteStability.test.ts",

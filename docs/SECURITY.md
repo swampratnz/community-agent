@@ -2244,7 +2244,7 @@ non-allowlisted parent would be unmoderated by construction. Controls:
 - **Only text/announcement channels**: forum/media channels use a different,
   tag-based thread-creation API this tool doesn't support; `create_thread`
   throws rather than guessing at forum tags.
-### 11. Scheduled events (`create_event`, issue #230)
+### 11b. Scheduled events (`create_event`, issue #230)
 Creates a real Discord `GuildScheduledEvent` (RSVP + reminders in the
 server's Events tab) instead of a text announcement. Outward-facing *and*
 member-notifying — a genuinely higher floor than `announce`/`create_poll` —
@@ -3829,7 +3829,7 @@ extended to `backgroundJobs.ts`'s `alertSuperAdmins` or `tools.ts`'s
   Members, Kick Members, **Ban Members** — required for the admin `ban_user`
   and `unban_user` actions; without it, either fails cleanly as `Failed: …`
   rather than silently no-oping — Manage Messages) plus Manage Events
-  (required for the admin `create_event` tool, §11), and place its role
+  (required for the admin `create_event` tool, §11b), and place its role
   appropriately in the hierarchy.
 
 ## Subscription-auth caveat
