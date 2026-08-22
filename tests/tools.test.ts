@@ -15469,6 +15469,356 @@ test(
   },
 );
 
+// --- team_setup welcome DM parity (issue #1065) -----------------------------
+// add_member sends a welcome DM (notifyMemberApproved) to every newly
+// registered member (issue #556's MEMBER_DM_FAILED_NOTE); team_setup's own
+// registration step (above) never called it. These tests cover the
+// delivery-parity fix: exactly one DM per NEWLY registered target, none for
+// an already-existing member, best-effort (a DM failure never blocks
+// registration/project-add/bind), and one aggregate failure note mirroring
+// add_member's single MEMBER_DM_FAILED_NOTE.
+
+test(
+  'team_setup sends exactly one welcome DM per newly-registered member, and none for an already-existing member (issue #1065)',
+  { skip },
+  async () => {
+    const conv = `${RUN}-team-setup-dm-count`;
+    const slug = `${RUN}-team-setup-dm-count`;
+    const existingA = teamSetupMemberId();
+    const existingB = teamSetupMemberId();
+    const existingC = teamSetupMemberId();
+    const freshA = teamSetupMemberId();
+    const freshB = teamSetupMemberId();
+    for (const id of [existingA, existingB, existingC]) {
+      await upsertMember({ platform: 'discord', userId: id, role: 'member', addedBy: 'test' });
+    }
+
+    const dmCalls: string[] = [];
+    const adapter = stubAdapter(async (userId) => {
+      dmCalls.push(userId);
+    });
+    const adminId = 'team-setup-dm-count-admin';
+    const caller = {
+      platform: 'discord' as const,
+      userId: adminId,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: conv,
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          {
+            handler: (
+              args: object,
+            ) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+          }
+        >;
+      }
+    )._registeredTools['team_setup'];
+
+    try {
+      const result = await registeredTool.handler({
+        slug,
+        name: 'DM Count Team',
+        members: [existingA, existingB, existingC, freshA, freshB],
+      });
+      assert.equal(result.isError, false);
+
+      const pending = takePendingAction('discord', conv, adminId);
+      assert.ok(pending);
+      await pending?.execute();
+
+      assert.equal(dmCalls.length, 2, 'exactly one welcome DM per newly-registered member');
+      assert.deepEqual(
+        new Set(dmCalls),
+        new Set([freshA, freshB]),
+        'only the newly-registered members receive a welcome DM',
+      );
+    } finally {
+      await pool.query(
+        `DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = ANY($1::text[])`,
+        [[existingA, existingB, existingC, freshA, freshB]],
+      );
+    }
+  },
+);
+
+test(
+  "team_setup's per-step registration/project-add report is unchanged in content when a welcome DM fails, and appends one aggregate failure note without blocking any other member's registration/project-add/bind (issue #1065)",
+  { skip },
+  async () => {
+    const conv = `${RUN}-team-setup-dm-fail`;
+    const slug = `${RUN}-team-setup-dm-fail`;
+    const failing = teamSetupMemberId();
+    const succeeding = teamSetupMemberId();
+
+    const adapter = stubAdapter(async (userId) => {
+      if (userId === failing) throw new Error('DMs closed');
+    });
+    const adminId = 'team-setup-dm-fail-admin';
+    const caller = {
+      platform: 'discord' as const,
+      userId: adminId,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: conv,
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          {
+            handler: (
+              args: object,
+            ) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+          }
+        >;
+      }
+    )._registeredTools['team_setup'];
+
+    try {
+      const result = await registeredTool.handler({
+        slug,
+        name: 'DM Fail Team',
+        members: [failing, succeeding],
+      });
+      assert.equal(result.isError, false);
+
+      const pending = takePendingAction('discord', conv, adminId);
+      assert.ok(pending);
+      const execResult = await pending?.execute();
+
+      assert.match(
+        execResult ?? '',
+        new RegExp(`discord:${failing}: registration registered as member; project added`),
+        "the failing target's registration/project-add report line is unchanged by the DM failure",
+      );
+      assert.match(
+        execResult ?? '',
+        new RegExp(`discord:${succeeding}: registration registered as member; project added`),
+        "another member's steps must still succeed when one member's DM fails",
+      );
+      assert.match(
+        execResult ?? '',
+        /1 of 2 new members: welcome DM not delivered/,
+        'exactly one aggregate failure note, not per-target noise',
+      );
+
+      const { rows } = await pool.query(
+        `SELECT platform_user_id FROM community_users WHERE platform_user_id = ANY($1::text[])`,
+        [[failing, succeeding]],
+      );
+      assert.equal(rows.length, 2, "the DM failure must not roll back either member's registration");
+    } finally {
+      await pool.query(
+        `DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = ANY($1::text[])`,
+        [[failing, succeeding]],
+      );
+    }
+  },
+);
+
+test(
+  're-running an identical confirmed team_setup call once every listed member is already registered sends zero welcome DMs (issue #1065)',
+  { skip },
+  async () => {
+    const conv = `${RUN}-team-setup-dm-idempotent`;
+    const slug = `${RUN}-team-setup-dm-idempotent`;
+    const memberA = teamSetupMemberId();
+    const memberB = teamSetupMemberId();
+
+    const dmCalls: string[] = [];
+    const adapter = stubAdapter(async (userId) => {
+      dmCalls.push(userId);
+    });
+    const adminId = 'team-setup-dm-idempotent-admin';
+    const caller = {
+      platform: 'discord' as const,
+      userId: adminId,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: conv,
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          {
+            handler: (
+              args: object,
+            ) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+          }
+        >;
+      }
+    )._registeredTools['team_setup'];
+
+    try {
+      const first = await registeredTool.handler({
+        slug,
+        name: 'DM Idempotent Team',
+        members: [memberA, memberB],
+      });
+      assert.equal(first.isError, false);
+      const firstPending = takePendingAction('discord', conv, adminId);
+      assert.ok(firstPending);
+      await firstPending?.execute();
+      assert.equal(dmCalls.length, 2, 'the first run DMs both newly-registered members');
+
+      dmCalls.length = 0;
+      const second = await registeredTool.handler({
+        slug,
+        name: 'DM Idempotent Team',
+        members: [memberA, memberB],
+      });
+      assert.equal(second.isError, false);
+      const secondPending = takePendingAction('discord', conv, adminId);
+      assert.ok(secondPending);
+      await secondPending?.execute();
+      assert.equal(dmCalls.length, 0, 'a re-run against already-registered members sends zero DMs');
+    } finally {
+      await pool.query(
+        `DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = ANY($1::text[])`,
+        [[memberA, memberB]],
+      );
+    }
+  },
+);
+
+// The adversarial review's acceptance criteria asked for a cross-platform
+// batch test mirroring #548's add_member/grant_admin invariant (admin acting
+// from Discord, a WhatsApp member id in `members`, DM must go through the
+// WhatsApp adapter, never the Discord one). That literal scenario cannot
+// occur through team_setup as built: unlike add_member's schema, `members`
+// carries no per-member platform argument, so resolveMemberTarget's
+// `platformArg ?? caller.platform` default (context.ts) resolves EVERY
+// target to the caller's own current-turn platform, and adapterFor()
+// (context.ts's `rowPlatform === caller.platform ? adapter : getAdapter?.(rowPlatform)`)
+// returns that SAME bound turn adapter whenever the row platform matches the
+// caller's — which, for team_setup, is always. A whatsapp-shaped id supplied
+// while acting from Discord can therefore never resolve to a `whatsapp`
+// target at all; it fails Discord's own snowflake validation and is refused
+// as invalid before the registration/DM loop ever sees it. This test pins
+// the guarantee that IS true and load-bearing here instead: team_setup can
+// never register — and therefore never DM — a member id under the wrong
+// platform.
+test(
+  "SECURITY: team_setup never registers or DMs a member id under the wrong platform — an id shaped for another platform is refused as invalid, never silently assigned to the caller's own platform (issue #1065)",
+  { skip },
+  async () => {
+    const conv = `${RUN}-team-setup-wrong-platform`;
+    const slug = `${RUN}-team-setup-wrong-platform`;
+    const validMember = teamSetupMemberId();
+    const whatsappShapedId = '6421234567'; // valid E.164 shape, invalid Discord snowflake shape
+
+    const dmCalls: string[] = [];
+    const adapter = stubAdapter(async (userId) => {
+      dmCalls.push(userId);
+    });
+    const adminId = 'team-setup-wrong-platform-admin';
+    const caller = {
+      platform: 'discord' as const,
+      userId: adminId,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: conv,
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          {
+            handler: (
+              args: object,
+            ) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+          }
+        >;
+      }
+    )._registeredTools['team_setup'];
+
+    try {
+      const result = await registeredTool.handler({
+        slug,
+        name: 'Wrong Platform Team',
+        members: [validMember, whatsappShapedId],
+      });
+      assert.equal(result.isError, false);
+      assert.match(result.content[0]?.text ?? '', /will be SKIPPED/);
+
+      const pending = takePendingAction('discord', conv, adminId);
+      assert.ok(pending);
+      await pending?.execute();
+
+      assert.deepEqual(dmCalls, [validMember], 'only the valid discord-shaped id is ever DMed');
+      const { rows } = await pool.query(
+        `SELECT platform, platform_user_id FROM community_users WHERE platform_user_id = $1`,
+        [whatsappShapedId],
+      );
+      assert.equal(rows.length, 0, 'a wrong-platform-shaped id must never be registered under any platform');
+    } finally {
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        validMember,
+      ]);
+    }
+  },
+);
+
+test(
+  "SECURITY: a fake secret-shaped token in a welcome DM send error never appears anywhere in team_setup's returned reply — only the fixed aggregate failure note may appear (issue #1065, mirrors #556's invariant for add_member/grant_admin)",
+  { skip },
+  async () => {
+    const conv = `${RUN}-team-setup-dm-leak`;
+    const slug = `${RUN}-team-setup-dm-leak`;
+    const secretToken = 'sk-ant-faketoken123';
+    const fresh = teamSetupMemberId();
+
+    const adapter = stubAdapter(async () => {
+      throw new Error(`upstream rejected: token ${secretToken} is invalid`);
+    });
+    const adminId = 'team-setup-dm-leak-admin';
+    const caller = {
+      platform: 'discord' as const,
+      userId: adminId,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: conv,
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          {
+            handler: (
+              args: object,
+            ) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+          }
+        >;
+      }
+    )._registeredTools['team_setup'];
+
+    try {
+      const result = await registeredTool.handler({ slug, name: 'DM Leak Team', members: [fresh] });
+      assert.equal(result.isError, false);
+      const pending = takePendingAction('discord', conv, adminId);
+      assert.ok(pending);
+      const execResult = await pending?.execute();
+
+      assert.doesNotMatch(String(execResult), /sk-ant-faketoken123|upstream rejected|token .* is invalid/);
+      assert.match(String(execResult), /1 of 1 new members: welcome DM not delivered/);
+    } finally {
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        fresh,
+      ]);
+    }
+  },
+);
+
 test('SECURITY: project_recall/project_note/project_list refuse a guest-tier caller before any DB read/write (assertAtLeast re-check, issue #927 / PR #929 review)', async () => {
   // MEMBER_TOOLS is also a GUEST's surface in open mode, and visibleProjectIds
   // checks only project_members — never tier. Without this handler re-check an
