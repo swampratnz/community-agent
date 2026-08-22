@@ -98,6 +98,10 @@ const EXPECTED: ReadonlyArray<readonly [string, string]> = [
     '28',
     "WhatsApp `!`-shortcuts discovery block honours a standing `'mi'` language preference too (issue #1034)",
   ],
+  [
+    '29',
+    'Discord text-attachment input (`TEXT_INPUT_ENABLED`, off by default, `super_admin`-only default, agent-base #44)',
+  ],
 ];
 
 /** Parsed straight from the document — the same regex the dump script uses. */

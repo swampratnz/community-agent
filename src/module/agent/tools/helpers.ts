@@ -896,6 +896,12 @@ export const FEATURE_FLAG_MAP: readonly FeatureFlagEntry[] = [
     label: 'Discord image-attachment input',
     category: 'Onboarding',
   },
+  {
+    envVar: 'TEXT_INPUT_ENABLED',
+    configPath: 'discord.text.enabled',
+    label: 'Discord text-attachment input',
+    category: 'Onboarding',
+  },
   // WhatsApp
   {
     envVar: 'WHATSAPP_WELCOME_ENABLED',
