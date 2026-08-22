@@ -358,7 +358,8 @@ const NOTICE_ENTRIES = {
    * `communityInfoAdminCapabilities`/`communityInfoSuperAdminCapabilities`
    * below (issue #1056), and the WhatsApp `!`-shortcuts segment got its own
    * `mi` variant in `whatsappTextCommands` below (issue #1034). No segment of
-   * this rundown is English-only any more.   */
+   * this rundown is English-only any more.
+   */
   communityInfoMemberCapabilities: {
     base:
       'NZ Claude Community — a New Zealand group building with Claude and the Anthropic API. ' +
