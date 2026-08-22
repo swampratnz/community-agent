@@ -297,10 +297,7 @@ test(
     const listOpenReportsForAdmin = async (scope: readonly string[]) =>
       scope.includes(staleReport.conversationId) ? [staleReport] : [];
     const listAdminIdentities = async () =>
-      admins([
-        { platformUserId: 'admin-a' },
-        { platformUserId: 'admin-b' },
-      ]);
+      admins([{ platformUserId: 'admin-a' }, { platformUserId: 'admin-b' }]);
     const runOnce = makeDefaultReportStaleAlertRun(
       [adapter],
       listAdminIdentities,
@@ -333,9 +330,7 @@ test(
       targetUserId: 'admin-0-whatsapp-identity',
     });
     const listOpenReportsForAdmin = async (_scope: readonly string[], viewerIds: readonly string[]) =>
-      [reportAgainstAdmin].filter(
-        (r) => !r.targetUserId || !viewerIds.includes(r.targetUserId),
-      );
+      [reportAgainstAdmin].filter((r) => !r.targetUserId || !viewerIds.includes(r.targetUserId));
     const listAdminIdentities = async () => admins([{}]);
     // Linked identity resolution: this admin's WhatsApp identity is the
     // report's target, matching link_member's cross-platform linking.
@@ -349,7 +344,11 @@ test(
 
     await runOnce();
 
-    assert.equal(dms.length, 0, 'a report filed against the admin themselves must never trigger their own alert');
+    assert.equal(
+      dms.length,
+      0,
+      'a report filed against the admin themselves must never trigger their own alert',
+    );
   },
 );
 
