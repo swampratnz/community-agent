@@ -23,6 +23,7 @@ import { engagementAlertJob } from '../engagementAlert.js';
 import { adminLeverageAlertJob } from '../adminLeverageAlert.js';
 import { knowledgeCandidateStaleAlertJob } from '../knowledgeCandidateStaleAlert.js';
 import { memberDigestJob } from '../memberDigest.js';
+import { reportStaleAlertJob } from '../reportStaleAlert.js';
 import type { JobSpec } from '@swampratnz/agent-base/jobs/types.js';
 
 /**
@@ -60,4 +61,5 @@ export const JOB_REGISTRY: readonly JobSpec[] = [
   devTeamWatchJob,
   appealStaleAlertJob,
   knowledgeCandidateStaleAlertJob,
+  reportStaleAlertJob,
 ];

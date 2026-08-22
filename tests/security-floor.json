@@ -127,6 +127,7 @@
   "repeatQuestionShortcutRouter.test.ts": 4,
   "replyRetractionDisabled.test.ts": 2,
   "replyRetractionRouter.test.ts": 1,
+  "reportStaleAlert.test.ts": 6,
   "reusableWorkflows.test.ts": 2,
   "reviewVerdict.test.ts": 5,
   "router.test.ts": 9,
