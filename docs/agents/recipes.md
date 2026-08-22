@@ -58,10 +58,13 @@ Then:
   Reuse today's section if it exists. Purely internal work (CI, deps, tooling,
   pipeline) instead goes in the skip ledger comment at the top of the file.
 - **`docs/SECURITY.md`** — if the change adds, removes or moves anything on the
-  security spine, or introduces a new input, egress or trust boundary. Note
-  that touching this file (or `.github/**`, `scripts/**`, `package.json`,
-  `CLAUDE.md`, `docs/PIPELINE.md`) routes the PR to a **human merge** — that is
-  intended, not a problem to design around.
+  security spine, or introduces a new input, egress or trust boundary. Its
+  `### N. Title` section list is pinned by `tests/securityDocSections.test.ts`,
+  so adding or renumbering a section means updating that snapshot in the same
+  diff (`npx tsx tests/dumpSecurityDocSections.ts` regenerates it). Editing
+  this file no longer routes the PR to a human merge; `.github/**`,
+  `scripts/**`, `package.json`, `CLAUDE.md`, `docs/PIPELINE.md` and
+  `docs/VISION.md` still do — that is intended, not a problem to design around.
 - **`docs/agents/module-map.md`** — if you added, removed or renamed a `src/`
   module. `npm run context:check` fails otherwise; `npm run context:fix`
   does the mechanical part.
