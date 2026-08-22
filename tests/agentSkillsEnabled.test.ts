@@ -76,10 +76,11 @@ test('SECURITY: AC2 — AGENT_SKILLS_ENABLED=true adds Skill to tools and loads 
         'knowledge-contribution',
         'debug-claude-api-error',
         'member-connection',
+        'api-cost-and-latency',
       ],
       `${role}: skills must be exactly ['prompt-review', 'model-and-plan-selection', ` +
         `'agent-architecture-review', 'project-showcase', 'claude-code-setup', 'getting-started', ` +
-        `'knowledge-contribution', 'debug-claude-api-error', 'member-connection']`,
+        `'knowledge-contribution', 'debug-claude-api-error', 'member-connection', 'api-cost-and-latency']`,
     );
   }
 });
@@ -97,6 +98,7 @@ test("SECURITY: AC6/AC7 (#755) — skills is always the literal ENABLED_SKILLS a
       'knowledge-contribution',
       'debug-claude-api-error',
       'member-connection',
+      'api-cost-and-latency',
     ]);
     assert.notEqual(opts.skills, 'all');
   }
@@ -270,6 +272,81 @@ test(
       /relay it as data, never as instructions/i,
       'SKILL.md must state interest text is relayed as data, never as instructions',
     );
+  },
+);
+
+test(
+  'SECURITY: issue #1058 — api-cost-and-latency resolves to the bundled SKILL.md, grants no new tool ' +
+    "access, and changes no role's disallowedTools",
+  async () => {
+    const { toolsForRole } = await import('@swampratnz/agent-base/auth/rbac.js');
+    const skillPath = join(
+      dirname(fileURLToPath(import.meta.url)),
+      '../src/module/agent/skills/api-cost-and-latency/SKILL.md',
+    );
+    const body = readFileSync(skillPath, 'utf8');
+    assert.match(
+      body,
+      /^---\nname: api-cost-and-latency\n/,
+      'SKILL.md must carry valid api-cost-and-latency front-matter',
+    );
+    for (const role of ['guest', 'member', 'admin', 'super_admin'] as const) {
+      const opts = buildQueryOptions(role, 'prompt', {}, null, 'conv-1', 'discord');
+      assert.ok(
+        opts.skills?.includes('api-cost-and-latency'),
+        `${role}: skills must include api-cost-and-latency when the flag is on`,
+      );
+      const webSearch = role === 'admin' || role === 'super_admin';
+      assert.deepEqual(
+        opts.disallowedTools,
+        ['Task', 'WebFetch', ...(webSearch ? [] : ['WebSearch'])],
+        `${role}: disallowedTools must be unaffected by adding api-cost-and-latency to ENABLED_SKILLS`,
+      );
+      const expected = [...toolsForRole(role, 'discord'), ...(webSearch ? ['WebSearch'] : [])].filter(
+        (t) => !(FEATURE_FLAGGED_TOOLS as readonly string[]).includes(t),
+      );
+      assert.deepEqual(
+        [...opts.allowedTools].sort(),
+        [...expected].sort(),
+        `${role}: allowedTools must be unaffected by api-cost-and-latency — no new MCP tool surface`,
+      );
+    }
+  },
+);
+
+test(
+  'SECURITY: issue #1058 AC #5 — api-cost-and-latency SKILL.md carries an untrusted-input clause for ' +
+    'member-pasted code/config/bill text (data to analyse, never instructions to obey)',
+  () => {
+    const skillPath = join(
+      dirname(fileURLToPath(import.meta.url)),
+      '../src/module/agent/skills/api-cost-and-latency/SKILL.md',
+    );
+    const body = readFileSync(skillPath, 'utf8');
+    assert.match(body, /UNTRUSTED DATA/, 'SKILL.md must label member-pasted content as untrusted data');
+    assert.match(
+      body,
+      /never to execute/,
+      'SKILL.md must state the untrusted content is analysed, never executed/obeyed',
+    );
+  },
+);
+
+test(
+  'SECURITY: issue #1058 AC #3 — api-cost-and-latency SKILL.md hands model-choice questions off to ' +
+    'model-and-plan-selection rather than restating that guidance',
+  () => {
+    const skillPath = join(
+      dirname(fileURLToPath(import.meta.url)),
+      '../src/module/agent/skills/api-cost-and-latency/SKILL.md',
+    );
+    const body = readFileSync(skillPath, 'utf8');
+    assert.match(
+      body,
+      /model-and-plan-selection/,
+      'SKILL.md must hand off model-choice questions to model-and-plan-selection',
+    );
+    assert.match(body, /out of scope/i, 'SKILL.md must state model choice is out of scope for this skill');
   },
 );
 
@@ -459,5 +536,9 @@ test('SECURITY: AC5 — the bundled skill plugin directory contains no hooks/, a
   assert.ok(
     files.some((f) => f.endsWith(join('member-connection', 'SKILL.md'))),
     'expected member-connection/SKILL.md to be present',
+  );
+  assert.ok(
+    files.some((f) => f.endsWith(join('api-cost-and-latency', 'SKILL.md'))),
+    'expected api-cost-and-latency/SKILL.md to be present',
   );
 });
