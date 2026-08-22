@@ -61,6 +61,15 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   "(median Nh to close)" fragment whenever at least one report closed this
   period, computed from the same rows the counts already use; nothing
   changes when no reports closed.
+- **`my_warnings` and `my_submissions` (and their `/warnings`/`!warnings`,
+  `/mysubmissions`/`!mysubmissions` mirrors) now render in te reo Māori for a
+  member with a standing `'mi'` language preference.** (#1077) Previously
+  these two self-service tools always answered in English regardless of the
+  caller's stored preference, unlike `/kb`, `/digest`, `community_info` and
+  the guidelines/moderation DMs, which already do this. A member checking
+  whether they're one warning from a mute, or whether their appeal/report is
+  still pending, now gets that answer in their preferred language. Everyone
+  else sees byte-identical English output, exactly as before.
 
 ## 2026-08-22
 

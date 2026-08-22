@@ -24,19 +24,37 @@ import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
  * `windowed` is `null` whenever the windowed second read was skipped (no
  * `strikeWindowDays` configured, or `active` is 0/at-or-over `limit`, which
  * both short-circuit to a fixed message that never mentions the window).
+ * `language` is the caller's own `getLanguagePreference` value, threaded in
+ * as an explicit parameter (rather than read inside this function) so the
+ * render stays pure — same shape as `formatMyDataText`'s `language` param
+ * (issue #1030). Every branch below only swaps surrounding text; the
+ * interpolated numerics (`active`, `limit`, `active - windowed`) are
+ * identical in both languages.
  */
-export function formatMyWarningsText(active: number, limit: number, windowed: number | null): string {
+export function formatMyWarningsText(
+  active: number,
+  limit: number,
+  windowed: number | null,
+  language: LanguagePreference,
+): string {
+  const mi = language === 'mi';
   if (active === 0) {
-    return 'You have no active warnings.';
+    return mi ? 'Kāore he whakatūpato e mahi tonu ana mōu.' : 'You have no active warnings.';
   }
   if (active >= limit) {
-    return `You've reached the warning limit (${active}/${limit}). An admin can clear this.`;
+    return mi
+      ? `Kua eke koe ki te tepe whakatūpato (${active}/${limit}). Ka taea e tētahi kaiwhakahaere te ūkui i tēnei.`
+      : `You've reached the warning limit (${active}/${limit}). An admin can clear this.`;
   }
-  let msg = `You have ${active} active warning${active === 1 ? '' : 's'} (limit ${limit}).`;
+  let msg = mi
+    ? `He ${active} ō whakatūpato e mahi tonu ana (te tepe ${limit}).`
+    : `You have ${active} active warning${active === 1 ? '' : 's'} (limit ${limit}).`;
   if (windowed !== null && windowed < active) {
-    msg +=
-      ` ${active - windowed} of these are old enough not to count toward a new mute, but any uncleared ` +
-      'warning still applies if you leave and rejoin.';
+    msg += mi
+      ? ` He ${active - windowed} o ēnei kua tawhito rawa hei tāpiri ki tētahi aukati hōu, engari ka mahi ` +
+        'tonu tētahi whakatūpato kāore anō i ūkuitia mēnā ka wehe, ka hoki mai anō koe.'
+      : ` ${active - windowed} of these are old enough not to count toward a new mute, but any uncleared ` +
+        'warning still applies if you leave and rejoin.';
   }
   return msg;
 }
@@ -46,7 +64,11 @@ export function formatMyWarningsText(active: number, limit: number, windowed: nu
  * entry points" the `my_submissions` tool handler and the `/mysubmissions`/
  * `!mysubmissions` commands (issue #1018) share, so a command answer can
  * never drift from what `my_submissions` itself would say for the same DB
- * state. Mirrors `formatMyWarningsText`'s split.
+ * state. Mirrors `formatMyWarningsText`'s split, including the `language`
+ * param (issue #1030's shape): every branch below only swaps the surrounding
+ * headers/labels — ids, statuses, truncated previews, relative-age strings
+ * and retrieval counts are identical, unchanged interpolations in both
+ * languages.
  */
 export function formatMySubmissionsText(
   suggestions: Awaited<ReturnType<typeof listOwnSuggestions>>,
@@ -54,7 +76,9 @@ export function formatMySubmissionsText(
   appeals: Awaited<ReturnType<typeof listOwnAppeals>>,
   knowledgeTips: Awaited<ReturnType<typeof listOwnKnowledgeCandidates>>,
   connectionRequests: Awaited<ReturnType<typeof listOwnProjectConnectionRequests>>,
+  language: LanguagePreference,
 ): string {
+  const mi = language === 'mi';
   if (
     suggestions.length === 0 &&
     reports.length === 0 &&
@@ -62,60 +86,80 @@ export function formatMySubmissionsText(
     knowledgeTips.length === 0 &&
     connectionRequests.length === 0
   ) {
-    return "You haven't filed any suggestions or reports yet.";
+    return mi
+      ? 'Kāore anō koe kia tuku taunakitanga, pūrongo rānei.'
+      : "You haven't filed any suggestions or reports yet.";
   }
 
   const lines: string[] = [];
   if (suggestions.length > 0) {
-    lines.push('Your suggestions:');
+    lines.push(mi ? 'Āu taunakitanga:' : 'Your suggestions:');
     for (const s of suggestions) {
       lines.push(
-        `- #${s.id} [${s.status}] ${truncateForEcho(s.content)} — filed ${formatRelativeAge(s.createdAt)}`,
+        mi
+          ? `- #${s.id} [${s.status}] ${truncateForEcho(s.content)} — i tukuna ${formatRelativeAge(s.createdAt)}`
+          : `- #${s.id} [${s.status}] ${truncateForEcho(s.content)} — filed ${formatRelativeAge(s.createdAt)}`,
       );
     }
   }
   if (reports.length > 0) {
     if (lines.length > 0) lines.push('');
-    lines.push('Your reports:');
+    lines.push(mi ? 'Āu pūrongo:' : 'Your reports:');
     for (const r of reports) {
       lines.push(
-        `- #${r.id} [${r.status}] ${truncateForEcho(r.reason)} — filed ${formatRelativeAge(r.createdAt)}`,
+        mi
+          ? `- #${r.id} [${r.status}] ${truncateForEcho(r.reason)} — i tukuna ${formatRelativeAge(r.createdAt)}`
+          : `- #${r.id} [${r.status}] ${truncateForEcho(r.reason)} — filed ${formatRelativeAge(r.createdAt)}`,
       );
     }
   }
   if (appeals.length > 0) {
     if (lines.length > 0) lines.push('');
-    lines.push('Your appeals:');
+    lines.push(mi ? 'Āu pīra:' : 'Your appeals:');
     for (const a of appeals) {
-      const reason = a.reason ? truncateForEcho(a.reason) : 'no reason given';
-      lines.push(`- #${a.id} [${a.status}] ${reason} — filed ${formatRelativeAge(a.createdAt)}`);
+      const reason = a.reason ? truncateForEcho(a.reason) : mi ? 'kāore he take i homai' : 'no reason given';
+      lines.push(
+        mi
+          ? `- #${a.id} [${a.status}] ${reason} — i tukuna ${formatRelativeAge(a.createdAt)}`
+          : `- #${a.id} [${a.status}] ${reason} — filed ${formatRelativeAge(a.createdAt)}`,
+      );
     }
   }
   if (knowledgeTips.length > 0) {
     if (lines.length > 0) lines.push('');
-    lines.push('Your knowledge tips:');
+    lines.push(mi ? 'Āu tohutohu mōhiotanga:' : 'Your knowledge tips:');
     for (const k of knowledgeTips) {
       // "used N times" only for an accepted tip with a positive retrieval
       // count (issue #880) — never "used 0 times" for an accepted-but-
       // unretrieved or non-accepted tip, which would read as discouraging.
       const impact =
         k.status === 'accepted' && k.retrievalCount && k.retrievalCount > 0
-          ? ` — used ${k.retrievalCount} time${k.retrievalCount === 1 ? '' : 's'} in answers so far`
+          ? mi
+            ? ` — kua whakamahia ${k.retrievalCount} tāima i ngā whakautu tae noa ki tēnei wā`
+            : ` — used ${k.retrievalCount} time${k.retrievalCount === 1 ? '' : 's'} in answers so far`
           : '';
       lines.push(
-        `- #${k.id} [${k.status}] ${truncateForEcho(k.title)} — filed ${formatRelativeAge(k.createdAt)}${impact}`,
+        mi
+          ? `- #${k.id} [${k.status}] ${truncateForEcho(k.title)} — i tukuna ${formatRelativeAge(k.createdAt)}${impact}`
+          : `- #${k.id} [${k.status}] ${truncateForEcho(k.title)} — filed ${formatRelativeAge(k.createdAt)}${impact}`,
       );
     }
   }
   if (connectionRequests.length > 0) {
     if (lines.length > 0) lines.push('');
-    lines.push('Your connection requests:');
+    lines.push(mi ? 'Āu tono hononga:' : 'Your connection requests:');
     for (const c of connectionRequests) {
       // No status column exists (issue #908) — this is a receipt, not a
       // tracker. A since-removed/purged project reads back null; say so
       // rather than rendering a blank or throwing.
-      const projectLabel = c.projectName ?? 'a project that is no longer listed';
-      lines.push(`- #${c.id} — ${projectLabel} — filed ${formatRelativeAge(c.createdAt)}`);
+      const projectLabel = mi
+        ? (c.projectName ?? 'tētahi kaupapa kua kore e whakarārangihia')
+        : (c.projectName ?? 'a project that is no longer listed');
+      lines.push(
+        mi
+          ? `- #${c.id} — ${projectLabel} — i tukuna ${formatRelativeAge(c.createdAt)}`
+          : `- #${c.id} — ${projectLabel} — filed ${formatRelativeAge(c.createdAt)}`,
+      );
     }
   }
   return lines.join('\n');
@@ -220,12 +264,13 @@ export const selfServiceTools = [
     readOnlyHint: false,
     schema: {},
     handler: async (_args, { caller }) => {
-      const [suggestions, reports, appeals, knowledgeTips, connectionRequests] = await Promise.all([
+      const [suggestions, reports, appeals, knowledgeTips, connectionRequests, language] = await Promise.all([
         listOwnSuggestions(caller.platform, caller.userId, 10),
         listOwnReports(caller.platform, caller.userId, 10),
         listOwnAppeals(caller.platform, caller.userId, 10),
         listOwnKnowledgeCandidates(caller.platform, caller.userId, 10),
         listOwnProjectConnectionRequests(caller.platform, caller.userId, 10),
+        getLanguagePreference(caller.platform, caller.userId),
       ]);
       const isEmpty =
         suggestions.length === 0 &&
@@ -234,7 +279,7 @@ export const selfServiceTools = [
         knowledgeTips.length === 0 &&
         connectionRequests.length === 0;
       return text(
-        formatMySubmissionsText(suggestions, reports, appeals, knowledgeTips, connectionRequests),
+        formatMySubmissionsText(suggestions, reports, appeals, knowledgeTips, connectionRequests, language),
         isEmpty,
       );
     },
@@ -270,7 +315,8 @@ export const selfServiceTools = [
         active > 0 && active < limit && windowDays
           ? await countActiveWarnings(caller.platform, caller.userId, windowDays)
           : null;
-      return text(formatMyWarningsText(active, limit, windowed));
+      const language = await getLanguagePreference(caller.platform, caller.userId);
+      return text(formatMyWarningsText(active, limit, windowed, language));
     },
   }),
 

@@ -1095,14 +1095,14 @@ test(
     let adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     let { interaction, replies } = fakeInteraction({ commandName: 'warnings', userId: 'member-1' });
     await handleInteraction(interaction as never, adapterDeps(adapter));
-    assert.equal(replies[0].content, formatMyWarningsText(0, 3, null));
+    assert.equal(replies[0].content, formatMyWarningsText(0, 3, null, 'auto'));
 
     // Branch 2: under limit, no window configured.
     opts.activeWarnings = 1;
     adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     ({ interaction, replies } = fakeInteraction({ commandName: 'warnings', userId: 'member-1' }));
     await handleInteraction(interaction as never, adapterDeps(adapter));
-    assert.equal(replies[0].content, formatMyWarningsText(1, 3, null));
+    assert.equal(replies[0].content, formatMyWarningsText(1, 3, null, 'auto'));
 
     // Branch 3: under limit, WITH a window, and some strikes have aged out
     // (windowed < active).
@@ -1112,7 +1112,7 @@ test(
     adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     ({ interaction, replies } = fakeInteraction({ commandName: 'warnings', userId: 'member-1' }));
     await handleInteraction(interaction as never, adapterDeps(adapter));
-    assert.equal(replies[0].content, formatMyWarningsText(2, 3, 1));
+    assert.equal(replies[0].content, formatMyWarningsText(2, 3, 1, 'auto'));
     assert.match(replies[0].content, /old enough not to count toward a new mute/);
 
     // Branch 4: at/over the limit.
@@ -1122,7 +1122,7 @@ test(
     adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     ({ interaction, replies } = fakeInteraction({ commandName: 'warnings', userId: 'member-1' }));
     await handleInteraction(interaction as never, adapterDeps(adapter));
-    assert.equal(replies[0].content, formatMyWarningsText(3, 3, null));
+    assert.equal(replies[0].content, formatMyWarningsText(3, 3, null, 'auto'));
   },
 );
 
@@ -1176,7 +1176,7 @@ test('/mysubmissions returns the same content the shared formatter renders for t
 
   await handleInteraction(interaction as never, adapterDeps(adapter));
 
-  assert.equal(replies[0].content, formatMySubmissionsText([], [], [], [], []));
+  assert.equal(replies[0].content, formatMySubmissionsText([], [], [], [], [], 'auto'));
   assert.match(replies[0].content, /haven't filed any suggestions or reports yet/);
 });
 
@@ -1222,7 +1222,7 @@ test('/mysubmissions returns the same content the shared formatter renders for a
   // expected text must go through the same filter, not the raw formatter output.
   assert.equal(
     replies[0].content,
-    await adapterDeps(adapter).filtered(formatMySubmissionsText(expectedSuggestions, [], [], [], [])),
+    await adapterDeps(adapter).filtered(formatMySubmissionsText(expectedSuggestions, [], [], [], [], 'auto')),
   );
   assert.match(replies[0].content, /Your suggestions:/);
 });

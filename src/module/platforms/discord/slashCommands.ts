@@ -412,7 +412,8 @@ async function handleWarnings(
     active > 0 && active < limit && windowDays
       ? await countActiveWarnings('discord', interaction.user.id, windowDays)
       : null;
-  const message = formatMyWarningsText(active, limit, windowed);
+  const language = await getLanguagePreference('discord', interaction.user.id);
+  const message = formatMyWarningsText(active, limit, windowed, language);
   recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
   await replyEphemeral(interaction, message, deps);
 }
@@ -433,14 +434,22 @@ async function handleMySubmissions(
     await replyEphemeral(interaction, NOT_AUTHORIZED_TEXT, deps);
     return;
   }
-  const [suggestions, reports, appeals, knowledgeTips, connectionRequests] = await Promise.all([
+  const [suggestions, reports, appeals, knowledgeTips, connectionRequests, language] = await Promise.all([
     listOwnSuggestions('discord', interaction.user.id, 10),
     listOwnReports('discord', interaction.user.id, 10),
     listOwnAppeals('discord', interaction.user.id, 10),
     listOwnKnowledgeCandidates('discord', interaction.user.id, 10),
     listOwnProjectConnectionRequests('discord', interaction.user.id, 10),
+    getLanguagePreference('discord', interaction.user.id),
   ]);
-  const message = formatMySubmissionsText(suggestions, reports, appeals, knowledgeTips, connectionRequests);
+  const message = formatMySubmissionsText(
+    suggestions,
+    reports,
+    appeals,
+    knowledgeTips,
+    connectionRequests,
+    language,
+  );
   recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
   await replyEphemeral(interaction, message, deps);
 }

@@ -226,7 +226,7 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
     // adapter-resolved (msg.platform, msg.userId).
     name: 'warnings',
     platforms: ['discord', 'whatsapp'],
-    whatsapp: async (text, msg, role) => {
+    whatsapp: async (text, msg, role, deps) => {
       if (!/^!warnings$/i.test(text)) return TEXT_COMMAND_UNMATCHED;
       if (!atLeast(role, 'member')) return null;
       const limit = config.moderation.strikeLimit;
@@ -236,7 +236,8 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
         active > 0 && active < limit && windowDays
           ? await countActiveWarnings(msg.platform, msg.userId, windowDays)
           : null;
-      return formatMyWarningsText(active, limit, windowed);
+      const language = await deps.getLangPref(msg.platform, msg.userId);
+      return formatMyWarningsText(active, limit, windowed, language);
     },
   },
   {
@@ -248,17 +249,25 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
     // (msg.platform, msg.userId).
     name: 'mysubmissions',
     platforms: ['discord', 'whatsapp'],
-    whatsapp: async (text, msg, role) => {
+    whatsapp: async (text, msg, role, deps) => {
       if (!/^!mysubmissions$/i.test(text)) return TEXT_COMMAND_UNMATCHED;
       if (!atLeast(role, 'member')) return null;
-      const [suggestions, reports, appeals, knowledgeTips, connectionRequests] = await Promise.all([
+      const [suggestions, reports, appeals, knowledgeTips, connectionRequests, language] = await Promise.all([
         listOwnSuggestions(msg.platform, msg.userId, 10),
         listOwnReports(msg.platform, msg.userId, 10),
         listOwnAppeals(msg.platform, msg.userId, 10),
         listOwnKnowledgeCandidates(msg.platform, msg.userId, 10),
         listOwnProjectConnectionRequests(msg.platform, msg.userId, 10),
+        deps.getLangPref(msg.platform, msg.userId),
       ]);
-      return formatMySubmissionsText(suggestions, reports, appeals, knowledgeTips, connectionRequests);
+      return formatMySubmissionsText(
+        suggestions,
+        reports,
+        appeals,
+        knowledgeTips,
+        connectionRequests,
+        language,
+      );
     },
   },
   {
