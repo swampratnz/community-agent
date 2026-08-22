@@ -353,12 +353,25 @@ ownership rules:
   the review worker's identity) newer than the head commit, and does NOT touch
   any governance/CI/config path (`.github/`, `scripts/`, `package.json`,
   typecheck/lint/format config, `CLAUDE.md`, `docs/PIPELINE.md`,
-  `docs/SECURITY.md`) — those always require a human merge, so the loop can
+  `docs/VISION.md`) — those always require a human merge, so the loop can
   never auto-merge a change to its own guardrails or to what "green" means.
+  `docs/SECURITY.md` is deliberately NOT on that list: every other entry can
+  weaken the check that would catch it (PR-branch CI runs the PR's own
+  workflows), whereas no workflow or check reads that document, so it is
+  descriptive where the rest are causal. It is not inert — line 10 above
+  points every agent at it, so a wrong edit can mislead one — but that pointer
+  is shared with `docs/ARCHITECTURE.md`, `docs/STANDARDS.md` and
+  `docs/agents/*`, none of them governed either, and the rules an agent must
+  obey live in this file's security-posture section, which stays governed. It
+  cost 64% of the list's human presses; `tests/securityDocSections.test.ts`
+  now pins its section list instead, the same trade
+  `tests/toolTierMap.test.ts` makes for the tier map — structural drift only,
+  not content correctness.
   A governance-path PR that passes every other gate is not skipped silently:
   it gets a `human-merge-ready` label plus one marker-guarded comment asking
-  a maintainer to merge (most feature PRs touch `docs/SECURITY.md` to
-  document themselves, so this is the common case, not the exception).
+  a maintainer to merge (pipeline work routinely edits `.github/` or
+  `scripts/` to fix the machinery itself, so this stays a well-trodden path
+  even with `docs/SECURITY.md` off the list).
   Never one labelled `needs-human`/`no-auto-merge`. Exactly ONE merge per run:
   afterwards `main` has advanced, so it dispatches the conflict resolver to
   rebase the rest, and the next PR only re-qualifies once it is green against

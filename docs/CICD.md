@@ -507,9 +507,16 @@ own PR.
    gates the pair, so a 🔒 added without a `CODEOWNERS` line silently drops
    review routing.
 5. **This file is not a governance path.** The auto-merge matcher governs
-   `CLAUDE.md`, `docs/PIPELINE.md`, `docs/SECURITY.md` and `docs/VISION.md`, so
-   a bot PR editing *those* always waits for a human — but a bot PR editing
-   `docs/CICD.md` can auto-merge. That is arguably correct (this file is a
+   `CLAUDE.md`, `docs/PIPELINE.md` and `docs/VISION.md`, so a bot PR editing
+   *those* always waits for a human — but a bot PR editing `docs/CICD.md` can
+   auto-merge. (`docs/SECURITY.md` was on that list and came off: it is
+   descriptive rather than causal — no workflow or check reads it, so unlike
+   the other three it cannot weaken a gate — and it was costing 64% of the
+   list's human presses. (It is not inert: `CLAUDE.md` points agents at it, as
+   it does at `docs/ARCHITECTURE.md` and `docs/agents/*`, which are not
+   governed either.) `tests/securityDocSections.test.ts` pins its section
+   list instead. The same descriptive/causal test is the one to apply to this
+   file if it is ever proposed for the matcher.) That is arguably correct (this file is a
    reference; the workflow files are the authority) and arguably not (a
    confidently wrong CI/CD reference misleads exactly the cold agent sessions
    it is written for). Left as a maintainer decision — adding it to the matcher
