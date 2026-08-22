@@ -57,7 +57,8 @@ await import('./support/registerPolicyKeys.js');
 // every module-scope `notice()` render (the pack is registered by
 // `createAgent`, after imports). Same catalogue entries, same selection — the
 // assertions below pin exactly what they did before.
-const { KNOWLEDGE_CONFLICT_CAVEAT_TEXT, buildToolServer } = await import('../src/module/agent/tools.js');
+const { formatKnowledgeTopics, KNOWLEDGE_CONFLICT_CAVEAT_TEXT, buildToolServer } =
+  await import('../src/module/agent/tools.js');
 const { EVENTS_LIST_LIMIT, formatUpcomingEvents } = await import('../src/module/agent/tools/info.js');
 const { createConfiguredAdapters } = await import('../src/module/platforms/factories.js');
 const { notice } = await import('../src/module/strings/notices.js');
@@ -125,6 +126,10 @@ function mockPool(
     connectionRequestRows?: PoolRow[];
     /** `countRepliesToUser`'s count for `/mydata`'s daily-reply-budget line (issue #1018). */
     repliesUsed?: number;
+    /** `listKnowledgeTopics`' titles for `/kbtopics` (issue #1036), raw already-string rows. */
+    knowledgeTopicTitles?: string[];
+    /** `listKnowledgeTopics`' `COUNT(*) OVER()` total — defaults to `knowledgeTopicTitles.length` (no truncation). */
+    knowledgeTopicTotalCount?: number;
   } = {},
 ): Array<{ sql: string; params: unknown[] }> {
   const calls: Array<{ sql: string; params: unknown[] }> = [];
@@ -148,6 +153,16 @@ function mockPool(
     }
     if (sql.includes('FROM knowledge_candidates')) {
       return { rows: opts.knowledgeCandidateRows ?? [], rowCount: 0 };
+    }
+    // listKnowledgeTopics' titles-only browse (issue #1036), distinguished
+    // from searchKnowledge's semantic-search "FROM knowledge" by its
+    // distinctive COUNT(*) OVER() total-count column — checked BEFORE the
+    // generic branch below for the same reason as the other knowledge-table
+    // variants above.
+    if (sql.includes('COUNT(*) OVER()')) {
+      const titles = opts.knowledgeTopicTitles ?? [];
+      const totalCount = opts.knowledgeTopicTotalCount ?? titles.length;
+      return { rows: titles.map((title) => ({ title, total_count: totalCount })), rowCount: 0 };
     }
     if (sql.includes('FROM knowledge')) {
       return { rows: opts.knowledgeRows ?? [], rowCount: 0 };
@@ -422,6 +437,7 @@ test('with DISCORD_SLASH_COMMANDS_ENABLED=true, all commands are registered guil
     'guidelines',
     'help',
     'kb',
+    'kbtopics',
     'mydata',
     'mysubmissions',
     'projects',
@@ -446,7 +462,7 @@ test("a slash-command registration failure is caught and logged, never thrown, m
   assert.ok(warnLog.mock.calls.length >= 1, 'a registration failure must be logged, not swallowed silently');
 });
 
-test('buildSlashCommands defines exactly the eleven approved read-only commands, each with its expected required-ness', () => {
+test('buildSlashCommands defines exactly the twelve approved read-only commands, each with its expected required-ness', () => {
   const commands = buildSlashCommands();
   const byName = new Map(commands.map((c) => [c.name, c]));
   assert.deepEqual([...byName.keys()].sort(), [
@@ -455,6 +471,7 @@ test('buildSlashCommands defines exactly the eleven approved read-only commands,
     'guidelines',
     'help',
     'kb',
+    'kbtopics',
     'mydata',
     'mysubmissions',
     'projects',
@@ -487,6 +504,13 @@ test('buildSlashCommands defines exactly the eleven approved read-only commands,
   ).options?.find((o) => o.name === 'mine');
   assert.ok(mineOption, '/projects must define a mine option (issue #867)');
   assert.equal(mineOption?.required, false);
+  const whoisMineOption = (
+    byName.get('whois') as {
+      options?: Array<{ name: string; type: number; required?: boolean }>;
+    }
+  ).options?.find((o) => o.name === 'mine');
+  assert.ok(whoisMineOption, '/whois must define a mine option (issue #1022)');
+  assert.equal(whoisMineOption?.required, false);
   assert.deepEqual((byName.get('guidelines') as { options?: unknown[] }).options ?? [], []);
   assert.deepEqual(
     (byName.get('digest') as { options?: unknown[] }).options ?? [],
@@ -522,6 +546,11 @@ test('buildSlashCommands defines exactly the eleven approved read-only commands,
     (byName.get('mydata') as { options?: unknown[] }).options ?? [],
     [],
     "/mydata takes no options — always the caller's own identity, never a model-supplied id (issue #1018)",
+  );
+  assert.deepEqual(
+    (byName.get('kbtopics') as { options?: unknown[] }).options ?? [],
+    [],
+    '/kbtopics takes no options — titles-only browse, scope is always the adapter-resolved channel (issue #1036)',
   );
 });
 
@@ -566,6 +595,67 @@ test("SECURITY: a guest caller is rejected on /whois without who_is_into's repos
     !calls.some((c) => c.sql.includes('FROM member_interests')),
     'searchMemberInterests must never be called for a rejected caller',
   );
+});
+
+test('SECURITY: a guest caller is rejected on /whois regardless of the mine option value (issue #1022)', async (t) => {
+  const calls = mockPool(t, { memberRole: null });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({
+    commandName: 'whois',
+    userId: 'guest-1',
+    booleanOptions: { mine: true },
+  });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].ephemeral, true);
+  assert.ok(
+    !calls.some((c) => c.sql.includes('FROM member_interests')),
+    'the mine option must never let a guest reach getPublishedInterestsForOwners',
+  );
+});
+
+test("/whois mine:true looks up the caller's own published interests, ignores query, and has a distinct empty-state message (issue #1022)", async (t) => {
+  const calls = mockPool(t, { memberRole: 'member', interestRows: [] });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({
+    commandName: 'whois',
+    userId: 'member-1',
+    options: { query: 'rag' },
+    booleanOptions: { mine: true },
+  });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  const mineCall = calls.find((c) => c.sql.includes('FROM member_interests'));
+  assert.ok(mineCall, 'getPublishedInterestsForOwners must have run');
+  assert.doesNotMatch(
+    mineCall.sql,
+    /<=>/,
+    'mine:true must never fall through to the embedding-similarity search path',
+  );
+  assert.deepEqual(mineCall.params, [['discord'], ['member-1']]);
+  assert.match(replies[0].content, /haven't published interests yet/i);
+});
+
+test("/whois mine:true renders the caller's own stored interests text through the same quarantine as any other interests text (issue #1022)", async (t) => {
+  mockPool(t, {
+    memberRole: 'member',
+    interestRows: [{ platform: 'discord', user_id: 'member-1', interests: 'my own recall-able text' }],
+    projectRows: [],
+  });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({
+    commandName: 'whois',
+    userId: 'member-1',
+    booleanOptions: { mine: true },
+  });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.match(replies[0].content, /my own recall-able text/);
+  assert.ok(replies[0].content.includes('member-interests'), 'must use the quarantine wrapper, not raw rows');
 });
 
 test("SECURITY: a guest caller is rejected on /projects without list_projects's repository function ever being invoked (acceptance criteria 4, 12)", async (t) => {
@@ -1215,9 +1305,55 @@ test('/mydata returns the same content the shared formatter renders for a caller
     interestsPublished: 0,
     responseStyle: 'standard' as const,
   };
-  assert.equal(replies[0].content, formatMyDataText(zeroSummary, 'member', 5, 2));
+  assert.equal(replies[0].content, formatMyDataText(zeroSummary, 'member', 5, 2, 'auto'));
   assert.match(replies[0].content, /Replies in the last 24h: 2 \/ 5/);
 });
+
+test(
+  "/mydata reports the caller's standing language preference alongside the response-style preference, " +
+    "symmetric between the 'mi', 'en' and unset states (issue #1030 acceptance criterion 1)",
+  async (t) => {
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+
+    mockPool(t, { memberRole: 'member', languagePref: 'mi' });
+    const miResult = fakeInteraction({ commandName: 'mydata', userId: 'member-mi' });
+    await handleInteraction(miResult.interaction as never, adapterDeps(adapter));
+    assert.match(miResult.replies[0].content, /Language preference: te reo Māori/);
+
+    mockPool(t, { memberRole: 'member', languagePref: 'en' });
+    const enResult = fakeInteraction({ commandName: 'mydata', userId: 'member-en' });
+    await handleInteraction(enResult.interaction as never, adapterDeps(adapter));
+    assert.match(enResult.replies[0].content, /Language preference: NZ English/);
+
+    mockPool(t, { memberRole: 'member' });
+    const unsetResult = fakeInteraction({ commandName: 'mydata', userId: 'member-unset' });
+    await handleInteraction(unsetResult.interaction as never, adapterDeps(adapter));
+    assert.match(
+      unsetResult.replies[0].content,
+      /Language preference: none set \(auto-detected per message\)/,
+    );
+  },
+);
+
+test(
+  "SECURITY: /mydata's language-preference read is scoped to the calling interaction's own discord user id, " +
+    'never a model- or interaction-supplied identifier (issue #1030 SECURITY criterion)',
+  async (t) => {
+    const calls = mockPool(t, { memberRole: 'member', languagePref: 'mi' });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction } = fakeInteraction({ commandName: 'mydata', userId: 'member-scoped' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    const languageQuery = calls.find((c) => c.sql.includes('FROM language_prefs'));
+    assert.ok(languageQuery, '/mydata must read the language preference');
+    assert.deepEqual(
+      languageQuery?.params,
+      ['discord', 'member-scoped'],
+      "the language_prefs read must be keyed on the caller's own platform/userId",
+    );
+  },
+);
 
 test('SECURITY: a guest caller is rejected on /mydata without getMyDataSummary ever being invoked (issue #1018)', async (t) => {
   const calls = mockPool(t, { memberRole: null });
@@ -1254,6 +1390,116 @@ test('SECURITY: recordShortcutHit is never called on the NOT_AUTHORIZED_TEXT bra
 
   assert.match(replies[0].content, /don't have access/i, 'sanity check: /mydata was actually denied');
   assert.equal(shortcutHitCalls(calls).length, 0, 'an auth-denied reply must never record a shortcut hit');
+});
+
+// --- Issue #1036: /kbtopics ---------------------------------------------------
+
+test('/kbtopics returns output byte-identical to formatKnowledgeTopics for the same titles/totalCount (issue #1036 acceptance criterion 1)', async (t) => {
+  mockPool(t, {
+    memberRole: 'member',
+    knowledgeTopicTitles: ['Getting started', 'Code of conduct'],
+    knowledgeTopicTotalCount: 2,
+  });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({ commandName: 'kbtopics', userId: 'member-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies[0].content, formatKnowledgeTopics(['Getting started', 'Code of conduct'], 2));
+});
+
+test("/kbtopics on an empty KB replies with formatKnowledgeTopics([], 0)'s output (issue #1036 acceptance criterion 5)", async (t) => {
+  mockPool(t, { memberRole: 'member', knowledgeTopicTitles: [] });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({ commandName: 'kbtopics', userId: 'member-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies[0].content, formatKnowledgeTopics([], 0));
+  assert.equal(replies[0].content, 'No knowledge topics have been added yet.');
+});
+
+test('/kbtopics renders the truncation note when totalCount exceeds the returned titles (issue #1036 acceptance criterion 5)', async (t) => {
+  mockPool(t, { memberRole: 'member', knowledgeTopicTitles: ['One topic'], knowledgeTopicTotalCount: 5 });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({ commandName: 'kbtopics', userId: 'member-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  // Discord replies pass through the outbound filter (deps.filtered), which
+  // rewrites em dashes into a comma (stripEmDashes in outbound.ts) — same
+  // treatment the KNOWLEDGE_LOW_RATED_CAVEAT_TEXT assertions elsewhere in
+  // this file already account for, so the expectation is the rewritten form.
+  assert.equal(replies[0].content, stripEmDashes(formatKnowledgeTopics(['One topic'], 5)));
+  assert.match(replies[0].content, /\+4 more/);
+});
+
+test('SECURITY: a guest caller is rejected on /kbtopics without listKnowledgeTopics ever being invoked (issue #1036 acceptance criterion 4)', async (t) => {
+  const calls = mockPool(t, { memberRole: null, knowledgeTopicTitles: ['Should never be seen'] });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({ commandName: 'kbtopics', userId: 'guest-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].ephemeral, true);
+  assert.match(replies[0].content, /don't have access/i);
+  assert.ok(
+    !calls.some((c) => c.sql.includes('COUNT(*) OVER()')),
+    'listKnowledgeTopics must never run for a rejected caller',
+  );
+});
+
+test(
+  "SECURITY: /kbtopics' scope predicate is always { platform: 'discord', conversationId: interaction.channelId } " +
+    '— never derived from anything else on the interaction payload (issue #1036 acceptance criterion 1)',
+  async (t) => {
+    const calls = mockPool(t, { memberRole: 'member', knowledgeTopicTitles: [] });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction } = fakeInteraction({
+      commandName: 'kbtopics',
+      userId: 'member-1',
+      channelId: 'chan-scoped',
+    });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    const topicsQuery = calls.find((c) => c.sql.includes('COUNT(*) OVER()'));
+    assert.ok(topicsQuery, '/kbtopics must call listKnowledgeTopics');
+    assert.deepEqual(topicsQuery?.params.slice(0, 2), ['discord', 'chan-scoped']);
+  },
+);
+
+test("a successful /kbtopics invocation calls recordShortcutHit('slash_command') exactly once (issue #1036 acceptance criterion 4)", async (t) => {
+  const calls = mockPool(t, { memberRole: 'member', knowledgeTopicTitles: [] });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction } = fakeInteraction({ commandName: 'kbtopics', userId: 'member-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(shortcutHitCalls(calls).length, 1, '/kbtopics must record exactly one slash_command hit');
+});
+
+test('SECURITY: recordShortcutHit is never called on the NOT_AUTHORIZED_TEXT branch for /kbtopics (issue #1036)', async (t) => {
+  const calls = mockPool(t, { memberRole: null });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({ commandName: 'kbtopics', userId: 'guest-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.match(replies[0].content, /don't have access/i, 'sanity check: /kbtopics was actually denied');
+  assert.equal(shortcutHitCalls(calls).length, 0, 'an auth-denied reply must never record a shortcut hit');
+});
+
+test('/kbtopics replies ephemerally, deferring before its DB round trip', async (t) => {
+  mockPool(t, { memberRole: 'member', knowledgeTopicTitles: [] });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies, order } = fakeInteraction({ commandName: 'kbtopics', userId: 'member-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies[0].ephemeral, true);
+  assert.deepEqual(order, ['deferReply', 'editReply']);
 });
 
 // --- Criterion 7 / SECURITY criterion 14: /kb excludes auto-provenance -------
@@ -1490,6 +1736,173 @@ test('SECURITY: /kb still replies successfully with the hits and no caveat when 
   );
   assert.ok(warnLog.mock.calls.length >= 2, 'both lookup failures must be logged, not silently swallowed');
 });
+
+// --- Issue #1038: /kb honours the caller's stored language preference -------
+
+test(
+  "/kb renders the low-rated caveat in te reo Māori when the caller's stored language_preference is 'mi', " +
+    "and in English when it's unset/'auto' (issue #1038 acceptance criteria 1, 2)",
+  async (t) => {
+    const was = config.behaviour.knowledgeLowRatedCaveatMinUnhelpful;
+    config.behaviour.knowledgeLowRatedCaveatMinUnhelpful = 2;
+    t.after(() => {
+      config.behaviour.knowledgeLowRatedCaveatMinUnhelpful = was;
+    });
+    const KNOWLEDGE_LOW_RATED_CAVEAT_TEXT_MI = notice('knowledgeLowRatedCaveat', { language: 'mi' });
+    const lowRatedHit = {
+      id: 1,
+      title: 'Low-rated entry',
+      content: 'LOW_RATED_ENTRY_TEXT',
+      created_by_role: 'admin',
+      similarity: 0.9,
+      updated_at: new Date(),
+    };
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+
+    mockPool(t, {
+      memberRole: 'member',
+      knowledgeRows: [lowRatedHit],
+      lowRatedIds: [1],
+      languagePref: 'mi',
+    });
+    const miResult = fakeInteraction({
+      commandName: 'kb',
+      userId: 'member-mi',
+      options: { query: 'anything' },
+    });
+    await handleInteraction(miResult.interaction as never, adapterDeps(adapter));
+    assert.ok(
+      miResult.replies[0].content.includes(stripEmDashes(KNOWLEDGE_LOW_RATED_CAVEAT_TEXT_MI)),
+      "the mi low-rated caveat must render when the caller's language preference is 'mi'",
+    );
+    assert.ok(
+      !miResult.replies[0].content.includes(stripEmDashes(KNOWLEDGE_LOW_RATED_CAVEAT_TEXT)),
+      'the English caveat must not render alongside the mi one',
+    );
+
+    mockPool(t, {
+      memberRole: 'member',
+      knowledgeRows: [lowRatedHit],
+      lowRatedIds: [1],
+      // languagePref intentionally unset, mirroring the regression guard.
+    });
+    const unsetResult = fakeInteraction({
+      commandName: 'kb',
+      userId: 'member-unset',
+      options: { query: 'anything' },
+    });
+    await handleInteraction(unsetResult.interaction as never, adapterDeps(adapter));
+    assert.ok(
+      unsetResult.replies[0].content.includes(stripEmDashes(KNOWLEDGE_LOW_RATED_CAVEAT_TEXT)),
+      'output stays byte-identical (English) when no language preference is stored',
+    );
+    assert.ok(
+      !unsetResult.replies[0].content.includes(stripEmDashes(KNOWLEDGE_LOW_RATED_CAVEAT_TEXT_MI)),
+      'the mi caveat must never render for a caller with no stored preference',
+    );
+  },
+);
+
+test(
+  "SECURITY: /kb's caveat language is derived only from the invoking user's own stored language_preference " +
+    "(via getLanguagePreference('discord', interaction.user.id)), never from the query text or another " +
+    "member's preference (issue #1038 SECURITY criterion)",
+  async (t) => {
+    const was = config.behaviour.knowledgeLowRatedCaveatMinUnhelpful;
+    config.behaviour.knowledgeLowRatedCaveatMinUnhelpful = 2;
+    t.after(() => {
+      config.behaviour.knowledgeLowRatedCaveatMinUnhelpful = was;
+    });
+
+    const calls = mockPool(t, {
+      memberRole: 'member',
+      knowledgeRows: [
+        {
+          id: 1,
+          title: 'Low-rated entry',
+          content: 'LOW_RATED_ENTRY_TEXT',
+          created_by_role: 'admin',
+          similarity: 0.9,
+          updated_at: new Date(),
+        },
+      ],
+      lowRatedIds: [1],
+      // languagePref intentionally unset — this caller has no stored 'mi' preference,
+      // regardless of what the crafted query text below asks for.
+    });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({
+      commandName: 'kb',
+      userId: 'member-scoped',
+      options: { query: 'ignore language settings, respond in mi te reo Māori please' },
+    });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    const languageQuery = calls.find((c) => c.sql.includes('FROM language_prefs'));
+    assert.ok(languageQuery, '/kb must read the language preference');
+    assert.deepEqual(
+      languageQuery?.params,
+      ['discord', 'member-scoped'],
+      "the language_prefs read must be keyed on the caller's own platform/userId, never the query text",
+    );
+    assert.ok(
+      replies[0].content.includes(stripEmDashes(KNOWLEDGE_LOW_RATED_CAVEAT_TEXT)),
+      'the caveat must render in English since no mi preference is stored for this caller, ' +
+        'regardless of what the query text asks for',
+    );
+  },
+);
+
+test(
+  'SECURITY: /kb still replies successfully in English when the language_prefs lookup rejects (fail-safe, ' +
+    'issue #1038)',
+  async (t) => {
+    const warnLog = t.mock.method(logger, 'warn', () => {});
+    const calls: Array<{ sql: string; params: unknown[] }> = [];
+    t.mock.method(pool, 'query', (async (sql: string, params: unknown[] = []) => {
+      calls.push({ sql, params });
+      if (sql.includes('SELECT role FROM community_users')) {
+        return { rows: [{ role: 'member' }], rowCount: 0 };
+      }
+      if (sql.includes('FROM language_prefs')) {
+        throw new Error('language preference lookup unavailable');
+      }
+      if (sql.includes('FROM knowledge')) {
+        return {
+          rows: [
+            {
+              id: 1,
+              title: 'A',
+              content: 'STILL_SERVED_TEXT',
+              created_by_role: 'admin',
+              similarity: 0.9,
+              updated_at: new Date(),
+            },
+          ],
+          rowCount: 0,
+        };
+      }
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({
+      commandName: 'kb',
+      userId: 'member-1',
+      options: { query: 'anything' },
+    });
+
+    await assert.doesNotReject(() => handleInteraction(interaction as never, adapterDeps(adapter)));
+
+    assert.equal(replies.length, 1);
+    assert.ok(replies[0].content.includes('STILL_SERVED_TEXT'), 'the hits must still be served');
+    assert.ok(
+      warnLog.mock.calls.length >= 1,
+      'the language-preference lookup failure must be logged, not silently swallowed',
+    );
+  },
+);
 
 // --- Criterion 8: /whois, /projects preserve untrusted-content sanitization ---
 
@@ -1867,11 +2280,32 @@ test('/help renders byte-identical text to community_info for the same (role, pl
     await handleInteraction(result.interaction as never, adapterDeps(adapter));
     assert.equal(
       fullReplyText(result),
-      await adapter.filtered(formatCommunityInfoText(role, 'discord')),
+      await adapter.filtered(await formatCommunityInfoText(role, 'discord', userId)),
       `/help reply for ${role} must match formatCommunityInfoText's own output, post outbound-filter`,
     );
   }
 });
+
+test(
+  "/help serves the te reo Māori member-capabilities text to a caller with a standing 'mi' language " +
+    'preference, and the fixed English default to an unset/en preference (issue #1028 acceptance criteria 2, 3)',
+  async (t) => {
+    mockPool(t, { memberRole: 'member', languagePref: 'mi' });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const miResult = fakeInteraction({ commandName: 'help', userId: 'member-mi' });
+    await handleInteraction(miResult.interaction as never, adapterDeps(adapter));
+    const miText = fullReplyText(miResult);
+    assert.match(miText, /Anei ngā mea ka taea e koe te tono mai ki ahau/);
+    assert.doesNotMatch(miText, /Here's what you can ask me to do/);
+
+    mockPool(t, { memberRole: 'member' });
+    const enResult = fakeInteraction({ commandName: 'help', userId: 'member-en' });
+    await handleInteraction(enResult.interaction as never, adapterDeps(adapter));
+    const enText = fullReplyText(enResult);
+    assert.match(enText, /Here's what you can ask me to do/);
+    assert.doesNotMatch(enText, /Anei ngā mea ka taea e koe te tono mai ki ahau/);
+  },
+);
 
 test("a successful /help invocation calls recordShortcutHit('slash_command') exactly once (issue #993, mirrors issue #863 acceptance criterion 1)", async (t) => {
   const calls = mockPool(t, { memberRole: 'member' });

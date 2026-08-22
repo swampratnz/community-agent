@@ -32,6 +32,10 @@ const SAMPLE_ARGS: Partial<Record<NoticeId, unknown[][]>> = {
     [2, 2],
   ],
   blockedDm: [[]],
+  memberDigestKnowledgeHeading: [[1], [2]],
+  memberDigestProjectShowcase: [[1], [3]],
+  memberDigestInterestsUpdate: [[1], [3]],
+  memberDigestConnectionsUpdate: [[1], [3]],
 };
 
 function render(value: NoticeValue, args: readonly unknown[]): string {
@@ -133,3 +137,99 @@ test('CONFIRM/CANCEL stay literal, untranslated tokens in every pending-notice v
     assert.match(text, /\bCANCEL\b/);
   }
 });
+
+test(
+  "SECURITY: communityInfoMemberCapabilities' base and mi values contain no template placeholders/" +
+    "interpolation tokens — fixed, human-authored text only, consistent with this file's equivalence checks " +
+    'above (issue #1028 acceptance criterion 6)',
+  () => {
+    const entry = NOTICE_ENTRIES.communityInfoMemberCapabilities;
+    const placeholderPattern = /\$\{|\{\{|%s|%d|\{[0-9a-zA-Z_]*\}/;
+    assert.doesNotMatch(
+      entry.base,
+      placeholderPattern,
+      'base must be fixed text with no interpolation markers',
+    );
+    assert.doesNotMatch(
+      entry.language.mi,
+      placeholderPattern,
+      'the mi variant must be fixed text with no interpolation markers',
+    );
+  },
+);
+
+test(
+  "SECURITY: communityInfoAdminCapabilities' and communityInfoSuperAdminCapabilities' base and mi values " +
+    'contain no template placeholders/interpolation tokens — fixed, human-authored text only, no ' +
+    'interpolation of caller or message content (issue #1056 acceptance criterion 6)',
+  () => {
+    const placeholderPattern = /\$\{|\{\{|%s|%d|\{[0-9a-zA-Z_]*\}/;
+    for (const id of ['communityInfoAdminCapabilities', 'communityInfoSuperAdminCapabilities'] as const) {
+      const entry = NOTICE_ENTRIES[id];
+      assert.doesNotMatch(
+        entry.base,
+        placeholderPattern,
+        `${id} base must be fixed text with no interpolation markers`,
+      );
+      assert.doesNotMatch(
+        entry.language.mi,
+        placeholderPattern,
+        `${id} mi variant must be fixed text with no interpolation markers`,
+      );
+    }
+  },
+);
+
+test(
+  "SECURITY: whatsappTextCommands' base and mi values contain no template placeholders/interpolation " +
+    "tokens — fixed, human-authored text only, mirroring communityInfoMemberCapabilities' own check above " +
+    '(issue #1034 acceptance criterion 6)',
+  () => {
+    const entry = NOTICE_ENTRIES.whatsappTextCommands;
+    const placeholderPattern = /\$\{|\{\{|%s|%d|\{[0-9a-zA-Z_]*\}/;
+    assert.doesNotMatch(
+      entry.base,
+      placeholderPattern,
+      'base must be fixed text with no interpolation markers',
+    );
+    assert.doesNotMatch(
+      entry.language.mi,
+      placeholderPattern,
+      'the mi variant must be fixed text with no interpolation markers',
+    );
+  },
+);
+
+test(
+  'SECURITY: the six memberDigest section-label catalogue entries contain no template placeholders/' +
+    'interpolation tokens in their static wording — checked on the RENDERED output for the four ' +
+    'count-taking templates, so a leftover placeholder in the surrounding fixed text would still be ' +
+    'caught even though the count itself is legitimately interpolated (issue #1042 acceptance criterion 6)',
+  () => {
+    const placeholderPattern = /\$\{|\{\{|%s|%d|\{[0-9a-zA-Z_]*\}/;
+    const ids = [
+      'memberDigestTopicsHeading',
+      'memberDigestKnowledgeHeading',
+      'memberDigestProjectShowcase',
+      'memberDigestPlatformUpdatesHeading',
+      'memberDigestInterestsUpdate',
+      'memberDigestConnectionsUpdate',
+    ] as const;
+    for (const id of ids) {
+      const entry = NOTICE_ENTRIES[id] as NoticeEntry<NoticeValue>;
+      const sample = typeof entry.base === 'function' ? [3] : [];
+      assert.doesNotMatch(
+        render(entry.base, sample),
+        placeholderPattern,
+        `${id} base must render fixed text with no interpolation markers`,
+      );
+      const mi = entry.language?.mi;
+      assert.ok(mi, `${id} must have an mi variant`);
+      assert.doesNotMatch(
+        render(mi, sample),
+        placeholderPattern,
+        `${id} mi variant must render fixed text with no interpolation markers`,
+      );
+    }
+  },
+);

@@ -434,13 +434,22 @@ memory**:
    on demand mid-turn. Cross-conversation search is admin-only.
    `knowledge_search`'s result ordering is similarity-descending except for a
    narrow tie-break (issue #308): when two relevant hits land within
-   `KNOWLEDGE_TIE_MARGIN` of each other, the tie is broken first by low-rated
-   status (issue #562) — if exactly one hit has been flagged unhelpful by
-   ≥2 distinct members (per `areKnowledgeEntriesLowRated`), the non-low-rated
-   hit is listed first — and only then, if that doesn't decide it, by
-   staleness (per `isKnowledgeStale`/`KNOWLEDGE_STALE_DAYS`), where the
-   fresher one is listed first — a real relevance gap always wins regardless
-   of rating or staleness.
+   `KNOWLEDGE_TIE_MARGIN` of each other, a three-rung ladder decides the
+   order. First, low-rated status (issue #562) — if exactly one hit has been
+   flagged unhelpful by ≥2 distinct members (per `areKnowledgeEntriesLowRated`),
+   the non-low-rated hit is listed first. Next, if that doesn't decide it,
+   confirmed source reachability (issue #1054) — if exactly one hit has
+   `source_unreachable === true` (the weekly link-rot checker, issue #448,
+   has actually observed the cited URL and confirmed it dead), the hit whose
+   source is live or unchecked is listed first; `null` (never checked) and
+   `false` never demote a hit, so this rung is a no-op unless the link
+   checker is enabled. Finally, if still undecided, staleness (per
+   `isKnowledgeStale`/`KNOWLEDGE_STALE_DAYS`), where the fresher one is
+   listed first — a real relevance gap always wins regardless of rating,
+   reachability, or staleness. The ladder is ordered by strength of evidence:
+   a member's direct "not helpful" rating outranks a dead-link observation,
+   which in turn outranks staleness, which is only *inferred* from
+   timestamps.
    `isKnowledgeStale` also honors an optional absolute content-age ceiling,
    `KNOWLEDGE_STALE_MAX_AGE_DAYS` (issue #380, off unless set), OR-ed into the
    same predicate: it fires on a hit's edit age alone, closing the gap where a
@@ -944,7 +953,7 @@ this list — unlike the others it's implemented on both WhatsApp adapters
 | `community_guidelines` (read the community's rules, verbatim, or a not-set-yet message) | ❌ | ✅ | ✅ | ✅ |
 | `suggest_improvement` (file a bot-improvement idea; write-only) | ❌ | ✅ *(rate-capped, 3/24h)* | ✅ | ✅ |
 | `suggest_knowledge` (suggest a durable knowledge-base tip; write-only into the SAME admin-reviewed `knowledge_candidates` queue the context builder feeds — dedup-guarded, never influences answers before an admin accepts it) / `withdraw_knowledge_tip` (retract the caller's OWN still-pending tip(s), scoped in SQL to `source_platform`/`source_user_id`; never touches another member's tip, a machine-drafted candidate, or an already-reviewed one — issue #895) | ❌ | ✅ *(rate-capped, 3/24h)* | ✅ | ✅ |
-| `set_my_interests` (publish self-declared interests for member-to-member discovery; free text or the literal `'clear'`, one row per identity, upsert/clear semantics; explicitly floors at `member`, excluding open-mode guests) / `who_is_into` (embedding-similarity search over published interests only; same `member` floor; a caller with no published interests of their own can still search; a matched member with ≥1 active shared project also gets a `Shared projects: "X", "Y"` line, batched-looked-up from `member_projects` — issue #718) | ❌ | ✅ | ✅ | ✅ |
+| `set_my_interests` (publish self-declared interests for member-to-member discovery; free text or the literal `'clear'`, one row per identity, upsert/clear semantics; explicitly floors at `member`, excluding open-mode guests) / `who_is_into` (embedding-similarity search over published interests only; same `member` floor; a caller with no published interests of their own can still search; a matched member with ≥1 active shared project also gets a `Shared projects: "X", "Y"` line, batched-looked-up from `member_projects` — issue #718; an optional `mine` boolean, ignoring `query` when set, instead returns exactly the caller's own published interests text (or the same "haven't published yet" guidance), self-scoped by identity via `getPublishedInterestsForOwners` — the recall path `set_my_interests`'s own update/clear flow needs, mirroring `list_projects`' `mine` — issue #1022) | ❌ | ✅ | ✅ | ✅ |
 | `share_project` (publish a self-declared project to the member showcase; upsert-by-name edits, `remove: true` takes it down; per-member cap of 3, rate-capped 3 new shares/24h; explicitly floors at `member`, excluding open-mode guests) / `list_projects` (browse/search the showcase; same `member` floor; a project whose owner has published interests also gets an `Interests: <text>` line, batched-looked-up from `member_interests` — issue #718; each rendered row is prefixed with the project's DB id, e.g. `[#42]` — issue #840; an optional `seekingCollaborators` boolean narrows either path to only active projects with `seeking_collaborators = true` — issue #854; an optional `mine` boolean, ignoring `query`/`seekingCollaborators` when set, instead returns only the caller's own active projects via `listOwnProjects`, self-scoped by identity — the recall path `share_project`'s own name-based edit/remove needs — issue #867) | ❌ | ✅ | ✅ | ✅ |
 | `set_helper_availability` (opt in/out of being notified for `find_helper` requests matching the caller's own published interests; requires an existing `set_my_interests` row; instantly reversible, no CONFIRM) / `find_helper` (ask for member-to-member help; embedding-matches `topic` against opted-in helpers and sends AT MOST ONE DM, to the single best eligible candidate — never a broadcast, never a name/handle disclosed back to the requester; both rate-capped, both behind `FIND_HELPER_ENABLED`, off by default — issue #729) | ❌ | ✅ | ✅ | ✅ |
 | `request_project_connection` (ask to connect with a project owner who marked `seekingCollaborators` true; looks up the project by id and sends its owner AT MOST ONE DM naming the requester and project — never a broadcast, never discloses the owner's identity back to the requester beyond what `list_projects` already showed; requester rate-capped 3/24h, owner rate-capped 3 received/7d, both DB-backed; no feature flag — explicitly floors at `member`, excluding open-mode guests — issue #840) | ❌ | ✅ | ✅ | ✅ |
@@ -1431,13 +1440,19 @@ weakening it:
    `community_info` tool (issue #92) answers "what can you do?" with
    `MEMBER_CAPABILITIES_TEXT`, a plain-language line for every `MEMBER_TOOLS`
    entry, pinned against drift by an anti-drift coverage test (issue #311).
-   An admin caller additionally gets `ADMIN_CAPABILITIES_TEXT` (issue #367) —
-   the same discipline applied to `ADMIN_TOOLS`, replacing the old one-line
-   "ask what's new" pointer the grant DM (`ADMIN_APPROVED_MESSAGE`, issue
-   #201) had promised would give "a rundown, including your new admin tools"
-   but never did. A super_admin caller gets both of those plus
-   `SUPER_ADMIN_CAPABILITIES_TEXT` (issue #582) — the same discipline applied
-   to `SUPER_ADMIN_TOOLS`, its own anti-drift coverage test. #367 had
+   An admin caller additionally gets the admin capabilities text (issue
+   #367) — the same discipline applied to `ADMIN_TOOLS`, replacing the old
+   one-line "ask what's new" pointer the grant DM (`ADMIN_APPROVED_MESSAGE`,
+   issue #201) had promised would give "a rundown, including your new admin
+   tools" but never did. A super_admin caller gets both of those plus the
+   super-admin capabilities text (issue #582) — the same discipline applied
+   to `SUPER_ADMIN_TOOLS`, its own anti-drift coverage test. Both used to be
+   raw string constants (`ADMIN_CAPABILITIES_TEXT`/
+   `SUPER_ADMIN_CAPABILITIES_TEXT`) in `agent/tools/info.ts`; issue #1056
+   relocated them into the module notice pack as
+   `communityInfoAdminCapabilities`/`communityInfoSuperAdminCapabilities`
+   (see below) so they could gain a `mi` variant the same way the member
+   segment already had. #367 had
    explicitly deferred the `SUPER_ADMIN_TOOLS` case as a named, separate
    growth path ("no evidenced complaint... left as an explicit, separate
    growth path"); #582 is that follow-up, closing the one tier `community_info`
@@ -1458,7 +1473,20 @@ weakening it:
    four of the seven shortcuts (`!whois`/`!projects`/`!digest`/`!warnings`)
    themselves gate on `atLeast(role, 'member')` in `tryWhatsAppTextCommand` —
    a guest caller never satisfies it, so the block is withheld rather than
-   advertising shortcuts that would silently no-op for them.
+   advertising shortcuts that would silently no-op for them. The member
+   segment itself honours a standing `'mi'` `language_preference` (issue
+   #1028), the same `getLanguagePreference`/`community_guidelines` pattern
+   used throughout this list — `formatCommunityInfoText` (the one formatter
+   behind `community_info`/`/help`/`!help`, issue #993) is async precisely
+   for this read, and resolves the segment via the module notice pack's
+   `communityInfoMemberCapabilities` entry rather than a raw string constant.
+   Issue #1056 extended the same `language` value to the admin/super-admin
+   segments via the `communityInfoAdminCapabilities`/
+   `communityInfoSuperAdminCapabilities` notice entries, and issue #1034 did
+   the same for the WhatsApp shortcuts block via `whatsappTextCommands` —
+   between them closing every mid-reply language flip a `'mi'`-preference
+   caller could see, at any tier and on either platform. No segment of this
+   rundown is English-only any more.
 7. **Opt-in auto-enroll** (issue #605, off unless
    `DISCORD_AUTO_ENROLL_MEMBERS=true`). Removes the manual per-person
    `add_member` step: on every non-bot Discord join, `onGuildMemberAdd` calls
@@ -2105,6 +2133,35 @@ only the proactive weekly timer, not a member's standing authorization to
 read data they can already see individually via `/kb`/`/projects`/`/whois`
 (identical reasoning to `admin_digest`'s independence from
 `ADMIN_DIGEST_ENABLED`).
+
+A third on-demand surface, the WhatsApp `!digest` shortcut
+(`src/module/commands.ts`, issue #859), calls `buildMemberDigestContent()`
+the same way, but through `RegisteredCommand`'s `whatsapp` handler instead of
+directly — see `docs/agents/module-map.md`'s `commands.ts` entry.
+
+**Language awareness (issue #1042) — the on-demand-pull/scheduled-push split
+now differs on it.** `formatMemberDigestMessage`'s six section labels (the
+`📅`/`📚`/`🚀`/`🆕`/`🔍`/`🤝` frame text — every interpolated count, title
+list and comma-join stays assembled in code exactly as before) render via the
+module notice pack (`notice(id, { language })`, `src/module/strings/
+notices.ts`), the same `mi`-variant mechanism `community_info`/
+`community_guidelines` already use. All three on-demand pulls thread the
+caller's identity into `buildMemberDigestContent(deps?, caller?)`'s new
+second parameter, which reads the caller's own stored `language_preference`
+only when `caller` is supplied — `community_digest`'s handler and `/digest`
+pass it directly; `!digest` cannot, because `deps.buildDigestContentFn`
+(agent-base's `WhatsAppTextCommandDeps`) is a fixed, base-owned, zero-argument
+function type, so it structurally cannot carry a caller through. Its handler
+resolves the language via the already-available `deps.getLangPref` first and,
+only for a standing `'mi'` preference, calls `buildMemberDigestContent`
+directly instead of `deps.buildDigestContentFn()` — the common (unset/`en`/
+`auto`) case is untouched, still served through the original DI-tested
+zero-arg path. **The scheduled weekly channel push never gains this** —
+`makeDefaultMemberDigestRun`'s closure calls `buildMemberDigestContent(deps)`
+with no second argument, on purpose: it is one post to a shared channel, not
+a reply to one member, so no single recipient's preference may select which
+language it renders in. Pinned by a `SECURITY:` test asserting the push
+renders byte-identical regardless of a stubbed `getLanguagePreference`.
 
 ## Anthropic status check
 
@@ -2804,10 +2861,13 @@ package export the tool imports), never through the tool/model.
 **`/help`** (issue #993) has no tier gate at all, matching `/guidelines` and
 its own underlying tool, `community_info`: `handleHelp` defers, resolves the
 caller's role via `resolveRole('discord', ...)`, and replies with
-`formatCommunityInfoText(role, 'discord')` — a pure formatter exported from
-`agent/tools/info.ts` and factored out of `community_info`'s own handler body,
-so the tool and `/help` render byte-identical text for the same caller rather
-than each re-deriving the role-branching capability rundown independently.
+`formatCommunityInfoText(role, 'discord', interaction.user.id)` — an async
+formatter exported from `agent/tools/info.ts` and factored out of
+`community_info`'s own handler body, so the tool and `/help` render
+byte-identical text for the same caller rather than each re-deriving the
+role-branching capability rundown independently. Async since issue #1028: it
+also reads the caller's own standing `language_preference`, so a `userId` is
+now part of its signature alongside `role`/`platform`.
 
 **`/guidelines` deliberately does not serve the internal `GUIDELINES` block**
 from `agent/systemPrompt.ts` — despite that block being what the originating
@@ -2874,9 +2934,9 @@ change). Tier floors mirror the Discord side exactly: `!whois`, `!projects`,
 floor each tool's own handler applies); `!guidelines`, `!status`, and `!help`
 have no tier gate, matching `community_guidelines`/`check_status`/
 `community_info`. `!help` (issue #993) calls the same
-`formatCommunityInfoText(role, 'whatsapp')` formatter `/help` and
+`formatCommunityInfoText(role, 'whatsapp', msg.userId)` formatter `/help` and
 `community_info` call, so all three entry points render byte-identical text
-for a given (role, platform).
+for a given (role, platform, language).
 
 A bare `!whois` (no query, issue #889) mirrors `who_is_into`'s/`/whois`'s own
 no-argument self-match: it looks up the caller's own published

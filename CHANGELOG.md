@@ -24,6 +24,134 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #963 #964 #965 #968 #971 #983 #988 #989 #991 #992 #994
 -->
 
+## 2026-08-21
+
+### Added
+- **`!projects seeking` — WhatsApp can now browse the project showcase for
+  people actively looking for collaborators** (#1046): `/projects
+  seeking_collaborators:true` (Discord) and the `list_projects` tool have
+  supported this filter since #854, but WhatsApp's zero-model-call `!projects`
+  shortcut never gained it — a member had to scroll the whole list or spend a
+  real model turn to find who wants help. `!projects seeking` narrows the
+  same showcase to matching projects only, rendered identically to the other
+  two surfaces.
+- **Admins can now tell a member *why* their knowledge tip was declined.**
+  (#1050) `decline_knowledge_candidate`'s resolution DM previously named only
+  the tip's title — a member who contributed a `suggest_knowledge` tip that
+  was later declined learned *that* it wasn't added, but never *why*, so they
+  couldn't fix it and resubmit. Admins can now pass an optional, short
+  `reason`, which is appended as a distinct quoted clause to the existing
+  decline DM (English and te reo Māori both), so a duplicate/too-vague/
+  off-topic tip can be resubmitted with the actual problem fixed. Omitting
+  the reason produces the exact same DM as before.
+
+### Fixed
+- **`knowledge_search` no longer leads with an entry whose source link the bot
+  already knows is dead.** (#1054) When two knowledge entries are near-tied
+  for relevance, the reply already broke the tie by preferring a low-rated
+  entry (#562) or a stale one (#308) — but it never considered
+  `source_unreachable`, the weekly link-rot checker's (#448) own confirmed
+  verdict, even though the reply already displays a "⚠️ link appears dead"
+  caveat on that exact entry (#465). The bot could rank a dead-link entry
+  first, then warn you not to trust its citation. Near-tied results now
+  prefer the entry with a live (or unchecked) source over one confirmed dead,
+  checked after the low-rated signal and before staleness. Deployments that
+  haven't enabled the link checker are unaffected.
+- **`community_info`/`/help`/`!help`'s admin and super-admin capability
+  rundowns now honour a standing te reo Māori preference too** (#1056): since
+  #1028, a member-tier caller with `language_preference = 'mi'` got the
+  member-capabilities segment in te reo Māori — but an admin or super admin
+  with the same standing preference saw that te reo segment immediately
+  followed by an untranslated English admin/super-admin segment, mixing
+  languages mid-message. Both segments now render in te reo Māori for a
+  `'mi'`-preference admin/super-admin caller, matching the member segment's
+  existing behaviour; a caller with no preference (or `'en'`/`'auto'`) sees
+  byte-identical English to before.
+
+## 2026-08-20
+
+### Fixed
+- **The WhatsApp `!`-shortcuts discovery block in `community_info`/`!help` now
+  honours a standing te reo Māori preference too** (#1034): #1028 (below)
+  fixed the member-capabilities rundown but left the WhatsApp-only
+  `!`-shortcuts list immediately below it as a named follow-up — a
+  `language_preference = 'mi'` WhatsApp member got eight lines of te reo
+  Māori, then an abrupt flip to English for the one part of the reply most
+  specific to them. A WhatsApp member-tier caller with `language_preference =
+  'mi'` and the WhatsApp text-commands feature on now gets that block in te
+  reo Māori too; a caller with no preference (or `'en'`/`'auto'`) sees
+  byte-identical English to before.
+- **The admin-promotion DM no longer silently vanishes when your WhatsApp
+  window is closed.** (#1040) If a super admin ran `grant_admin` on a
+  WhatsApp Cloud user whose 24-hour customer-service window happened to be
+  closed at that moment, the orientation DM telling them what tools they now
+  have used to just disappear — no retry, no record — even though every
+  other approval/resolution DM in this bot (member approvals, suggestion/
+  report/appeal/knowledge-tip resolutions) already queues and delivers as
+  soon as that window reopens. It now gets the same recovery.
+- **`my_data` (and its `/mydata`/`!mydata` mirrors) now reports your language
+  preference, not just your response-style preference** (#1030): `my_data`'s
+  whole job is telling you what the bot has stored about you, and it already
+  reported your standing plain/standard reply-style choice — but silently
+  left out the equally-standing `set_language_preference('en'|'mi')` choice,
+  even though every other surface (`community_guidelines`,
+  `community_info`/`!help`, moderation and approval DMs) already honours it.
+  All three surfaces (the tool, `/mydata`, `!mydata`) now show a `Language
+  preference:` line right under the response-style one.
+- **`!kbtopics` is now listed in WhatsApp's `!help` shortcut rundown** (#1044):
+  the free `!kbtopics` shortcut for browsing what the knowledge base covers
+  shipped in #1036, but was never added to the "zero-wait shortcuts" list
+  `!help` shows WhatsApp members — so it was effectively undiscoverable
+  unless you already knew the command. It's now listed alongside the other
+  free shortcuts.
+
+### Added
+- **`list_top_knowledge` — admins can now rank knowledge entries by how often
+  they're retrieved, not just find what's wrong with them** (#1024): every
+  existing knowledge-health tool (`list_duplicate_knowledge`,
+  `list_knowledge_conflicts`, `list_low_rated_knowledge`,
+  `list_knowledge({ staleOnly: true })`) answers "what needs fixing" —
+  there was no way to see which entries are actually earning their keep short
+  of paging through the full `list_knowledge` browse list and eyeballing
+  every entry's retrieval count by hand. `list_top_knowledge` ranks the whole
+  scope by retrieval count (an entry never retrieved is still shown, ranked
+  last, not hidden), same admin-only, read-only tier as its siblings.
+- **`/kbtopics` (Discord) and `!kbtopics` (WhatsApp) — a zero-wait shortcut
+  browsing what the community knowledge base covers** (#1036): every other
+  read-only, zero-argument member tool with a "just show me" shape already had
+  a deterministic shortcut (`/warnings`, `/mysubmissions`+`/mydata`, `/status`,
+  `/events`, `/help`) — `list_knowledge_topics`, the proactive titles-only
+  counterpart to `knowledge_search` for a member who doesn't yet know the
+  right words to search for, was the one left out (`/kb`'s `query` option is
+  required, so it can only search, never browse). Same output
+  `list_knowledge_topics` already gives, without spending an agent turn.
+
+### Fixed
+- **`community_info`/`/help`/`!help` now honour a standing te reo Māori
+  preference** (#1028): the bot's own "what can you do?" answer used to tell
+  every member te reo Māori is available ("Ask me to explain things more
+  simply, or reply in te reo Māori") while always answering that question
+  itself in English, regardless of what the member had already stored with
+  `set_language_preference`. A member-tier caller with `language_preference =
+  'mi'` now gets the member-capabilities rundown in te reo Māori, matching
+  `community_guidelines`'s existing behaviour; a caller with no preference (or
+  `'en'`/`'auto'`) sees byte-identical English to before. Admin/super-admin
+  content stays English-only for now; the WhatsApp `!`-shortcuts block
+  immediately below this segment got the same te reo Māori treatment in #1034
+  (above).
+- **The on-demand community digest (`community_digest`, `/digest`, `!digest`)
+  now honours a standing te reo Māori preference too** (#1042): this was the
+  last per-caller digest pull left out of the `mi` series `community_info`
+  (#1028) and `community_guidelines` completed — pulling it on demand always
+  answered in English regardless of `set_language_preference`. A caller with
+  `language_preference = 'mi'` now gets every present section (this week's
+  topics, new-in-the-knowledge-base, project showcase, platform updates,
+  interests, connections) with its label rendered in te reo Māori; the
+  underlying counts, titles and lists are unchanged. A caller with no
+  preference (or `'en'`/`'auto'`) sees byte-identical English to before. The
+  weekly scheduled channel post — one message to a shared channel, not a
+  reply to one member — stays English-only, unaffected either way.
+
 ## 2026-08-19
 
 ### Added
@@ -74,6 +202,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   Discord and need member tier plus `WHATSAPP_TEXT_COMMANDS_ENABLED` on
   WhatsApp, matching `/warnings`'s own gate; an argument-bearing WhatsApp
   message falls through to a normal reply rather than matching.
+- **`who_is_into({ mine: true })` and `/whois mine:True` — check your own
+  published interests before updating or clearing them** (#1022): previously
+  there was no way to read back what `set_my_interests` last stored — the
+  no-query self-match path explicitly excludes your own entry, and `my_data`
+  only reports whether you've published, never the text itself. The new
+  `mine` option, mirroring `list_projects({ mine: true })`, returns exactly
+  your own stored interests text, self-scoped by your identity — or the
+  familiar "you haven't published interests yet" guidance if you have none.
 
 ## 2026-08-18
 

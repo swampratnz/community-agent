@@ -26,7 +26,10 @@ export const digestMemberTools = [
       // excludes open-mode guests even though the tool is structurally
       // reachable at MEMBER_TOOLS tier.
       assertAtLeast(caller.role, 'member', 'community_digest');
-      const message = await buildMemberDigestContent();
+      const message = await buildMemberDigestContent(undefined, {
+        platform: caller.platform,
+        userId: caller.userId,
+      });
       if (message == null) return text('Nothing to report right now.');
       // This tool result re-enters the model's context (unlike the weekly
       // channel post, sent straight to Discord) — quarantine it the same way

@@ -111,6 +111,7 @@ const EXPECTED: Record<string, readonly string[]> = {
     'list_reports',
     'list_roster',
     'list_suggestions',
+    'list_top_knowledge',
     'list_unhelpful_themes',
     'merge_knowledge',
     'moderate',

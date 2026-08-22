@@ -8,122 +8,8 @@ import { formatStatusMessage, getStatusCache } from '../../status/anthropicStatu
 import { formatEventTime } from '@swampratnz/agent-base/util/eventTime.js';
 import type { UpcomingEvent } from '@swampratnz/agent-base/platforms/types.js';
 import { text } from './helpers.js';
+import { notice } from '../../strings/notices.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
-
-/**
- * Plain-language rundown of what a member can ask the bot to do, named by
- * behaviour rather than tool id (issue #92) — every entry in MEMBER_TOOLS
- * gets a line, most safety-relevant (report_content) first. Kept to a few
- * short lines deliberately: a wall of text reads worse than the terse blurb
- * it replaces.
- */
-const MEMBER_CAPABILITIES_TEXT =
-  'NZ Claude Community — a New Zealand group building with Claude and the Anthropic API. ' +
-  "Here's what you can ask me to do:\n" +
-  '- Flag harassment, spam, or a rule violation to admins ("report this"), or withdraw one filed by mistake\n' +
-  '- Ask admins to review a warning you think was a mistake ("appeal my warning")\n' +
-  '- Ask me for our community guidelines ("what are the rules here?")\n' +
-  '- Answer questions from curated community knowledge — just ask\n' +
-  '- Browse the topics our knowledge base covers, if you\'re not sure what to ask ("what do you know about?")\n' +
-  '- Search back through your own past messages for something said earlier\n' +
-  "- Check what I've stored about you, your active warnings, or your filed suggestions/reports\n" +
-  '- Catch you up on recent activity in this conversation ("what did I miss?")\n' +
-  '- Suggest how the bot or community could be better, or suggest a knowledge-base tip for other members ' +
-  'to find later, or withdraw one before an admin reviews it\n' +
-  '- Rate my last answer helpful or not\n' +
-  '- Ask to talk to a human community admin, if I\'m not getting you anywhere ("can I talk to a ' +
-  'human?")\n' +
-  '- Ask me to explain things more simply, or reply in te reo Māori ("keep it simple")\n' +
-  '- React to a message with an emoji instead of replying\n' +
-  '- Ask if a Claude/API problem is a known Anthropic outage, not your bug\n' +
-  '- Ask what meetups/events are coming up ("what\'s on?")\n' +
-  '- Share a project you\'ve built with the community, or browse what others have shared ("share my ' +
-  'project", "what has everyone built?")\n' +
-  "- Ask to connect with a project owner who's looking for collaborators (\"I'd like to help with that " +
-  'project")\n' +
-  '- Publish your own interests so other members can find you, or find members into a topic ("add me to ' +
-  'who\'s into RAG", "who\'s working on Discord bots?")\n' +
-  '- Ask if someone in the community can help with something you\'re stuck on ("can someone help with ' +
-  'X?"), or opt in/out of being notified for other members\' requests\n' +
-  '- Pull the community digest on demand\n' +
-  "- Record decisions in a project you're part of and search that project's shared memory later, or " +
-  'list your projects\n' +
-  '- Erase all your stored data any time ("forget me")';
-
-/**
- * Fixed-literal rundown of the WhatsApp `!`-prefixed text-command shortcuts
- * (issue #859), appended to MEMBER_CAPABILITIES_TEXT only for a WhatsApp
- * caller when `config.behaviour.whatsappTextCommandsEnabled` is true (issue
- * #872) — Discord already gets free discovery via its native `/` picker
- * (`SlashCommandBuilder.setDescription`, `src/platforms/discord/slashCommands.ts`),
- * which WhatsApp has no client-native equivalent of. No `!kb`: the existing
- * KNOWLEDGE_SHORTCUT_ENABLED shortcut already covers WhatsApp for that one
- * (#859's own decision). Never interpolates caller or message data — same
- * trust level as MEMBER_CAPABILITIES_TEXT.
- */
-const WHATSAPP_TEXT_COMMANDS_TEXT =
-  "You're on WhatsApp, so you can also use these zero-wait shortcuts:\n" +
-  '- `!whois <topic>` — find members into a topic\n' +
-  '- `!projects [query]` — browse the project showcase\n' +
-  '- `!guidelines` — community guidelines\n' +
-  "- `!digest` — this week's digest\n" +
-  '- `!status` — check for a known Anthropic outage\n' +
-  '- `!warnings` — your own active warning count\n' +
-  '- `!mysubmissions` — status of your filed suggestions/reports\n' +
-  '- `!mydata` — what the bot has stored about you\n' +
-  '- `!help` — this capability rundown';
-
-/**
- * Plain-language rundown of what an admin can additionally ask the bot to
- * do, on top of MEMBER_CAPABILITIES_TEXT above (issue #367) — every entry in
- * ADMIN_TOOLS gets a mention, consolidated into behaviourally-related
- * bullets rather than 44 one-per-line entries, same discipline
- * MEMBER_CAPABILITIES_TEXT already uses (issue #311). Safety-relevant tools
- * (moderate, clear_warnings, archive_thread) come first, mirroring
- * MEMBER_CAPABILITIES_TEXT's own "most safety-relevant first" convention.
- * No interpolation of any runtime/tool argument — static text only, same
- * trust level as MEMBER_CAPABILITIES_TEXT. Issue #1008 added the
- * find_knowledge clause to the knowledge-curation line.
- */
-const ADMIN_CAPABILITIES_TEXT =
-  'As an admin, you also have:\n' +
-  "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread, review the moderation history log, pull one member's full warning history, list everyone who's currently muted, list who's currently blocked on WhatsApp, or review and resolve filed appeals\n" +
-  "- Manage membership: add a new member, remove a member, link a member's cross-platform identity, or unlink a member's cross-platform identity\n" +
-  '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, check which knowledge entries are rated poorly, and review recurring unhelpful-answer themes across all answers\n' +
-  '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
-  "- Curate the knowledge base: save a new knowledge entry, browse knowledge entries, semantically find a knowledge entry's id by what it says, edit a knowledge entry, delete a knowledge entry, or merge two entries together, and check for near-duplicate entries or conflicting entries\n" +
-  "- Review knowledge candidates, accept a candidate or decline a candidate, track knowledge gaps (questions I couldn't answer), recurring question clusters, raw context digests, pull your own admin-digest snapshot on demand, get a review-queue roll-up of all five review queues at once, or check how quickly I've been answering members (response latency)\n" +
-  '- See who is waiting for access, decline a pending access request without granting it, or see who ' +
-  'has joined or left the server\n' +
-  "- Add a note about a member, review notes on a member, delete a note, or look up a member's history across conversations\n" +
-  '- Set the community guidelines or the welcome message shown to new members\n' +
-  '- Assign a Discord role, remove a Discord role, or list which roles are available to assign\n' +
-  "- Set up team projects: create one, give a member access, take a member's access away, allow or " +
-  'stop it being discussed here, review who has access, or archive a finished project and bring it ' +
-  'back again, or batch-create a whole team (project, roster, and this channel) in one confirmed call\n' +
-  '- Generate an image, read a web page from an allowlisted host, or check recent changes to the ' +
-  'bot and community (the changelog)';
-
-/**
- * Plain-language rundown of what a super admin can additionally ask the bot
- * to do, on top of MEMBER_CAPABILITIES_TEXT and ADMIN_CAPABILITIES_TEXT above
- * (issue #582) — every entry in SUPER_ADMIN_TOOLS gets a mention,
- * consolidated into behaviourally-related bullets rather than 19 one-per-line
- * entries, same discipline ADMIN_CAPABILITIES_TEXT already uses (issue #367).
- * No interpolation of any runtime/tool argument — static text only, same
- * trust level as its two siblings.
- */
-const SUPER_ADMIN_CAPABILITIES_TEXT =
-  'As a super admin, you also have:\n' +
-  '- Grant or revoke admin status for a member\n' +
-  '- Pause or resume the bot, view audit logs, review admin activity, list current admins, ' +
-  'or check usage/engagement stats\n' +
-  '- Erase all of a user\'s stored data on request ("purge their data")\n' +
-  '- Change bot-wide policy settings, or trigger a redeploy of the bot\n' +
-  '- See which optional feature flags are currently on or off\n' +
-  '- File a GitHub issue suggesting an improvement\n' +
-  '- Dispatch a remote dev-team job to assess or deliver a change, check its status, fetch its result, ' +
-  "turn a completed assessment into a tracked backlog, list an assessment's findings, or re-check one finding";
 
 /**
  * Fixed cap on how many upcoming events `list_events` returns (issue #388) —
@@ -133,24 +19,42 @@ const SUPER_ADMIN_CAPABILITIES_TEXT =
 export const EVENTS_LIST_LIMIT = 10;
 
 /**
- * Pure formatter behind `community_info` AND the `/help`/`!help` commands
- * (issue #993) — factored out so the tool handler and both command entry
- * points render byte-identical text for the same (role, platform), rather
- * than each re-deriving the role/platform branching independently. Depends
- * only on its arguments plus `config.behaviour.whatsappTextCommandsEnabled`
- * (the same flag the tool handler already read) — never on caller identity
- * beyond the resolved role.
+ * Pure-in-shape formatter behind `community_info` AND the `/help`/`!help`
+ * commands (issue #993) — factored out so the tool handler and both command
+ * entry points render byte-identical text for the same (role, platform,
+ * language), rather than each re-deriving the role/platform branching (or
+ * the language lookup) independently. Async since issue #1028: the member
+ * segment now honours the caller's standing `language_preference` (the same
+ * `getLanguagePreference` accessor `community_guidelines` uses), read ONCE
+ * here rather than at each of the three call sites, so the DB read and the
+ * variant-selection logic exist in exactly one place. Issue #1056 extended
+ * that same `language` value to the admin/super-admin segments (previously
+ * unconditionally English), closing the mid-message language mix #1028 left
+ * for any admin/super-admin caller with a standing `'mi'` preference. Depends
+ * only on its
+ * arguments plus `config.behaviour.whatsappTextCommandsEnabled` (the same
+ * flag the tool handler already read) and the caller's own stored language
+ * preference — never on message content, and never on a language belonging
+ * to anyone but `(platform, userId)` itself.
  */
-export function formatCommunityInfoText(role: Tier, platform: Platform): string {
+export async function formatCommunityInfoText(
+  role: Tier,
+  platform: Platform,
+  userId: string,
+): Promise<string> {
+  const language = await getLanguagePreference(platform, userId);
+  const memberCapabilitiesText = notice('communityInfoMemberCapabilities', { language });
   const memberSegment =
     platform === 'whatsapp' && config.behaviour.whatsappTextCommandsEnabled && atLeast(role, 'member')
-      ? `${MEMBER_CAPABILITIES_TEXT}\n${WHATSAPP_TEXT_COMMANDS_TEXT}`
-      : MEMBER_CAPABILITIES_TEXT;
+      ? `${memberCapabilitiesText}\n${notice('whatsappTextCommands', { language })}`
+      : memberCapabilitiesText;
   if (role === 'super_admin') {
-    return `${memberSegment}\n${ADMIN_CAPABILITIES_TEXT}\n${SUPER_ADMIN_CAPABILITIES_TEXT}`;
+    const adminCapabilitiesText = notice('communityInfoAdminCapabilities', { language });
+    const superAdminCapabilitiesText = notice('communityInfoSuperAdminCapabilities', { language });
+    return `${memberSegment}\n${adminCapabilitiesText}\n${superAdminCapabilitiesText}`;
   }
   if (role === 'admin') {
-    return `${memberSegment}\n${ADMIN_CAPABILITIES_TEXT}`;
+    return `${memberSegment}\n${notice('communityInfoAdminCapabilities', { language })}`;
   }
   return memberSegment;
 }
@@ -186,7 +90,8 @@ export const infoTools = [
     minTier: 'member',
     readOnlyHint: true,
     schema: {},
-    handler: async (_args, { caller }) => text(formatCommunityInfoText(caller.role, caller.platform)),
+    handler: async (_args, { caller }) =>
+      text(await formatCommunityInfoText(caller.role, caller.platform, caller.userId)),
   }),
 
   // Read-only, no arguments; returns the admin-set guidelines text verbatim,

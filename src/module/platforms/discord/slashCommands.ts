@@ -19,7 +19,9 @@ import {
   countRepliesToUser,
   getLanguagePreference,
   getMyDataSummary,
+  getPublishedInterestsForOwners,
   hasConflictAmongIds,
+  listKnowledgeTopics,
   listOwnAppeals,
   listOwnKnowledgeCandidates,
   listOwnProjectConnectionRequests,
@@ -38,9 +40,11 @@ import {
   formatCommunityInfoText,
   formatInterestResults,
   formatKnowledgeSearchResults,
+  formatKnowledgeTopics,
   formatProjectResults,
   KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD,
   LIST_PROJECTS_DEFAULT_LIMIT,
+  WHO_IS_INTO_NO_PROFILE_HINT,
 } from '../../agent/tools.js';
 import { chunkText } from '@swampratnz/agent-base/platforms/textChunk.js';
 import { bindDiscordCommand, type SlashCommandDeps } from '@swampratnz/agent-base/commands/registry.js';
@@ -126,6 +130,10 @@ async function handleKb(interaction: ChatInputCommandInteraction, deps: SlashCom
           return new Set<number>();
         })
       : new Set<number>();
+  // getLanguagePreference (issue #1038) already fails safe to 'auto' on a DB
+  // hiccup — same accessor handleGuidelines/handleMyData already call for
+  // this command's own caller, scoped to their own discord user id.
+  const lang = await getLanguagePreference('discord', interaction.user.id);
   recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
   await replyEphemeral(
     interaction,
@@ -135,6 +143,7 @@ async function handleKb(interaction: ChatInputCommandInteraction, deps: SlashCom
       config.adminDigest.knowledgeStaleMaxAgeDays,
       hasConflict,
       lowRatedIds,
+      lang,
     ),
     deps,
   );
@@ -194,9 +203,22 @@ async function handleWhois(interaction: ChatInputCommandInteraction, deps: Slash
     await replyEphemeral(interaction, NOT_AUTHORIZED_TEXT, deps);
     return;
   }
+  const mine = interaction.options.getBoolean('mine', false) ?? false;
   const query = interaction.options.getString('query', false);
   let reply: string;
-  if (query) {
+  if (mine) {
+    // Checked before query (issue #1022, mirroring /projects' mine handling
+    // above): self-scoped by the caller's OWN identity, ignores any query
+    // passed alongside it — same underlying lookup as who_is_into's chat-path
+    // handler (social.ts).
+    const interestsByOwner = await getPublishedInterestsForOwners([
+      { platform: 'discord', userId: interaction.user.id },
+    ]);
+    const own = interestsByOwner.get(`discord:${interaction.user.id}`);
+    reply = own
+      ? await formatInterestResults([{ platform: 'discord', userId: interaction.user.id, interests: own }])
+      : WHO_IS_INTO_NO_PROFILE_HINT;
+  } else if (query) {
     const hits = await searchMemberInterests(query);
     reply =
       hits.length === 0
@@ -274,7 +296,12 @@ async function handleDigest(interaction: ChatInputCommandInteraction, deps: Slas
   // Calls buildMemberDigestContent directly (not through the tool/model, and
   // never wrapped in untrusted()) — like /kb/whois/projects/guidelines, this
   // reply never re-enters model context, so there is nothing to quarantine.
-  const message = await buildMemberDigestContent();
+  // Threads the caller's identity (issue #1042) so a standing 'mi' preference
+  // renders the digest's section labels in te reo Māori.
+  const message = await buildMemberDigestContent(undefined, {
+    platform: 'discord',
+    userId: interaction.user.id,
+  });
   recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
   await replyEphemeral(interaction, message ?? 'Nothing to report right now.', deps);
 }
@@ -297,13 +324,18 @@ async function handleStatus(interaction: ChatInputCommandInteraction, deps: Slas
  * `minTier: 'member'` tool reachable by every caller including guests (same
  * "MEMBER_TOOLS is also a guest's surface in open mode" reachability every
  * sibling tool documents), and `formatCommunityInfoText` itself branches on
- * the resolved role, so there is nothing left for this handler to gate.
+ * the resolved role (and, since issue #1028, on the caller's own stored
+ * language preference), so there is nothing left for this handler to gate.
  */
 async function handleHelp(interaction: ChatInputCommandInteraction, deps: SlashCommandDeps): Promise<void> {
   await deferEphemeral(interaction);
   const role = await resolveRole('discord', interaction.user.id);
   recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
-  await replyEphemeral(interaction, formatCommunityInfoText(role, 'discord'), deps);
+  await replyEphemeral(
+    interaction,
+    await formatCommunityInfoText(role, 'discord', interaction.user.id),
+    deps,
+  );
 }
 
 /**
@@ -380,7 +412,38 @@ async function handleMyData(interaction: ChatInputCommandInteraction, deps: Slas
   const limit = config.behaviour.dailyReplyLimitPerUser;
   const used =
     role !== 'super_admin' && limit !== 0 ? await countRepliesToUser('discord', interaction.user.id) : null;
-  const message = formatMyDataText(summary, role, limit, used);
+  const language = await getLanguagePreference('discord', interaction.user.id);
+  const message = formatMyDataText(summary, role, limit, used, language);
+  recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
+  await replyEphemeral(interaction, message, deps);
+}
+
+/**
+ * `list_knowledge_topics` is structurally in MEMBER_TOOLS but adds its own
+ * runtime floor (`minTier: 'member'`), same shape as
+ * `/warnings`/`/mysubmissions`/`/mydata` above — mirrored here via
+ * `toolsForRole` + `atLeast`. No options: scope is always the
+ * adapter-resolved `interaction.channelId`, never a model-/interaction-
+ * supplied value (issue #1036).
+ */
+async function handleKbTopics(
+  interaction: ChatInputCommandInteraction,
+  deps: SlashCommandDeps,
+): Promise<void> {
+  await deferEphemeral(interaction);
+  const role = await resolveRole('discord', interaction.user.id);
+  if (
+    !toolsForRole(role, 'discord').includes('mcp__community__list_knowledge_topics') ||
+    !atLeast(role, 'member')
+  ) {
+    await replyEphemeral(interaction, NOT_AUTHORIZED_TEXT, deps);
+    return;
+  }
+  const { titles, totalCount } = await listKnowledgeTopics(
+    { platform: 'discord', conversationId: interaction.channelId },
+    config.behaviour.knowledgeTopicsListLimit,
+  );
+  const message = formatKnowledgeTopics(titles, totalCount);
   recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
   await replyEphemeral(interaction, message, deps);
 }
@@ -491,6 +554,12 @@ export function bindCommunitySlashCommands(adapter: PlatformAdapter): void {
             .setDescription('Optional topic/keyword; omit to find members like you')
             .setRequired(false),
         )
+        .addBooleanOption((o) =>
+          o
+            .setName('mine')
+            .setDescription('Only show your own published interests — ignores query')
+            .setRequired(false),
+        )
         .toJSON(),
     handle: handleWhois,
   });
@@ -543,6 +612,14 @@ export function bindCommunitySlashCommands(adapter: PlatformAdapter): void {
         .setDescription('See a summary of what the bot has stored about you.')
         .toJSON(),
     handle: handleMyData,
+  });
+  bindDiscordCommand('kbtopics', {
+    build: () =>
+      new SlashCommandBuilder()
+        .setName('kbtopics')
+        .setDescription('Browse the titles of what the community knowledge base covers.')
+        .toJSON(),
+    handle: handleKbTopics,
   });
   bindDiscordCommand('events', {
     build: () =>

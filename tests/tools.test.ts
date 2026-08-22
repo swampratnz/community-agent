@@ -114,6 +114,7 @@ const {
   HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER,
   PROJECT_NOTE_RETENTION_NOTICE,
   TEAM_SETUP_MEMBER_CAP,
+  SUGGESTION_RESOLUTION_ECHO_CHARS,
 } = await import('../src/module/agent/tools.js');
 const { reserveVoiceTranscriptionSlot } = await import('@swampratnz/agent-base/agent/rateReservers.js');
 const { filterOutbound } = await import('@swampratnz/agent-base/agent/outbound.js');
@@ -203,6 +204,7 @@ const { formatMyDataText, formatMySubmissionsText } =
   await import('../src/module/agent/tools/selfService.js');
 const { getPendingAlertsForTests, resetPendingAlertsForTests } =
   await import('@swampratnz/agent-base/pendingAlertQueue.js');
+const { COMMUNITY_COMMANDS } = await import('../src/module/commands.js');
 
 // Unique per test-run scope so the knowledge_search handler test's fixture
 // row never collides across runs, mirroring the RUN-tag convention in
@@ -1324,6 +1326,125 @@ test('notifyKnowledgeTipResolved truncates a long tip title in the echoed confir
   assert.match(calls[0], /x{100,140}\.\.\./, 'the echoed title is truncated with an ellipsis');
 });
 
+// decline_knowledge_candidate's optional `reason` (issue #1050): a distinct,
+// quoted, trailing clause on the declined branch only, byte-identical to
+// pre-#1050 when omitted.
+test('notifyKnowledgeTipResolved appends a quoted reason clause after the title clause when declining with a reason (issue #1050 acceptance criterion #1/#3)', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyKnowledgeTipResolved(
+    adapter,
+    'user-1',
+    'declined',
+    'how to reset your password',
+    'discord',
+    'this duplicates an existing entry',
+  );
+
+  assert.match(
+    calls[0],
+    /^Thanks for the knowledge tip — after review it wasn't added this time: "how to reset your password"\. Reason: "this duplicates an existing entry"$/,
+    'the title clause is preserved verbatim, followed by a distinct quoted reason clause',
+  );
+});
+
+test("notifyKnowledgeTipResolved's declined-with-reason wording stays neutral-to-supportive (issue #1050 acceptance criterion #3a)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyKnowledgeTipResolved(adapter, 'user-1', 'declined', 'title', 'discord', 'not really a tip');
+
+  assert.doesNotMatch(
+    calls[0],
+    /wrong|rejected|denied|bad/i,
+    'a reason clause must not make the decline copy read as punitive',
+  );
+});
+
+test('notifyKnowledgeTipResolved produces a decline DM byte-identical to the reasonless message when reason is omitted, undefined, or empty (issue #1050 acceptance criterion #2/#4)', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyKnowledgeTipResolved(adapter, 'user-1', 'declined', 'title', 'discord');
+  await notifyKnowledgeTipResolved(adapter, 'user-1', 'declined', 'title', 'discord', undefined);
+  await notifyKnowledgeTipResolved(adapter, 'user-1', 'declined', 'title', 'discord', '');
+
+  assert.equal(calls.length, 3);
+  assert.equal(calls[0], `Thanks for the knowledge tip — after review it wasn't added this time: "title"`);
+  assert.equal(calls[1], calls[0]);
+  assert.equal(calls[2], calls[0]);
+  calls.forEach((c) => {
+    assert.ok(!c.endsWith(' '), 'no trailing whitespace when reason is absent');
+    assert.ok(!c.includes('\n'), 'no extra newline when reason is absent');
+  });
+});
+
+test('notifyKnowledgeTipResolved ignores a reason on the accepted branch — the accepted DM is unaffected (issue #1050 acceptance criterion #3)', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyKnowledgeTipResolved(
+    adapter,
+    'user-1',
+    'accepted',
+    'title',
+    'discord',
+    'this text must be ignored',
+  );
+
+  assert.equal(
+    calls[0],
+    `Your knowledge tip has been added to the knowledge base — thanks for the contribution! ("title")`,
+    'accepted-branch wording is byte-identical whether or not a reason is supplied',
+  );
+});
+
+test('notifyKnowledgeTipResolved truncates a long decline reason in the echoed clause (issue #1050 acceptance criterion #1)', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+  const longReason = 'y'.repeat(500);
+
+  await notifyKnowledgeTipResolved(adapter, 'user-1', 'declined', 'title', 'discord', longReason);
+
+  assert.ok(!calls[0].includes(longReason), 'the full 500-char reason must not appear verbatim');
+  assert.match(calls[0], /y{100,140}\.\.\./, 'the echoed reason is truncated with an ellipsis');
+});
+
+test("notifyKnowledgeTipResolved's reason clause renders in te reo Māori for a caller with a stored 'mi' preference, reason itself untranslated (issue #1050, issue #331)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyKnowledgeTipResolved(
+    adapter,
+    'user-1',
+    'declined',
+    'how to reset your password',
+    'discord',
+    'he tauriterite tēnei',
+    async () => 'mi',
+  );
+
+  assert.match(calls[0], /kāore i tāpirihia/);
+  assert.match(
+    calls[0],
+    /Take: "he tauriterite tēnei"/,
+    'the reason clause label is te reo, the reason text is not',
+  );
+});
+
 test('notifyKnowledgeTipResolved swallows a DM failure rather than throwing (resolution stays the source of truth)', async () => {
   const adapter = stubAdapter(async () => {
     throw new Error('DMs closed');
@@ -1344,6 +1465,7 @@ test("notifyKnowledgeTipResolved sends the te reo Māori variant for each status
     'accepted',
     'how to reset your password',
     'discord',
+    undefined,
     async () => 'mi',
   );
   await notifyKnowledgeTipResolved(
@@ -1352,6 +1474,7 @@ test("notifyKnowledgeTipResolved sends the te reo Māori variant for each status
     'declined',
     'how to reset your password',
     'discord',
+    undefined,
     async () => 'mi',
   );
 
@@ -1366,7 +1489,15 @@ test("notifyKnowledgeTipResolved sends the English default for the default 'auto
     calls.push(message);
   });
 
-  await notifyKnowledgeTipResolved(adapter, 'user-1', 'accepted', 'title', 'discord', async () => 'auto');
+  await notifyKnowledgeTipResolved(
+    adapter,
+    'user-1',
+    'accepted',
+    'title',
+    'discord',
+    undefined,
+    async () => 'auto',
+  );
 
   assert.match(calls[0], /added to the knowledge base/i);
 });
@@ -1377,7 +1508,7 @@ test("SECURITY: notifyKnowledgeTipResolved degrades to the English default, rath
     calls.push(message);
   });
 
-  await notifyKnowledgeTipResolved(adapter, 'user-1', 'accepted', 'title', 'discord', async () => {
+  await notifyKnowledgeTipResolved(adapter, 'user-1', 'accepted', 'title', 'discord', undefined, async () => {
     throw new Error('DB unreachable');
   });
 
@@ -2791,6 +2922,221 @@ test('SECURITY: list_knowledge_conflicts rejects a non-admin caller (assertAtLea
   );
 });
 
+test(
+  'list_top_knowledge ranks by retrievalCount descending over the FULL scope, not just the first `limit` ' +
+    'unsorted rows — an older, high-retrieval entry that a naive fetch-then-sort would page out still ranks ' +
+    'first (issue #1024 acceptance criterion 2)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-top-knowledge-global-scope`;
+    const { id: topId } = await saveKnowledge({
+      title: 'top-knowledge-highest-count',
+      content: 'The entry with by far the most retrievals, but the oldest updated_at in this scope.',
+      scope,
+    });
+    // Older than every entry below, and its retrieval count is set directly
+    // (not via recordKnowledgeRetrieval) so last_retrieved_at stays null —
+    // isolates the test to the retrievalCount ordering alone.
+    await pool.query(
+      `UPDATE knowledge SET updated_at = now() - interval '1 day', retrieval_count = 9 WHERE id = $1`,
+      [topId],
+    );
+
+    // Three more-recently-updated, zero-retrieval entries — a buggy handler
+    // that fetches only `limit` rows in listKnowledge's default (updated_at
+    // DESC) order and sorts afterward would return exactly these three and
+    // never see topId at all.
+    const others = await Promise.all(
+      [0, 1, 2].map((i) =>
+        saveKnowledge({
+          title: `top-knowledge-zero-count-${i}`,
+          content: `A never-retrieved entry, more recently updated than the top entry (${i}).`,
+          scope,
+        }),
+      ),
+    );
+
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'admin-1',
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: 'convo-list-top-knowledge-ranking',
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['list_top_knowledge'];
+
+    const result = await registeredTool.handler({ scope, limit: 3 });
+    const output = result.content[0]?.text ?? '';
+    // untrusted() collapses the entries' joining '\n' into a single space, so
+    // all returned rows share one body line — position is asserted via
+    // substring index, not line-splitting.
+    const topIndex = output.indexOf(`#${topId} [`);
+    assert.notEqual(
+      topIndex,
+      -1,
+      'the highest-retrieval entry must be present at all — a handler that fetches only `limit` rows in ' +
+        "listKnowledge's default (updated_at DESC) order before sorting would omit it entirely, since it is " +
+        'the oldest-updated row in the scope',
+    );
+    for (const { id: otherId } of others) {
+      const otherIndex = output.indexOf(`#${otherId} [`);
+      if (otherIndex !== -1) {
+        assert.ok(
+          topIndex < otherIndex,
+          'the highest-retrieval entry must rank ahead of any lower-retrieval (zero-count) entry that also appears',
+        );
+      }
+    }
+    const entryCount = (output.match(/#\d+ \[/g) ?? []).length;
+    assert.equal(entryCount, 3, '`limit: 3` caps the ranked result to 3 entries, not the full 4-entry scope');
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[topId, ...others.map((o) => o.id)]]);
+  },
+);
+
+test(
+  'list_top_knowledge is eligible to show a retrievalCount === 0 entry (ranked last, not filtered out) when the scope has fewer entries than `limit` (issue #1024 acceptance criterion 3)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-top-knowledge-small-kb-scope`;
+    const { id: retrievedId } = await saveKnowledge({
+      title: 'top-knowledge-small-kb-retrieved',
+      content: 'A retrieved entry in a scope smaller than the requested limit.',
+      scope,
+    });
+    await recordKnowledgeRetrieval([retrievedId]);
+    const { id: neverRetrievedId } = await saveKnowledge({
+      title: 'top-knowledge-small-kb-never-retrieved',
+      content: 'A never-retrieved entry in the same small scope.',
+      scope,
+    });
+
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'admin-1',
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: 'convo-list-top-knowledge-small-kb',
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['list_top_knowledge'];
+
+    const result = await registeredTool.handler({ scope, limit: 10 });
+    const output = result.content[0]?.text ?? '';
+    assert.match(output, new RegExp(`#${retrievedId}\\b`), 'the retrieved entry appears');
+    assert.match(
+      output,
+      new RegExp(`#${neverRetrievedId}\\b`),
+      'a retrievalCount === 0 entry is eligible to appear rather than being filtered out',
+    );
+    assert.ok(
+      output.indexOf(`#${retrievedId}`) < output.indexOf(`#${neverRetrievedId}`),
+      'the retrieved entry ranks ahead of the never-retrieved one',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[retrievedId, neverRetrievedId]]);
+  },
+);
+
+test('SECURITY: list_top_knowledge rejects a member and a guest caller (assertAtLeast re-check, issue #1024 acceptance criterion 4)', async () => {
+  const adapter = stubAdapter(async () => {});
+  for (const role of ['member', 'guest'] as const) {
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${role}-1`,
+      userName: 'Caller',
+      role,
+      conversationId: 'convo-list-top-knowledge-reject',
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['list_top_knowledge'];
+
+    await assert.rejects(
+      () => registeredTool.handler({}),
+      /admin/i,
+      `a ${role} caller must be rejected by the assertAtLeast re-check`,
+    );
+  }
+});
+
+test(
+  "SECURITY: list_top_knowledge's rendered row is byte-identical to list_knowledge's rendered row for the " +
+    'same entry — both go through the same formatKnowledgeEntryLine renderer, so list_top_knowledge can ' +
+    'never expose a field list_knowledge does not already render (issue #1024 acceptance criterion 5)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-top-knowledge-field-parity-scope`;
+    const { id } = await saveKnowledge({
+      title: 'top-knowledge-field-parity',
+      content: 'An entry with a source citation, so every optional rendered field is populated.',
+      scope,
+      sourceUrl: 'https://example.com/top-knowledge-field-parity',
+      sourceTitle: 'Field parity fixture',
+    });
+    await recordKnowledgeRetrieval([id]);
+
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'admin-1',
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: 'convo-list-top-knowledge-field-parity',
+    };
+    const server = buildToolServer(caller, adapter);
+    const tools = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools;
+
+    const listKnowledgeOutput = (await tools['list_knowledge'].handler({ scope })).content[0]?.text ?? '';
+    const listTopKnowledgeOutput =
+      (await tools['list_top_knowledge'].handler({ scope })).content[0]?.text ?? '';
+
+    // Only one entry in this scope, so each output's body (the line after
+    // untrusted()'s fixed label-line newline) IS that entry's whole rendered
+    // row — no multi-entry splitting needed.
+    const listKnowledgeLine = listKnowledgeOutput.split('\n')[1];
+    const listTopKnowledgeLine = listTopKnowledgeOutput.split('\n')[1];
+    assert.match(listKnowledgeLine ?? '', new RegExp(`^#${id} \\[`), 'list_knowledge must render this entry');
+    assert.equal(
+      listTopKnowledgeLine,
+      listKnowledgeLine,
+      "list_top_knowledge's row for this entry must be byte-identical to list_knowledge's — no new field",
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
+  },
+);
+
 test('SECURITY: set_language_preference rejects any language outside {auto,en,mi} at the zod schema boundary (issue #189)', () => {
   const adapter = stubAdapter(async () => {});
   const caller = {
@@ -2825,17 +3171,22 @@ test('SECURITY: set_language_preference rejects any language outside {auto,en,mi
 });
 
 // community_info (issue #92): the reply is fully determined by caller.role
-// (already trusted, tier-resolved data), so the handler is exercised directly
-// via the MCP server's registered tool, same pattern as the
-// moderation_history zod test above — no DB, no adapter behaviour involved.
+// (already trusted, tier-resolved data) plus — since issue #1028 — the
+// caller's own stored language_prefs row, so the handler is exercised
+// directly via the MCP server's registered tool, same pattern as the
+// moderation_history zod test above — no adapter behaviour involved. userId
+// defaults to a fixed value so every pre-#1028 call site (implicitly asking
+// for the default/unset-preference English text) is unchanged; pass a
+// distinct userId to exercise a caller with a standing language preference.
 function communityInfoHandler(
   role: 'guest' | 'member' | 'admin' | 'super_admin',
   platform: 'discord' | 'whatsapp' = 'discord',
+  userId = 'caller-1',
 ) {
   const adapter = stubAdapter(async () => {});
   const caller = {
     platform,
-    userId: 'caller-1',
+    userId,
     userName: 'Caller',
     role,
     conversationId: 'convo-1',
@@ -2954,7 +3305,7 @@ test('community_info: admin-tier reply stays byte-identical, never gains SUPER_A
     "- Manage membership: add a new member, remove a member, link a member's cross-platform identity, or unlink a member's cross-platform identity\n" +
     '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, check which knowledge entries are rated poorly, and review recurring unhelpful-answer themes across all answers\n' +
     '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
-    "- Curate the knowledge base: save a new knowledge entry, browse knowledge entries, semantically find a knowledge entry's id by what it says, edit a knowledge entry, delete a knowledge entry, or merge two entries together, and check for near-duplicate entries or conflicting entries\n" +
+    "- Curate the knowledge base: save a new knowledge entry, browse knowledge entries, semantically find a knowledge entry's id by what it says, edit a knowledge entry, delete a knowledge entry, or merge two entries together, check for near-duplicate entries or conflicting entries, or rank entries by how often they're retrieved\n" +
     "- Review knowledge candidates, accept a candidate or decline a candidate, track knowledge gaps (questions I couldn't answer), recurring question clusters, raw context digests, pull your own admin-digest snapshot on demand, get a review-queue roll-up of all five review queues at once, or check how quickly I've been answering members (response latency)\n" +
     '- See who is waiting for access, decline a pending access request without granting it, or see who ' +
     'has joined or left the server\n' +
@@ -2972,7 +3323,8 @@ test('community_info: admin-tier reply stays byte-identical, never gains SUPER_A
     adminReply,
     `${memberReply}\n${expectedAdminCapabilitiesText}`,
     "admin-tier reply must be byte-identical to today's deliberately-updated text (issue #1008 added the " +
-      'find_knowledge clause) — this PR must not change the admin branch beyond that documented addition',
+      'find_knowledge clause; issue #1024 added the list_top_knowledge clause) — this PR must not change ' +
+      'the admin branch beyond that documented addition',
   );
   assert.doesNotMatch(
     adminReply,
@@ -3162,6 +3514,7 @@ const ADMIN_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__merge_knowledge', /merge two entries together/i],
   ['mcp__community__list_duplicate_knowledge', /near-duplicate entries/i],
   ['mcp__community__list_knowledge_conflicts', /conflicting entries/i],
+  ['mcp__community__list_top_knowledge', /rank entries by how often they're retrieved/i],
   ['mcp__community__list_access_requests', /waiting for access/i],
   ['mcp__community__decline_access_request', /decline a pending access request/i],
   ['mcp__community__add_member_note', /add a note about a member/i],
@@ -3268,8 +3621,10 @@ test('community_info: admin reply stays under a hard char cap, not a wall of tex
   // once more for issue #1006's decline_access_request clause (same
   // access-request line again, not a new bullet); bumped once more for issue
   // #1008's find_knowledge clause (consolidated into the existing
-  // knowledge-base curation bullet, not a new bullet).
-  assert.ok(adminReply.length < 4470, `admin reply should stay short; was ${adminReply.length} chars`);
+  // knowledge-base curation bullet, not a new bullet); bumped once more for
+  // issue #1024's list_top_knowledge clause (same knowledge-base curation
+  // bullet again, not a new bullet).
+  assert.ok(adminReply.length < 4520, `admin reply should stay short; was ${adminReply.length} chars`);
 });
 
 test('SECURITY: community_info member-tier and guest-tier replies never name an admin/super_admin-only tool or contain any ADMIN_CAPABILITIES_TEXT-unique line (issue #367, issue #311)', async () => {
@@ -3409,9 +3764,11 @@ test('community_info: super_admin reply stays under a hard char cap, not a wall 
   // review's project_unarchive clause, and once more alongside the admin cap
   // for issue #944's team_setup clause, and once more alongside the admin cap
   // for issue #1006's decline_access_request clause; bumped once more
-  // alongside the admin cap for issue #1008's find_knowledge clause.
+  // alongside the admin cap for issue #1008's find_knowledge clause; bumped
+  // once more alongside the admin cap for issue #1024's list_top_knowledge
+  // clause.
   assert.ok(
-    superAdminReply.length < 5120,
+    superAdminReply.length < 5170,
     `super_admin reply should stay short; was ${superAdminReply.length} chars`,
   );
 });
@@ -3493,6 +3850,7 @@ test('SECURITY: community_info for a WhatsApp caller with whatsappTextCommandsEn
         '- `!guidelines` — community guidelines\n' +
         "- `!digest` — this week's digest\n" +
         '- `!status` — check for a known Anthropic outage\n' +
+        '- `!kbtopics` — browse what the knowledge base covers\n' +
         '- `!warnings` — your own active warning count\n' +
         '- `!mysubmissions` — status of your filed suggestions/reports\n' +
         '- `!mydata` — what the bot has stored about you\n' +
@@ -3503,6 +3861,66 @@ test('SECURITY: community_info for a WhatsApp caller with whatsappTextCommandsEn
     config.behaviour.whatsappTextCommandsEnabled = original;
   }
 });
+
+test(
+  'SECURITY: the WhatsApp shortcut-discovery block appended for a WhatsApp caller contains no template ' +
+    'placeholders/interpolation tokens — fixed, human-authored text only (issue #1044 acceptance criterion 3)',
+  async () => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    try {
+      config.behaviour.whatsappTextCommandsEnabled = true;
+      const flagOnReply = (await communityInfoHandler('member', 'whatsapp')).content[0]?.text ?? '';
+      const placeholderPattern = /\$\{|\{\{|%s|%d|\{[0-9a-zA-Z_]*\}/;
+      assert.doesNotMatch(
+        flagOnReply,
+        placeholderPattern,
+        'the WhatsApp shortcut-discovery block must be fixed text with no interpolation markers',
+      );
+    } finally {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    }
+  },
+);
+
+test(
+  'every command in COMMUNITY_COMMANDS whose platforms include "whatsapp" appears as a `!name` bullet in the ' +
+    'WhatsApp shortcut-discovery block, or is on the explicit WHATSAPP_DISCOVERY_EXEMPT_COMMANDS allowlist — so ' +
+    'a future WhatsApp shortcut that skips this file fails CI instead of shipping silently undiscoverable ' +
+    '(issue #1044 acceptance criterion 2)',
+  async () => {
+    // No command is currently exempt: every command whose platforms include
+    // 'whatsapp' is reachable by a member-tier-or-below caller (member-gated
+    // or ungated), so it must be discoverable via !help. Mirrors the
+    // documented `!kb` exemption from WHATSAPP_TEXT_COMMANDS_TEXT's own doc
+    // comment (`!kb` is excluded by its Discord-only `platforms`, not this
+    // list) — a future flag-gated beta shortcut would go here, named and
+    // explained, rather than silently vanishing from the discovery block.
+    const WHATSAPP_DISCOVERY_EXEMPT_COMMANDS: readonly string[] = [];
+
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    try {
+      config.behaviour.whatsappTextCommandsEnabled = true;
+      const discoveryText = (await communityInfoHandler('member', 'whatsapp')).content[0]?.text ?? '';
+
+      const whatsappCommandNames = COMMUNITY_COMMANDS.filter((c) => c.platforms.includes('whatsapp')).map(
+        (c) => c.name,
+      );
+      assert.ok(whatsappCommandNames.length > 0, 'sanity: at least one command targets whatsapp');
+
+      for (const name of whatsappCommandNames) {
+        if (WHATSAPP_DISCOVERY_EXEMPT_COMMANDS.includes(name)) continue;
+        assert.match(
+          discoveryText,
+          new RegExp('`!' + name + '[ `]'),
+          `!${name} is a WhatsApp-reachable command missing a bullet in WHATSAPP_TEXT_COMMANDS_TEXT ` +
+            '(add one, or add it to WHATSAPP_DISCOVERY_EXEMPT_COMMANDS with a documented reason)',
+        );
+      }
+    } finally {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    }
+  },
+);
 
 test('SECURITY: community_info for a guest-tier WhatsApp caller never advertises the member-gated shortcuts, even with whatsappTextCommandsEnabled on (issue #872)', async () => {
   const original = config.behaviour.whatsappTextCommandsEnabled;
@@ -3541,7 +3959,7 @@ test('community_info renders byte-identical text to formatCommunityInfoText for 
         const handlerReply = (await communityInfoHandler(role, platform)).content[0]?.text ?? '';
         assert.equal(
           handlerReply,
-          formatCommunityInfoText(role, platform),
+          await formatCommunityInfoText(role, platform, 'caller-1'),
           `community_info(${role}, ${platform}) must match formatCommunityInfoText's own output`,
         );
       }
@@ -3550,6 +3968,374 @@ test('community_info renders byte-identical text to formatCommunityInfoText for 
     config.behaviour.whatsappTextCommandsEnabled = original;
   }
 });
+
+// --- issue #1028: community_info honours a standing 'mi' language preference
+
+test(
+  'community_info/formatCommunityInfoText serve the te reo Māori member-capabilities text to a member-tier ' +
+    "caller with a standing 'mi' language preference, and byte-identical English to a caller with no " +
+    "stored preference or an 'en' preference (issue #1028 acceptance criteria 2, 3)",
+  { skip },
+  async () => {
+    const miUser = `${RUN}-info-mi-preference`;
+    const enUser = `${RUN}-info-en-preference`;
+
+    await setLanguagePreferenceHandler({ platform: 'discord', userId: miUser }).handler({ language: 'mi' });
+    await setLanguagePreferenceHandler({ platform: 'discord', userId: enUser }).handler({ language: 'en' });
+
+    const defaultReply = (await communityInfoHandler('member', 'discord')).content[0]?.text ?? '';
+    const miReply = (await communityInfoHandler('member', 'discord', miUser)).content[0]?.text ?? '';
+    const enReply = (await communityInfoHandler('member', 'discord', enUser)).content[0]?.text ?? '';
+
+    assert.equal(
+      enReply,
+      defaultReply,
+      "an 'en'-preference caller must render byte-identical to a caller with no stored preference",
+    );
+    assert.match(
+      miReply,
+      /Anei ngā mea ka taea e koe te tono mai ki ahau/,
+      "a 'mi'-preference caller must get the te reo Māori member-capabilities text",
+    );
+    assert.doesNotMatch(
+      miReply,
+      /Here's what you can ask me to do/,
+      'the mi reply must not also contain the English member-capabilities text',
+    );
+    assert.equal(
+      await formatCommunityInfoText('member', 'discord', miUser),
+      miReply,
+      "formatCommunityInfoText's own output must match the tool handler's (single source of truth)",
+    );
+  },
+);
+
+test(
+  "SECURITY: community_info's language selection is driven solely by the caller's own (platform, userId) " +
+    "stored language preference — a 'mi'-preference caller's language never leaks into a distinct caller's " +
+    'reply (issue #1028 acceptance criterion 4)',
+  { skip },
+  async () => {
+    const miUser = `${RUN}-info-sec-mi`;
+    const otherUser = `${RUN}-info-sec-other`;
+
+    await setLanguagePreferenceHandler({ platform: 'discord', userId: miUser }).handler({ language: 'mi' });
+
+    const miReply = (await communityInfoHandler('member', 'discord', miUser)).content[0]?.text ?? '';
+    const otherReply = (await communityInfoHandler('member', 'discord', otherUser)).content[0]?.text ?? '';
+
+    assert.match(miReply, /Anei ngā mea ka taea e koe te tono mai ki ahau/);
+    assert.match(
+      otherReply,
+      /Here's what you can ask me to do/,
+      "a distinct caller with no stored preference must never inherit another caller's 'mi' preference",
+    );
+  },
+);
+
+// --- issue #1056: community_info's admin/super-admin segments honour a
+// standing 'mi' language preference too, closing the mid-message language
+// mix #1028 left behind for exactly this caller shape.
+
+test(
+  'community_info/formatCommunityInfoText serve the te reo Māori admin-capabilities text to an admin ' +
+    "caller with a standing 'mi' language preference, distinct from the English base text (issue #1056 " +
+    'acceptance criterion 1)',
+  { skip },
+  async () => {
+    const miAdmin = `${RUN}-info-admin-mi-preference`;
+
+    await setLanguagePreferenceHandler({ platform: 'discord', userId: miAdmin }).handler({ language: 'mi' });
+
+    const miReply = (await communityInfoHandler('admin', 'discord', miAdmin)).content[0]?.text ?? '';
+
+    assert.match(
+      miReply,
+      /I a koe e noho kaiwhakahaere ana, kei a koe hoki/,
+      "an admin caller with a 'mi' preference must get the te reo Māori admin-capabilities text",
+    );
+    assert.doesNotMatch(
+      miReply,
+      /As an admin, you also have/,
+      'the mi reply must not also contain the English admin-capabilities text',
+    );
+    assert.equal(
+      await formatCommunityInfoText('admin', 'discord', miAdmin),
+      miReply,
+      "formatCommunityInfoText's own output must match the tool handler's (single source of truth)",
+    );
+  },
+);
+
+// --- issue #1034: the WhatsApp `!`-shortcuts discovery block honours the
+// caller's standing 'mi' language preference too, matching #1028's treatment
+// of the member-capabilities segment immediately above it.
+
+test(
+  'community_info/formatCommunityInfoText serve the te reo Māori WhatsApp shortcuts block, immediately ' +
+    'following the te reo Māori member-capabilities text, to a WhatsApp member-tier caller with a standing ' +
+    "'mi' language preference and whatsappTextCommandsEnabled on (issue #1034 acceptance criterion 3)",
+  { skip },
+  async () => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    const miUser = `${RUN}-info-whatsapp-mi-preference`;
+    try {
+      config.behaviour.whatsappTextCommandsEnabled = true;
+      await setLanguagePreferenceHandler({ platform: 'whatsapp', userId: miUser }).handler({
+        language: 'mi',
+      });
+
+      const miReply = (await communityInfoHandler('member', 'whatsapp', miUser)).content[0]?.text ?? '';
+
+      assert.match(
+        miReply,
+        /Anei ngā mea ka taea e koe te tono mai ki ahau/,
+        'must contain the te reo Māori member-capabilities text',
+      );
+      assert.match(
+        miReply,
+        /Kei runga koe i WhatsApp, nō reira ka taea hoki e koe te whakamahi i ēnei pokatata tere/,
+        'must contain the te reo Māori WhatsApp shortcuts block, not an English fallback',
+      );
+      assert.doesNotMatch(
+        miReply,
+        /You're on WhatsApp, so you can also use these zero-wait shortcuts/,
+        'must not also contain the English shortcuts block',
+      );
+      assert.ok(
+        miReply.indexOf('Anei ngā mea ka taea e koe te tono mai ki ahau') <
+          miReply.indexOf('Kei runga koe i WhatsApp'),
+        'the shortcuts block must follow the member-capabilities segment, not precede it',
+      );
+      assert.equal(
+        await formatCommunityInfoText('member', 'whatsapp', miUser),
+        miReply,
+        "formatCommunityInfoText's own output must match the tool handler's (single source of truth)",
+      );
+    } finally {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    }
+  },
+);
+
+test(
+  'community_info/formatCommunityInfoText serve te reo Māori for BOTH the admin- and super-admin-capabilities ' +
+    "segments to a super_admin caller with a standing 'mi' language preference (issue #1056 acceptance " +
+    'criterion 2)',
+  { skip },
+  async () => {
+    const miSuperAdmin = `${RUN}-info-super-admin-mi-preference`;
+
+    await setLanguagePreferenceHandler({ platform: 'discord', userId: miSuperAdmin }).handler({
+      language: 'mi',
+    });
+
+    const miReply =
+      (await communityInfoHandler('super_admin', 'discord', miSuperAdmin)).content[0]?.text ?? '';
+
+    assert.match(
+      miReply,
+      /I a koe e noho kaiwhakahaere ana, kei a koe hoki/,
+      'must include the te reo admin segment',
+    );
+    assert.match(
+      miReply,
+      /I a koe e noho kaiwhakahaere matua \(super admin\) ana, kei a koe hoki/,
+      'must include the te reo super-admin segment',
+    );
+    assert.doesNotMatch(miReply, /As an admin, you also have/, 'must not contain the English admin text');
+    assert.doesNotMatch(
+      miReply,
+      /As a super admin, you also have/,
+      'must not contain the English super-admin text',
+    );
+    assert.equal(
+      await formatCommunityInfoText('super_admin', 'discord', miSuperAdmin),
+      miReply,
+      "formatCommunityInfoText's own output must match the tool handler's (single source of truth)",
+    );
+  },
+);
+
+test(
+  "community_info/formatCommunityInfoText render the WhatsApp shortcuts block byte-identical to today's " +
+    "English literal for a WhatsApp member-tier caller with no stored language preference, an 'en' " +
+    "preference, or an 'auto' preference (issue #1034 acceptance criterion 4)",
+  { skip },
+  async () => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    const enUser = `${RUN}-info-whatsapp-en-preference`;
+    const autoUser = `${RUN}-info-whatsapp-auto-preference`;
+    const expected =
+      "You're on WhatsApp, so you can also use these zero-wait shortcuts:\n" +
+      '- `!whois <topic>` — find members into a topic\n' +
+      '- `!projects [query]` — browse the project showcase\n' +
+      '- `!guidelines` — community guidelines\n' +
+      "- `!digest` — this week's digest\n" +
+      '- `!status` — check for a known Anthropic outage\n' +
+      '- `!kbtopics` — browse what the knowledge base covers\n' +
+      '- `!warnings` — your own active warning count\n' +
+      '- `!mysubmissions` — status of your filed suggestions/reports\n' +
+      '- `!mydata` — what the bot has stored about you\n' +
+      '- `!help` — this capability rundown';
+    try {
+      config.behaviour.whatsappTextCommandsEnabled = true;
+      await setLanguagePreferenceHandler({ platform: 'whatsapp', userId: enUser }).handler({
+        language: 'en',
+      });
+      await setLanguagePreferenceHandler({ platform: 'whatsapp', userId: autoUser }).handler({
+        language: 'auto',
+      });
+
+      const unsetReply = (await communityInfoHandler('member', 'whatsapp')).content[0]?.text ?? '';
+      const enReply = (await communityInfoHandler('member', 'whatsapp', enUser)).content[0]?.text ?? '';
+      const autoReply = (await communityInfoHandler('member', 'whatsapp', autoUser)).content[0]?.text ?? '';
+
+      for (const [label, reply] of [
+        ['unset', unsetReply],
+        ['en', enReply],
+        ['auto', autoReply],
+      ] as const) {
+        assert.ok(
+          reply.endsWith(expected),
+          `${label}-preference caller's reply must end with today's byte-identical English shortcuts literal`,
+        );
+      }
+      assert.equal(enReply, unsetReply, "'en' preference must render byte-identical to no stored preference");
+      assert.equal(
+        autoReply,
+        unsetReply,
+        "'auto' preference must render byte-identical to no stored preference",
+      );
+    } finally {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    }
+  },
+);
+
+test(
+  "SECURITY: community_info's admin- and super-admin-capabilities segments render byte-identical English " +
+    "text (today's ADMIN_CAPABILITIES_TEXT/SUPER_ADMIN_CAPABILITIES_TEXT content) for a caller whose " +
+    "language_preference is unset, 'en', or 'auto' — the default/majority-path regression guard, and role " +
+    'still gates which segments appear (issue #1056 acceptance criterion 5)',
+  { skip },
+  async () => {
+    const unsetAdmin = `${RUN}-info-admin-unset-preference`;
+    const enSuperAdmin = `${RUN}-info-super-admin-en-preference`;
+    const autoSuperAdmin = `${RUN}-info-super-admin-auto-preference`;
+
+    await setLanguagePreferenceHandler({ platform: 'discord', userId: enSuperAdmin }).handler({
+      language: 'en',
+    });
+    await setLanguagePreferenceHandler({ platform: 'discord', userId: autoSuperAdmin }).handler({
+      language: 'auto',
+    });
+
+    const adminReplyUnset =
+      (await communityInfoHandler('admin', 'discord', unsetAdmin)).content[0]?.text ?? '';
+    const superAdminReplyEn =
+      (await communityInfoHandler('super_admin', 'discord', enSuperAdmin)).content[0]?.text ?? '';
+    const superAdminReplyAuto =
+      (await communityInfoHandler('super_admin', 'discord', autoSuperAdmin)).content[0]?.text ?? '';
+    const superAdminReplyDefault = (await communityInfoHandler('super_admin')).content[0]?.text ?? '';
+
+    assert.match(adminReplyUnset, /As an admin, you also have/, 'unset preference must default to English');
+    assert.doesNotMatch(
+      adminReplyUnset,
+      /I a koe e noho kaiwhakahaere ana/,
+      'unset preference must never render the te reo admin text',
+    );
+    assert.equal(
+      superAdminReplyEn,
+      superAdminReplyDefault,
+      "an 'en'-preference super_admin caller must render byte-identical to a caller with no stored preference",
+    );
+    assert.equal(
+      superAdminReplyAuto,
+      superAdminReplyDefault,
+      "an 'auto'-preference super_admin caller must render byte-identical to a caller with no stored preference",
+    );
+    assert.match(superAdminReplyDefault, /As an admin, you also have/, 'must contain the English admin text');
+    assert.match(
+      superAdminReplyDefault,
+      /As a super admin, you also have/,
+      'must contain the English super-admin text',
+    );
+
+    // Role gating is unaffected by the language change: a member/guest never
+    // sees any admin content, even were they to hold a 'mi' preference.
+    const memberReply = (await communityInfoHandler('member')).content[0]?.text ?? '';
+    const guestReply = (await communityInfoHandler('guest')).content[0]?.text ?? '';
+    assert.doesNotMatch(memberReply, /As an admin, you also have|I a koe e noho kaiwhakahaere ana/);
+    assert.doesNotMatch(guestReply, /As an admin, you also have|I a koe e noho kaiwhakahaere ana/);
+  },
+);
+
+test(
+  'community_info/formatCommunityInfoText never render the WhatsApp shortcuts block, in either language, ' +
+    'for a Discord caller (any language preference) or a WhatsApp caller with whatsappTextCommandsEnabled ' +
+    'off — regression pin for issue #1034 (acceptance criterion 5)',
+  { skip },
+  async () => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    const discordMiUser = `${RUN}-info-shortcuts-discord-mi`;
+    try {
+      await setLanguagePreferenceHandler({ platform: 'discord', userId: discordMiUser }).handler({
+        language: 'mi',
+      });
+
+      config.behaviour.whatsappTextCommandsEnabled = true;
+      const discordMiReply =
+        (await communityInfoHandler('member', 'discord', discordMiUser)).content[0]?.text ?? '';
+      assert.doesNotMatch(discordMiReply, /!whois/, 'a Discord caller must never see the WhatsApp shortcuts');
+      assert.doesNotMatch(
+        discordMiReply,
+        /Kei runga koe i WhatsApp/,
+        'a Discord caller must never see the te reo Māori WhatsApp shortcuts either',
+      );
+
+      config.behaviour.whatsappTextCommandsEnabled = false;
+      const whatsappFlagOffReply = (await communityInfoHandler('member', 'whatsapp')).content[0]?.text ?? '';
+      assert.doesNotMatch(
+        whatsappFlagOffReply,
+        /!whois|Kei runga koe i WhatsApp/,
+        'a WhatsApp caller with the flag off must never see either language of the shortcuts block',
+      );
+    } finally {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    }
+  },
+);
+
+test(
+  "SECURITY: the WhatsApp shortcuts block's language selection is driven solely by the caller's own " +
+    "(platform, userId) stored language preference plus whatsappTextCommandsEnabled — a 'mi'-preference " +
+    "caller's language never leaks into a distinct caller's reply (issue #1034 acceptance criterion 7)",
+  { skip },
+  async () => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    const miUser = `${RUN}-info-shortcuts-sec-mi`;
+    const otherUser = `${RUN}-info-shortcuts-sec-other`;
+    try {
+      config.behaviour.whatsappTextCommandsEnabled = true;
+      await setLanguagePreferenceHandler({ platform: 'whatsapp', userId: miUser }).handler({
+        language: 'mi',
+      });
+
+      const miReply = (await communityInfoHandler('member', 'whatsapp', miUser)).content[0]?.text ?? '';
+      const otherReply = (await communityInfoHandler('member', 'whatsapp', otherUser)).content[0]?.text ?? '';
+
+      assert.match(miReply, /Kei runga koe i WhatsApp/);
+      assert.match(
+        otherReply,
+        /You're on WhatsApp, so you can also use these zero-wait shortcuts/,
+        "a distinct caller with no stored preference must never inherit another caller's 'mi' preference",
+      );
+    } finally {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    }
+  },
+);
 
 test('SECURITY: redeploy_bot registers a pending action instead of executing directly (issue #101)', async () => {
   const adapter = stubAdapter(async () => {});
@@ -9765,6 +10551,61 @@ test("SECURITY: formatKnowledgeSearchResults keeps an auto-researched hit's quar
   assert.match(autoLineFirst ?? '', /Unreviewed auto content\./);
 });
 
+// lang (issue #1038): formatKnowledgeSearchResults threads its trailing lang
+// argument straight into formatKnowledgeCitationNote, so /kb (the only
+// caller that passes it) can render the stale/low-rated caveats in the
+// caller's stored language preference. knowledge_search's own call site
+// (knowledgeMember.ts) never passes it — the model composes that reply
+// in-language already — so it, and every other omitted-argument caller,
+// must stay byte-identical.
+test('formatKnowledgeSearchResults renders the stale and low-rated caveats in te reo Māori when lang is "mi" (issue #1038 acceptance criterion 2)', () => {
+  const hit = {
+    id: 1,
+    title: 'Stale low-rated entry',
+    content: 'Some content.',
+    similarity: 0.9,
+    updatedAt: ancientDate,
+    lastRetrievedAt: null,
+  };
+  const text = formatKnowledgeSearchResults([hit], 30, 0, false, new Set([1]), 'mi');
+  assert.ok(
+    text.includes(notice('knowledgeStaleNote', { language: 'mi' })),
+    'the mi staleness caveat must render when lang is mi',
+  );
+  assert.ok(
+    text.includes(notice('knowledgeLowRatedCaveat', { language: 'mi' })),
+    'the mi low-rated caveat must render when lang is mi',
+  );
+  assert.ok(!text.includes('may be outdated'), 'the English staleness caveat must not render alongside mi');
+  assert.ok(
+    !text.includes('other members found this unhelpful'),
+    'the English low-rated caveat must not render alongside mi',
+  );
+});
+
+test(
+  "formatKnowledgeSearchResults is byte-identical whether lang is omitted or explicitly 'auto' " +
+    '(issue #1038 regression guard — stale/low-rated caveats stay English)',
+  () => {
+    const hit = {
+      id: 1,
+      title: 'Stale low-rated entry',
+      content: 'Some content.',
+      similarity: 0.9,
+      updatedAt: ancientDate,
+      lastRetrievedAt: null,
+    };
+    const omitted = formatKnowledgeSearchResults([hit], 30, 0, false, new Set([1]));
+    const explicitAuto = formatKnowledgeSearchResults([hit], 30, 0, false, new Set([1]), 'auto');
+    assert.equal(omitted, explicitAuto);
+    assert.ok(omitted.includes('may be outdated'), 'sanity check: the English staleness caveat is present');
+    assert.ok(
+      omitted.includes('other members found this unhelpful'),
+      'sanity check: the English low-rated caveat is present',
+    );
+  },
+);
+
 // formatKnowledgeCitationNote (issue #214): deterministic, send-path-only
 // citation + freshness formatting shared by knowledge_search
 // (formatKnowledgeSearchResults) and the router's zero-token knowledge
@@ -11205,6 +12046,163 @@ test("SECURITY: formatKnowledgeSearchResults keeps a low-rated hit's own content
     'low-rated entry stays first when its relevance gap is real',
   );
   assert.match(lowRatedLineFirst ?? '', /\(95% match\).*Unique low-rated content marker\./);
+});
+
+// formatKnowledgeSearchResults' near-tie comparator also considering
+// sourceUnreachable (issue #1054) — a third rung, checked AFTER lowRatedIds
+// and BEFORE staleness, keying on the weekly link-rot checker's (#448)
+// verdict. deadLinkTieHit mirrors lowRatedTieHit's shape so only the
+// reachability signal varies.
+const deadLinkTieHit = (
+  similarity: number,
+  title: string,
+  id: number,
+  sourceUnreachable: boolean | null,
+) => ({
+  id,
+  title,
+  content: `Content for ${title}.`,
+  similarity,
+  updatedAt: new Date(),
+  lastRetrievedAt: null,
+  sourceUnreachable,
+});
+
+test('formatKnowledgeSearchResults near-tie (issue #1054): the reachable hit sorts before an equally-relevant dead-link hit even when the dead-link hit has marginally higher raw similarity', () => {
+  const dead = deadLinkTieHit(0.8, 'Dead-link entry', 1, true);
+  const reachable = deadLinkTieHit(0.8 - (KNOWLEDGE_TIE_MARGIN - 0.01), 'Reachable entry', 2, null);
+  const text = formatKnowledgeSearchResults([dead, reachable]);
+  assert.ok(
+    text.indexOf('Reachable entry') < text.indexOf('Dead-link entry'),
+    'the reachable hit must sort first despite the dead-link hit having the marginally higher raw similarity',
+  );
+});
+
+test('formatKnowledgeSearchResults near-tie (issue #1054): order is unchanged when both near-tied hits are dead-linked (no reachability signal to act on)', () => {
+  const higher = deadLinkTieHit(0.8, 'Higher-scored dead-link entry', 1, true);
+  const lower = deadLinkTieHit(0.8 - (KNOWLEDGE_TIE_MARGIN - 0.01), 'Lower-scored dead-link entry', 2, true);
+  const text = formatKnowledgeSearchResults([higher, lower]);
+  assert.ok(
+    text.indexOf('Higher-scored dead-link entry') < text.indexOf('Lower-scored dead-link entry'),
+    'both-dead-link near-ties fall through to the staleness/index tie-break, keeping similarity-descending order',
+  );
+});
+
+test('formatKnowledgeSearchResults near-tie (issue #1054): order is unchanged when neither near-tied hit is dead-linked', () => {
+  const higher = deadLinkTieHit(0.8, 'Higher-scored reachable entry', 1, null);
+  const lower = deadLinkTieHit(0.8 - (KNOWLEDGE_TIE_MARGIN - 0.01), 'Lower-scored reachable entry', 2, null);
+  const text = formatKnowledgeSearchResults([higher, lower]);
+  assert.ok(
+    text.indexOf('Higher-scored reachable entry') < text.indexOf('Lower-scored reachable entry'),
+    'neither-dead-link near-ties fall through to the staleness/index tie-break, unchanged',
+  );
+});
+
+test('formatKnowledgeSearchResults (issue #1054): a real relevance gap (more than KNOWLEDGE_TIE_MARGIN) always wins, even when the higher-scored hit is the dead-link one', () => {
+  const dead = deadLinkTieHit(0.9, 'Dead-link but clearly more relevant', 1, true);
+  const reachable = deadLinkTieHit(
+    0.9 - (KNOWLEDGE_TIE_MARGIN + 0.01),
+    'Reachable but clearly less relevant',
+    2,
+    null,
+  );
+  const text = formatKnowledgeSearchResults([dead, reachable]);
+  assert.ok(
+    text.indexOf('Dead-link but clearly more relevant') < text.indexOf('Reachable but clearly less relevant'),
+    'a genuine relevance gap must never be overridden by the dead-link tie-break',
+  );
+});
+
+test('formatKnowledgeSearchResults near-tie (issue #1054, acceptance criterion 2a): low-rated dominates dead-link — a reachable-but-low-rated hit still sorts after a dead-link-but-not-low-rated hit', () => {
+  const reachableLowRated = deadLinkTieHit(0.8, 'Reachable low-rated entry', 1, null);
+  const deadNotLowRated = deadLinkTieHit(
+    0.8 - (KNOWLEDGE_TIE_MARGIN - 0.01),
+    'Dead-link healthy-rated entry',
+    2,
+    true,
+  );
+  const text = formatKnowledgeSearchResults(
+    [reachableLowRated, deadNotLowRated],
+    undefined,
+    undefined,
+    false,
+    new Set([1]),
+  );
+  assert.ok(
+    text.indexOf('Dead-link healthy-rated entry') < text.indexOf('Reachable low-rated entry'),
+    'the low-rated rung must dominate the dead-link rung — a low-rated hit sorts last even though its source is reachable',
+  );
+});
+
+test('formatKnowledgeSearchResults near-tie (issue #1054, acceptance criterion 2b): dead-link dominates staleness — a stale-but-reachable hit still sorts before a fresh-but-dead-link hit', () => {
+  const staleReachable = { ...deadLinkTieHit(0.8, 'Stale reachable entry', 1, null), updatedAt: ancientDate };
+  const freshDead = deadLinkTieHit(0.8 - (KNOWLEDGE_TIE_MARGIN - 0.01), 'Fresh dead-link entry', 2, true);
+  const text = formatKnowledgeSearchResults([staleReachable, freshDead], 30);
+  assert.ok(
+    text.indexOf('Stale reachable entry') < text.indexOf('Fresh dead-link entry'),
+    'the dead-link rung must dominate staleness — a dead-link hit sorts last even though it is fresher',
+  );
+});
+
+test('SECURITY: formatKnowledgeSearchResults near-tie ordering is byte-identical whether sourceUnreachable is null, false, or omitted entirely — a never-checked or confirmed-live entry is never demoted (issue #1054)', () => {
+  const stale = staleHit(0.8, 'Stale entry');
+  const fresh = freshHit(0.8 - (KNOWLEDGE_TIE_MARGIN - 0.01), 'Fresh entry');
+  const omitted = formatKnowledgeSearchResults([stale, fresh], 30);
+  const withNull = formatKnowledgeSearchResults(
+    [
+      { ...stale, sourceUnreachable: null },
+      { ...fresh, sourceUnreachable: null },
+    ],
+    30,
+  );
+  const withFalse = formatKnowledgeSearchResults(
+    [
+      { ...stale, sourceUnreachable: false },
+      { ...fresh, sourceUnreachable: false },
+    ],
+    30,
+  );
+  assert.equal(
+    withNull,
+    omitted,
+    'sourceUnreachable: null must be byte-identical to the field being omitted',
+  );
+  assert.equal(
+    withFalse,
+    omitted,
+    'sourceUnreachable: false must be byte-identical to the field being omitted',
+  );
+});
+
+test('SECURITY: formatKnowledgeSearchResults introduces no new string and no new disclosure for the dead-link rung — a same-ordered pair renders byte-identical text whether or not sourceUnreachable is set (issue #1054)', () => {
+  const a = {
+    id: 1,
+    title: 'A',
+    content: 'Content A',
+    similarity: 0.8,
+    updatedAt: new Date(),
+    lastRetrievedAt: null,
+  };
+  const b = {
+    id: 2,
+    title: 'B',
+    content: 'Content B',
+    similarity: 0.8 - (KNOWLEDGE_TIE_MARGIN - 0.01),
+    updatedAt: new Date(),
+    lastRetrievedAt: null,
+  };
+  // Neither hit carries a sourceUrl, so #465's display caveat never fires
+  // either way — this isolates the ordering rung from the display rung.
+  const withoutSignal = formatKnowledgeSearchResults([a, b]);
+  const withSignalButSameOrder = formatKnowledgeSearchResults([
+    { ...a, sourceUnreachable: true },
+    { ...b, sourceUnreachable: true },
+  ]);
+  assert.equal(
+    withoutSignal,
+    withSignalButSameOrder,
+    'a same-ordered pair must render byte-identical text regardless of sourceUnreachable — reordering must never leak which entry was (or would be) demoted',
+  );
 });
 
 test('formatKnowledgeSearchResults (issue #465): the knowledge_search tool reply surfaces the dead-link caveat for a hit whose source_unreachable is true', () => {
@@ -13728,6 +14726,7 @@ function whoIsIntoHandler(caller: {
         {
           handler: (args: {
             query?: string;
+            mine?: boolean;
           }) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
         }
       >;
@@ -14434,6 +15433,15 @@ test('SECURITY: set_my_interests and who_is_into refuse a guest-tier caller befo
   );
 });
 
+test('SECURITY: who_is_into refuses a guest-tier caller when mine: true is set — the new argument adds no alternate reachability path (issue #1022)', async () => {
+  const whoTool = whoIsIntoHandler({ platform: 'discord', userId: 'guest-4', role: 'guest' });
+  await assert.rejects(
+    () => whoTool.handler({ mine: true }),
+    /Permission denied/,
+    'a guest must be refused with mine: true, before getPublishedInterestsForOwners is ever called',
+  );
+});
+
 test(
   "set_my_interests publishes the caller's interests, upserts in place on a second call, and 'clear' removes the entry — all reflected via who_is_into (issue #634)",
   { skip },
@@ -14712,6 +15720,99 @@ test(
       [caller, matchesPublished, matchesChatOnly],
     ]);
     await pool.query(`DELETE FROM interactions WHERE user_id = $1`, [caller]);
+  },
+);
+
+test(
+  "who_is_into mine:true returns exactly the caller's own published interests text, with a distinct empty-state message, and leaves mine omitted/false byte-identical to today (issue #1022 AC #1, #2, #5)",
+  { skip },
+  async () => {
+    const caller = `${RUN}-who-is-into-mine-caller`;
+    const setTool = setMyInterestsHandler({ platform: 'discord', userId: caller });
+    const whoTool = whoIsIntoHandler({ platform: 'discord', userId: caller });
+
+    const noneYet = await whoTool.handler({ mine: true });
+    assert.equal(noneYet.isError, false);
+    assert.match(noneYet.content[0]?.text ?? '', /haven't published interests yet/i);
+
+    const published = await setTool.handler({ interests: 'Recall-my-own interests text' });
+    assert.equal(published.isError, false);
+
+    const mine = await whoTool.handler({ mine: true });
+    assert.equal(mine.isError, false);
+    assert.match(mine.content[0]?.text ?? '', /Recall-my-own interests text/);
+
+    // AC #5: mine omitted/false stays byte-identical to today's existing
+    // no-query self-match path (the caller now has a published row).
+    const omitted = await whoTool.handler({});
+    const explicitFalse = await whoTool.handler({ mine: false });
+    assert.equal(explicitFalse.content[0]?.text, omitted.content[0]?.text);
+    assert.doesNotMatch(
+      omitted.content[0]?.text ?? '',
+      /Recall-my-own interests text/,
+      "the existing no-query path excludes the caller's own row (issue #882) — mine:true must not have changed that",
+    );
+
+    await pool.query(`DELETE FROM member_interests WHERE platform = 'discord' AND user_id = $1`, [caller]);
+  },
+);
+
+test(
+  "SECURITY: who_is_into({ mine: true }) for caller A never returns caller B's interests, even when B has a published row and A does not (issue #1022 AC #3)",
+  { skip },
+  async () => {
+    const callerA = `${RUN}-who-is-into-mine-caller-a`;
+    const callerB = `${RUN}-who-is-into-mine-caller-b`;
+    const bSetTool = setMyInterestsHandler({ platform: 'discord', userId: callerB });
+    assert.equal(
+      (await bSetTool.handler({ interests: 'must never leak into caller A mine:true results' })).isError,
+      false,
+    );
+
+    const aWhoTool = whoIsIntoHandler({ platform: 'discord', userId: callerA });
+    const aMine = await aWhoTool.handler({ mine: true });
+    assert.match(
+      aMine.content[0]?.text ?? '',
+      /haven't published interests yet/i,
+      "caller A has no published row of their own, regardless of caller B's",
+    );
+    assert.doesNotMatch(aMine.content[0]?.text ?? '', /must never leak into caller A/);
+
+    await pool.query(`DELETE FROM member_interests WHERE platform = 'discord' AND user_id = $1`, [callerB]);
+  },
+);
+
+test(
+  "SECURITY: who_is_into mine:true ignores a supplied query and draws its result exclusively from the caller's own published interests, never falling through to the public search path (issue #1022 AC #4)",
+  { skip },
+  async () => {
+    const ownerId = `${RUN}-who-is-into-mine-ignores-query`;
+    const otherId = `${RUN}-who-is-into-mine-ignores-query-other`;
+    const ownerSetTool = setMyInterestsHandler({ platform: 'discord', userId: ownerId });
+    const otherSetTool = setMyInterestsHandler({ platform: 'discord', userId: otherId });
+    const whoTool = whoIsIntoHandler({ platform: 'discord', userId: ownerId });
+
+    // The caller's own published text deliberately does NOT match the query
+    // below, so if mine:true fell through to the public search path it would
+    // be excluded (or replaced by the other member's matching row).
+    assert.equal((await ownerSetTool.handler({ interests: 'Unrelated own interests text' })).isError, false);
+    assert.equal(
+      (await otherSetTool.handler({ interests: 'a gizmo project matching the query below' })).isError,
+      false,
+    );
+
+    const result = await whoTool.handler({ mine: true, query: 'gizmo' });
+    const resultText = result.content[0]?.text ?? '';
+    assert.match(resultText, /Unrelated own interests text/, "the caller's own text is still shown");
+    assert.doesNotMatch(
+      resultText,
+      /gizmo/,
+      "another member's interests must never appear, even though they match the supplied query",
+    );
+
+    await pool.query(`DELETE FROM member_interests WHERE platform = 'discord' AND user_id = ANY($1)`, [
+      [ownerId, otherId],
+    ]);
   },
 );
 
@@ -18762,7 +19863,152 @@ test(
 );
 
 test(
-  'SECURITY: machine-drafted candidates (source_user_id IS NULL) never trigger a DM on accept OR decline, regardless of resolution outcome (issue #703 acceptance criterion #3/#7)',
+  'decline_knowledge_candidate forwards an optional reason to the resolution DM as a distinct clause (issue #1050 acceptance criterion #1)',
+  { skip },
+  async () => {
+    const tip = await createKnowledgeTip({
+      platform: 'discord',
+      userId: KNOWLEDGE_TIP_RESOLUTION_HANDLER_USER,
+      topic: `${RUN} kc-tip-resolution-decline-reason-topic`,
+      title: 'declined-with-reason tip title',
+      content: `${RUN} kc-tip-resolution-decline-reason content`,
+    });
+    assert.ok(tip);
+    const candidateId = tip.id;
+
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (_userId, message) => {
+      calls.push(message);
+    });
+
+    const tools = knowledgeCandidateHandlers({ platform: 'discord', adapter });
+    const result = await tools['decline_knowledge_candidate'].handler({
+      id: candidateId,
+      reason: 'this duplicates an existing entry',
+    });
+
+    assert.equal(result.isError, false);
+    assert.equal(calls.length, 1);
+    assert.match(calls[0], /declined-with-reason tip title/);
+    assert.match(calls[0], /Reason: "this duplicates an existing entry"/);
+
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [candidateId]);
+  },
+);
+
+test(
+  'SECURITY: decline_knowledge_candidate truncateForEcho-caps a reason longer than the echo bound before it reaches the member DM, never the raw payload (issue #1050 acceptance criterion #5)',
+  { skip },
+  async () => {
+    const tip = await createKnowledgeTip({
+      platform: 'discord',
+      userId: KNOWLEDGE_TIP_RESOLUTION_HANDLER_USER,
+      topic: `${RUN} kc-tip-resolution-decline-long-reason-topic`,
+      title: 'declined-with-long-reason tip title',
+      content: `${RUN} kc-tip-resolution-decline-long-reason content`,
+    });
+    assert.ok(tip);
+    const candidateId = tip.id;
+    const longReason = 'z'.repeat(500);
+
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (_userId, message) => {
+      calls.push(message);
+    });
+
+    const tools = knowledgeCandidateHandlers({ platform: 'discord', adapter });
+    const result = await tools['decline_knowledge_candidate'].handler({
+      id: candidateId,
+      reason: longReason,
+    });
+
+    assert.equal(result.isError, false);
+    assert.equal(calls.length, 1);
+    assert.ok(!calls[0].includes(longReason), 'the raw 500-char reason must never reach the member DM');
+    assert.match(
+      calls[0],
+      /z{100,140}\.\.\./,
+      'the reason reaching the DM is the truncateForEcho-capped form',
+    );
+
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [candidateId]);
+  },
+);
+
+test('SECURITY: decline_knowledge_candidate rejects a reason over SUGGESTION_RESOLUTION_ECHO_CHARS at the zod schema boundary (issue #1050 acceptance criterion #1)', () => {
+  const adapter = stubAdapter(async () => {});
+  const caller = {
+    platform: 'discord' as const,
+    userId: 'admin-1',
+    userName: 'Admin',
+    role: 'admin' as const,
+    conversationId: 'convo-1',
+  };
+  const server = buildToolServer(caller, adapter);
+  const registeredTool = (
+    server.instance as unknown as {
+      _registeredTools: Record<string, { inputSchema: { safeParse: (v: unknown) => { success: boolean } } }>;
+    }
+  )._registeredTools['decline_knowledge_candidate'];
+
+  assert.equal(
+    registeredTool.inputSchema.safeParse({ id: 1, reason: 'x'.repeat(SUGGESTION_RESOLUTION_ECHO_CHARS) })
+      .success,
+    true,
+    'exactly the echo bound is allowed',
+  );
+  assert.equal(
+    registeredTool.inputSchema.safeParse({ id: 1, reason: 'x'.repeat(SUGGESTION_RESOLUTION_ECHO_CHARS + 1) })
+      .success,
+    false,
+    'one character over the echo bound must be rejected',
+  );
+  assert.equal(
+    registeredTool.inputSchema.safeParse({ id: 1 }).success,
+    true,
+    'the id-only call form (no reason) remains valid',
+  );
+});
+
+test("SECURITY: decline_knowledge_candidate's new reason argument changes neither its admin-tier requirement nor any role's tool surface — still exactly ADMIN_TOOLS membership, absent from MEMBER_TOOLS/SUPER_ADMIN_TOOLS is irrelevant since ADMIN_TOOLS is a superset a super_admin also gets (issue #1050 acceptance criterion #6)", async () => {
+  assert.ok(
+    ADMIN_TOOLS.includes('mcp__community__decline_knowledge_candidate'),
+    'decline_knowledge_candidate must still be exactly in ADMIN_TOOLS',
+  );
+  assert.ok(
+    !MEMBER_TOOLS.includes('mcp__community__decline_knowledge_candidate'),
+    'the new reason argument must not have moved decline_knowledge_candidate into MEMBER_TOOLS',
+  );
+
+  const adapter = stubAdapter(async () => {});
+  for (const role of ['guest', 'member'] as const) {
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'caller-1',
+      userName: 'Caller',
+      role,
+      conversationId: 'convo-1',
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['decline_knowledge_candidate'];
+
+    await assert.rejects(
+      () => registeredTool.handler({ id: 1, reason: 'ignored' }),
+      /admin/i,
+      `a ${role} caller must be rejected by the assertAtLeast re-check even with reason set — the new param opens no lower-privilege path`,
+    );
+  }
+});
+
+test(
+  'SECURITY: machine-drafted candidates (source_user_id IS NULL) never trigger a DM on accept OR decline, regardless of resolution outcome or a supplied decline reason (issue #703 acceptance criterion #3/#7, issue #1050 acceptance criterion #7)',
   { skip },
   async () => {
     const digestId = await insertContextDigest({
@@ -18795,10 +20041,17 @@ test(
 
     const acceptResult = await tools['accept_knowledge_candidate'].handler({ id: acceptedCandidateId });
     assert.equal(acceptResult.isError, false);
-    const declineResult = await tools['decline_knowledge_candidate'].handler({ id: declinedCandidateId });
+    const declineResult = await tools['decline_knowledge_candidate'].handler({
+      id: declinedCandidateId,
+      reason: 'this reason must never be echoed anywhere — there is no member to send it to',
+    });
     assert.equal(declineResult.isError, false);
 
-    assert.equal(calls.length, 0, 'a machine-drafted candidate has no member to notify on either path');
+    assert.equal(
+      calls.length,
+      0,
+      'a machine-drafted candidate has no member to notify on either path, even with a decline reason supplied',
+    );
 
     const knowledgeRows = await pool.query(`SELECT id FROM knowledge WHERE content = $1`, [
       `${RUN} kc-tip-machine accept content`,
@@ -18863,6 +20116,55 @@ test(
       `${RUN} kc-tip-resolution-cross-platform content`,
     ]);
     await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [knowledgeRows.rows.map((r) => r.id)]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [candidateId]);
+  },
+);
+
+test(
+  "SECURITY: decline_knowledge_candidate routes a cross-platform DM through the tip's origin adapter, never the resolving admin's current-turn adapter, and the new reason argument cannot redirect it (issue #703 acceptance criterion #4/#7, issue #1050 acceptance criterion #7)",
+  { skip },
+  async () => {
+    const tip = await createKnowledgeTip({
+      platform: 'whatsapp',
+      userId: KNOWLEDGE_TIP_RESOLUTION_HANDLER_USER,
+      topic: `${RUN} kc-tip-resolution-decline-cross-platform-topic`,
+      title: 'decline cross-platform tip title',
+      content: `${RUN} kc-tip-resolution-decline-cross-platform content`,
+    });
+    assert.ok(tip);
+    const candidateId = tip.id;
+
+    const adminTurnCalls: string[] = [];
+    const adminTurnAdapter = stubAdapter(async (userId) => {
+      adminTurnCalls.push(userId);
+    });
+    const originCalls: Array<[string, string]> = [];
+    const originAdapter = stubAdapter(async (userId, text) => {
+      originCalls.push([userId, text]);
+    });
+
+    // Same shape as accept_knowledge_candidate's cross-platform test above:
+    // the tip was filed on whatsapp, the admin is resolving from discord, and
+    // decline_knowledge_candidate's own args (id, reason) carry no identity/
+    // platform field — the reason string in particular must not be usable to
+    // redirect the DM anywhere but the persisted row's own origin platform.
+    const tools = knowledgeCandidateHandlers({
+      platform: 'discord',
+      adapter: adminTurnAdapter,
+      getAdapter: (platform) => (platform === 'whatsapp' ? originAdapter : undefined),
+    });
+    const result = await tools['decline_knowledge_candidate'].handler({
+      id: candidateId,
+      reason: 'this is not a redirect vector',
+    });
+
+    assert.equal(result.isError, false, 'resolution itself still succeeds');
+    assert.equal(adminTurnCalls.length, 0, "never misaddressed through the resolving admin's own adapter");
+
+    const submitterCalls = originCalls.filter(([userId]) => userId === KNOWLEDGE_TIP_RESOLUTION_HANDLER_USER);
+    assert.equal(submitterCalls.length, 1, "the submitter is notified via the tip's origin platform");
+    assert.match(submitterCalls[0][1], /Reason: "this is not a redirect vector"/);
+
     await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [candidateId]);
   },
 );
@@ -21163,14 +22465,18 @@ test(
   { skip },
   async () => {
     const userId = `${MY_DATA_HANDLER_USER}-formatter-parity`;
-    const [handlerResult, summary] = await Promise.all([
+    const [handlerResult, summary, language] = await Promise.all([
       myDataHandler(userId).handler(),
       getMyDataSummary('whatsapp', userId),
+      getLanguagePreference('whatsapp', userId),
     ]);
     const limit = config.behaviour.dailyReplyLimitPerUser;
     const used = limit !== 0 ? await countRepliesToUser('whatsapp', userId) : null;
 
-    assert.equal(handlerResult.content[0]?.text ?? '', formatMyDataText(summary, 'member', limit, used));
+    assert.equal(
+      handlerResult.content[0]?.text ?? '',
+      formatMyDataText(summary, 'member', limit, used, language),
+    );
   },
 );
 
@@ -21228,6 +22534,53 @@ test(
     assert.match(output, /Projects you've shared: 1/);
     assert.match(output, /Interests published \(who_is_into\): yes/);
     assert.match(output, /Response style preference: plain/);
+  },
+);
+
+test(
+  "my_data's Language preference line reflects the caller's own set_language_preference state exactly, " +
+    "symmetric with the Response style preference line, for the 'mi', 'en' and unset states (issue #1030 " +
+    'acceptance criterion 1)',
+  { skip },
+  async () => {
+    const userId = `${MY_DATA_HANDLER_USER}-language`;
+
+    const unsetOutput = (await myDataHandler(userId).handler()).content[0]?.text ?? '';
+    assert.match(unsetOutput, /Language preference: none set \(auto-detected per message\)/);
+
+    await setLanguagePreferenceHandler({ platform: 'whatsapp', userId }).handler({ language: 'mi' });
+    const miOutput = (await myDataHandler(userId).handler()).content[0]?.text ?? '';
+    assert.match(miOutput, /Language preference: te reo Māori/);
+
+    await setLanguagePreferenceHandler({ platform: 'whatsapp', userId }).handler({ language: 'en' });
+    const enOutput = (await myDataHandler(userId).handler()).content[0]?.text ?? '';
+    assert.match(enOutput, /Language preference: NZ English/);
+
+    await pool.query(`DELETE FROM language_prefs WHERE platform = 'whatsapp' AND user_id = $1`, [userId]);
+  },
+);
+
+test(
+  "SECURITY: my_data's Language preference line reflects only the caller's OWN getLanguagePreference state, " +
+    "never another user's — scoped identically to every other field my_data renders (issue #1030 SECURITY " +
+    'criterion)',
+  { skip },
+  async () => {
+    const caller = `${MY_DATA_HANDLER_USER}-language-caller`;
+    const otherUser = `${MY_DATA_HANDLER_USER}-language-other`;
+
+    await setLanguagePreferenceHandler({ platform: 'whatsapp', userId: otherUser }).handler({
+      language: 'mi',
+    });
+
+    // The tool takes no arguments (pinned above) — there is no identifier a
+    // model could supply to redirect the read, so the caller's own (unset)
+    // language preference is all that can ever be reflected back, never the
+    // other user's 'mi' preference just set.
+    const output = (await myDataHandler(caller).handler()).content[0]?.text ?? '';
+    assert.match(output, /Language preference: none set \(auto-detected per message\)/);
+
+    await pool.query(`DELETE FROM language_prefs WHERE platform = 'whatsapp' AND user_id = $1`, [otherUser]);
   },
 );
 
@@ -21425,6 +22778,27 @@ test("my_data's tool description mentions the daily reply budget so the model kn
   )._registeredTools['my_data'].description;
   assert.match(description ?? '', /reply budget/i);
 });
+
+test(
+  "my_data's tool description lists the language preference alongside the response-style preference it " +
+    'already lists (issue #1030 acceptance criterion 3)',
+  () => {
+    const server = buildToolServer(
+      {
+        platform: 'whatsapp' as const,
+        userId: 'u1',
+        userName: 'Member',
+        role: 'member',
+        conversationId: 'c1',
+      },
+      stubAdapter(async () => {}),
+    );
+    const description = (
+      server.instance as unknown as { _registeredTools: Record<string, { description?: string }> }
+    )._registeredTools['my_data'].description;
+    assert.match(description ?? '', /response-style and language preferences/i);
+  },
+);
 
 test(
   'my_data: getMyDataSummary/MyDataSummary is unchanged by the reply-budget addition — the new line is ' +

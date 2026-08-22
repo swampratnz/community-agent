@@ -37,6 +37,7 @@ export {
   OTHER_CONFIGURED_KNOBS,
   formatOtherConfiguredKnobs,
   truncateForEcho,
+  SUGGESTION_RESOLUTION_ECHO_CHARS,
   DEV_TEAM_CHAT_CAP,
   devTeamScrub,
   formatDevTeamJobStatus,
@@ -63,7 +64,7 @@ export { CATCH_UP_DEFAULT_HOURS, CATCH_UP_MAX_HOURS, CATCH_UP_MAX_MESSAGES } fro
 export { APPEAL_MODERATION_REASON_MAX_CHARS } from './tools/reportsMember.js';
 export { HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER } from './tools/feedback.js';
 export { ALLOWED_REACTION_EMOJI, REACTION_RATE_LIMIT_PER_DAY } from './tools/reactions.js';
-export { LIST_PROJECTS_DEFAULT_LIMIT } from './tools/social.js';
+export { LIST_PROJECTS_DEFAULT_LIMIT, WHO_IS_INTO_NO_PROFILE_HINT } from './tools/social.js';
 export { WARN_USER_RATE_LIMIT_PER_HOUR } from './tools/moderation.js';
 export { TEAM_SETUP_MEMBER_CAP } from './tools/teamSetup.js';
 export {

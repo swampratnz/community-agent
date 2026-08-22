@@ -3,19 +3,26 @@ import { config } from '@swampratnz/agent-base/config.js';
 import {
   countActiveWarnings,
   countRepliesToUser,
+  getLanguagePreference,
   getMyDataSummary,
+  getPublishedInterestsForOwners,
+  listKnowledgeTopics,
   listOwnAppeals,
   listOwnKnowledgeCandidates,
   listOwnProjectConnectionRequests,
   listOwnReports,
   listOwnSuggestions,
+  listRecentProjects,
 } from '@swampratnz/agent-base/storage/repository.js';
 import {
   formatCommunityInfoText,
   formatInterestResults,
+  formatKnowledgeTopics,
   formatProjectResults,
   LIST_PROJECTS_DEFAULT_LIMIT,
+  WHO_IS_INTO_NO_PROFILE_HINT,
 } from './agent/tools.js';
+import { buildMemberDigestContent } from './memberDigest.js';
 import {
   formatMyDataText,
   formatMySubmissionsText,
@@ -34,9 +41,9 @@ import { formatStatusMessage, getStatusCache } from './status/anthropicStatus.js
  * homes; registry order is the previous `buildSlashCommands()` order (kb,
  * projects, whois, guidelines, digest), with `events` (issue #1004),
  * `status` (issue #995), `warnings` (issue #1000), `mysubmissions`/`mydata`
- * (issue #1018), and `help` (issue #993) appended — also safe for the
- * WhatsApp side because every `!` matcher is anchored and mutually
- * exclusive.
+ * (issue #1018), `help` (issue #993), and `kbtopics` (issue #1036) appended
+ * — also safe for the WhatsApp side because every `!` matcher is anchored
+ * and mutually exclusive.
  *
  * The Discord halves are BOUND by `bindCommunitySlashCommands()`
  * (slashCommands.ts), which `createConfiguredAdapters()` calls — never at
@@ -76,6 +83,24 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
           : await formatProjectResults(projects);
       }
 
+      // Same anchoring discipline as `mine` above (issue #1046 SECURITY
+      // criteria 3-4): checked BEFORE the general query regex so the literal
+      // word "seeking" is never swallowed as a searchProjectsFn query, and
+      // `!projects seeking <anything>` falls through instead of matching.
+      // Calls listRecentProjects directly (not deps.listRecentProjectsFn) —
+      // that dependency's type is agent-base's fixed, zero-opts
+      // WhatsAppTextCommandDeps shape and cannot carry seekingCollaboratorsOnly
+      // through, the same constraint `digest` above already hit and solved
+      // the same way.
+      if (/^!projects\s+seeking$/i.test(text)) {
+        if (!atLeast(role, 'member')) return null;
+        const opts = { seekingCollaboratorsOnly: true };
+        const projects = await listRecentProjects(LIST_PROJECTS_DEFAULT_LIMIT, opts);
+        return projects.length === 0
+          ? 'No projects are currently looking for collaborators.'
+          : await formatProjectResults(projects);
+      }
+
       const projectsMatch = /^!projects(?:\s+(.+))?$/i.exec(text);
       if (!projectsMatch) return TEXT_COMMAND_UNMATCHED;
       if (!atLeast(role, 'member')) return null;
@@ -94,6 +119,27 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
     name: 'whois',
     platforms: ['discord', 'whatsapp'],
     whatsapp: async (text, msg, role, deps) => {
+      // Checked BEFORE the general `!whois [query]` branch below so the
+      // literal word "mine" is never swallowed as a `searchMemberInterestsFn`
+      // query (issue #1048) — mirrors `!projects mine`'s (issue #916)
+      // ordering discipline and `who_is_into({ mine: true })`'s own
+      // ignore-query-when-mine behaviour rather than blending the two.
+      // Calls getPublishedInterestsForOwners directly (not via deps) — that
+      // dependency isn't part of agent-base's fixed, zero-opts
+      // WhatsAppTextCommandDeps shape, the same constraint `!projects seeking`
+      // (issue #1046) hit and solved the same way. This mirrors
+      // handleWhois's Discord `mine` branch (slashCommands.ts) byte-for-byte.
+      if (/^!whois\s+mine$/i.test(text)) {
+        if (!atLeast(role, 'member')) return null;
+        const interestsByOwner = await getPublishedInterestsForOwners([
+          { platform: msg.platform, userId: msg.userId },
+        ]);
+        const own = interestsByOwner.get(`${msg.platform}:${msg.userId}`);
+        return own
+          ? await formatInterestResults([{ platform: msg.platform, userId: msg.userId, interests: own }])
+          : WHO_IS_INTO_NO_PROFILE_HINT;
+      }
+
       const whoisMatch = /^!whois(?:\s+(.+))?$/i.exec(text);
       if (!whoisMatch) return TEXT_COMMAND_UNMATCHED;
       if (!atLeast(role, 'member')) return null;
@@ -142,10 +188,22 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
   {
     name: 'digest',
     platforms: ['discord', 'whatsapp'],
-    whatsapp: async (text, _msg, role, deps) => {
+    whatsapp: async (text, msg, role, deps) => {
       if (!/^!digest$/i.test(text)) return TEXT_COMMAND_UNMATCHED;
       if (!atLeast(role, 'member')) return null;
-      const message = await deps.buildDigestContentFn();
+      // deps.buildDigestContentFn (agent-base's WhatsAppTextCommandDeps) is
+      // fixed zero-arg — base owns that type, so it cannot carry the caller's
+      // identity through to buildMemberDigestContent for localisation
+      // (issue #1042). It stays the default/English-preference path (same
+      // DI-tested call as before); a standing 'mi' preference calls
+      // buildMemberDigestContent directly instead, exactly as /digest and
+      // community_digest already do, so its rendering is real (DB-backed)
+      // rather than the deps-stubbed fixture.
+      const language = await deps.getLangPref(msg.platform, msg.userId);
+      const message =
+        language === 'mi'
+          ? await buildMemberDigestContent(undefined, { platform: msg.platform, userId: msg.userId })
+          : await deps.buildDigestContentFn();
       return message ?? 'Nothing to report right now.';
     },
   },
@@ -215,7 +273,8 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
       const limit = config.behaviour.dailyReplyLimitPerUser;
       const used =
         role !== 'super_admin' && limit !== 0 ? await countRepliesToUser(msg.platform, msg.userId) : null;
-      return formatMyDataText(summary, role, limit, used);
+      const language = await getLanguagePreference(msg.platform, msg.userId);
+      return formatMyDataText(summary, role, limit, used, language);
     },
   },
   {
@@ -223,12 +282,33 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
     platforms: ['discord', 'whatsapp'],
     // No tier gate, matching community_info's own `minTier: 'member'` floor
     // (a guest-reachable member-floor tool, same reasoning as `guidelines`
-    // above) — formatCommunityInfoText branches its own content on `role`,
-    // so the caller's actual tier is what determines what comes back, not a
-    // dispatch-time gate here.
+    // above) — formatCommunityInfoText branches its own content on `role`
+    // (and, since issue #1028, on the caller's own stored language
+    // preference), so the caller's actual tier is what determines what comes
+    // back, not a dispatch-time gate here.
     whatsapp: async (text, msg, role) => {
       if (!/^!help$/i.test(text)) return TEXT_COMMAND_UNMATCHED;
-      return formatCommunityInfoText(role, msg.platform);
+      return await formatCommunityInfoText(role, msg.platform, msg.userId);
+    },
+  },
+  {
+    // Anchored, argument-rejecting matcher, same discipline as `warnings`/
+    // `mysubmissions`/`mydata` above (issue #1036 SECURITY criterion 3):
+    // `!kbtopics anything` falls through to TEXT_COMMAND_UNMATCHED rather
+    // than matching, so no message-supplied text can ever reach the scope
+    // predicate — the conversationId passed below is always the
+    // adapter-resolved (msg.platform, msg.conversationId), never parsed
+    // from `text`.
+    name: 'kbtopics',
+    platforms: ['discord', 'whatsapp'],
+    whatsapp: async (text, msg, role) => {
+      if (!/^!kbtopics$/i.test(text)) return TEXT_COMMAND_UNMATCHED;
+      if (!atLeast(role, 'member')) return null;
+      const { titles, totalCount } = await listKnowledgeTopics(
+        { platform: msg.platform, conversationId: msg.conversationId },
+        config.behaviour.knowledgeTopicsListLimit,
+      );
+      return formatKnowledgeTopics(titles, totalCount);
     },
   },
 ];

@@ -273,7 +273,11 @@ export async function notifyMemberApproved(
  * (`wasAlreadyAdmin` false) so re-running `grant_admin` on an existing admin
  * doesn't re-send it, and a failed DM (closed DMs, WhatsApp 24h window, etc.)
  * is logged and swallowed — the grant itself is the source of truth, never
- * blocked on this. Exported separately from the `grant_admin` tool so it's
+ * blocked on this. A `WindowClosedError` rejection is queued via
+ * `queueForWindowReopen` at `'low'` priority instead of logged-and-dropped
+ * (issue #1040 — the last function in the #644/#888/#922/#998
+ * WindowClosedError-parity series for this file; any other rejection is
+ * unaffected). Exported separately from the `grant_admin` tool so it's
  * unit-testable without the MCP tool-call transport. Honours the target's
  * standing `'mi'` language preference identically to `notifyMemberApproved`
  * above (issue #331).
@@ -300,6 +304,14 @@ export async function notifyAdminApproved(
     .sendDirectMessage(userId, message)
     .then(() => true)
     .catch((err) => {
+      if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+        adapter.queueForWindowReopen(userId, message, 'low');
+        logger.warn(
+          { userId, platform },
+          "Admin promotion DM: recipient's window is closed, queued for reopen",
+        );
+        return true;
+      }
       logger.warn({ err, userId }, 'Admin promotion DM failed');
       return false;
     });
@@ -587,18 +599,22 @@ export async function notifyAppealResolved(
  * otherwise silent to the person who started it. Mirrors
  * `notifyAppealResolved`'s shape exactly: fire-and-forget, `.catch(logger.warn)`,
  * never blocks or changes the accept/decline tool's own reported outcome.
- * `decline_knowledge_candidate` takes no reason argument, so the `declined`
- * wording is neutral-to-supportive (mirroring `notifyAppealResolved`'s
- * `dismissed` case) rather than fabricating one. Only ever echoes the
- * (possibly admin-overridden) title of the member's own previously-submitted
- * tip via `truncateForEcho` — never any other candidate's fields. Exported
- * separately so it's unit-testable without the MCP tool-call transport, same
- * convention as `notifyAppealResolved`. Honours the submitter's standing
- * `'mi'` language preference (issue #331), same degrade-to-`'auto'`-on-
- * failure shape. A `WindowClosedError` rejection is queued via
- * `queueForWindowReopen` at `'low'` priority instead of logged-and-dropped
- * (issue #644, same #602 recovery extended to this member-facing DM); any
- * other rejection is unaffected.
+ * `decline_knowledge_candidate` accepts an optional `reason` (issue #1050);
+ * when supplied it is appended, `truncateForEcho`-capped and quoted, as a
+ * distinct trailing clause after the title clause, on the `declined` branch
+ * only — the `accepted` branch ignores it. When `reason` is omitted the
+ * `declined` wording stays exactly what it was before #1050 (neutral-to-
+ * supportive, mirroring `notifyAppealResolved`'s `dismissed` case, rather
+ * than fabricating one). Only ever echoes the (possibly admin-overridden)
+ * title of the member's own previously-submitted tip and the admin's own
+ * decline `reason`, both via `truncateForEcho` — never any other
+ * candidate's fields. Exported separately so it's unit-testable without the
+ * MCP tool-call transport, same convention as `notifyAppealResolved`.
+ * Honours the submitter's standing `'mi'` language preference (issue #331),
+ * same degrade-to-`'auto'`-on-failure shape. A `WindowClosedError`
+ * rejection is queued via `queueForWindowReopen` at `'low'` priority
+ * instead of logged-and-dropped (issue #644, same #602 recovery extended to
+ * this member-facing DM); any other rejection is unaffected.
  */
 export async function notifyKnowledgeTipResolved(
   adapter: PlatformAdapter,
@@ -606,11 +622,13 @@ export async function notifyKnowledgeTipResolved(
   status: 'accepted' | 'declined',
   title: string,
   platform: Platform,
+  reason?: string | null,
   getLangPref: typeof getLanguagePreference = getLanguagePreference,
 ): Promise<void> {
   const echoed = truncateForEcho(title);
+  const echoedReason = status === 'declined' && reason ? truncateForEcho(reason) : null;
   const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
-  const message =
+  const base =
     lang === 'mi'
       ? status === 'declined'
         ? `Ngā mihi mō tō koha mātauranga — i muri i te arotake, kāore i tāpirihia ā tōna wā: "${echoed}"`
@@ -618,6 +636,7 @@ export async function notifyKnowledgeTipResolved(
       : status === 'declined'
         ? `Thanks for the knowledge tip — after review it wasn't added this time: "${echoed}"`
         : `Your knowledge tip has been added to the knowledge base — thanks for the contribution! ("${echoed}")`;
+  const message = echoedReason ? `${base}. ${lang === 'mi' ? 'Take' : 'Reason'}: "${echoedReason}"` : base;
   await adapter.sendDirectMessage(userId, message).catch((err) => {
     if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
       adapter.queueForWindowReopen(userId, message, 'low');

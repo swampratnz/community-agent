@@ -15,7 +15,11 @@ import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js'
 // coverage to the MEMBER-facing resolution DMs that never got it:
 // notifyMemberApproved, notifySuggestionResolved, notifyReportResolved,
 // notifyAppealResolved, and (issue #703) notifyKnowledgeTipResolved (all in
-// src/module/agent/tools.ts).
+// src/module/agent/tools.ts). Issue #1040 extends it once more to
+// notifyAdminApproved — a single-recipient resolution DM with the identical
+// shape (it never touches listAdmins() or any other static repository
+// import either), the last function in the #644/#888/#922/#998
+// WindowClosedError-parity series for notify.ts.
 //
 // Unlike tools.ts's admin-alert path, none of these functions touch
 // listAdmins() or any other static repository import — they take the
@@ -36,6 +40,7 @@ const {
   notifyReportResolved,
   notifyAppealResolved,
   notifyKnowledgeTipResolved,
+  notifyAdminApproved,
 } = await import('../src/module/agent/tools.js');
 const { WhatsAppCloudAdapter, WindowClosedError } =
   await import('@swampratnz/agent-base/platforms/whatsapp/cloudAdapter.js');
@@ -226,7 +231,58 @@ test('notifyKnowledgeTipResolved: a non-WindowClosedError rejection is unaffecte
   assert.deepEqual(queued, []);
 });
 
-test('an adapter with no queueForWindowReopen (Discord/Baileys shape) falls through to log-and-drop for a WindowClosedError rejection from any of the 5 producers — no crash, byte-identical drop behavior', async () => {
+test('notifyAdminApproved: a WindowClosedError rejection queues via queueForWindowReopen at low priority and resolves true, instead of only logging and resolving false (issue #1040 acceptance criterion 1)', async () => {
+  const { adapter, sends, queued } = makeFakeCloudAdapter(new WindowClosedError('admin-1'));
+
+  const delivered = await notifyAdminApproved(adapter, 'admin-1', false, 'whatsapp');
+
+  assert.deepEqual(sends, [], 'the live send was never recorded as succeeding');
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0]?.userId, 'admin-1');
+  assert.equal(queued[0]?.priority, 'low');
+  assert.match(queued[0]?.message ?? '', /admin/i, 'the queued text is the same templated promotion message');
+  assert.equal(
+    delivered,
+    true,
+    "queued-for-reopen counts as delivered, not a DM failure (issue #556's signal)",
+  );
+});
+
+test('notifyAdminApproved: a non-WindowClosedError rejection is unaffected — still logged-and-dropped, resolves false (issue #1040 acceptance criterion 2)', async () => {
+  const { adapter, queued } = makeFakeCloudAdapter(new Error('DMs closed'));
+
+  const delivered = await notifyAdminApproved(adapter, 'admin-1', false, 'whatsapp');
+
+  assert.deepEqual(queued, [], 'a generic rejection must never populate the window-reopen queue');
+  assert.equal(delivered, false);
+});
+
+test(
+  'SECURITY: notifyAdminApproved queues the byte-identical message passed to sendDirectMessage, addressed ' +
+    'only to userId — no new interpolation and no new recipient (issue #1040 acceptance criterion 5, ' +
+    "preserving issue #201's no-interpolation invariant for adminApprovedMessage)",
+  async () => {
+    const { adapter, queued } = makeFakeCloudAdapter(new WindowClosedError('admin-2'));
+    let sentMessage: string | undefined;
+    const originalSend = adapter.sendDirectMessage.bind(adapter);
+    adapter.sendDirectMessage = async (userId: string, text: string) => {
+      sentMessage = text;
+      return originalSend(userId, text);
+    };
+
+    await notifyAdminApproved(adapter, 'admin-2', false, 'whatsapp');
+
+    assert.equal(queued.length, 1);
+    assert.equal(queued[0]?.userId, 'admin-2', 'no recipient id other than userId is ever queued');
+    assert.equal(
+      queued[0]?.message,
+      sentMessage,
+      'the queued payload is byte-identical to the message that would otherwise have been sent directly',
+    );
+  },
+);
+
+test('an adapter with no queueForWindowReopen (Discord/Baileys shape) falls through to log-and-drop for a WindowClosedError rejection from any of the 6 producers — no crash, byte-identical drop behavior', async () => {
   const approved = makeAdapterWithoutQueueMethod(new WindowClosedError('member-1'));
   const delivered = await notifyMemberApproved(approved.adapter, 'member-1', false, 'discord');
   assert.equal(delivered, false, 'no queueForWindowReopen to fall back to, so this is a plain drop');
@@ -250,12 +306,16 @@ test('an adapter with no queueForWindowReopen (Discord/Baileys shape) falls thro
   await assert.doesNotReject(
     notifyKnowledgeTipResolved(tip.adapter, 'member-5', 'accepted', 'tip title', 'discord'),
   );
+
+  const admin = makeAdapterWithoutQueueMethod(new WindowClosedError('admin-1'));
+  const adminDelivered = await notifyAdminApproved(admin.adapter, 'admin-1', false, 'discord');
+  assert.equal(adminDelivered, false, 'no queueForWindowReopen to fall back to, so this is a plain drop');
 });
 
 test(
-  "SECURITY: a 'low'-priority entry produced by any of the 5 new member-facing producers can never evict a " +
+  "SECURITY: a 'low'-priority entry produced by any of the 6 member/admin-facing producers can never evict a " +
     "'system'-priority entry queued for the same recipient — extends #602/#545's priority-eviction invariant " +
-    'to these new producers, exercised against the REAL WhatsAppCloudAdapter.queueForWindowReopen ' +
+    'to these producers, exercised against the REAL WhatsAppCloudAdapter.queueForWindowReopen ' +
     '(acceptance criterion 5)',
   async () => {
     // Same per-recipient cap tests/whatsappCloudAdapter.test.ts's own tests use
@@ -315,6 +375,10 @@ test(
     await assertLowNeverEvictsSystem(
       (adapter) => notifyKnowledgeTipResolved(adapter, 'r5', 'accepted', 'tip title', 'whatsapp'),
       'r5',
+    );
+    await assertLowNeverEvictsSystem(
+      (adapter) => notifyAdminApproved(adapter, 'r6', false, 'whatsapp'),
+      'r6',
     );
   },
 );

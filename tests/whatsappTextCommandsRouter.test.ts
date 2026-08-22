@@ -17,6 +17,10 @@ import type {
   MemberProjectSearchHit,
 } from '@swampratnz/agent-base/storage/repository/memberProjects.js';
 import type { ShortcutKind } from '@swampratnz/agent-base/storage/repository/shortcutHits.js';
+// !help (issue #1028) reads the module notice pack's communityInfoMemberCapabilities
+// entry via formatCommunityInfoText — the pack is registered by createAgent in
+// production; tests opt in explicitly, same convention as tools.test.ts.
+import './support/registerNotices.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -63,7 +67,8 @@ await import('./support/registerCommands.js');
 await import('./support/registerPolicyKeys.js');
 const { Router } = await import('@swampratnz/agent-base/router.js');
 const { makeRouterDeps } = await import('../src/module/routerWiring.js');
-const { countRepliesToUser } = await import('@swampratnz/agent-base/storage/repository.js');
+const { countRepliesToUser, upsertMember, insertContextDigest, setLanguagePreference } =
+  await import('@swampratnz/agent-base/storage/repository.js');
 const { formatStatusMessage, getStatusCache, pollAnthropicStatus, resetStatusCacheForTests } =
   await import('../src/module/status/anthropicStatus.js');
 const { formatMyDataText, formatMySubmissionsText, formatMyWarningsText } =
@@ -253,6 +258,64 @@ function mockPoolRoleAndWarnings(
     return { rows: [], rowCount: 0 };
   }) as typeof pool.query);
   return ref;
+}
+
+/**
+ * Stubs `pool.query`'s role branch plus `FROM member_projects`, returning
+ * every `{ sql, params }` call so a test can assert on the exact SQL text.
+ * The `!projects seeking` branch (issue #1046) calls `listRecentProjects`
+ * DIRECTLY — never through `deps.listRecentProjectsFn` — so it is invisible
+ * to `RouterOpts`/`makeRouter` the way every other `!projects` form is;
+ * asserting its behaviour needs the raw pool mock, same technique
+ * `discordSlashCommands.test.ts`'s `mockPool` uses for the identical
+ * `/projects seeking_collaborators:true` call.
+ */
+function mockPoolRoleAndProjects(
+  t: { mock: { method: typeof import('node:test').mock.method } },
+  role: 'admin' | 'member' | null,
+  projectRows: Array<Record<string, unknown>> = [],
+): Array<{ sql: string; params: unknown[] }> {
+  const calls: Array<{ sql: string; params: unknown[] }> = [];
+  t.mock.method(pool, 'query', (async (sql: string, params: unknown[] = []) => {
+    calls.push({ sql, params });
+    if (sql.includes('SELECT role FROM community_users')) {
+      return { rows: role ? [{ role }] : [], rowCount: 0 };
+    }
+    if (sql.includes('FROM member_projects')) {
+      return { rows: projectRows, rowCount: 0 };
+    }
+    return { rows: [], rowCount: 0 };
+  }) as typeof pool.query);
+  return calls;
+}
+
+/**
+ * Stubs `pool.query`'s role branch plus `FROM member_interests`, returning
+ * every `{ sql, params }` call so a test can assert on what was queried. The
+ * `!whois mine` branch (issue #1048) calls `getPublishedInterestsForOwners`
+ * DIRECTLY — never through a `deps.*Fn` — so it is invisible to
+ * `RouterOpts`/`makeRouter` the way every other `!whois` form is; asserting
+ * its behaviour needs the raw pool mock, the same technique
+ * `mockPoolRoleAndProjects` above uses for the identical `!projects seeking`
+ * (issue #1046) direct call.
+ */
+function mockPoolRoleAndInterests(
+  t: { mock: { method: typeof import('node:test').mock.method } },
+  role: 'admin' | 'member' | null,
+  interestRows: Array<Record<string, unknown>> = [],
+): Array<{ sql: string; params: unknown[] }> {
+  const calls: Array<{ sql: string; params: unknown[] }> = [];
+  t.mock.method(pool, 'query', (async (sql: string, params: unknown[] = []) => {
+    calls.push({ sql, params });
+    if (sql.includes('SELECT role FROM community_users')) {
+      return { rows: role ? [{ role }] : [], rowCount: 0 };
+    }
+    if (sql.includes('FROM member_interests')) {
+      return { rows: interestRows, rowCount: 0 };
+    }
+    return { rows: [], rowCount: 0 };
+  }) as typeof pool.query);
+  return calls;
 }
 
 test('config: WHATSAPP_TEXT_COMMANDS_ENABLED=true is reflected in config.behaviour.whatsappTextCommandsEnabled', () => {
@@ -495,6 +558,143 @@ test('a bare "!whois" with only trailing whitespace still takes the no-argument 
   assert.match(sent[0].text, /haven't published interests yet/);
 });
 
+// --- !whois mine (issue #1048) ----------------------------------------------
+
+test('acceptance criterion 1: "!Whois Mine" (case-insensitive) from a member with published interests calls getPublishedInterestsForOwners keyed on msg.platform/msg.userId, rendered through formatInterestResults, never searchMemberInterestsFn', async (t) => {
+  const calls = mockPoolRoleAndInterests(t, 'member', [
+    { platform: 'whatsapp', user_id: 'member-1', interests: 'rust and distributed systems' },
+  ]);
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    searchMemberInterestsFn: async () => {
+      throw new Error('searchMemberInterestsFn must never be called for "!whois mine"');
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!Whois Mine', userId: 'member-1' }));
+
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /rust and distributed systems/);
+  const interestsCall = calls.find((c) => c.sql.includes('FROM member_interests'));
+  assert.ok(interestsCall, 'getPublishedInterestsForOwners must have run');
+  assert.deepEqual(interestsCall.params, [['whatsapp'], ['member-1']]);
+});
+
+test('acceptance criterion 2: "!whois mine" from a member with no published interests returns WHO_IS_INTO_NO_PROFILE_HINT verbatim, not an empty string or the no-profile browse fallback', async (t) => {
+  mockPoolRoleAndInterests(t, 'member', []);
+  const { WHO_IS_INTO_NO_PROFILE_HINT } = await import('../src/module/agent/tools.js');
+  const router = makeRouter({ runTurn: throwingRunTurn });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!whois mine', userId: 'member-1' }));
+
+  assert.equal(sent[0].text, WHO_IS_INTO_NO_PROFILE_HINT);
+});
+
+test('acceptance criterion 3: "!whois mine" is checked before the general !whois [query] branch — "mine" as a literal interest search term never reaches searchMemberInterestsFn as the query "mine"', async (t) => {
+  mockPoolRoleAndInterests(t, 'member', [
+    { platform: 'whatsapp', user_id: 'member-1', interests: 'gardening' },
+  ]);
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    searchMemberInterestsFn: async (query) => {
+      assert.notEqual(
+        query,
+        'mine',
+        'searchMemberInterestsFn must never be called with the literal query "mine"',
+      );
+      return [];
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!whois mine', userId: 'member-1' }));
+
+  assert.match(sent[0].text, /gardening/);
+});
+
+test('acceptance criterion 4: "!whois mine trailing" (trailing text) does not match the anchored mine branch — falls through to the general query path with "mine trailing" as the search query', async (t) => {
+  mockPoolRoleAndInterests(t, 'member');
+  let searchCalledWith: string | undefined;
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    searchMemberInterestsFn: async (query) => {
+      searchCalledWith = query;
+      return [];
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!whois mine trailing', userId: 'member-1' }));
+
+  assert.equal(searchCalledWith, 'mine trailing');
+  assert.equal(sent[0].text, 'No members have published interests matching that yet.');
+});
+
+test('SECURITY: a sub-member caller\'s "!whois mine" falls through to the normal turn silently — getPublishedInterestsForOwners (direct call) is never invoked (issue #1048)', async (t) => {
+  const calls = mockPoolRoleAndInterests(t, null);
+  const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!whois mine', userId: 'guest-1' }));
+
+  assert.equal(sent.length, 1);
+  assert.equal(
+    sent[0].text,
+    REAL_TURN_REPLY,
+    'a sub-member caller must get the normal turn reply, never a distinguishing "not authorized" text',
+  );
+  assert.ok(
+    !calls.some((c) => c.sql.includes('FROM member_interests')),
+    'getPublishedInterestsForOwners must never run for a rejected caller — the gate runs before any repository read',
+  );
+});
+
+test('SECURITY: "!whois mine" for caller A never returns caller B\'s interests — only the caller\'s own resolved msg.platform/msg.userId is wired into getPublishedInterestsForOwners (issue #1048)', async (t) => {
+  const calls = mockPoolRoleAndInterests(t, 'member', [
+    { platform: 'whatsapp', user_id: 'caller-a', interests: "caller A's own interests" },
+  ]);
+  const router = makeRouter({ runTurn: throwingRunTurn });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  // userName spoofs caller B's identity — the implicit "mine" scope must
+  // come only from msg.platform/msg.userId, never from any other message
+  // field, and a message-body-supplied identifier must never reach the
+  // lookup either (there is none to parse here — the matcher is anchored).
+  await trigger(makeMessage({ text: '!whois mine', userId: 'caller-a', userName: 'caller-b-impersonation' }));
+
+  assert.match(sent[0].text, /caller A's own interests/);
+  const interestsCall = calls.find((c) => c.sql.includes('FROM member_interests'));
+  assert.ok(interestsCall);
+  assert.deepEqual(interestsCall.params, [['whatsapp'], ['caller-a']]);
+});
+
+test('SECURITY: "!whois mine 12345" (a message-body-supplied identifier) never reaches getPublishedInterestsForOwners — the anchored matcher rejects it and it falls through to the search path instead', async (t) => {
+  mockPoolRoleAndInterests(t, 'member');
+  let searchCalledWith: string | undefined;
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    searchMemberInterestsFn: async (query) => {
+      searchCalledWith = query;
+      return [];
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!whois mine 12345', userId: 'member-1' }));
+
+  assert.equal(searchCalledWith, 'mine 12345');
+  assert.equal(sent[0].text, 'No members have published interests matching that yet.');
+});
+
 // --- !projects ------------------------------------------------------------------
 
 test('!projects (no query) from a member uses listRecentProjectsFn, never searchProjectsFn', async (t) => {
@@ -640,6 +840,110 @@ test('"!projects mine" is checked before the general !projects [query] branch �
   assert.equal(sent[0].text, 'No shared projects match that.');
 });
 
+// --- !projects seeking (issue #1046) ----------------------------------------
+
+test('AC1: "!projects seeking" (case-insensitive) from a member calls listRecentProjects with seekingCollaboratorsOnly:true, rendered through formatProjectResults (issue #1046)', async (t) => {
+  const projects = [
+    {
+      id: 1,
+      platform: 'whatsapp',
+      user_id: 'owner-1',
+      name: 'Seeking Project',
+      description: 'wants collaborators',
+      link: null,
+      seeking_collaborators: true,
+      created_at: new Date(),
+    },
+  ];
+  const calls = mockPoolRoleAndProjects(t, 'member', projects);
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    listRecentProjectsFn: async () => {
+      throw new Error(
+        'deps.listRecentProjectsFn must never be called for "!projects seeking" (issue #1046 AC1)',
+      );
+    },
+    searchProjectsFn: async () => {
+      throw new Error('searchProjectsFn must never be called for "!projects seeking"');
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!Projects Seeking', userId: 'member-1' }));
+
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /Seeking Project/);
+  const projectCall = calls.find((c) => c.sql.includes('FROM member_projects'));
+  assert.ok(projectCall, 'listRecentProjects must have run');
+  assert.match(
+    projectCall.sql,
+    /AND seeking_collaborators/,
+    'the seeking branch must narrow the SQL exactly as list_projects/`/projects seeking_collaborators:true` do',
+  );
+});
+
+test('AC2: "!projects seeking" with no matching projects replies with the exact filtered empty-state string, byte-identical to the Discord/tool surfaces (issue #1046)', async (t) => {
+  mockPoolRoleAndProjects(t, 'member', []);
+  const router = makeRouter({ runTurn: throwingRunTurn });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!projects seeking', userId: 'member-1' }));
+
+  assert.equal(sent[0].text, 'No projects are currently looking for collaborators.');
+});
+
+test(
+  'SECURITY: "!projects seeking foo" (trailing text) never matches the seeking branch — it falls through to the ' +
+    'general searchProjectsFn query branch with the whole trailing text as the query (issue #1046 AC3)',
+  async (t) => {
+    mockPoolRole(t, 'member');
+    let searchCalledWith: string | undefined;
+    const router = makeRouter({
+      runTurn: throwingRunTurn,
+      searchProjectsFn: async (query) => {
+        searchCalledWith = query;
+        return [];
+      },
+      listRecentProjectsFn: async () => {
+        throw new Error('deps.listRecentProjectsFn must never be called for "!projects seeking foo"');
+      },
+    });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!projects seeking foo', userId: 'member-1' }));
+
+    assert.equal(searchCalledWith, 'seeking foo');
+    assert.equal(sent[0].text, 'No shared projects match that.');
+  },
+);
+
+test(
+  'SECURITY: a sub-member caller\'s "!projects seeking" falls through to the normal turn silently — listRecentProjects ' +
+    '(direct call) is never invoked (issue #1046 AC4)',
+  async (t) => {
+    const calls = mockPoolRoleAndProjects(t, null);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!projects seeking', userId: 'guest-1' }));
+
+    assert.equal(sent.length, 1);
+    assert.equal(
+      sent[0].text,
+      REAL_TURN_REPLY,
+      'a sub-member caller must get the normal turn reply, never a distinguishing "not authorized" text',
+    );
+    assert.ok(
+      !calls.some((c) => c.sql.includes('FROM member_projects')),
+      'listRecentProjects must never run for a rejected caller',
+    );
+  },
+);
+
 test('acceptance criterion 4: a default `new Router(makeRouterDeps())` with no listOwnProjectsFn override still constructs, and an unrelated existing command (!guidelines) behaves unchanged (trailing defaulted field)', async (t) => {
   mockPoolRole(t, null);
   const router = new Router(makeRouterDeps());
@@ -726,6 +1030,75 @@ test('!digest replies with the fixed "Nothing to report" text when buildDigestCo
   assert.equal(sent[0].text, 'Nothing to report right now.');
 });
 
+test('!digest for a member with a default/unset language preference still uses deps.buildDigestContentFn — the mi bypass path never triggers for the common case', async (t) => {
+  let buildDigestCalled = false;
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    getLangPref: async () => 'auto',
+    buildDigestContentFn: async () => {
+      buildDigestCalled = true;
+      return 'This week: 2 new projects.';
+    },
+  });
+  mockPoolRole(t, 'member');
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!digest', userId: 'member-1' }));
+
+  assert.equal(buildDigestCalled, true);
+  assert.equal(sent[0].text, 'This week: 2 new projects.');
+});
+
+test(
+  "issue #1042: !digest for a caller with a stored 'mi' language preference renders the mi section " +
+    'labels (DB-backed) — deps.buildDigestContentFn is base-owned and fixed zero-arg, so it cannot carry ' +
+    'caller identity through for localisation; the handler calls buildMemberDigestContent directly instead',
+  { skip: !hasDb },
+  async () => {
+    const userId = `${RUN}-digest-mi`;
+    const topic = `${RUN}-digest-mi-topic`;
+    await upsertMember({ platform: 'whatsapp', userId, role: 'member', addedBy: `${RUN}-actor` });
+    await setLanguagePreference('whatsapp', userId, 'mi');
+    const digestId = await insertContextDigest({
+      periodStart: new Date(),
+      periodEnd: new Date(),
+      platform: 'discord',
+      topic,
+      summary: 'aggregate summary',
+      exampleRefs: [],
+      distinctUsers: config.memberDigest.minDistinctUsers,
+      questionCount: 2,
+    });
+    try {
+      const router = new Router(
+        makeRouterDeps({
+          runTurn: throwingRunTurn,
+          typingRefireMs: 20,
+          checkPaused: async () => false,
+        }),
+      );
+      const { adapter, sent, trigger } = makeAdapter();
+      router.register(adapter);
+
+      await trigger(makeMessage({ text: '!digest', userId, conversationId: `${RUN}-digest-mi-convo` }));
+
+      assert.equal(sent.length, 1);
+      assert.match(
+        sent[0].text,
+        /Ngā kaupapa o tēnei wiki/,
+        'the mi topics-heading label must appear — proves the DB-backed buildMemberDigestContent path rendered in te reo, not the fixed English deps.buildDigestContentFn stub some other test in this file left behind',
+      );
+    } finally {
+      await pool.query('DELETE FROM context_digests WHERE id = $1', [digestId]);
+      await pool.query(`DELETE FROM language_prefs WHERE platform = 'whatsapp' AND user_id = $1`, [userId]);
+      await pool.query(`DELETE FROM community_users WHERE platform = 'whatsapp' AND platform_user_id = $1`, [
+        userId,
+      ]);
+    }
+  },
+);
+
 // --- !help (issue #993): zero-cost command counterpart to community_info ---
 
 test('!help has no tier gate — served even for a guest caller, mirroring !guidelines', async (t) => {
@@ -764,7 +1137,7 @@ test('!help renders byte-identical text to formatCommunityInfoText(role, "whatsa
 
     await trigger(makeMessage({ text: '!help', userId: `${role}-1` }));
 
-    assert.equal(sent[0].text, formatCommunityInfoText(role, 'whatsapp'));
+    assert.equal(sent[0].text, await formatCommunityInfoText(role, 'whatsapp', `${role}-1`));
   }
 
   // super_admin is resolved from config.rbac.superAdminWhatsappNumbers, never
@@ -784,7 +1157,7 @@ test('!help renders byte-identical text to formatCommunityInfoText(role, "whatsa
 
   await trigger(makeMessage({ text: '!help', userId: 'super-1' }));
 
-  assert.equal(sent[0].text, formatCommunityInfoText('super_admin', 'whatsapp'));
+  assert.equal(sent[0].text, await formatCommunityInfoText('super_admin', 'whatsapp', 'super-1'));
 });
 
 test('SECURITY: !help for a member caller never contains ADMIN_CAPABILITIES_TEXT/SUPER_ADMIN_CAPABILITIES_TEXT content, and for an admin caller never contains SUPER_ADMIN_CAPABILITIES_TEXT content (issue #993 authoritative criterion 6)', async (t) => {
@@ -815,6 +1188,40 @@ test('SECURITY: !help for a member caller never contains ADMIN_CAPABILITIES_TEXT
   assert.match(admin.sent[0].text, /warn, mute, kick/i);
   assert.doesNotMatch(admin.sent[0].text, /grant or revoke admin status/i);
 });
+
+test(
+  "!help serves the te reo Māori member-capabilities text to a member-tier caller with a standing 'mi' " +
+    'language preference, and the fixed English default to a caller with no preference (issue #1028 ' +
+    'acceptance criteria 2, 3, 5)',
+  async (t) => {
+    let currentLanguage: 'mi' | null = null;
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users')) {
+        return { rows: [{ role: 'member' }], rowCount: 0 };
+      }
+      if (sql.includes('FROM language_prefs')) {
+        return { rows: currentLanguage ? [{ language: currentLanguage }] : [], rowCount: 0 };
+      }
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+
+    currentLanguage = 'mi';
+    const miRouter = makeRouter({ runTurn: throwingRunTurn, recordShortcutHitFn: async () => {} });
+    const mi = makeAdapter();
+    miRouter.register(mi.adapter);
+    await mi.trigger(makeMessage({ text: '!help', userId: 'member-mi' }));
+    assert.match(mi.sent[0].text, /Anei ngā mea ka taea e koe te tono mai ki ahau/);
+    assert.doesNotMatch(mi.sent[0].text, /Here's what you can ask me to do/);
+
+    currentLanguage = null;
+    const enRouter = makeRouter({ runTurn: throwingRunTurn, recordShortcutHitFn: async () => {} });
+    const en = makeAdapter();
+    enRouter.register(en.adapter);
+    await en.trigger(makeMessage({ text: '!help', userId: 'member-en' }));
+    assert.match(en.sent[0].text, /Here's what you can ask me to do/);
+    assert.doesNotMatch(en.sent[0].text, /Anei ngā mea ka taea e koe te tono mai ki ahau/);
+  },
+);
 
 test("a successful !help invocation calls recordShortcutHit('whatsapp_text_command') exactly once (issue #993, mirrors issue #874 acceptance criterion 1)", async (t) => {
   mockPoolRole(t, 'member');
@@ -1141,7 +1548,67 @@ test(
       interestsPublished: 0,
       responseStyle: 'standard' as const,
     };
-    assert.equal(sent[0].text, formatMyDataText(zeroSummary, 'member', 5, 2));
+    assert.equal(sent[0].text, formatMyDataText(zeroSummary, 'member', 5, 2, 'auto'));
+  },
+);
+
+test(
+  "!mydata reports the caller's standing language preference alongside the response-style preference, " +
+    "symmetric between the 'mi', 'en' and unset states (issue #1030 acceptance criterion 1)",
+  async (t) => {
+    for (const [languagePref, expected] of [
+      ['mi', 'Language preference: te reo Māori'],
+      ['en', 'Language preference: NZ English'],
+      [undefined, 'Language preference: none set (auto-detected per message)'],
+    ] as const) {
+      t.mock.reset();
+      t.mock.method(pool, 'query', (async (sql: string) => {
+        if (sql.includes('SELECT role FROM community_users'))
+          return { rows: [{ role: 'member' }], rowCount: 0 };
+        if (sql.includes('own_messages'))
+          return { rows: [{ own_messages: 0, replies_to_them: 0 }], rowCount: 0 };
+        if (sql.includes('FROM language_prefs'))
+          return { rows: languagePref ? [{ language: languagePref }] : [], rowCount: 0 };
+        return { rows: [], rowCount: 0 };
+      }) as typeof pool.query);
+      const router = makeRouter({ runTurn: throwingRunTurn });
+      const { adapter, sent, trigger } = makeAdapter();
+      router.register(adapter);
+
+      await trigger(makeMessage({ text: '!mydata', userId: 'member-1' }));
+
+      assert.match(sent[0].text, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    }
+  },
+);
+
+test(
+  "SECURITY: !mydata's language-preference read is scoped to the sender's own platform/userId, never a " +
+    'message-supplied identifier (issue #1030 SECURITY criterion)',
+  async (t) => {
+    const calls: Array<{ sql: string; params: unknown[] }> = [];
+    t.mock.method(pool, 'query', (async (sql: string, params: unknown[] = []) => {
+      calls.push({ sql, params });
+      if (sql.includes('SELECT role FROM community_users'))
+        return { rows: [{ role: 'member' }], rowCount: 0 };
+      if (sql.includes('own_messages'))
+        return { rows: [{ own_messages: 0, replies_to_them: 0 }], rowCount: 0 };
+      if (sql.includes('FROM language_prefs')) return { rows: [{ language: 'mi' }], rowCount: 0 };
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: throwingRunTurn });
+    const { adapter, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!mydata', userId: 'member-scoped' }));
+
+    const languageQuery = calls.find((c) => c.sql.includes('FROM language_prefs'));
+    assert.ok(languageQuery, '!mydata must read the language preference');
+    assert.deepEqual(
+      languageQuery?.params,
+      ['whatsapp', 'member-scoped'],
+      "the language_prefs read must be keyed on the sender's own platform/userId",
+    );
   },
 );
 
@@ -1227,6 +1694,149 @@ test('acceptance criterion 9: !mysubmissions and !mydata each record exactly one
 
   assert.equal(sent.length, 2);
   assert.deepEqual(hits, ['whatsapp_text_command', 'whatsapp_text_command']);
+});
+
+// --- !kbtopics (issue #1036) --------------------------------------------------
+
+test('!kbtopics returns the same content formatKnowledgeTopics renders for the given titles/totalCount (issue #1036 acceptance criterion 2)', async (t) => {
+  const { formatKnowledgeTopics } = await import('../src/module/agent/tools.js');
+  t.mock.method(pool, 'query', (async (sql: string) => {
+    if (sql.includes('SELECT role FROM community_users')) return { rows: [{ role: 'member' }], rowCount: 0 };
+    if (sql.includes('COUNT(*) OVER()')) {
+      return {
+        rows: [
+          { title: 'Getting started', total_count: 2 },
+          { title: 'Code of conduct', total_count: 2 },
+        ],
+        rowCount: 0,
+      };
+    }
+    return { rows: [], rowCount: 0 };
+  }) as typeof pool.query);
+  const router = makeRouter({ runTurn: throwingRunTurn });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!kbtopics', userId: 'member-1' }));
+
+  assert.equal(sent[0].text, formatKnowledgeTopics(['Getting started', 'Code of conduct'], 2));
+});
+
+test("!kbtopics on an empty KB returns formatKnowledgeTopics([], 0)'s output (issue #1036 acceptance criterion 5)", async (t) => {
+  mockPoolRole(t, 'member');
+  const router = makeRouter({ runTurn: throwingRunTurn });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!kbtopics', userId: 'member-1' }));
+
+  assert.equal(sent[0].text, 'No knowledge topics have been added yet.');
+});
+
+test('a bare "!kbtopicsx" (no space, unrecognised) is not matched as the !kbtopics command — anchored matcher (issue #1036 SECURITY criterion 3)', async (t) => {
+  mockPoolRole(t, 'member');
+  const router = makeRouter({});
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!kbtopicsx', userId: 'member-1' }));
+
+  assert.equal(sent[0].text, REAL_TURN_REPLY);
+});
+
+test(
+  'SECURITY: "!kbtopics <anything>" is never matched — the anchored matcher rejects any argument, so no ' +
+    'message-supplied text can ever reach listKnowledgeTopics (issue #1036 SECURITY criterion 3)',
+  async (t) => {
+    let topicsQueried = false;
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users'))
+        return { rows: [{ role: 'member' }], rowCount: 0 };
+      if (sql.includes('COUNT(*) OVER()')) {
+        topicsQueried = true;
+        return { rows: [], rowCount: 0 };
+      }
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!kbtopics; DROP TABLE knowledge', userId: 'member-1' }));
+
+    assert.equal(sent[0].text, REAL_TURN_REPLY, 'an argument must fall through to a normal turn');
+    assert.equal(topicsQueried, false, 'listKnowledgeTopics must never run when an argument is present');
+  },
+);
+
+test(
+  'SECURITY: a guest caller\'s "!kbtopics" falls through to the normal turn — listKnowledgeTopics is never ' +
+    'invoked (issue #1036 acceptance criterion 4)',
+  async (t) => {
+    let topicsQueried = false;
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users')) return { rows: [], rowCount: 0 };
+      if (sql.includes('COUNT(*) OVER()')) {
+        topicsQueried = true;
+        return { rows: [], rowCount: 0 };
+      }
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!kbtopics', userId: 'guest-1' }));
+
+    assert.equal(sent.length, 1);
+    assert.equal(
+      sent[0].text,
+      REAL_TURN_REPLY,
+      'a guest gets no distinguishing denial reply, per the family norm',
+    );
+    assert.equal(topicsQueried, false, 'listKnowledgeTopics must never run for a rejected caller');
+  },
+);
+
+test(
+  "SECURITY: !kbtopics' scope predicate is always the adapter-resolved (msg.platform, msg.conversationId) " +
+    '— never anything parsed from the message text (issue #1036 acceptance criterion 2)',
+  async (t) => {
+    const calls: Array<{ sql: string; params: unknown[] }> = [];
+    t.mock.method(pool, 'query', (async (sql: string, params: unknown[] = []) => {
+      calls.push({ sql, params });
+      if (sql.includes('SELECT role FROM community_users'))
+        return { rows: [{ role: 'member' }], rowCount: 0 };
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: throwingRunTurn });
+    const { adapter, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!kbtopics', userId: 'member-1', conversationId: 'wa-conv-scoped' }));
+
+    const topicsQuery = calls.find((c) => c.sql.includes('COUNT(*) OVER()'));
+    assert.ok(topicsQuery, '!kbtopics must call listKnowledgeTopics');
+    assert.deepEqual(topicsQuery?.params.slice(0, 2), ['whatsapp', 'wa-conv-scoped']);
+  },
+);
+
+test("a successful !kbtopics invocation calls recordShortcutHit('whatsapp_text_command') exactly once (issue #1036)", async (t) => {
+  mockPoolRole(t, 'member');
+  const hits: string[] = [];
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    recordShortcutHitFn: async (kind) => {
+      hits.push(kind);
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!kbtopics', userId: 'member-1' }));
+
+  assert.equal(sent.length, 1);
+  assert.deepEqual(hits, ['whatsapp_text_command']);
 });
 
 // --- shortcut_hits tracking (issue #874, acceptance criterion 1) ------------

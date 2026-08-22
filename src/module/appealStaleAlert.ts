@@ -20,6 +20,17 @@ import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js'
 export const APPEAL_STALE_ALERT_THRESHOLD_HOURS = 72;
 
 /**
+ * How many open appeals one tick scans. `listAppeals`' own hard clamp is 200
+ * (`Math.min(Math.max(trunc(limit) || 50, 1), 200)`), so this is the widest a
+ * caller can ask for; the default of 50 is far too narrow for a backlog
+ * signal. See `makeDefaultAppealStaleAlertRun`'s doc comment for why the
+ * order (`created_at DESC`) makes the default actively wrong here rather than
+ * merely partial, and for the agent-base follow-up that would remove the
+ * bound entirely.
+ */
+export const APPEAL_STALE_ALERT_SCAN_LIMIT = 200;
+
+/**
  * Bare count + oldest-age-in-hours DM template — deliberately excludes every
  * appeal's id, `userId`/`userName`, platform, and reason, matching every
  * other digest/alert signal's "bare integers only" convention in this
@@ -83,7 +94,8 @@ export async function alertAdmins(
  * crossing latch (`stepUsageAlertTracker`, imported by reference exactly
  * like `departedAdminAlert.ts` does — not copied) over the COUNT of open
  * appeals older than `APPEAL_STALE_ALERT_THRESHOLD_HOURS`, computed fresh
- * each tick from `listAppeals('open')`. Alerts once on the tick the stale
+ * each tick from a bounded `listAppeals` scan (see below). Alerts once on the
+ * tick the stale
  * count first leaves 0, stays silent while it remains >=1 (including a
  * partial decrease that never reaches 0), and re-arms once every stale
  * appeal is resolved/dismissed and the count returns to 0 — the identical
@@ -92,10 +104,28 @@ export async function alertAdmins(
  * "guild-wide count latch, not per-appeal dedup" scoping). `listOpenAppeals`/
  * `listAdminIdentities` are injectable so tests can drive the latch across
  * ticks with no real DB and no timers.
+ *
+ * The explicit `APPEAL_STALE_ALERT_SCAN_LIMIT` is load-bearing, not decoration.
+ * `listAppeals` is a LIMIT-bounded list read whose default is 50 AND whose
+ * order is `created_at DESC` — newest first. Calling it bare would therefore
+ * hand this job the 50 NEWEST open appeals and then filter them for the
+ * OLDEST, which is backwards: past 50 open appeals the genuinely overdue ones
+ * are exactly the rows excluded, so the alert would go quiet precisely as the
+ * backlog it exists to report got worse. 200 is `listAppeals`' own hard clamp
+ * (`Math.min(..., 200)`), so it is the widest scan available from here.
+ *
+ * That bounds the failure rather than removing it: above 200 open appeals the
+ * count still understates. Removing it needs a dedicated aggregate — the
+ * `countOpenAppeals`/`oldestOpenAppealAgeDays` shape, but predicated on an age
+ * threshold and unscoped by platform — which lives in agent-base, so it is a
+ * follow-up there rather than a raw query smuggled in here (nothing in
+ * `src/module/` reaches past the repository layer, and this job should not be
+ * the first).
  */
 export function makeDefaultAppealStaleAlertRun(
   adapters: readonly PlatformAdapter[],
-  listOpenAppeals: () => Promise<ModerationAppeal[]> = () => listAppeals('open'),
+  listOpenAppeals: () => Promise<ModerationAppeal[]> = () =>
+    listAppeals('open', APPEAL_STALE_ALERT_SCAN_LIMIT),
   listAdminIdentities: () => Promise<AdminIdentity[]> = listAdmins,
 ): () => Promise<void> {
   let tracker = initialUsageAlertTracker();

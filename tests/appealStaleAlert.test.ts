@@ -1,5 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
@@ -18,6 +20,7 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 
 const {
   APPEAL_STALE_ALERT_THRESHOLD_HOURS,
+  APPEAL_STALE_ALERT_SCAN_LIMIT,
   formatAppealStaleAlertMessage,
   makeDefaultAppealStaleAlertRun,
   alertAdmins,
@@ -309,3 +312,38 @@ test('startAppealStaleAlert: always-on, no enable flag — creates a timer even 
   assert.notEqual(timer, null, 'this job is unconditionally enabled by design');
   if (timer) clearInterval(timer);
 });
+
+// --- the scan bound (automated review of PR #1021) --------------------------
+
+test(
+  'the default listOpenAppeals asks listAppeals for APPEAL_STALE_ALERT_SCAN_LIMIT, never its 50-row default ' +
+    '— that default is ordered created_at DESC, so a bare call hands this job the NEWEST open appeals and ' +
+    'then filters them for the OLDEST, going quiet exactly as the backlog worsens',
+  async () => {
+    // Asserted against the SOURCE, deliberately. The argument only exists
+    // inside a default parameter, so the sole runtime observation point is the
+    // real `listAppeals` binding — and it is resolved at import time here, so
+    // `t.mock.module` cannot retarget it from this file (the same constraint
+    // tests/agentCoreCacheUsage.test.ts documents). Every other test in this
+    // file injects `listOpenAppeals` and therefore bypasses the limit
+    // entirely, which is precisely how the bare call shipped unnoticed — so a
+    // behavioural test here would re-create the blind spot rather than close
+    // it. Same technique as tests/conflictResolverEligibility.test.ts, which
+    // reads its subject out of a workflow file.
+    const source = await readFile(
+      fileURLToPath(new URL('../src/module/appealStaleAlert.ts', import.meta.url)),
+      'utf8',
+    );
+    assert.match(
+      source,
+      /listAppeals\('open',\s*APPEAL_STALE_ALERT_SCAN_LIMIT\)/,
+      "the job must scan with the explicit constant — a bare listAppeals('open') silently takes 50 rows",
+    );
+    assert.doesNotMatch(source, /listAppeals\('open'\)/, 'no bare, unbounded-looking call may remain');
+    assert.equal(
+      APPEAL_STALE_ALERT_SCAN_LIMIT,
+      200,
+      "200 is listAppeals' own hard clamp — a larger value here would be a claim the repository does not honour",
+    );
+  },
+);
