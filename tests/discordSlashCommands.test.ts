@@ -1779,6 +1779,125 @@ test('SECURITY: /kb reply includes KNOWLEDGE_CONFLICT_CAVEAT_TEXT when hasConfli
   );
 });
 
+// issue #1063: the conflict caveat (#802) was the one hardcoded-English line
+// left after #1038 gave the sibling stale/low-rated caveats mi parity —
+// #1038's own "Deliberately out of scope" section named this as the
+// follow-up. Mirrors #1038's own mi/regression test shape above.
+test(
+  "/kb renders the conflict caveat in te reo Māori when the caller's stored language_preference is 'mi', " +
+    "and stays byte-identical to today's English KNOWLEDGE_CONFLICT_CAVEAT_TEXT when it's unset/'auto' " +
+    '(issue #1063 acceptance criteria 1, 2)',
+  async (t) => {
+    const KNOWLEDGE_CONFLICT_CAVEAT_TEXT_MI = notice('knowledgeConflictCaveat', { language: 'mi' });
+    const knowledgeRows: PoolRow[] = [
+      {
+        id: 1,
+        title: 'A',
+        content: 'ENTRY_A_TEXT',
+        created_by_role: 'admin',
+        similarity: 0.9,
+        updated_at: new Date(),
+      },
+      {
+        id: 2,
+        title: 'B',
+        content: 'ENTRY_B_TEXT',
+        created_by_role: 'admin',
+        similarity: 0.85,
+        updated_at: new Date(),
+      },
+    ];
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+
+    mockPool(t, { memberRole: 'member', knowledgeRows, conflictExists: true, languagePref: 'mi' });
+    const miResult = fakeInteraction({
+      commandName: 'kb',
+      userId: 'member-mi',
+      options: { query: 'anything' },
+    });
+    await handleInteraction(miResult.interaction as never, adapterDeps(adapter));
+    assert.ok(
+      miResult.replies[0].content.includes(stripEmDashes(KNOWLEDGE_CONFLICT_CAVEAT_TEXT_MI)),
+      "the mi conflict caveat must render when the caller's language preference is 'mi'",
+    );
+    assert.ok(
+      !miResult.replies[0].content.includes(stripEmDashes(KNOWLEDGE_CONFLICT_CAVEAT_TEXT)),
+      'the English caveat must not render alongside the mi one',
+    );
+
+    mockPool(t, {
+      memberRole: 'member',
+      knowledgeRows,
+      conflictExists: true,
+      // languagePref intentionally unset — this caller has no stored 'mi' preference.
+    });
+    const unsetResult = fakeInteraction({
+      commandName: 'kb',
+      userId: 'member-unset',
+      options: { query: 'anything' },
+    });
+    await handleInteraction(unsetResult.interaction as never, adapterDeps(adapter));
+    assert.ok(
+      unsetResult.replies[0].content.includes(stripEmDashes(KNOWLEDGE_CONFLICT_CAVEAT_TEXT)),
+      'output stays byte-identical (English) when no language preference is stored (regression guard, #802/#1038)',
+    );
+    assert.ok(
+      !unsetResult.replies[0].content.includes(stripEmDashes(KNOWLEDGE_CONFLICT_CAVEAT_TEXT_MI)),
+      'the mi caveat must never render for a caller with no stored preference',
+    );
+  },
+);
+
+test(
+  'SECURITY: /kb conflict caveat, in both base and mi, is never interpolated with hit content, an entry id/title, ' +
+    'or which entries disagree (issue #1063)',
+  async (t) => {
+    const KNOWLEDGE_CONFLICT_CAVEAT_TEXT_MI = notice('knowledgeConflictCaveat', { language: 'mi' });
+    const knowledgeRows: PoolRow[] = [
+      {
+        id: 301,
+        title: 'ENTRY_A_TITLE',
+        content: 'ENTRY_A_TEXT',
+        created_by_role: 'admin',
+        similarity: 0.9,
+        updated_at: new Date(),
+      },
+      {
+        id: 402,
+        title: 'ENTRY_B_TITLE',
+        content: 'ENTRY_B_TEXT',
+        created_by_role: 'admin',
+        similarity: 0.85,
+        updated_at: new Date(),
+      },
+    ];
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+
+    for (const languagePref of ['mi', undefined] as const) {
+      mockPool(t, { memberRole: 'member', knowledgeRows, conflictExists: true, languagePref });
+      const { interaction, replies } = fakeInteraction({
+        commandName: 'kb',
+        userId: `member-${languagePref ?? 'unset'}`,
+        options: { query: 'anything' },
+      });
+      await handleInteraction(interaction as never, adapterDeps(adapter));
+      const expectedCaveat =
+        languagePref === 'mi' ? KNOWLEDGE_CONFLICT_CAVEAT_TEXT_MI : KNOWLEDGE_CONFLICT_CAVEAT_TEXT;
+      assert.ok(
+        replies[0].content.includes(stripEmDashes(expectedCaveat)),
+        `the exact fixed catalogue caveat must render for languagePref '${languagePref}'`,
+      );
+      assert.ok(
+        !expectedCaveat.includes('301') &&
+          !expectedCaveat.includes('402') &&
+          !expectedCaveat.includes('ENTRY_A_TITLE') &&
+          !expectedCaveat.includes('ENTRY_B_TITLE'),
+        `the caveat text for languagePref '${languagePref}' must never name an entry id or title`,
+      );
+    }
+  },
+);
+
 test('SECURITY: /kb reply includes KNOWLEDGE_LOW_RATED_CAVEAT_TEXT on exactly the hit line whose id is in the low-rated set, never on a sibling hit outside it', async (t) => {
   const was = config.behaviour.knowledgeLowRatedCaveatMinUnhelpful;
   config.behaviour.knowledgeLowRatedCaveatMinUnhelpful = 2;

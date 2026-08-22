@@ -650,6 +650,12 @@ const NOTICE_ENTRIES = {
     base: 'may be outdated',
     language: { mi: 'tērā pea kua tawhito' },
   },
+  knowledgeConflictCaveat: {
+    base: "some of these entries may disagree with each other — an admin hasn't reconciled them yet",
+    language: {
+      mi: 'tērā pea kāore ētahi o ēnei mōhiotanga e whakaae ana ki a rātou anō — kāore anō i whakatikahia e tētahi kaiwhakahaere',
+    },
+  },
   // --- moderation DM texts (moderation/moderator.ts) ------------------------
   mutedRoleNote: {
     base: MUTED_ROLE_NOTE_BASE,

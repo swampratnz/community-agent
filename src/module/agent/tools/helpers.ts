@@ -122,6 +122,14 @@ export interface KnowledgeCitationInfo {
  * string-equality is asserted in tests, mirroring
  * `KNOWLEDGE_LOW_RATED_CAVEAT_TEXT`'s own convention, so this can never
  * regress into naming which two entries disagree or what they say.
+ *
+ * Left exported and unchanged (issue #1063) — `routerWiring.ts`'s
+ * `sendKnowledgeShortcut` wiring still consumes this English-only constant
+ * directly, and existing tests still assert it exact-string. Its value is
+ * now also the `base` of the `knowledgeConflictCaveat` notice-catalogue
+ * entry (`strings/notices.ts`), which `formatKnowledgeSearchResults` renders
+ * instead of this constant so the trailing line can honour a caller's `mi`
+ * language preference; the two must stay byte-identical for `base`.
  */
 export const KNOWLEDGE_CONFLICT_CAVEAT_TEXT =
   "some of these entries may disagree with each other — an admin hasn't reconciled them yet";
@@ -246,8 +254,12 @@ export const KNOWLEDGE_TIE_MARGIN = 0.03;
  * opt-in: the caller (`knowledge_search`'s handler) computes it once via
  * `hasConflictAmongIds` on the ids that cleared the relevance floor, and
  * passes the boolean straight through — this function does no comparison of
- * its own. When `true`, `KNOWLEDGE_CONFLICT_CAVEAT_TEXT` is appended exactly
- * once as a trailing line after the hit list, never per-hit.
+ * its own. When `true`, the `knowledgeConflictCaveat` notice (issue #1063;
+ * `base` is byte-identical to the exported `KNOWLEDGE_CONFLICT_CAVEAT_TEXT`
+ * constant, still used unchanged by `routerWiring.ts`'s separate
+ * `sendKnowledgeShortcut` wiring) is appended exactly once as a trailing
+ * line after the hit list, never per-hit, rendered with this function's own
+ * `lang` parameter below so it matches the per-hit caveats' language.
  *
  * `lowRatedIds` (issue #432) defaults to an empty set and, like
  * `hasConflict`, is computed once by the caller (via
@@ -291,9 +303,12 @@ export const KNOWLEDGE_TIE_MARGIN = 0.03;
  * `formatKnowledgeCitationNote`'s own `lang` parameter, so a caller that
  * knows the invoking member's stored `language_preference` (today, `/kb`'s
  * `handleKb`) gets `mi` renderings of the stale/low-rated caveats on this
- * path too. The `knowledge_search` tool call site never passes it — the
- * model composes that reply in-language already — so it, and every other
- * omitted-argument caller, stays byte-identical to pre-#1038 behaviour.
+ * path too, and (issue #1063) into the trailing conflict caveat above, so a
+ * `mi`-preference member's `/kb` reply is one consistent language rather
+ * than `mi` everywhere except that one line. The `knowledge_search` tool
+ * call site never passes it — the model composes that reply in-language
+ * already — so it, and every other omitted-argument caller, stays
+ * byte-identical to pre-#1038 behaviour.
  */
 export function formatKnowledgeSearchResults(
   hits: Array<
@@ -362,7 +377,7 @@ export function formatKnowledgeSearchResults(
       return `- (${(h.similarity * 100).toFixed(0)}% match) ${h.title ? `${h.title}: ` : ''}${entryBody} (updated ${formatRelativeAge(h.updatedAt)})${note}`;
     })
     .join('\n');
-  return hasConflict ? `${body}\n\n(${KNOWLEDGE_CONFLICT_CAVEAT_TEXT})` : body;
+  return hasConflict ? `${body}\n\n(${notice('knowledgeConflictCaveat', { language: lang })})` : body;
 }
 
 /**
