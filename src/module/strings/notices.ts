@@ -353,12 +353,12 @@ const NOTICE_ENTRIES = {
    * The member-tier segment of `community_info`/`/help`/`!help`'s capability
    * rundown (issue #1028) — `base` moved VERBATIM from the old
    * `MEMBER_CAPABILITIES_TEXT` constant in info.ts, so this is a byte-neutral
-   * relocation, not a rewrite. The admin/super-admin segments got the same
-   * treatment in `communityInfoAdminCapabilities`/
-   * `communityInfoSuperAdminCapabilities` below (issue #1056); the WhatsApp
-   * `!`-shortcuts segment (`WHATSAPP_TEXT_COMMANDS_TEXT`, still in info.ts)
-   * stays English-only per issue #1028's own scoping (covered separately by
-   * issue #1034).
+   * relocation, not a rewrite. Both follow-ups its original scope named have
+   * since landed: the admin/super-admin segments got the same treatment in
+   * `communityInfoAdminCapabilities`/`communityInfoSuperAdminCapabilities`
+   * below (issue #1056), and the WhatsApp `!`-shortcuts segment got its own
+   * `mi` variant in `whatsappTextCommands` below (issue #1034). No segment of
+   * this rundown is English-only any more.
    */
   communityInfoMemberCapabilities: {
     base:
@@ -540,6 +540,49 @@ const NOTICE_ENTRIES = {
         '- Tuku mahi ki te tīma whanaketanga mamao hei arotake, hei tuku rānei i tētahi panonitanga, ' +
         'tirotiro i tōna tūnga, tiki i tōna hua, huri i tētahi arotake kua oti hei rārangi mahi e whāia ' +
         'ana, whakarārangi i ngā kitenga o tētahi arotake, tirotiro anō rānei i tētahi kitenga',
+    },
+  },
+  // --- community_info WhatsApp `!`-shortcuts discovery block (agent/tools/info.ts) ---
+  /**
+   * The WhatsApp-only `!`-shortcuts discovery block appended to the member
+   * capabilities segment above (issue #872) — `base` moved VERBATIM from the
+   * old `WHATSAPP_TEXT_COMMANDS_TEXT` constant in info.ts, so this is a
+   * byte-neutral relocation, not a rewrite (issue #1034, the follow-up
+   * `communityInfoMemberCapabilities`'s own doc comment named as scoped
+   * out). The `!`-prefixed command tokens stay literal/untranslated in the
+   * `mi` variant — `commands.ts`'s regexes match those exact ASCII strings.
+   * No `style` variant, matching `communityInfoMemberCapabilities`'s own
+   * scope. Never interpolates caller or message data — same trust level as
+   * the member capabilities notice above. `!kbtopics` (issue #1036) was
+   * added to both variants by issue #1044/#1034, closing a gap where it
+   * shipped without ever being added to this list.
+   */
+  whatsappTextCommands: {
+    base:
+      "You're on WhatsApp, so you can also use these zero-wait shortcuts:\n" +
+      '- `!whois <topic>` — find members into a topic\n' +
+      '- `!projects [query]` — browse the project showcase\n' +
+      '- `!guidelines` — community guidelines\n' +
+      "- `!digest` — this week's digest\n" +
+      '- `!status` — check for a known Anthropic outage\n' +
+      '- `!kbtopics` — browse what the knowledge base covers\n' +
+      '- `!warnings` — your own active warning count\n' +
+      '- `!mysubmissions` — status of your filed suggestions/reports\n' +
+      '- `!mydata` — what the bot has stored about you\n' +
+      '- `!help` — this capability rundown',
+    language: {
+      mi:
+        'Kei runga koe i WhatsApp, nō reira ka taea hoki e koe te whakamahi i ēnei pokatata tere:\n' +
+        '- `!whois <topic>` — rapu mema e pā ana ki tētahi kaupapa\n' +
+        '- `!projects [query]` — tirotiro i te whakaaturanga kaupapa\n' +
+        '- `!guidelines` — ngā tikanga hapori\n' +
+        '- `!digest` — te whakarāpopototanga o tēnei wiki\n' +
+        '- `!status` — tirotiro mehemea he raru mōhiotia nā Anthropic\n' +
+        '- `!kbtopics` — tirotiro i ngā kaupapa e kapi ana e te pātengi mōhiotanga\n' +
+        '- `!warnings` — te tatau o ō whakatūpato e mahi tonu ana\n' +
+        '- `!mysubmissions` — te āhua o ō tono/pūrongo kua tukuna\n' +
+        '- `!mydata` — he aha kua rongoātia e ahau mōu\n' +
+        '- `!help` — tēnei whakarāpopototanga pūkenga',
     },
   },
   // --- member digest section labels (memberDigest.ts) ----------------------

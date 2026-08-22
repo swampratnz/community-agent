@@ -4067,6 +4067,57 @@ test(
   },
 );
 
+// --- issue #1034: the WhatsApp `!`-shortcuts discovery block honours the
+// caller's standing 'mi' language preference too, matching #1028's treatment
+// of the member-capabilities segment immediately above it.
+
+test(
+  'community_info/formatCommunityInfoText serve the te reo Māori WhatsApp shortcuts block, immediately ' +
+    'following the te reo Māori member-capabilities text, to a WhatsApp member-tier caller with a standing ' +
+    "'mi' language preference and whatsappTextCommandsEnabled on (issue #1034 acceptance criterion 3)",
+  { skip },
+  async () => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    const miUser = `${RUN}-info-whatsapp-mi-preference`;
+    try {
+      config.behaviour.whatsappTextCommandsEnabled = true;
+      await setLanguagePreferenceHandler({ platform: 'whatsapp', userId: miUser }).handler({
+        language: 'mi',
+      });
+
+      const miReply = (await communityInfoHandler('member', 'whatsapp', miUser)).content[0]?.text ?? '';
+
+      assert.match(
+        miReply,
+        /Anei ngā mea ka taea e koe te tono mai ki ahau/,
+        'must contain the te reo Māori member-capabilities text',
+      );
+      assert.match(
+        miReply,
+        /Kei runga koe i WhatsApp, nō reira ka taea hoki e koe te whakamahi i ēnei pokatata tere/,
+        'must contain the te reo Māori WhatsApp shortcuts block, not an English fallback',
+      );
+      assert.doesNotMatch(
+        miReply,
+        /You're on WhatsApp, so you can also use these zero-wait shortcuts/,
+        'must not also contain the English shortcuts block',
+      );
+      assert.ok(
+        miReply.indexOf('Anei ngā mea ka taea e koe te tono mai ki ahau') <
+          miReply.indexOf('Kei runga koe i WhatsApp'),
+        'the shortcuts block must follow the member-capabilities segment, not precede it',
+      );
+      assert.equal(
+        await formatCommunityInfoText('member', 'whatsapp', miUser),
+        miReply,
+        "formatCommunityInfoText's own output must match the tool handler's (single source of truth)",
+      );
+    } finally {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    }
+  },
+);
+
 test(
   'community_info/formatCommunityInfoText serve te reo Māori for BOTH the admin- and super-admin-capabilities ' +
     "segments to a super_admin caller with a standing 'mi' language preference (issue #1056 acceptance " +
@@ -4103,6 +4154,62 @@ test(
       miReply,
       "formatCommunityInfoText's own output must match the tool handler's (single source of truth)",
     );
+  },
+);
+
+test(
+  "community_info/formatCommunityInfoText render the WhatsApp shortcuts block byte-identical to today's " +
+    "English literal for a WhatsApp member-tier caller with no stored language preference, an 'en' " +
+    "preference, or an 'auto' preference (issue #1034 acceptance criterion 4)",
+  { skip },
+  async () => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    const enUser = `${RUN}-info-whatsapp-en-preference`;
+    const autoUser = `${RUN}-info-whatsapp-auto-preference`;
+    const expected =
+      "You're on WhatsApp, so you can also use these zero-wait shortcuts:\n" +
+      '- `!whois <topic>` — find members into a topic\n' +
+      '- `!projects [query]` — browse the project showcase\n' +
+      '- `!guidelines` — community guidelines\n' +
+      "- `!digest` — this week's digest\n" +
+      '- `!status` — check for a known Anthropic outage\n' +
+      '- `!kbtopics` — browse what the knowledge base covers\n' +
+      '- `!warnings` — your own active warning count\n' +
+      '- `!mysubmissions` — status of your filed suggestions/reports\n' +
+      '- `!mydata` — what the bot has stored about you\n' +
+      '- `!help` — this capability rundown';
+    try {
+      config.behaviour.whatsappTextCommandsEnabled = true;
+      await setLanguagePreferenceHandler({ platform: 'whatsapp', userId: enUser }).handler({
+        language: 'en',
+      });
+      await setLanguagePreferenceHandler({ platform: 'whatsapp', userId: autoUser }).handler({
+        language: 'auto',
+      });
+
+      const unsetReply = (await communityInfoHandler('member', 'whatsapp')).content[0]?.text ?? '';
+      const enReply = (await communityInfoHandler('member', 'whatsapp', enUser)).content[0]?.text ?? '';
+      const autoReply = (await communityInfoHandler('member', 'whatsapp', autoUser)).content[0]?.text ?? '';
+
+      for (const [label, reply] of [
+        ['unset', unsetReply],
+        ['en', enReply],
+        ['auto', autoReply],
+      ] as const) {
+        assert.ok(
+          reply.endsWith(expected),
+          `${label}-preference caller's reply must end with today's byte-identical English shortcuts literal`,
+        );
+      }
+      assert.equal(enReply, unsetReply, "'en' preference must render byte-identical to no stored preference");
+      assert.equal(
+        autoReply,
+        unsetReply,
+        "'auto' preference must render byte-identical to no stored preference",
+      );
+    } finally {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    }
   },
 );
 
@@ -4161,6 +4268,72 @@ test(
     const guestReply = (await communityInfoHandler('guest')).content[0]?.text ?? '';
     assert.doesNotMatch(memberReply, /As an admin, you also have|I a koe e noho kaiwhakahaere ana/);
     assert.doesNotMatch(guestReply, /As an admin, you also have|I a koe e noho kaiwhakahaere ana/);
+  },
+);
+
+test(
+  'community_info/formatCommunityInfoText never render the WhatsApp shortcuts block, in either language, ' +
+    'for a Discord caller (any language preference) or a WhatsApp caller with whatsappTextCommandsEnabled ' +
+    'off — regression pin for issue #1034 (acceptance criterion 5)',
+  { skip },
+  async () => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    const discordMiUser = `${RUN}-info-shortcuts-discord-mi`;
+    try {
+      await setLanguagePreferenceHandler({ platform: 'discord', userId: discordMiUser }).handler({
+        language: 'mi',
+      });
+
+      config.behaviour.whatsappTextCommandsEnabled = true;
+      const discordMiReply =
+        (await communityInfoHandler('member', 'discord', discordMiUser)).content[0]?.text ?? '';
+      assert.doesNotMatch(discordMiReply, /!whois/, 'a Discord caller must never see the WhatsApp shortcuts');
+      assert.doesNotMatch(
+        discordMiReply,
+        /Kei runga koe i WhatsApp/,
+        'a Discord caller must never see the te reo Māori WhatsApp shortcuts either',
+      );
+
+      config.behaviour.whatsappTextCommandsEnabled = false;
+      const whatsappFlagOffReply = (await communityInfoHandler('member', 'whatsapp')).content[0]?.text ?? '';
+      assert.doesNotMatch(
+        whatsappFlagOffReply,
+        /!whois|Kei runga koe i WhatsApp/,
+        'a WhatsApp caller with the flag off must never see either language of the shortcuts block',
+      );
+    } finally {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    }
+  },
+);
+
+test(
+  "SECURITY: the WhatsApp shortcuts block's language selection is driven solely by the caller's own " +
+    "(platform, userId) stored language preference plus whatsappTextCommandsEnabled — a 'mi'-preference " +
+    "caller's language never leaks into a distinct caller's reply (issue #1034 acceptance criterion 7)",
+  { skip },
+  async () => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    const miUser = `${RUN}-info-shortcuts-sec-mi`;
+    const otherUser = `${RUN}-info-shortcuts-sec-other`;
+    try {
+      config.behaviour.whatsappTextCommandsEnabled = true;
+      await setLanguagePreferenceHandler({ platform: 'whatsapp', userId: miUser }).handler({
+        language: 'mi',
+      });
+
+      const miReply = (await communityInfoHandler('member', 'whatsapp', miUser)).content[0]?.text ?? '';
+      const otherReply = (await communityInfoHandler('member', 'whatsapp', otherUser)).content[0]?.text ?? '';
+
+      assert.match(miReply, /Kei runga koe i WhatsApp/);
+      assert.match(
+        otherReply,
+        /You're on WhatsApp, so you can also use these zero-wait shortcuts/,
+        "a distinct caller with no stored preference must never inherit another caller's 'mi' preference",
+      );
+    } finally {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    }
   },
 );
 

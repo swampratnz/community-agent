@@ -71,6 +71,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-08-20
 
 ### Fixed
+- **The WhatsApp `!`-shortcuts discovery block in `community_info`/`!help` now
+  honours a standing te reo Māori preference too** (#1034): #1028 (below)
+  fixed the member-capabilities rundown but left the WhatsApp-only
+  `!`-shortcuts list immediately below it as a named follow-up — a
+  `language_preference = 'mi'` WhatsApp member got eight lines of te reo
+  Māori, then an abrupt flip to English for the one part of the reply most
+  specific to them. A WhatsApp member-tier caller with `language_preference =
+  'mi'` and the WhatsApp text-commands feature on now gets that block in te
+  reo Māori too; a caller with no preference (or `'en'`/`'auto'`) sees
+  byte-identical English to before.
 - **The admin-promotion DM no longer silently vanishes when your WhatsApp
   window is closed.** (#1040) If a super admin ran `grant_admin` on a
   WhatsApp Cloud user whose 24-hour customer-service window happened to be
@@ -126,7 +136,9 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   'mi'` now gets the member-capabilities rundown in te reo Māori, matching
   `community_guidelines`'s existing behaviour; a caller with no preference (or
   `'en'`/`'auto'`) sees byte-identical English to before. Admin/super-admin
-  content and the WhatsApp `!`-shortcuts block stay English-only for now.
+  content stays English-only for now; the WhatsApp `!`-shortcuts block
+  immediately below this segment got the same te reo Māori treatment in #1034
+  (above).
 - **The on-demand community digest (`community_digest`, `/digest`, `!digest`)
   now honours a standing te reo Māori preference too** (#1042): this was the
   last per-caller digest pull left out of the `mi` series `community_info`

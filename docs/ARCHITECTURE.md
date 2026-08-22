@@ -1482,11 +1482,11 @@ weakening it:
    `communityInfoMemberCapabilities` entry rather than a raw string constant.
    Issue #1056 extended the same `language` value to the admin/super-admin
    segments via the `communityInfoAdminCapabilities`/
-   `communityInfoSuperAdminCapabilities` notice entries, closing the
-   mid-message language mix a `'mi'`-preference admin/super-admin caller
-   otherwise saw (a te reo member segment followed by an untranslated English
-   admin segment). The WhatsApp shortcuts block still stays English-only, an
-   explicit growth path (issue #1034) rather than either issue's scope.
+   `communityInfoSuperAdminCapabilities` notice entries, and issue #1034 did
+   the same for the WhatsApp shortcuts block via `whatsappTextCommands` —
+   between them closing every mid-reply language flip a `'mi'`-preference
+   caller could see, at any tier and on either platform. No segment of this
+   rundown is English-only any more.
 7. **Opt-in auto-enroll** (issue #605, off unless
    `DISCORD_AUTO_ENROLL_MEMBERS=true`). Removes the manual per-person
    `add_member` step: on every non-bot Discord join, `onGuildMemberAdd` calls

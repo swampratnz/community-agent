@@ -3275,12 +3275,13 @@ call.
   shortcut. Advertising them to a guest would violate `community_info`'s own
   invariant — "names every tool the caller actually has" — so the block is
   gated the same way the router gates the shortcuts themselves.
-- **Fixed literal, never interpolated.** The appended block
-  (`WHATSAPP_TEXT_COMMANDS_TEXT`) is a hand-written string naming the four
-  §23 shortcuts, authored with the same discipline as the member/admin
-  capability text blocks (`communityInfoMemberCapabilities`/
+- **Fixed literal, never interpolated.** The appended block resolves via the
+  module notice pack's `whatsappTextCommands` entry (`strings/notices.ts`,
+  issue #1034 — previously a raw `WHATSAPP_TEXT_COMMANDS_TEXT` constant),
+  naming the §23 shortcuts, authored with the same discipline as the
+  member/admin capability text blocks (`communityInfoMemberCapabilities`/
   `communityInfoAdminCapabilities`, §26/§27) — no caller or message data ever
-  reaches it.
+  reaches either variant. See §28 for its own `mi` variant.
 - **SECURITY: platform isolation.** A `SECURITY:`-prefixed test asserts a
   Discord caller's `community_info` output is byte-identical regardless of
   `whatsappTextCommandsEnabled`'s value — the WhatsApp branch structurally
@@ -3547,9 +3548,9 @@ while always rendering that answer itself in English.
   interpolates caller or message data into either variant.
 - **Scoped to the member-tier segment only, at the time.** The admin/
   super-admin segments and the WhatsApp `!`-shortcuts block (§24) stayed
-  English-only — named growth, not this issue's scope. §27 closes the
-  admin/super-admin half of that gap; the WhatsApp shortcuts block remains
-  English-only (issue #1034).
+  English-only — named growth, not this issue's scope. Both halves have since
+  closed: §27 for the admin/super-admin segments (issue #1056) and §28 for
+  the WhatsApp shortcuts block (issue #1034).
 - **SECURITY: no template placeholders.** A test asserts the
   `communityInfoMemberCapabilities` entry's `base` and `mi` values contain no
   interpolation markers, consistent with `tests/stringsCatalogue.test.ts`'s
@@ -3597,6 +3598,44 @@ its own.
 - **Regression safety for the common case.** A caller with no stored
   preference (or `'en'`/`'auto'`) renders byte-identical English output to
   before this issue, for both the admin and super-admin segments.
+
+### 28. WhatsApp `!`-shortcuts discovery block honours a standing `'mi'` language preference too (issue #1034)
+
+§26 closed the member-capabilities segment's language gap but named the
+WhatsApp `!`-shortcuts block immediately below it (§24) as the one segment
+still scoped out — a `'mi'`-preference WhatsApp member got eight lines of te
+reo Māori, then an abrupt flip to English for the one segment most specific
+to WhatsApp members. This closes that named follow-up.
+
+- **Same accessor, same call, no new read.** `formatCommunityInfoText`
+  resolves the shortcuts block via `notice('whatsappTextCommands', {
+  language })`, reusing the `language` value already read once for the
+  member-capabilities segment (§26) — no new `getLanguagePreference` call,
+  no new parameter, no new DB read.
+- **Fixed, human-authored text — no model call, no runtime translation.**
+  The `mi` variant is a literal in the notice pack (`whatsappTextCommands`
+  entry, `strings/notices.ts`), same trust level as every other
+  `NOTICE_ENTRIES` value. The `!`-prefixed command tokens themselves stay
+  literal/untranslated in the `mi` variant — `tryWhatsAppTextCommand`'s
+  regexes (§23) match those exact ASCII strings, so translating them would
+  break the commands they name, the same reasoning `pendingNotice`'s
+  `CONFIRM`/`CANCEL` tokens rest on.
+- **No `style` variant**, matching `communityInfoMemberCapabilities`'s own
+  scope — an un-requested growth path, not this issue's job.
+- **SECURITY: no template placeholders.** A test asserts the
+  `whatsappTextCommands` entry's `base` and `mi` values contain no
+  interpolation markers, mirroring §26's equivalent check.
+- **SECURITY: own-preference-only.** A test asserts the rendered variant is
+  a pure function of the caller's own stored `(platform, userId)` language
+  preference plus `whatsappTextCommandsEnabled` — never message content, and
+  never another caller's identity — mirroring §26's equivalent check for the
+  member-capabilities segment.
+- **Regression safety for the common case.** A WhatsApp caller with no
+  stored preference (or `'en'`/`'auto'`) renders byte-identical English
+  output to before this issue; a Discord caller (any preference, any flag
+  state) and a WhatsApp caller with the flag off are unaffected — the branch
+  condition from §24 is unchanged, only the text it renders on the WhatsApp
+  branch is now language-aware.
 
 ## Platform-specific notes
 
