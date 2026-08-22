@@ -33,6 +33,13 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   found it via `knowledge_search` — `/kb` now falls back to the same
   substring-robust lexical match `knowledge_search` has used since #362, so
   both surfaces find the same entries.
+- **`suggest_knowledge` no longer discards a correction to an existing
+  entry.** Reporting that an existing knowledge-base entry is now wrong or
+  stale (e.g. "the pricing page URL changed") is, by construction, highly
+  similar to the entry it corrects — which used to trip the "already
+  covered" duplicate check and get silently discarded with no record
+  anywhere. It's now queued for admin review instead, naming the entry it
+  may update, exactly like any other suggested tip (#1066).
 
 ## 2026-08-21
 

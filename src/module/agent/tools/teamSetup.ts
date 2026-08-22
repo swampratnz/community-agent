@@ -12,6 +12,7 @@ import {
   upsertMember,
 } from '@swampratnz/agent-base/storage/repository.js';
 import { text } from './helpers.js';
+import { notifyMemberApproved } from './notify.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 /**
@@ -88,7 +89,7 @@ export const teamSetupTools = [
             'Anyone not already a community member is registered at member tier, exactly like add_member.',
         ),
     },
-    handler: async (args, { caller, audited, requireConfirm, resolveMemberTarget }) => {
+    handler: async (args, { caller, audited, requireConfirm, resolveMemberTarget, adapterFor }) => {
       assertAtLeast(caller.role, 'admin', 'team_setup');
       // Defence in depth alongside the zod .max() above — a caller that
       // reaches the handler directly (as a test does) must be refused before
@@ -172,17 +173,40 @@ export const teamSetupTools = [
                 return steps.join('\n');
               }
 
+              // Aggregate counters for the welcome-DM note appended below (issue
+              // #1065) — per-target noise would duplicate what the existing
+              // registration/project rows already report, so only a summary is
+              // added, mirroring add_member's single MEMBER_DM_FAILED_NOTE.
+              let newRegistrationCount = 0;
+              let dmFailureCount = 0;
+
               for (const target of uniqueTargets) {
                 try {
                   const wasMember = (await getMemberRole(target.platform, target.userId)) !== null;
-                  const registerNote = wasMember
-                    ? 'already existed'
-                    : `registered as ${await upsertMember({
-                        platform: target.platform,
-                        userId: target.userId,
-                        role: 'member',
-                        addedBy: caller.userId,
-                      })}`;
+                  let registerNote: string;
+                  if (wasMember) {
+                    registerNote = 'already existed';
+                  } else {
+                    const finalRole = await upsertMember({
+                      platform: target.platform,
+                      userId: target.userId,
+                      role: 'member',
+                      addedBy: caller.userId,
+                    });
+                    registerNote = `registered as ${finalRole}`;
+                    newRegistrationCount += 1;
+                    // Welcome DM, mirroring add_member exactly (issue #1065): routed
+                    // through the TARGET's own platform adapter, never the acting
+                    // admin's current-turn one, and best-effort — notifyMemberApproved
+                    // swallows its own send failures and returns false rather than
+                    // throwing, so this can never fail the registration/project-add
+                    // below.
+                    const memberTarget = adapterFor(target.platform);
+                    const dmDelivered = memberTarget
+                      ? await notifyMemberApproved(memberTarget, target.userId, wasMember, target.platform)
+                      : true;
+                    if (!dmDelivered) dmFailureCount += 1;
+                  }
                   const added = await addProjectMember(
                     project.id,
                     target.platform,
@@ -201,6 +225,11 @@ export const teamSetupTools = [
                 }
               }
               for (const raw of invalid) steps.push(`${sanitizeForConfirm(raw)}: failed (invalid id)`);
+              if (dmFailureCount > 0) {
+                steps.push(
+                  `${dmFailureCount} of ${newRegistrationCount} new members: welcome DM not delivered`,
+                );
+              }
 
               try {
                 const bound = await bindProjectSurface(

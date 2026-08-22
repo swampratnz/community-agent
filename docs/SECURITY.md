@@ -698,12 +698,19 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   `SECURITY:` tests); a `SECURITY:` test also pins that the tool writes ONLY
   to `knowledge_candidates`, never `knowledge`. Reuses the context builder's
   own pre-insert dedup guard verbatim (`candidateTopicAlreadyReviewed` +
-  `findKnowledgeCoveringTopic`) so a tip whose topic is already
-  queued/reviewed or already covered by an existing entry is refused before
-  insert, and a DB-backed rolling-24h rate cap
-  (`KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY`, 3/day) plus title/content length caps
-  bound queue-flooding, same `COUNT(*)`-inside-the-insert pattern as
-  `suggest_improvement`. Provenance is two nullable columns,
+  `findKnowledgeCoveringTopic`): a topic already queued/reviewed as a
+  candidate is still refused outright before insert, but a topic that
+  merely matches an existing PUBLISHED `knowledge` entry is queued rather
+  than refused (issue #1066) — that guard can't tell a true duplicate from a
+  genuine correction to a stale/wrong entry, since a correction is by
+  construction highly similar to the entry it corrects, so both are surfaced
+  to an admin (naming the covering entry) rather than silently discarded. A
+  DB-backed rolling-24h rate cap (`KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY`, 3/day)
+  plus title/content length caps bound queue-flooding on EITHER branch, same
+  `COUNT(*)`-inside-the-insert pattern as `suggest_improvement`; the
+  `candidateTopicAlreadyReviewed` guard above additionally stops repeat
+  corrections against the same topic once the first is itself a pending
+  candidate row. Provenance is two nullable columns,
   `source_platform`/`source_user_id` (null/null for every machine-drafted
   row); `list_knowledge_candidates` renders a `[member-suggested by <name>]`
   tag for a member-sourced row — **SECURITY:** a candidate's own

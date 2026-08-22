@@ -264,12 +264,6 @@ export const knowledgeMemberTools = [
             'need to resubmit.',
         );
       }
-      const covering = await findKnowledgeCoveringTopic(topicEmbedding);
-      if (covering) {
-        const label = covering.title ? `"${covering.title}"` : `entry #${covering.id}`;
-        return text(`Thanks, but this looks already covered by existing knowledge entry ${label}.`);
-      }
-
       const created = await createKnowledgeTip({
         platform: caller.platform,
         userId: caller.userId,
@@ -283,6 +277,25 @@ export const knowledgeMemberTools = [
           `You've already suggested ${KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY} tips in the last 24 hours. ` +
             'Please wait before suggesting another.',
           true,
+        );
+      }
+      // A high-similarity match here is also what a genuine CORRECTION to
+      // that entry looks like (issue #1066) — the topic is by construction
+      // near-identical to the entry it corrects, so this can't distinguish
+      // "duplicate" from "stale/wrong". Rather than discard it unreviewed,
+      // it's queued exactly like the no-match case above and the admin
+      // judges it: decline if it's truly redundant, or update_knowledge on
+      // the named entry. candidateTopicAlreadyReviewed above still runs
+      // first and still blocks a repeat submission on the same topic once
+      // this correction is itself a pending candidate row. Checked only
+      // now (not before createKnowledgeTip) so a submission that's going to
+      // be rate-limited anyway skips this extra lookup.
+      const covering = await findKnowledgeCoveringTopic(topicEmbedding);
+      if (covering) {
+        const label = covering.title ? `"${covering.title}"` : `entry #${covering.id}`;
+        return text(
+          `Thanks! This looks related to existing knowledge entry ${label} — Tip #${created.id} has ` +
+            'been queued for admin review as a possible update to it.',
         );
       }
       return text(
