@@ -213,16 +213,66 @@ jobs:
             #     changes what the pipeline will build next, which is exactly
             #     the "rewrite its own guardrails" risk this list exists for.
             #
-            # A governance hit does NOT stop evaluation, only the merge: the
-            # pipeline's own acceptance criteria make most feature PRs document
-            # themselves in docs/SECURITY.md, so a silent skip here stranded
-            # fully-vetted PRs with no signal to anyone (2026-07-21). Instead,
-            # keep evaluating; if the PR passes EVERY other gate it is labelled
-            # `human-merge-ready` with one marker-guarded comment, so the human
-            # merge it requires actually gets requested.
+            # docs/SECURITY.md was REMOVED from this list, and the reasoning
+            # is worth keeping because it is the test to apply to any future
+            # addition. Every other entry earns its place the same way: a PR
+            # editing it can weaken the check that would catch it, because
+            # `pull_request` CI runs the workflow FROM THE PR BRANCH. That does
+            # not reach docs/SECURITY.md: no workflow or check reads it —
+            # there is no readFileSync/gh-api load of that path anywhere — so
+            # editing it cannot change what runs or what "green" means. It is
+            # DESCRIPTIVE, where everything else here is CAUSAL.
+            #
+            # It is NOT inert, and an earlier version of this comment wrongly
+            # said so. CLAUDE.md:10 tells every agent to start with README.md,
+            # "then docs/ARCHITECTURE.md and docs/SECURITY.md", and both the
+            # build worker and the review worker are told to read CLAUDE.md —
+            # so an agent that follows the pointer does read this file, and a
+            # subtly wrong edit could mislead one. Two things bound that, and
+            # neither is "the auto-merge gate":
+            #   - The pointer is shared. CLAUDE.md points the same way at
+            #     docs/ARCHITECTURE.md, docs/STANDARDS.md and docs/agents/*,
+            #     none of which are on this list and none of which anyone has
+            #     proposed adding. Governing a file because CLAUDE.md names it
+            #     would pull in every orientation doc in the repo.
+            #   - The imperatives are elsewhere. The "do not regress" rules an
+            #     agent must obey live in CLAUDE.md's own security-posture
+            #     section, which STAYS governed — the build worker's prompt
+            #     points there for exactly that ("conventions + security
+            #     posture you must not regress"). docs/SECURITY.md carries the
+            #     threat model and rationale behind those rules.
+            # Residual risk, accepted knowingly: a wrong edit here now reaches
+            # main on an automated LGTM, and the structural pin below catches
+            # renumbering, not wrong content. That is the same exposure every
+            # other orientation doc already carries.
+            #
+            # It was also, by a distance, the most expensive entry: measured
+            # over the last 40 merges it appeared in 7, and was the ONLY
+            # governed path in all seven — 64% of every human press this list
+            # forced, more than `.github/`. Because the pipeline's own
+            # acceptance criteria push most feature work to document itself
+            # here, the gate had stopped tracking risk and started tracking
+            # diligence: two te reo rendering PRs were held for documenting
+            # themselves, while #1021 (a new always-on job that DMs every
+            # admin) added no section at all and would have passed untouched.
+            #
+            # The drift it did guard against — this document ceasing to
+            # describe the real controls — is now held by
+            # tests/securityDocSections.test.ts, which pins the section list so
+            # a change is a reviewable diff instead of an unnoticed one. Same
+            # trade tests/toolTierMap.test.ts already makes for a MORE
+            # dangerous file. That pin found a duplicate section number that
+            # had survived this gate for many merges.
+            #
+            # A governance hit does NOT stop evaluation, only the merge: a
+            # silent skip here stranded fully-vetted PRs with no signal to
+            # anyone (2026-07-21). Instead, keep evaluating; if the PR passes
+            # EVERY other gate it is labelled `human-merge-ready` with one
+            # marker-guarded comment, so the human merge it requires actually
+            # gets requested.
             files="$(gh pr view "$n" --repo "$REPO" --json files --jq '.files[].path')"
             governance_hit='false'
-            if printf '%s\n' "$files" | grep -qE '^(\.github/|scripts/|CLAUDE\.md$|docs/PIPELINE\.md$|docs/SECURITY\.md$|docs/VISION\.md$|src/module/agentModule\.ts$|package(-lock)?\.json$|tsconfig([.-].*)?\.json$|eslint\.config\.|\.prettier)'; then
+            if printf '%s\n' "$files" | grep -qE '^(\.github/|scripts/|CLAUDE\.md$|docs/PIPELINE\.md$|docs/VISION\.md$|src/module/agentModule\.ts$|package(-lock)?\.json$|tsconfig([.-].*)?\.json$|eslint\.config\.|\.prettier)'; then
               governance_hit='true'
               echo "PR #$n: touches a governance/CI/config path (workflows, check machinery, or governance docs) — will never auto-merge; still evaluating for the human-merge-ready escalation."
             fi
@@ -386,7 +436,7 @@ jobs:
                 gh pr edit "$n" --repo "$REPO" --add-label human-merge-ready \
                   || echo "::warning::Could not add the human-merge-ready label to PR #$n."
                 gh pr comment "$n" --repo "$REPO" --body "${READY_MARKER}
-          🤖 Auto-merge evaluated this PR as **fully vetted** — every check green, \`MERGEABLE\`, and a fresh automated \`LGTM\` — but it touches a governance/CI/config path (\`.github/\`, \`scripts/\`, \`package.json\`, check config, or the \`CLAUDE.md\`/\`docs/PIPELINE.md\`/\`docs/SECURITY.md\` governance docs), which always requires a **human merge** (see docs/PIPELINE.md, auto-merge loop). Labelled \`human-merge-ready\` — a maintainer just needs to press merge." \
+          🤖 Auto-merge evaluated this PR as **fully vetted** — every check green, \`MERGEABLE\`, and a fresh automated \`LGTM\` — but it touches a governance/CI/config path (\`.github/\`, \`scripts/\`, \`package.json\`, check config, or the \`CLAUDE.md\`/\`docs/PIPELINE.md\`/\`docs/VISION.md\` governance docs), which always requires a **human merge** (see docs/PIPELINE.md, auto-merge loop). Labelled \`human-merge-ready\` — a maintainer just needs to press merge." \
                   || echo "::warning::Could not post the human-merge-ready comment on PR #$n."
               else
                 echo "PR #$n: fully vetted but governance-path — already flagged human-merge-ready, nothing to do."

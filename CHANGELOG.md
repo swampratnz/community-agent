@@ -21,7 +21,7 @@ shows it to members. Append numbers; never remove them.
 Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #775 #784 #804 #807 #809 #810 #812 #814 #816 #817 #818 #819 #821 #824 #825
 #868 #896 #899 #904 #949 #950 #951 #952 #953 #954 #955 #956 #957 #958 #961
-#963 #964 #965 #968 #971 #983 #988 #989 #991 #992 #994 #1017
+#963 #964 #965 #968 #971 #983 #988 #989 #991 #992 #994 #1017 #1071
 -->
 
 ## 2026-08-23
@@ -35,8 +35,35 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   community-wide knowledge entries by how often they've actually answered a
   member's question, mirroring the admin-only `list_top_knowledge` (#1024)
   but scoped to what a member can already see.
+- **Admins now get a proactive nudge when a member-suggested knowledge tip
+  has been sitting unreviewed for a week.** (#1074) Previously the only
+  signal for a stale pending knowledge candidate was a bare count on the
+  weekly digest or the `review_queue` pull — easy to miss if it slipped
+  past. Now, once any pending candidate has waited more than 7 days for
+  review, every admin gets a one-time DM nudge (re-arming only after the
+  backlog clears), pointing at `list_knowledge_candidates` to review it. No
+  candidate content is included in the alert — only the count and how long
+  the oldest has waited.
+- **The weekly admin digest now shows how many content reports were closed
+  this period, not just how many are still open.** (#1076) The digest
+  already tracked the open-report backlog (`openReports`, #450), and
+  moderation appeals got a closed-outcome complement in #844 — reports were
+  the one gap left. A new line ("N report(s) closed this period: X
+  resolved, Y dismissed") now appears alongside the existing open-reports
+  line whenever at least one report closed, scoped to the same conversations
+  and admin-exclusion rules as the rest of the digest; nothing changes when
+  the count is zero.
 
 ## 2026-08-22
+
+### Added
+- **Admins now get a one-time DM nudge when the open moderation-appeal
+  backlog goes stale.** (#1021) Previously the only signal for an appeal
+  sitting open too long was pulling `list_appeals` and eyeballing ages.
+  Now, once any open appeal has been waiting more than 72 hours, every
+  admin gets a single DM naming a bare count and the oldest appeal's
+  age-in-hours (re-arming only after the backlog clears back to zero) — no
+  appeal id, member, or reason is included.
 
 ### Fixed
 - **`/kb` now finds exact technical strings it used to miss.** An error code,
@@ -52,6 +79,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   covered" duplicate check and get silently discarded with no record
   anywhere. It's now queued for admin review instead, naming the entry it
   may update, exactly like any other suggested tip (#1066).
+- **`/kb`'s knowledge-conflict caveat now honours a standing te reo Māori
+  preference too.** (#1064) The trailing "some of these entries may
+  disagree with each other — an admin hasn't reconciled them yet" caveat
+  was the one part of `/kb`'s reply that #1038 left in English only. A
+  caller with `language_preference = 'mi'` now sees this caveat in te reo
+  Māori too, matching the stale/low-rated caveats it sits alongside; a
+  caller with no preference (or `'en'`/`'auto'`) sees byte-identical
+  English to before.
 
 ## 2026-08-21
 
@@ -80,6 +115,23 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   "which entries earn their keep" ranking, and a `/kb` search that came up
   empty wasn't recorded as a knowledge gap for admins to see. `/kb` now
   records both, exactly as asking the same question in chat already does.
+- **`!whois mine` — WhatsApp can now recall your own published interests**
+  (#1049): `who_is_into({ mine: true })` (Discord's `/whois mine`) has let
+  you check what `set_my_interests` last stored since #1022, but WhatsApp's
+  zero-model-call `!whois` shortcut never gained the same `mine` option — a
+  WhatsApp member had to spend a real model turn to read back their own
+  profile. `!whois mine` returns exactly your own stored interests text (or
+  the familiar "you haven't published interests yet" guidance), identified
+  only by your own WhatsApp identity, never anything in the message text.
+- **New Agent Skill: `api-cost-and-latency`** (#1059): coaches a member
+  through reducing cost or latency in an Anthropic API integration that
+  already works — prompt caching, batch processing, context management,
+  right-sizing `max_tokens`/output shape, and streaming — complementing
+  `debug-claude-api-error`'s broken-call scope and `model-and-plan-
+  selection`'s which-model-or-plan scope. Every factual claim (price, cache
+  TTL, batch discount, rate limit) is grounded via `knowledge_search` rather
+  than hardcoded. Loads only when `AGENT_SKILLS_ENABLED` is on, same as
+  every other bundled skill.
 
 ### Fixed
 - **`knowledge_search` no longer leads with an entry whose source link the bot
@@ -140,6 +192,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   `!help` shows WhatsApp members — so it was effectively undiscoverable
   unless you already knew the command. It's now listed alongside the other
   free shortcuts.
+- **`/kb`'s stale and low-rated caveats now honour a standing te reo Māori
+  preference too** (#1039): `/kb` is a zero-model-call shortcut, but it never
+  passed the caller's language preference into the caveats it appends when a
+  hit is stale or low-rated, so those always rendered in English even for a
+  member with `language_preference = 'mi'` — the last gap in this series
+  after #1028's community_info fix. A `'mi'`-preference caller now sees both
+  caveats in te reo Māori; a caller with no preference (or `'en'`/`'auto'`)
+  sees byte-identical English to before.
 
 ### Added
 - **`list_top_knowledge` — admins can now rank knowledge entries by how often

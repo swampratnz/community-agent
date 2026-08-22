@@ -157,7 +157,15 @@ test('SECURITY: the crossing-tick alert DM contains no appeal id, user id/name, 
   const secretUserId = 'secret-user-id-4f2a';
   const secretUserName = 'secret-display-name';
   const secretReason = 'secret-appeal-reason-text';
-  const listOpenAppeals = async () => [
+  // Built EAGERLY, before runOnce() captures its clock. The job reads
+  // `Date.now()` first and only then awaits listOpenAppeals(), so a fixture
+  // that dates the appeal inside that callback stamps it LATER than `now` —
+  // making the measured age just under 100h, which `Math.floor` renders as
+  // "99h". Sub-millisecond on an idle machine, but a loaded CI runner
+  // deschedules the process between the two often enough to make this test a
+  // coin flip (it reddened PR #1071 twice). Constructing first inverts the
+  // ordering: the age is then a hair OVER 100h and floors to 100 every time.
+  const staleAppeals = [
     appeal({
       ageHours: 100,
       id: 999,
@@ -167,6 +175,7 @@ test('SECURITY: the crossing-tick alert DM contains no appeal id, user id/name, 
       platform: 'discord',
     }),
   ];
+  const listOpenAppeals = async () => staleAppeals;
   const listAdminIdentities = async () => admins([{}]);
   const runOnce = makeDefaultAppealStaleAlertRun([adapter], listOpenAppeals, listAdminIdentities);
 

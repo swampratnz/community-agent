@@ -88,6 +88,7 @@ is marked **🔒**. Changes there need a `SECURITY:` test (see
 - `src/module/engagementAlert.ts` — Threshold alerting on community engagement statistics, reusing the usage-alert debounce shape.
 - `src/module/github/` — 🔒 GitHub issue creation for the super-admin `suggest_issue` tool. The bot's only GitHub egress and its only write credential; the token is fine-grained and issues-scoped.
 - `src/module/jobs/` — The pinned-order community `JOB_REGISTRY` list — only the ORDER lives here; each spec lives with the job module that owns it.
+- `src/module/knowledgeCandidateStaleAlert.ts` — Guild-wide crossing-latch alert (issue #1073) DMing every admin once when the count of pending knowledge candidates older than 168h first leaves zero — the push complement to `list_knowledge_candidates`' pull-only view and the weekly `oldestPendingCandidateAgeDays` digest line. Mirrors `appealStaleAlert.ts`'s pattern and reuses its `alertAdmins` helper unchanged.
 - `src/module/media/` — The Grok image-generation client behind the `generate_image` tool — an optional product integration, not framework (agent-base plan §5).
 - `src/module/memberDigest.ts` — The member-facing digest of recent community activity, built from PII-scrubbed aggregates rather than raw messages.
 - `src/module/moderation/` — The community-owned default bad-word list registered into the wordlist's fail-loud slot; operators still extend it with MODERATION_BAD_WORDS.
