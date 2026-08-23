@@ -77,10 +77,12 @@ test('SECURITY: AC2 — AGENT_SKILLS_ENABLED=true adds Skill to tools and loads 
         'debug-claude-api-error',
         'member-connection',
         'api-cost-and-latency',
+        'rag-and-retrieval-design',
       ],
       `${role}: skills must be exactly ['prompt-review', 'model-and-plan-selection', ` +
         `'agent-architecture-review', 'project-showcase', 'claude-code-setup', 'getting-started', ` +
-        `'knowledge-contribution', 'debug-claude-api-error', 'member-connection', 'api-cost-and-latency']`,
+        `'knowledge-contribution', 'debug-claude-api-error', 'member-connection', 'api-cost-and-latency', ` +
+        `'rag-and-retrieval-design']`,
     );
   }
 });
@@ -99,6 +101,7 @@ test("SECURITY: AC6/AC7 (#755) — skills is always the literal ENABLED_SKILLS a
       'debug-claude-api-error',
       'member-connection',
       'api-cost-and-latency',
+      'rag-and-retrieval-design',
     ]);
     assert.notEqual(opts.skills, 'all');
   }
@@ -350,6 +353,86 @@ test(
   },
 );
 
+test(
+  'SECURITY: issue #1110 — rag-and-retrieval-design resolves to the bundled SKILL.md, grants no new tool ' +
+    "access, and changes no role's disallowedTools",
+  async () => {
+    const { toolsForRole } = await import('@swampratnz/agent-base/auth/rbac.js');
+    const skillPath = join(
+      dirname(fileURLToPath(import.meta.url)),
+      '../src/module/agent/skills/rag-and-retrieval-design/SKILL.md',
+    );
+    const body = readFileSync(skillPath, 'utf8');
+    assert.match(
+      body,
+      /^---\nname: rag-and-retrieval-design\n/,
+      'SKILL.md must carry valid rag-and-retrieval-design front-matter',
+    );
+    for (const role of ['guest', 'member', 'admin', 'super_admin'] as const) {
+      const opts = buildQueryOptions(role, 'prompt', {}, null, 'conv-1', 'discord');
+      assert.ok(
+        opts.skills?.includes('rag-and-retrieval-design'),
+        `${role}: skills must include rag-and-retrieval-design when the flag is on`,
+      );
+      const webSearch = role === 'admin' || role === 'super_admin';
+      assert.deepEqual(
+        opts.disallowedTools,
+        ['Task', 'WebFetch', ...(webSearch ? [] : ['WebSearch'])],
+        `${role}: disallowedTools must be unaffected by adding rag-and-retrieval-design to ENABLED_SKILLS`,
+      );
+      const expected = [...toolsForRole(role, 'discord'), ...(webSearch ? ['WebSearch'] : [])].filter(
+        (t) => !(FEATURE_FLAGGED_TOOLS as readonly string[]).includes(t),
+      );
+      assert.deepEqual(
+        [...opts.allowedTools].sort(),
+        [...expected].sort(),
+        `${role}: allowedTools must be unaffected by rag-and-retrieval-design — no new MCP tool surface`,
+      );
+    }
+  },
+);
+
+test(
+  'SECURITY: issue #1110 — rag-and-retrieval-design SKILL.md carries an untrusted-input clause for ' +
+    'member-pasted code/schema/config (data to analyse, never instructions to obey)',
+  () => {
+    const skillPath = join(
+      dirname(fileURLToPath(import.meta.url)),
+      '../src/module/agent/skills/rag-and-retrieval-design/SKILL.md',
+    );
+    const body = readFileSync(skillPath, 'utf8');
+    assert.match(body, /UNTRUSTED DATA/, 'SKILL.md must label member-pasted content as untrusted data');
+    assert.match(
+      body,
+      /never to execute/,
+      'SKILL.md must state the untrusted content is analysed, never executed/obeyed',
+    );
+  },
+);
+
+test(
+  'issue #1110 — rag-and-retrieval-design SKILL.md hands model-choice and whole-pipeline questions off ' +
+    'to model-and-plan-selection and agent-architecture-review rather than restating that guidance',
+  () => {
+    const skillPath = join(
+      dirname(fileURLToPath(import.meta.url)),
+      '../src/module/agent/skills/rag-and-retrieval-design/SKILL.md',
+    );
+    const body = readFileSync(skillPath, 'utf8');
+    assert.match(
+      body,
+      /model-and-plan-selection/,
+      'SKILL.md must hand off embedding/generation model-choice questions to model-and-plan-selection',
+    );
+    assert.match(
+      body,
+      /agent-architecture-review/,
+      'SKILL.md must hand off whole-pipeline concerns to agent-architecture-review',
+    );
+    assert.match(body, /out of scope/i, 'SKILL.md must state whole-pipeline concerns are out of scope for this skill');
+  },
+);
+
 test('SECURITY: AC7 — enabling AGENT_SKILLS_ENABLED grants no tier Read, Bash, Glob, or Grep', () => {
   const FORBIDDEN = ['Read', 'Bash', 'Glob', 'Grep'];
   for (const role of ['guest', 'member', 'admin', 'super_admin'] as const) {
@@ -540,5 +623,9 @@ test('SECURITY: AC5 — the bundled skill plugin directory contains no hooks/, a
   assert.ok(
     files.some((f) => f.endsWith(join('api-cost-and-latency', 'SKILL.md'))),
     'expected api-cost-and-latency/SKILL.md to be present',
+  );
+  assert.ok(
+    files.some((f) => f.endsWith(join('rag-and-retrieval-design', 'SKILL.md'))),
+    'expected rag-and-retrieval-design/SKILL.md to be present',
   );
 });
