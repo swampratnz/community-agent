@@ -274,7 +274,9 @@ after(async () => {
     // scope, resurfaced as a false-positive "already covered" match against
     // an unrelated test's fixture content (issue #872 build session).
     await pool.query(`DELETE FROM knowledge WHERE scope = $1`, [KNOWLEDGE_ENTRY_ID_SCOPE_LEAK_SCOPE_A]);
-    await pool.query(`DELETE FROM suggestions WHERE user_id LIKE $1`, [`${RESOLVE_SUGGESTION_HANDLER_USER}%`]);
+    await pool.query(`DELETE FROM suggestions WHERE user_id LIKE $1`, [
+      `${RESOLVE_SUGGESTION_HANDLER_USER}%`,
+    ]);
     await pool.query(`DELETE FROM content_reports WHERE reporter_user_id LIKE $1`, [
       `${RESOLVE_REPORT_HANDLER_USER}%`,
     ]);
@@ -1016,7 +1018,15 @@ test('notifySuggestionResolved produces a declined DM byte-identical to the reas
   });
 
   await notifySuggestionResolved(adapter, 'user-1', 'declined', 'add dark mode', 'discord');
-  await notifySuggestionResolved(adapter, 'user-1', 'declined', 'add dark mode', 'discord', undefined, undefined);
+  await notifySuggestionResolved(
+    adapter,
+    'user-1',
+    'declined',
+    'add dark mode',
+    'discord',
+    undefined,
+    undefined,
+  );
   await notifySuggestionResolved(adapter, 'user-1', 'declined', 'add dark mode', 'discord', undefined, '');
 
   assert.equal(calls.length, 3);
@@ -1031,7 +1041,15 @@ test('SECURITY: notifySuggestionResolved truncates a long adminReason in the ech
   });
   const longReason = 'z'.repeat(500);
 
-  await notifySuggestionResolved(adapter, 'user-1', 'declined', 'add dark mode', 'discord', undefined, longReason);
+  await notifySuggestionResolved(
+    adapter,
+    'user-1',
+    'declined',
+    'add dark mode',
+    'discord',
+    undefined,
+    longReason,
+  );
 
   assert.ok(!calls[0].includes(longReason), 'the full 500-char adminReason must not appear verbatim');
   assert.match(calls[0], /z{100,140}\.\.\./, 'the echoed adminReason is truncated with an ellipsis');
@@ -1054,7 +1072,11 @@ test("notifySuggestionResolved's adminReason clause renders in te reo Māori for
   );
 
   assert.match(calls[0], /kāore e hangaia/);
-  assert.match(calls[0], /Take: "he tauriterite tēnei"/, 'the reason clause label is te reo, the text is not');
+  assert.match(
+    calls[0],
+    /Take: "he tauriterite tēnei"/,
+    'the reason clause label is te reo, the text is not',
+  );
 });
 
 // notifyReportResolved holds all of resolve_report's new (issue #120)
@@ -1240,7 +1262,15 @@ test('notifyReportResolved produces a dismissed DM byte-identical to the reasonl
   });
 
   await notifyReportResolved(adapter, 'user-1', 'dismissed', 'someone was rude', 'discord');
-  await notifyReportResolved(adapter, 'user-1', 'dismissed', 'someone was rude', 'discord', undefined, undefined);
+  await notifyReportResolved(
+    adapter,
+    'user-1',
+    'dismissed',
+    'someone was rude',
+    'discord',
+    undefined,
+    undefined,
+  );
   await notifyReportResolved(adapter, 'user-1', 'dismissed', 'someone was rude', 'discord', undefined, '');
 
   assert.equal(calls.length, 3);
@@ -1286,7 +1316,11 @@ test("notifyReportResolved's adminReason clause renders in te reo Māori for a c
   );
 
   assert.match(calls[0], /kāore he mahi anō i mahia/);
-  assert.match(calls[0], /Take: "he tauriterite tēnei"/, 'the reason clause label is te reo, the text is not');
+  assert.match(
+    calls[0],
+    /Take: "he tauriterite tēnei"/,
+    'the reason clause label is te reo, the text is not',
+  );
 });
 
 // notifyAppealResolved holds all of resolve_appeal's new (issue #622)
@@ -1444,7 +1478,15 @@ test('notifyAppealResolved appends the adminReason clause even when the appellan
     calls.push(message);
   });
 
-  await notifyAppealResolved(adapter, 'user-1', 'dismissed', null, 'discord', undefined, 'strikes were correct');
+  await notifyAppealResolved(
+    adapter,
+    'user-1',
+    'dismissed',
+    null,
+    'discord',
+    undefined,
+    'strikes were correct',
+  );
 
   assert.match(
     calls[0],
@@ -1488,7 +1530,15 @@ test('notifyAppealResolved produces a dismissed DM byte-identical to the reasonl
     undefined,
     undefined,
   );
-  await notifyAppealResolved(adapter, 'user-1', 'dismissed', 'my mute was a mistake', 'discord', undefined, '');
+  await notifyAppealResolved(
+    adapter,
+    'user-1',
+    'dismissed',
+    'my mute was a mistake',
+    'discord',
+    undefined,
+    '',
+  );
 
   assert.equal(calls.length, 3);
   assert.equal(calls[1], calls[0]);
@@ -1533,7 +1583,11 @@ test("notifyAppealResolved's adminReason clause renders in te reo Māori for a c
   );
 
   assert.match(calls[0], /kāore he mahi anō i mahia/);
-  assert.match(calls[0], /Take: "he tauriterite tēnei"/, 'the reason clause label is te reo, the text is not');
+  assert.match(
+    calls[0],
+    /Take: "he tauriterite tēnei"/,
+    'the reason clause label is te reo, the text is not',
+  );
 });
 
 // notifyWarningsCleared holds all of clear_warnings' new (issue #865)
@@ -14149,7 +14203,10 @@ test(
 );
 
 test('SECURITY: resolve_suggestion rejects a reason over SUGGESTION_RESOLUTION_ECHO_CHARS at the zod schema boundary (issue #1099 acceptance criterion #1)', () => {
-  const registeredTool = resolveSuggestionHandler({ platform: 'discord', adapter: stubAdapter(async () => {}) });
+  const registeredTool = resolveSuggestionHandler({
+    platform: 'discord',
+    adapter: stubAdapter(async () => {}),
+  });
 
   assert.equal(
     registeredTool.inputSchema.safeParse({
@@ -14240,7 +14297,11 @@ test(
     assert.equal(adminTurnCalls.length, 0, "never misaddressed through the resolving admin's own adapter");
 
     const submitterCalls = originCalls.filter(([userId]) => userId === redirectTestUser);
-    assert.equal(submitterCalls.length, 1, "the submitter is notified via the suggestion's own origin platform");
+    assert.equal(
+      submitterCalls.length,
+      1,
+      "the submitter is notified via the suggestion's own origin platform",
+    );
     assert.match(submitterCalls[0][1], /Reason: "not a redirect vector"/);
   },
 );
