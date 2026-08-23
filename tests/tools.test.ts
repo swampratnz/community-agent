@@ -274,9 +274,11 @@ after(async () => {
     // scope, resurfaced as a false-positive "already covered" match against
     // an unrelated test's fixture content (issue #872 build session).
     await pool.query(`DELETE FROM knowledge WHERE scope = $1`, [KNOWLEDGE_ENTRY_ID_SCOPE_LEAK_SCOPE_A]);
-    await pool.query(`DELETE FROM suggestions WHERE user_id = $1`, [RESOLVE_SUGGESTION_HANDLER_USER]);
-    await pool.query(`DELETE FROM content_reports WHERE reporter_user_id = $1`, [
-      RESOLVE_REPORT_HANDLER_USER,
+    await pool.query(`DELETE FROM suggestions WHERE user_id LIKE $1`, [
+      `${RESOLVE_SUGGESTION_HANDLER_USER}%`,
+    ]);
+    await pool.query(`DELETE FROM content_reports WHERE reporter_user_id LIKE $1`, [
+      `${RESOLVE_REPORT_HANDLER_USER}%`,
     ]);
     await pool.query(`DELETE FROM content_reports WHERE reporter_user_id LIKE $1`, [
       `${REPORT_CONTENT_HANDLER_USER}%`,
@@ -952,6 +954,131 @@ test("SECURITY: notifySuggestionResolved degrades to the English default, rather
   assert.match(calls[0], /marked \*\*done\*\*/);
 });
 
+// notifySuggestionResolved's optional adminReason (issue #1099, mirroring
+// decline_knowledge_candidate's #1050 field): a distinct, quoted, trailing
+// clause on the declined branch only, byte-identical to pre-#1099 when
+// omitted.
+test('notifySuggestionResolved appends a quoted reason clause after the content clause when declining with an adminReason (issue #1099 acceptance criterion #3)', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifySuggestionResolved(
+    adapter,
+    'user-1',
+    'declined',
+    'add dark mode',
+    'discord',
+    undefined,
+    'duplicates an existing suggestion',
+  );
+
+  assert.match(
+    calls[0],
+    /^Thanks for the suggestion — after review it won't be built for now: "add dark mode" Reason: "duplicates an existing suggestion"$/,
+  );
+});
+
+test('notifySuggestionResolved ignores adminReason on non-declined branches — reviewed/done DMs are byte-identical whether or not it is supplied (issue #1099 acceptance criterion #4)', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifySuggestionResolved(adapter, 'user-1', 'reviewed', 'add dark mode', 'discord');
+  await notifySuggestionResolved(
+    adapter,
+    'user-1',
+    'reviewed',
+    'add dark mode',
+    'discord',
+    undefined,
+    'this text must be ignored',
+  );
+  await notifySuggestionResolved(adapter, 'user-1', 'done', 'add dark mode', 'discord');
+  await notifySuggestionResolved(
+    adapter,
+    'user-1',
+    'done',
+    'add dark mode',
+    'discord',
+    undefined,
+    'this text must be ignored',
+  );
+
+  assert.equal(calls[1], calls[0], 'reviewed wording is unaffected by a supplied adminReason');
+  assert.equal(calls[3], calls[2], 'done wording is unaffected by a supplied adminReason');
+});
+
+test('notifySuggestionResolved produces a declined DM byte-identical to the reasonless message when adminReason is omitted, undefined, or empty (issue #1099 acceptance criterion #2)', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifySuggestionResolved(adapter, 'user-1', 'declined', 'add dark mode', 'discord');
+  await notifySuggestionResolved(
+    adapter,
+    'user-1',
+    'declined',
+    'add dark mode',
+    'discord',
+    undefined,
+    undefined,
+  );
+  await notifySuggestionResolved(adapter, 'user-1', 'declined', 'add dark mode', 'discord', undefined, '');
+
+  assert.equal(calls.length, 3);
+  assert.equal(calls[1], calls[0]);
+  assert.equal(calls[2], calls[0]);
+});
+
+test('SECURITY: notifySuggestionResolved truncates a long adminReason in the echoed clause, never the raw payload (issue #1099 acceptance criterion #3)', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+  const longReason = 'z'.repeat(500);
+
+  await notifySuggestionResolved(
+    adapter,
+    'user-1',
+    'declined',
+    'add dark mode',
+    'discord',
+    undefined,
+    longReason,
+  );
+
+  assert.ok(!calls[0].includes(longReason), 'the full 500-char adminReason must not appear verbatim');
+  assert.match(calls[0], /z{100,140}\.\.\./, 'the echoed adminReason is truncated with an ellipsis');
+});
+
+test("notifySuggestionResolved's adminReason clause renders in te reo Māori for a caller with a stored 'mi' preference, the reason text itself untranslated (issue #1099 acceptance criterion #3, issue #331)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifySuggestionResolved(
+    adapter,
+    'user-1',
+    'declined',
+    'add dark mode',
+    'discord',
+    async () => 'mi',
+    'he tauriterite tēnei',
+  );
+
+  assert.match(calls[0], /kāore e hangaia/);
+  assert.match(
+    calls[0],
+    /Take: "he tauriterite tēnei"/,
+    'the reason clause label is te reo, the text is not',
+  );
+});
+
 // notifyReportResolved holds all of resolve_report's new (issue #120)
 // notification behaviour, tested directly here the same way
 // notifySuggestionResolved is above.
@@ -1081,6 +1208,121 @@ test("SECURITY: notifyReportResolved degrades to the English default, rather tha
   assert.match(calls[0], /reviewed and resolved/);
 });
 
+// notifyReportResolved's optional adminReason (issue #1099, mirroring
+// decline_knowledge_candidate's #1050 field): a distinct, quoted, trailing
+// clause on the dismissed branch only, byte-identical to pre-#1099 when
+// omitted. Distinct from the reporter's own echoed reason, which stays the
+// leading quoted clause.
+test('notifyReportResolved appends a quoted adminReason clause after the reporter-echoed clause when dismissing with a reason (issue #1099 acceptance criterion #3)', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyReportResolved(
+    adapter,
+    'user-1',
+    'dismissed',
+    'someone was rude',
+    'discord',
+    undefined,
+    'insufficient evidence',
+  );
+
+  assert.match(
+    calls[0],
+    /^Your report has been reviewed\. After triage, no further action was taken — thanks for flagging it: "someone was rude" Reason: "insufficient evidence"$/,
+  );
+});
+
+test('notifyReportResolved ignores adminReason on the resolved branch — the resolved DM is byte-identical whether or not it is supplied (issue #1099 acceptance criterion #4)', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyReportResolved(adapter, 'user-1', 'resolved', 'someone was rude', 'discord');
+  await notifyReportResolved(
+    adapter,
+    'user-1',
+    'resolved',
+    'someone was rude',
+    'discord',
+    undefined,
+    'this text must be ignored',
+  );
+
+  assert.equal(calls[1], calls[0], 'resolved wording is unaffected by a supplied adminReason');
+});
+
+test('notifyReportResolved produces a dismissed DM byte-identical to the reasonless message when adminReason is omitted, undefined, or empty (issue #1099 acceptance criterion #2)', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyReportResolved(adapter, 'user-1', 'dismissed', 'someone was rude', 'discord');
+  await notifyReportResolved(
+    adapter,
+    'user-1',
+    'dismissed',
+    'someone was rude',
+    'discord',
+    undefined,
+    undefined,
+  );
+  await notifyReportResolved(adapter, 'user-1', 'dismissed', 'someone was rude', 'discord', undefined, '');
+
+  assert.equal(calls.length, 3);
+  assert.equal(calls[1], calls[0]);
+  assert.equal(calls[2], calls[0]);
+});
+
+test('SECURITY: notifyReportResolved truncates a long adminReason in the echoed clause, never the raw payload (issue #1099 acceptance criterion #3)', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+  const longReason = 'z'.repeat(500);
+
+  await notifyReportResolved(
+    adapter,
+    'user-1',
+    'dismissed',
+    'someone was rude',
+    'discord',
+    undefined,
+    longReason,
+  );
+
+  assert.ok(!calls[0].includes(longReason), 'the full 500-char adminReason must not appear verbatim');
+  assert.match(calls[0], /z{100,140}\.\.\./, 'the echoed adminReason is truncated with an ellipsis');
+});
+
+test("notifyReportResolved's adminReason clause renders in te reo Māori for a caller with a stored 'mi' preference, the reason text itself untranslated (issue #1099 acceptance criterion #3, issue #331)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyReportResolved(
+    adapter,
+    'user-1',
+    'dismissed',
+    'someone was rude',
+    'discord',
+    async () => 'mi',
+    'he tauriterite tēnei',
+  );
+
+  assert.match(calls[0], /kāore he mahi anō i mahia/);
+  assert.match(
+    calls[0],
+    /Take: "he tauriterite tēnei"/,
+    'the reason clause label is te reo, the text is not',
+  );
+});
+
 // notifyAppealResolved holds all of resolve_appeal's new (issue #622)
 // notification behaviour — the missing half of #554's own stated intent to
 // "mirror the content_reports pattern" — tested directly here the same way
@@ -1201,6 +1443,151 @@ test("SECURITY: notifyAppealResolved degrades to the English default, rather tha
 
   assert.equal(calls.length, 1);
   assert.match(calls[0], /reviewed and resolved/);
+});
+
+// notifyAppealResolved's optional adminReason (issue #1099, mirroring
+// decline_knowledge_candidate's #1050 field): a distinct, quoted, trailing
+// clause on the dismissed branch only, byte-identical to pre-#1099 when
+// omitted. Distinct from the appellant's own echoed reason (nullable), which
+// stays the leading quoted clause when present.
+test('notifyAppealResolved appends a quoted adminReason clause after the appellant-echoed clause when dismissing with a reason (issue #1099 acceptance criterion #3)', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAppealResolved(
+    adapter,
+    'user-1',
+    'dismissed',
+    'my mute was a mistake',
+    'discord',
+    undefined,
+    'strikes were correctly issued',
+  );
+
+  assert.match(
+    calls[0],
+    /^Your appeal has been reviewed\. After triage, no further action was taken — thanks for reaching out\. "my mute was a mistake" Reason: "strikes were correctly issued"$/,
+  );
+});
+
+test('notifyAppealResolved appends the adminReason clause even when the appellant filed no reason of their own (issue #1099 acceptance criterion #3)', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAppealResolved(
+    adapter,
+    'user-1',
+    'dismissed',
+    null,
+    'discord',
+    undefined,
+    'strikes were correct',
+  );
+
+  assert.match(
+    calls[0],
+    /^Your appeal has been reviewed\. After triage, no further action was taken — thanks for reaching out\. Reason: "strikes were correct"$/,
+  );
+});
+
+test('notifyAppealResolved ignores adminReason on the resolved branch — the resolved DM is byte-identical whether or not it is supplied (issue #1099 acceptance criterion #4)', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAppealResolved(adapter, 'user-1', 'resolved', 'my mute was a mistake', 'discord');
+  await notifyAppealResolved(
+    adapter,
+    'user-1',
+    'resolved',
+    'my mute was a mistake',
+    'discord',
+    undefined,
+    'this text must be ignored',
+  );
+
+  assert.equal(calls[1], calls[0], 'resolved wording is unaffected by a supplied adminReason');
+});
+
+test('notifyAppealResolved produces a dismissed DM byte-identical to the reasonless message when adminReason is omitted, undefined, or empty (issue #1099 acceptance criterion #2)', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAppealResolved(adapter, 'user-1', 'dismissed', 'my mute was a mistake', 'discord');
+  await notifyAppealResolved(
+    adapter,
+    'user-1',
+    'dismissed',
+    'my mute was a mistake',
+    'discord',
+    undefined,
+    undefined,
+  );
+  await notifyAppealResolved(
+    adapter,
+    'user-1',
+    'dismissed',
+    'my mute was a mistake',
+    'discord',
+    undefined,
+    '',
+  );
+
+  assert.equal(calls.length, 3);
+  assert.equal(calls[1], calls[0]);
+  assert.equal(calls[2], calls[0]);
+});
+
+test('SECURITY: notifyAppealResolved truncates a long adminReason in the echoed clause, never the raw payload (issue #1099 acceptance criterion #3)', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+  const longReason = 'z'.repeat(500);
+
+  await notifyAppealResolved(
+    adapter,
+    'user-1',
+    'dismissed',
+    'my mute was a mistake',
+    'discord',
+    undefined,
+    longReason,
+  );
+
+  assert.ok(!calls[0].includes(longReason), 'the full 500-char adminReason must not appear verbatim');
+  assert.match(calls[0], /z{100,140}\.\.\./, 'the echoed adminReason is truncated with an ellipsis');
+});
+
+test("notifyAppealResolved's adminReason clause renders in te reo Māori for a caller with a stored 'mi' preference, the reason text itself untranslated (issue #1099 acceptance criterion #3, issue #331)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAppealResolved(
+    adapter,
+    'user-1',
+    'dismissed',
+    'my mute was a mistake',
+    'discord',
+    async () => 'mi',
+    'he tauriterite tēnei',
+  );
+
+  assert.match(calls[0], /kāore he mahi anō i mahia/);
+  assert.match(
+    calls[0],
+    /Take: "he tauriterite tēnei"/,
+    'the reason clause label is te reo, the text is not',
+  );
 });
 
 // notifyWarningsCleared holds all of clear_warnings' new (issue #865)
@@ -13599,7 +13986,9 @@ function resolveSuggestionHandler(caller: {
           handler: (args: {
             id: number;
             status: 'reviewed' | 'declined' | 'done';
+            reason?: string;
           }) => Promise<{ content: Array<{ type: string; text: string }> }>;
+          inputSchema: { safeParse: (v: unknown) => { success: boolean } };
         }
       >;
     }
@@ -13753,6 +14142,170 @@ test(
   },
 );
 
+// resolve_suggestion's optional admin reason (issue #1099, mirroring
+// decline_knowledge_candidate's #1050 field): notifySuggestionResolved's own
+// message shape is unit-tested above without the MCP transport; these
+// exercise the handler's wiring against a real resolved row (DB required).
+test(
+  'resolve_suggestion forwards an optional reason to the resolution DM as a distinct clause when declining (issue #1099 acceptance criterion #3)',
+  { skip },
+  async () => {
+    const created = await createSuggestion({
+      platform: 'discord',
+      userId: `${RESOLVE_SUGGESTION_HANDLER_USER}-reason`,
+      content: 'add dark mode',
+    });
+    assert.ok(created);
+
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (_userId, text) => {
+      calls.push(text);
+    });
+
+    const result = await resolveSuggestionHandler({ platform: 'discord', adapter }).handler({
+      id: created.id,
+      status: 'declined',
+      reason: 'duplicates an existing suggestion',
+    });
+
+    assert.match(result.content[0]?.text ?? '', /marked declined/);
+    assert.equal(calls.length, 1);
+    assert.match(calls[0], /Reason: "duplicates an existing suggestion"/);
+  },
+);
+
+test(
+  'resolve_suggestion ignores a reason on non-declined statuses — the DM is byte-identical whether or not it is supplied (issue #1099 acceptance criterion #4)',
+  { skip },
+  async () => {
+    const created = await createSuggestion({
+      platform: 'discord',
+      userId: `${RESOLVE_SUGGESTION_HANDLER_USER}-ignore`,
+      content: 'add dark mode',
+    });
+    assert.ok(created);
+
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (_userId, text) => {
+      calls.push(text);
+    });
+
+    const result = await resolveSuggestionHandler({ platform: 'discord', adapter }).handler({
+      id: created.id,
+      status: 'done',
+      reason: 'this text must be ignored',
+    });
+
+    assert.match(result.content[0]?.text ?? '', /marked done/);
+    assert.equal(calls.length, 1);
+    assert.doesNotMatch(calls[0], /Reason:/, 'a reason supplied on a done status produces no "why" text');
+  },
+);
+
+test('SECURITY: resolve_suggestion rejects a reason over SUGGESTION_RESOLUTION_ECHO_CHARS at the zod schema boundary (issue #1099 acceptance criterion #1)', () => {
+  const registeredTool = resolveSuggestionHandler({
+    platform: 'discord',
+    adapter: stubAdapter(async () => {}),
+  });
+
+  assert.equal(
+    registeredTool.inputSchema.safeParse({
+      id: 1,
+      status: 'declined',
+      reason: 'x'.repeat(SUGGESTION_RESOLUTION_ECHO_CHARS),
+    }).success,
+    true,
+    'exactly the echo bound is allowed',
+  );
+  assert.equal(
+    registeredTool.inputSchema.safeParse({
+      id: 1,
+      status: 'declined',
+      reason: 'x'.repeat(SUGGESTION_RESOLUTION_ECHO_CHARS + 1),
+    }).success,
+    false,
+    'one character over the echo bound must be rejected',
+  );
+  assert.equal(
+    registeredTool.inputSchema.safeParse({ id: 1, status: 'declined' }).success,
+    true,
+    'the reasonless call form remains valid',
+  );
+});
+
+test(
+  'SECURITY: resolve_suggestion never persists the reason to admin_audit params (issue #1099 acceptance criterion #5)',
+  { skip },
+  async () => {
+    const created = await createSuggestion({
+      platform: 'discord',
+      userId: `${RESOLVE_SUGGESTION_HANDLER_USER}-audit`,
+      content: 'add dark mode',
+    });
+    assert.ok(created);
+
+    const adapter = stubAdapter(async () => {});
+    const result = await resolveSuggestionHandler({ platform: 'discord', adapter }).handler({
+      id: created.id,
+      status: 'declined',
+      reason: 'this must never reach the audit log',
+    });
+    assert.match(result.content[0]?.text ?? '', /marked declined/);
+
+    const { rows } = await pool.query(
+      `SELECT params FROM admin_audit WHERE action_kind = 'resolve_suggestion' AND params->>'id' = $1 ORDER BY id DESC LIMIT 1`,
+      [String(created.id)],
+    );
+    assert.equal(rows.length, 1);
+    assert.ok(!('reason' in rows[0].params), 'the audited() params object must not contain a reason key');
+
+    await pool.query(
+      `DELETE FROM admin_audit WHERE action_kind = 'resolve_suggestion' AND params->>'id' = $1`,
+      [String(created.id)],
+    );
+  },
+);
+
+test(
+  "SECURITY: resolve_suggestion's reason argument cannot redirect the resolution DM — it still routes only to the suggestion's own persisted userId/platform (issue #1099 acceptance criterion #6)",
+  { skip },
+  async () => {
+    const redirectTestUser = `${RESOLVE_SUGGESTION_HANDLER_USER}-redirect`;
+    const created = await createSuggestion({
+      platform: 'whatsapp',
+      userId: redirectTestUser,
+      content: 'reason must not be usable as a redirect vector',
+    });
+    assert.ok(created);
+
+    const adminTurnCalls: string[] = [];
+    const adminTurnAdapter = stubAdapter(async (userId) => {
+      adminTurnCalls.push(userId);
+    });
+    const originCalls: Array<[string, string]> = [];
+    const originAdapter = stubAdapter(async (userId, text) => {
+      originCalls.push([userId, text]);
+    });
+
+    const result = await resolveSuggestionHandler({
+      platform: 'discord',
+      adapter: adminTurnAdapter,
+      getAdapter: (platform) => (platform === 'whatsapp' ? originAdapter : undefined),
+    }).handler({ id: created.id, status: 'declined', reason: 'not a redirect vector' });
+
+    assert.match(result.content[0]?.text ?? '', /marked declined/, 'resolution itself still succeeds');
+    assert.equal(adminTurnCalls.length, 0, "never misaddressed through the resolving admin's own adapter");
+
+    const submitterCalls = originCalls.filter(([userId]) => userId === redirectTestUser);
+    assert.equal(
+      submitterCalls.length,
+      1,
+      "the submitter is notified via the suggestion's own origin platform",
+    );
+    assert.match(submitterCalls[0][1], /Reason: "not a redirect vector"/);
+  },
+);
+
 // resolve_report tool handler (issue #120, cross-platform routing issue
 // #157): notifyReportResolved itself is unit-tested above without the MCP
 // transport; these exercise the handler's wiring — the origin-platform
@@ -13782,7 +14335,9 @@ function resolveReportHandler(caller: {
           handler: (args: {
             id: number;
             status: 'resolved' | 'dismissed';
+            reason?: string;
           }) => Promise<{ content: Array<{ type: string; text: string }> }>;
+          inputSchema: { safeParse: (v: unknown) => { success: boolean } };
         }
       >;
     }
@@ -13937,6 +14492,166 @@ test(
     });
 
     assert.match(result.content[0]?.text ?? '', /marked resolved/, 'resolve_report still reports success');
+  },
+);
+
+// resolve_report's optional admin reason (issue #1099, mirroring
+// decline_knowledge_candidate's #1050 field): notifyReportResolved's own
+// message shape is unit-tested above without the MCP transport; these
+// exercise the handler's wiring against a real resolved row (DB required).
+test(
+  'resolve_report forwards an optional reason to the resolution DM as a distinct clause when dismissing (issue #1099 acceptance criterion #3)',
+  { skip },
+  async () => {
+    const created = await createContentReport({
+      platform: 'discord',
+      reporterUserId: `${RESOLVE_REPORT_HANDLER_USER}-reason`,
+      conversationId: 'convo-1',
+      reason: 'someone was rude',
+    });
+    assert.ok(created);
+
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (_userId, text) => {
+      calls.push(text);
+    });
+
+    const result = await resolveReportHandler({ platform: 'discord', adapter }).handler({
+      id: created.id,
+      status: 'dismissed',
+      reason: 'insufficient evidence',
+    });
+
+    assert.match(result.content[0]?.text ?? '', /marked dismissed/);
+    assert.equal(calls.length, 1);
+    assert.match(calls[0], /Reason: "insufficient evidence"/);
+  },
+);
+
+test(
+  'resolve_report ignores a reason on the resolved status — the DM is byte-identical whether or not it is supplied (issue #1099 acceptance criterion #4)',
+  { skip },
+  async () => {
+    const created = await createContentReport({
+      platform: 'discord',
+      reporterUserId: `${RESOLVE_REPORT_HANDLER_USER}-ignore`,
+      conversationId: 'convo-1',
+      reason: 'someone was rude',
+    });
+    assert.ok(created);
+
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (_userId, text) => {
+      calls.push(text);
+    });
+
+    const result = await resolveReportHandler({ platform: 'discord', adapter }).handler({
+      id: created.id,
+      status: 'resolved',
+      reason: 'this text must be ignored',
+    });
+
+    assert.match(result.content[0]?.text ?? '', /marked resolved/);
+    assert.equal(calls.length, 1);
+    assert.doesNotMatch(calls[0], /Reason:/, 'a reason supplied on a resolved status produces no "why" text');
+  },
+);
+
+test('SECURITY: resolve_report rejects a reason over SUGGESTION_RESOLUTION_ECHO_CHARS at the zod schema boundary (issue #1099 acceptance criterion #1)', () => {
+  const registeredTool = resolveReportHandler({ platform: 'discord', adapter: stubAdapter(async () => {}) });
+
+  assert.equal(
+    registeredTool.inputSchema.safeParse({
+      id: 1,
+      status: 'dismissed',
+      reason: 'x'.repeat(SUGGESTION_RESOLUTION_ECHO_CHARS),
+    }).success,
+    true,
+    'exactly the echo bound is allowed',
+  );
+  assert.equal(
+    registeredTool.inputSchema.safeParse({
+      id: 1,
+      status: 'dismissed',
+      reason: 'x'.repeat(SUGGESTION_RESOLUTION_ECHO_CHARS + 1),
+    }).success,
+    false,
+    'one character over the echo bound must be rejected',
+  );
+  assert.equal(
+    registeredTool.inputSchema.safeParse({ id: 1, status: 'dismissed' }).success,
+    true,
+    'the reasonless call form remains valid',
+  );
+});
+
+test(
+  'SECURITY: resolve_report never persists the reason to admin_audit params (issue #1099 acceptance criterion #5)',
+  { skip },
+  async () => {
+    const created = await createContentReport({
+      platform: 'discord',
+      reporterUserId: `${RESOLVE_REPORT_HANDLER_USER}-audit`,
+      conversationId: 'convo-1',
+      reason: 'someone was rude',
+    });
+    assert.ok(created);
+
+    const adapter = stubAdapter(async () => {});
+    const result = await resolveReportHandler({ platform: 'discord', adapter }).handler({
+      id: created.id,
+      status: 'dismissed',
+      reason: 'this must never reach the audit log',
+    });
+    assert.match(result.content[0]?.text ?? '', /marked dismissed/);
+
+    const { rows } = await pool.query(
+      `SELECT params FROM admin_audit WHERE action_kind = 'resolve_report' AND params->>'id' = $1 ORDER BY id DESC LIMIT 1`,
+      [String(created.id)],
+    );
+    assert.equal(rows.length, 1);
+    assert.ok(!('reason' in rows[0].params), 'the audited() params object must not contain a reason key');
+
+    await pool.query(`DELETE FROM admin_audit WHERE action_kind = 'resolve_report' AND params->>'id' = $1`, [
+      String(created.id),
+    ]);
+  },
+);
+
+test(
+  "SECURITY: resolve_report's reason argument cannot redirect the resolution DM — it still routes only to the report's own persisted reporterUserId/platform (issue #1099 acceptance criterion #6)",
+  { skip },
+  async () => {
+    const redirectTestReporter = `${RESOLVE_REPORT_HANDLER_USER}-redirect`;
+    const created = await createContentReport({
+      platform: 'whatsapp',
+      reporterUserId: redirectTestReporter,
+      conversationId: 'convo-1',
+      reason: 'reason must not be usable as a redirect vector',
+    });
+    assert.ok(created);
+
+    const adminTurnCalls: string[] = [];
+    const adminTurnAdapter = stubAdapter(async (userId) => {
+      adminTurnCalls.push(userId);
+    });
+    const originCalls: Array<[string, string]> = [];
+    const originAdapter = stubAdapter(async (userId, text) => {
+      originCalls.push([userId, text]);
+    });
+
+    const result = await resolveReportHandler({
+      platform: 'discord',
+      adapter: adminTurnAdapter,
+      getAdapter: (platform) => (platform === 'whatsapp' ? originAdapter : undefined),
+    }).handler({ id: created.id, status: 'dismissed', reason: 'not a redirect vector' });
+
+    assert.match(result.content[0]?.text ?? '', /marked dismissed/, 'resolution itself still succeeds');
+    assert.equal(adminTurnCalls.length, 0, "never misaddressed through the resolving admin's own adapter");
+
+    const reporterCalls = originCalls.filter(([userId]) => userId === redirectTestReporter);
+    assert.equal(reporterCalls.length, 1, "the reporter is notified via the report's own origin platform");
+    assert.match(reporterCalls[0][1], /Reason: "not a redirect vector"/);
   },
 );
 
@@ -23447,10 +24162,11 @@ function resolveAppealHandler(
       _registeredTools: Record<
         string,
         {
-          handler: (args: { id: number; status: 'resolved' | 'dismissed' }) => Promise<{
+          handler: (args: { id: number; status: 'resolved' | 'dismissed'; reason?: string }) => Promise<{
             content: Array<{ type: string; text: string }>;
             isError?: boolean;
           }>;
+          inputSchema: { safeParse: (v: unknown) => { success: boolean } };
         }
       >;
     }
@@ -23713,6 +24429,173 @@ test(
     }).handler({ id, status: 'resolved' });
 
     assert.match(result.content[0]?.text ?? '', /marked resolved/, 'resolve_appeal still reports success');
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [id]);
+  },
+);
+
+// resolve_appeal's optional admin reason (issue #1099, mirroring
+// decline_knowledge_candidate's #1050 field): notifyAppealResolved's own
+// message shape is unit-tested above without the MCP transport; these
+// exercise the handler's wiring against a real resolved row (DB required).
+test(
+  'resolve_appeal forwards an optional reason to the resolution DM as a distinct clause when dismissing (issue #1099 acceptance criterion #3)',
+  { skip },
+  async () => {
+    const { id } = await createModerationAppeal({
+      platform: 'discord',
+      userId: RESOLVE_APPEAL_HANDLER_USER,
+      userName: 'Member',
+      reason: 'my mute was a mistake',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (_userId, text) => {
+      calls.push(text);
+    });
+
+    const result = await resolveAppealHandler('admin', 'admin-resolve-appeal-reason', {
+      platform: 'discord',
+      adapter,
+    }).handler({ id, status: 'dismissed', reason: 'strikes were correctly issued' });
+
+    assert.match(result.content[0]?.text ?? '', /marked dismissed/);
+    assert.equal(calls.length, 1);
+    assert.match(calls[0], /Reason: "strikes were correctly issued"/);
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [id]);
+  },
+);
+
+test(
+  'resolve_appeal ignores a reason on the resolved status — the DM is byte-identical whether or not it is supplied (issue #1099 acceptance criterion #4)',
+  { skip },
+  async () => {
+    const { id } = await createModerationAppeal({
+      platform: 'discord',
+      userId: RESOLVE_APPEAL_HANDLER_USER,
+      userName: 'Member',
+      reason: 'my mute was a mistake',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (_userId, text) => {
+      calls.push(text);
+    });
+
+    const result = await resolveAppealHandler('admin', 'admin-resolve-appeal-reason-ignored', {
+      platform: 'discord',
+      adapter,
+    }).handler({ id, status: 'resolved', reason: 'this text must be ignored' });
+
+    assert.match(result.content[0]?.text ?? '', /marked resolved/);
+    assert.equal(calls.length, 1);
+    assert.doesNotMatch(calls[0], /Reason:/, 'a reason supplied on a resolved status produces no "why" text');
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [id]);
+  },
+);
+
+test('SECURITY: resolve_appeal rejects a reason over SUGGESTION_RESOLUTION_ECHO_CHARS at the zod schema boundary (issue #1099 acceptance criterion #1)', () => {
+  const registeredTool = resolveAppealHandler('admin', 'admin-resolve-appeal-schema');
+
+  assert.equal(
+    registeredTool.inputSchema.safeParse({
+      id: 1,
+      status: 'dismissed',
+      reason: 'x'.repeat(SUGGESTION_RESOLUTION_ECHO_CHARS),
+    }).success,
+    true,
+    'exactly the echo bound is allowed',
+  );
+  assert.equal(
+    registeredTool.inputSchema.safeParse({
+      id: 1,
+      status: 'dismissed',
+      reason: 'x'.repeat(SUGGESTION_RESOLUTION_ECHO_CHARS + 1),
+    }).success,
+    false,
+    'one character over the echo bound must be rejected',
+  );
+  assert.equal(
+    registeredTool.inputSchema.safeParse({ id: 1, status: 'dismissed' }).success,
+    true,
+    'the reasonless call form remains valid',
+  );
+});
+
+test(
+  'SECURITY: resolve_appeal never persists the reason to admin_audit params (issue #1099 acceptance criterion #5)',
+  { skip },
+  async () => {
+    const { id } = await createModerationAppeal({
+      platform: 'discord',
+      userId: RESOLVE_APPEAL_HANDLER_USER,
+      userName: 'Member',
+      reason: 'my mute was a mistake',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+
+    const adapter = stubAdapter(async () => {});
+    const result = await resolveAppealHandler('admin', 'admin-resolve-appeal-audit', {
+      platform: 'discord',
+      adapter,
+    }).handler({ id, status: 'dismissed', reason: 'this must never reach the audit log' });
+    assert.match(result.content[0]?.text ?? '', /marked dismissed/);
+
+    const { rows } = await pool.query(
+      `SELECT params FROM admin_audit WHERE action_kind = 'resolve_appeal' AND params->>'id' = $1 ORDER BY id DESC LIMIT 1`,
+      [String(id)],
+    );
+    assert.equal(rows.length, 1);
+    assert.ok(!('reason' in rows[0].params), 'the audited() params object must not contain a reason key');
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [id]);
+    await pool.query(`DELETE FROM admin_audit WHERE action_kind = 'resolve_appeal' AND params->>'id' = $1`, [
+      String(id),
+    ]);
+  },
+);
+
+test(
+  "SECURITY: resolve_appeal's reason argument cannot redirect the resolution DM — it still routes only to the appeal's own persisted userId/platform (issue #1099 acceptance criterion #6)",
+  { skip },
+  async () => {
+    const { id } = await createModerationAppeal({
+      platform: 'whatsapp',
+      userId: RESOLVE_APPEAL_HANDLER_USER,
+      userName: 'Member',
+      reason: 'reason must not be usable as a redirect vector',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+
+    const adminTurnCalls: string[] = [];
+    const adminTurnAdapter = stubAdapter(async (userId) => {
+      adminTurnCalls.push(userId);
+    });
+    const originCalls: Array<[string, string]> = [];
+    const originAdapter = stubAdapter(async (userId, text) => {
+      originCalls.push([userId, text]);
+    });
+
+    const result = await resolveAppealHandler('admin', 'admin-resolve-appeal-redirect', {
+      platform: 'discord',
+      adapter: adminTurnAdapter,
+      getAdapter: (platform) => (platform === 'whatsapp' ? originAdapter : undefined),
+    }).handler({ id, status: 'dismissed', reason: 'not a redirect vector' });
+
+    assert.match(result.content[0]?.text ?? '', /marked dismissed/, 'resolution itself still succeeds');
+    assert.equal(adminTurnCalls.length, 0, "never misaddressed through the resolving admin's own adapter");
+
+    const appellantCalls = originCalls.filter(([userId]) => userId === RESOLVE_APPEAL_HANDLER_USER);
+    assert.equal(appellantCalls.length, 1, "the appellant is notified via the appeal's own origin platform");
+    assert.match(appellantCalls[0][1], /Reason: "not a redirect vector"/);
 
     await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [id]);
   },

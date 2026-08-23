@@ -27,6 +27,19 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-08-24
 
 ### Added
+- **Admins can now tell a member *why* their report, appeal, or suggestion
+  was dismissed or declined.** (#1099) `decline_knowledge_candidate` (#1050)
+  was the only one of a four-tool "mark triaged, DM the submitter" family
+  that let an admin explain a decision — `resolve_report`, `resolve_appeal`,
+  and `resolve_suggestion` only ever echoed the member's own previously-filed
+  words back to them, plus a neutral status line. All three now accept the
+  same optional, short `reason`, appended as a distinct quoted clause to the
+  resolution DM (English and te reo Māori both) on a `dismissed`/`declined`
+  outcome only — a `resolved`/`reviewed`/`done` outcome has nothing to
+  explain, so a supplied reason is ignored there. Omitting the reason
+  produces the exact same DM as before. Like the knowledge-candidate field,
+  it is never persisted to the audit log — admin-authored free text sent only
+  to the original submitter's own DM.
 - **Admins now get a proactive nudge when a guest's access request has been
   sitting unreviewed for a week.** (#1100) `access_requests` was the last of
   `review_queue`'s five admin queues (access requests, suggestions,
