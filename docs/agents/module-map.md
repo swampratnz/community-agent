@@ -102,6 +102,7 @@ is marked **🔒**. Changes there need a `SECURITY:` test (see
 - `src/module/storage/` — The community-owned policy keys (guidelines and welcome message, plus their te reo Māori variants) with their typed accessors, and this module's schema fragments (`schema/`), both contributed through the manifest.
 - `src/module/storage/schema/` — 🔒 This deployment's schema contribution (plan §3 `migrations`): the fragments agent-base does NOT ship, contributed through `AgentModule.migrations` and concatenated AFTER every base fragment as one atomic query. Today that is the standing-preference value allowlists base generalised into shape checks. Never re-declare a base fragment, and never reshape a constraint base owns — pinned by `tests/schemaConstraintIdempotency.test.ts`.
 - `src/module/strings/` — The community notice pack: every notice's English/mi/plain text verbatim, plus the `NoticeIdMap` augmentation that keeps per-id return types.
+- `src/module/suggestionStaleAlert.ts` — Guild-wide crossing-latch alert (issue #1091) DMing every admin once when the count of pending (`status = 'new'`) member suggestions older than 168h first leaves zero — the push complement to `list_suggestions`' pull-only view and the weekly `oldestPendingSuggestionAgeDays` digest line. Mirrors `appealStaleAlert.ts`'s pattern and reuses its `alertAdmins` helper unchanged.
 - `src/module/usageCostDigest.ts` — The periodic cost digest (spend, cache hit rate) sent to super admins.
 
 <!-- module-map:end -->
