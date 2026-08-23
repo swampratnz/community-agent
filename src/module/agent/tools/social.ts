@@ -9,9 +9,11 @@ import {
   FIND_HELPER_WEEKLY_LIMIT_PER_HELPER,
   findHelperCandidates,
   getActiveProjectById,
+  getLanguagePreference,
   getPublishedInterestsForOwners,
   isFindHelperRequesterAtDailyCap,
   isProjectConnectionRequesterAtDailyCap,
+  type LanguagePreference,
   listOwnProjects,
   listRecentInterests,
   listRecentProjects,
@@ -54,6 +56,70 @@ export const LIST_PROJECTS_DEFAULT_LIMIT = 8;
 export const WHO_IS_INTO_NO_PROFILE_HINT =
   "You haven't published interests yet — call set_my_interests first, then who_is_into with no " +
   'topic will search using your own published interests.';
+
+/**
+ * `list_projects`' four bot-authored empty-state strings — the "one
+ * function, two entry points" split `formatMyWarningsText`/
+ * `formatMySubmissionsText`/`formatMyDataText` (`selfService.ts`) established
+ * for #1077/#1030, applied here (issue #1105) so this tool's handler and its
+ * `!projects`/`/projects` command mirrors (`commands.ts`, `slashCommands.ts`)
+ * can never drift from each other or from this one source of truth. Every
+ * branch below only swaps the surrounding prose — the rendered project rows
+ * themselves (`formatProjectResults`) are member-authored free text and stay
+ * untranslated, out of scope for this proposal.
+ */
+export function formatListProjectsEmptyText(
+  kind: 'mine' | 'seeking' | 'query' | 'none',
+  language: LanguagePreference,
+): string {
+  const mi = language === 'mi';
+  switch (kind) {
+    case 'mine':
+      return mi ? 'Kāore anō koe kia tohatoha i tētahi kaupapa.' : "You haven't shared any projects yet.";
+    case 'seeking':
+      return mi
+        ? 'Kāore he kaupapa e rapu hoa mahi ana i tēnei wā.'
+        : 'No projects are currently looking for collaborators.';
+    case 'query':
+      return mi ? 'Kāore he kaupapa kua tohaina e ōrite ana ki tērā.' : 'No shared projects match that.';
+    case 'none':
+      return mi ? 'Kāore anō he kaupapa kua tohaina.' : 'No projects have been shared yet.';
+  }
+}
+
+/**
+ * `who_is_into`'s bot-authored empty-state/guidance strings, same shape as
+ * `formatListProjectsEmptyText` above and shared with its `!whois`/`/whois`
+ * command mirrors. `'noProfile'` is byte-identical to the standalone
+ * `WHO_IS_INTO_NO_PROFILE_HINT` constant in English (kept exported above
+ * since existing call sites reference it directly); this function is what
+ * threads the caller's own `getLanguagePreference` result through it. The
+ * Discord slash command's own differently-worded no-profile hint (it tells a
+ * member to talk to the bot rather than call a tool by name) is NOT one of
+ * these — it stays local to `slashCommands.ts`, since consolidating it here
+ * would change its English wording, not just add a language branch.
+ */
+export function formatWhoIsIntoEmptyText(
+  kind: 'noProfile' | 'query' | 'selfNoMatch',
+  language: LanguagePreference,
+): string {
+  const mi = language === 'mi';
+  switch (kind) {
+    case 'noProfile':
+      return mi
+        ? 'Kāore anō koe kia whakaputa i ō hiahia, karangahia te set_my_interests i te tuatahi, kātahi, ' +
+            'ki te kore he kaupapa e tohua ana ki a who_is_into, ka rapu mā ō hiahia kua whakaputaina.'
+        : WHO_IS_INTO_NO_PROFILE_HINT;
+    case 'query':
+      return mi
+        ? 'Kāore anō he mema kua whakaputa i ngā hiahia e ōrite ana ki tērā.'
+        : 'No members have published interests matching that yet.';
+    case 'selfNoMatch':
+      return mi
+        ? 'Kāore anō ētahi atu mema kua whakaputa i ngā hiahia e ōrite ana ki ōu.'
+        : 'No other members have published interests matching yours yet.';
+  }
+}
 
 export const socialTools = [
   // Self-scoped write (one row per identity, upsert/clear semantics),
@@ -144,7 +210,8 @@ export const socialTools = [
         ]);
         const own = interestsByOwner.get(`${caller.platform}:${caller.userId}`);
         if (!own) {
-          return text(WHO_IS_INTO_NO_PROFILE_HINT);
+          const language = await getLanguagePreference(caller.platform, caller.userId);
+          return text(formatWhoIsIntoEmptyText('noProfile', language));
         }
         return text(
           await formatInterestResults([{ platform: caller.platform, userId: caller.userId, interests: own }]),
@@ -153,7 +220,8 @@ export const socialTools = [
       if (args.query) {
         const hits = await searchMemberInterests(args.query, WHO_IS_INTO_LIMIT);
         if (hits.length === 0) {
-          return text('No members have published interests matching that yet.');
+          const language = await getLanguagePreference(caller.platform, caller.userId);
+          return text(formatWhoIsIntoEmptyText('query', language));
         }
         return text(await formatInterestResults(hits));
       }
@@ -164,12 +232,14 @@ export const socialTools = [
         // most recently published/updated interests (mirroring
         // list_projects' no-query listRecentProjects default), still
         // appending the same set_my_interests hint after the list.
-        const hint = WHO_IS_INTO_NO_PROFILE_HINT;
+        const language = await getLanguagePreference(caller.platform, caller.userId);
+        const hint = formatWhoIsIntoEmptyText('noProfile', language);
         const recent = await listRecentInterests(WHO_IS_INTO_LIMIT);
         return text(recent.length === 0 ? hint : `${await formatInterestResults(recent)}\n\n${hint}`);
       }
       if (selfMatch.hits.length === 0) {
-        return text('No other members have published interests matching yours yet.');
+        const language = await getLanguagePreference(caller.platform, caller.userId);
+        return text(formatWhoIsIntoEmptyText('selfNoMatch', language));
       }
       return text(await formatInterestResults(selfMatch.hits));
     },
@@ -444,7 +514,8 @@ export const socialTools = [
       if (args.mine) {
         const projects = await listOwnProjects(caller.platform, caller.userId);
         if (projects.length === 0) {
-          return text("You haven't shared any projects yet.");
+          const language = await getLanguagePreference(caller.platform, caller.userId);
+          return text(formatListProjectsEmptyText('mine', language));
         }
         return text(await formatProjectResults(projects));
       }
@@ -453,12 +524,12 @@ export const socialTools = [
         ? await searchProjects(args.query, LIST_PROJECTS_DEFAULT_LIMIT, opts)
         : await listRecentProjects(LIST_PROJECTS_DEFAULT_LIMIT, opts);
       if (projects.length === 0) {
+        const language = await getLanguagePreference(caller.platform, caller.userId);
         return text(
-          args.seekingCollaborators
-            ? 'No projects are currently looking for collaborators.'
-            : args.query
-              ? 'No shared projects match that.'
-              : 'No projects have been shared yet.',
+          formatListProjectsEmptyText(
+            args.seekingCollaborators ? 'seeking' : args.query ? 'query' : 'none',
+            language,
+          ),
         );
       }
       return text(await formatProjectResults(projects));

@@ -59,8 +59,10 @@ await import('./support/registerPolicyKeys.js');
 // assertions below pin exactly what they did before.
 const {
   formatKnowledgeTopics,
+  formatListProjectsEmptyText,
   formatMostHelpfulKnowledge,
   formatReviewQueueSummary,
+  formatWhoIsIntoEmptyText,
   KNOWLEDGE_CONFLICT_CAVEAT_TEXT,
   MOST_HELPFUL_KNOWLEDGE_FETCH_CAP,
   rankKnowledgeByRetrieval,
@@ -886,6 +888,179 @@ test('/projects mine:true calls listOwnProjects scoped to the caller identity, i
   );
   assert.deepEqual(mineCall.params, ['discord', 'member-1']);
   assert.match(replies[0].content, /You haven't shared any projects yet\./);
+});
+
+// --- issue #1105: /whois and /projects honour a standing 'mi' language preference ----
+
+test("/whois mine:true with no published interests renders the te reo Māori no-profile hint for a caller with a stored 'mi' language preference, byte-identical English otherwise (issue #1105 acceptance criterion 3)", async (t) => {
+  for (const language of ['mi', 'en'] as const) {
+    mockPool(t, { memberRole: 'member', interestRows: [], languagePref: language });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({
+      commandName: 'whois',
+      userId: `member-mine-${language}`,
+      booleanOptions: { mine: true },
+    });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    // The real DiscordAdapter's outbound filter (deps.filtered, via
+    // adapterDeps above) rewrites em dashes into commas on every send
+    // (agent-base's stripEmDashes) — WHO_IS_INTO_NO_PROFILE_HINT's English
+    // text carries one, so the raw formatWhoIsIntoEmptyText() output is
+    // compared post-filter here, exactly as it actually renders.
+    assert.equal(replies[0].content, stripEmDashes(formatWhoIsIntoEmptyText('noProfile', language)));
+  }
+});
+
+test("/whois with a query and no matches renders the te reo Māori empty-state text for a caller with a stored 'mi' language preference, byte-identical English otherwise (issue #1105 acceptance criterion 3)", async (t) => {
+  for (const language of ['mi', 'en'] as const) {
+    mockPool(t, { memberRole: 'member', interestRows: [], languagePref: language });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({
+      commandName: 'whois',
+      userId: `member-query-${language}`,
+      options: { query: 'rag' },
+    });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies[0].content, formatWhoIsIntoEmptyText('query', language));
+  }
+});
+
+test("SECURITY: /whois's language-preference read is scoped to the calling interaction's own discord user id, never a model- or interaction-supplied identifier (issue #1105 SECURITY criterion)", async (t) => {
+  const calls = mockPool(t, { memberRole: 'member', interestRows: [], languagePref: 'mi' });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction } = fakeInteraction({
+    commandName: 'whois',
+    userId: 'member-scoped',
+    options: { query: 'rag' },
+  });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  const languageQuery = calls.find((c) => c.sql.includes('FROM language_prefs'));
+  assert.ok(languageQuery, '/whois must read the language preference');
+  assert.deepEqual(
+    languageQuery?.params,
+    ['discord', 'member-scoped'],
+    "the language_prefs read must be keyed on the caller's own platform/userId",
+  );
+});
+
+test("/projects mine:true with no shared projects renders the te reo Māori empty-state text for a caller with a stored 'mi' language preference, byte-identical English otherwise (issue #1105 acceptance criterion 3)", async (t) => {
+  for (const language of ['mi', 'en'] as const) {
+    mockPool(t, { memberRole: 'member', projectRows: [], languagePref: language });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({
+      commandName: 'projects',
+      userId: `member-mine-${language}`,
+      booleanOptions: { mine: true },
+    });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies[0].content, formatListProjectsEmptyText('mine', language));
+  }
+});
+
+test("/projects seeking_collaborators:true with no matches renders the te reo Māori empty-state text for a caller with a stored 'mi' language preference, byte-identical English otherwise (issue #1105 acceptance criterion 3)", async (t) => {
+  for (const language of ['mi', 'en'] as const) {
+    mockPool(t, { memberRole: 'member', projectRows: [], languagePref: language });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({
+      commandName: 'projects',
+      userId: `member-seeking-${language}`,
+      booleanOptions: { seeking_collaborators: true },
+    });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies[0].content, formatListProjectsEmptyText('seeking', language));
+  }
+});
+
+test("/projects with a query and no matches renders the te reo Māori empty-state text for a caller with a stored 'mi' language preference, byte-identical English otherwise (issue #1105 acceptance criterion 3)", async (t) => {
+  for (const language of ['mi', 'en'] as const) {
+    mockPool(t, { memberRole: 'member', projectRows: [], languagePref: language });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({
+      commandName: 'projects',
+      userId: `member-query-${language}`,
+      options: { query: 'rag' },
+    });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies[0].content, formatListProjectsEmptyText('query', language));
+  }
+});
+
+test("/projects with no query and nothing shared renders the te reo Māori empty-state text for a caller with a stored 'mi' language preference, byte-identical English otherwise (issue #1105 acceptance criterion 3)", async (t) => {
+  for (const language of ['mi', 'en'] as const) {
+    mockPool(t, { memberRole: 'member', projectRows: [], languagePref: language });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({
+      commandName: 'projects',
+      userId: `member-none-${language}`,
+    });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies[0].content, formatListProjectsEmptyText('none', language));
+  }
+});
+
+test("SECURITY: /projects's language-preference read is scoped to the calling interaction's own discord user id, never a model- or interaction-supplied identifier (issue #1105 SECURITY criterion)", async (t) => {
+  const calls = mockPool(t, { memberRole: 'member', projectRows: [], languagePref: 'mi' });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction } = fakeInteraction({
+    commandName: 'projects',
+    userId: 'member-scoped',
+    options: { query: 'rag' },
+  });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  const languageQuery = calls.find((c) => c.sql.includes('FROM language_prefs'));
+  assert.ok(languageQuery, '/projects must read the language preference');
+  assert.deepEqual(
+    languageQuery?.params,
+    ['discord', 'member-scoped'],
+    "the language_prefs read must be keyed on the caller's own platform/userId",
+  );
+});
+
+test("/projects and /whois render byte-identical member-supplied row content regardless of the caller's language preference — only the surrounding empty-state prose is ever translated (issue #1105 acceptance criterion 5)", async (t) => {
+  for (const language of ['mi', 'en'] as const) {
+    mockPool(t, {
+      memberRole: 'member',
+      projectRows: [
+        {
+          id: 1,
+          platform: 'discord',
+          user_id: 'owner-1',
+          name: 'Cool Project',
+          description: 'does cool things',
+          link: null,
+          seeking_collaborators: false,
+          created_at: new Date(),
+        },
+      ],
+      languagePref: language,
+    });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({
+      commandName: 'projects',
+      userId: `member-rows-${language}`,
+    });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.match(replies[0].content, /Cool Project/);
+    assert.match(replies[0].content, /does cool things/);
+  }
 });
 
 test("SECURITY: /kb tracks knowledge_search's own toolsForRole reachability rather than a hardcoded role check — a guest CAN use /kb, exactly like the chat-path tool (acceptance criteria 4, 12)", async (t) => {

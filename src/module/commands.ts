@@ -27,13 +27,14 @@ import {
   formatCommunityInfoText,
   formatInterestResults,
   formatKnowledgeTopics,
+  formatListProjectsEmptyText,
   formatMostHelpfulKnowledge,
   formatProjectResults,
   formatReviewQueueSummary,
+  formatWhoIsIntoEmptyText,
   LIST_PROJECTS_DEFAULT_LIMIT,
   MOST_HELPFUL_KNOWLEDGE_FETCH_CAP,
   rankKnowledgeByRetrieval,
-  WHO_IS_INTO_NO_PROFILE_HINT,
 } from './agent/tools.js';
 import { buildMemberDigestContent } from './memberDigest.js';
 import {
@@ -93,7 +94,7 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
         if (!atLeast(role, 'member')) return null;
         const projects = await deps.listOwnProjectsFn(msg.platform, msg.userId);
         return projects.length === 0
-          ? "You haven't shared any projects yet."
+          ? formatListProjectsEmptyText('mine', await deps.getLangPref(msg.platform, msg.userId))
           : await formatProjectResults(projects);
       }
 
@@ -111,7 +112,7 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
         const opts = { seekingCollaboratorsOnly: true };
         const projects = await listRecentProjects(LIST_PROJECTS_DEFAULT_LIMIT, opts);
         return projects.length === 0
-          ? 'No projects are currently looking for collaborators.'
+          ? formatListProjectsEmptyText('seeking', await deps.getLangPref(msg.platform, msg.userId))
           : await formatProjectResults(projects);
       }
 
@@ -123,9 +124,10 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
         ? await deps.searchProjectsFn(query, LIST_PROJECTS_DEFAULT_LIMIT)
         : await deps.listRecentProjectsFn(LIST_PROJECTS_DEFAULT_LIMIT);
       return projects.length === 0
-        ? query
-          ? 'No shared projects match that.'
-          : 'No projects have been shared yet.'
+        ? formatListProjectsEmptyText(
+            query ? 'query' : 'none',
+            await deps.getLangPref(msg.platform, msg.userId),
+          )
         : await formatProjectResults(projects);
     },
   },
@@ -151,7 +153,7 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
         const own = interestsByOwner.get(`${msg.platform}:${msg.userId}`);
         return own
           ? await formatInterestResults([{ platform: msg.platform, userId: msg.userId, interests: own }])
-          : WHO_IS_INTO_NO_PROFILE_HINT;
+          : formatWhoIsIntoEmptyText('noProfile', await deps.getLangPref(msg.platform, msg.userId));
       }
 
       const whoisMatch = /^!whois(?:\s+(.+))?$/i.exec(text);
@@ -161,7 +163,7 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
       if (query) {
         const hits = await deps.searchMemberInterestsFn(query);
         return hits.length === 0
-          ? 'No members have published interests matching that yet.'
+          ? formatWhoIsIntoEmptyText('query', await deps.getLangPref(msg.platform, msg.userId))
           : await formatInterestResults(hits);
       }
       // Bare `!whois` (issue #889): mirror who_is_into's/`/whois`'s own
@@ -175,14 +177,12 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
         // Issue #920: same no-profile browse fallback as who_is_into's chat
         // path and /whois — a separate call site, wired independently via
         // the injected listRecentInterestsFn.
-        const hint =
-          "You haven't published interests yet — call set_my_interests first, then who_is_into with no " +
-          'topic will search using your own published interests.';
+        const hint = formatWhoIsIntoEmptyText('noProfile', await deps.getLangPref(msg.platform, msg.userId));
         const recent = await deps.listRecentInterestsFn();
         return recent.length === 0 ? hint : `${await formatInterestResults(recent)}\n\n${hint}`;
       }
       return selfMatch.hits.length === 0
-        ? 'No members have published interests matching that yet.'
+        ? formatWhoIsIntoEmptyText('query', await deps.getLangPref(msg.platform, msg.userId))
         : await formatInterestResults(selfMatch.hits);
     },
   },
