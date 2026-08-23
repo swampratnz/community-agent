@@ -992,6 +992,20 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
     aggregate is shown, never what it contains. Neither source function
     returns an identity, topic, or project name, so this line carries the
     same structural guarantee as `newProjectCount`/`newInterestCount` above.
+  - **Upcoming events (issue #1093)** is the one section here that is NOT
+    `context_digests`-derived: it is a live Discord REST read
+    (`adapter.listUpcomingEvents`), the same optional adapter method
+    `list_events`/`/events` already call, appended only after
+    `buildMemberDigestContent` has already produced non-null content for the
+    week (a fully quiet week never triggers the read at all) and only on the
+    single already-resolved Discord adapter this job uses for the channel
+    post — never any other adapter in the registered set. Rendered via the
+    same `formatUpcomingEvents` `list_events` uses, so the field set (name,
+    start/end time, location, description, id) is byte-identical to what any
+    member can already pull on demand; no new field, no member identifier.
+    The read is wrapped in try/catch: a transient Discord API failure drops
+    the events section for that tick rather than blocking or failing the
+    rest of the digest send.
 - **Suggestions** (`suggestions`, issue #46): member-authored improvement
   ideas for the bot. No new data class (members' messages are already
   stored; guests, whose content is never stored in gated mode, have no
