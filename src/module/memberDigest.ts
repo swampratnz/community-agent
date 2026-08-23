@@ -3,6 +3,7 @@ import { logger } from '@swampratnz/agent-base/logger.js';
 import { startTrackedJob } from '@swampratnz/agent-base/jobs/trackedJob.js';
 import { scrubPII } from './context/export.js';
 import { notice } from './strings/notices.js';
+import { EVENTS_LIST_LIMIT, formatUpcomingEvents } from './agent/tools/info.js';
 import {
   countAcceptedMemberKnowledgeTipsSince,
   countHelperMatchesSince,
@@ -399,7 +400,31 @@ export function makeDefaultMemberDigestRun(
     // through still posts on a later tick instead of waiting out a full week.
     if (!message) return;
 
-    await adapter.sendMessage({ conversationId: channelId, text: message });
+    // Issue #1093: append an "Upcoming events" section, but only on a week
+    // that is already posting (the read above this point never runs on a
+    // fully quiet week — that's the v1 scope decision, not an oversight).
+    // adapter.listUpcomingEvents is a live Discord REST read, not a DB-backed
+    // aggregate like the deps above, so it's deliberately not threaded
+    // through MemberDigestContentDeps/buildMemberDigestContent — those two
+    // other call sites (community_digest tool, /digest, !digest) have no
+    // adapter to reach it with. Reuses list_events' own formatter/cap
+    // (formatUpcomingEvents/EVENTS_LIST_LIMIT from tools/info.ts) so the
+    // fields shown here are byte-identical to what a member can already pull
+    // themselves. try/catch: a transient Discord API failure degrades to "no
+    // events section this week", the same fail-safe posture as every other
+    // supplementary read in this function — it must never block or fail the
+    // rest of the digest send.
+    let fullMessage = message;
+    try {
+      const events = adapter.listUpcomingEvents ? await adapter.listUpcomingEvents(EVENTS_LIST_LIMIT) : [];
+      if (events.length > 0) {
+        fullMessage = `${message}\n\nUpcoming events:\n${formatUpcomingEvents(events)}`;
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Member digest: listUpcomingEvents failed; posting without an events section');
+    }
+
+    await adapter.sendMessage({ conversationId: channelId, text: fullMessage });
     await recordSent();
   };
 }

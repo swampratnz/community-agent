@@ -1,6 +1,10 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { OutgoingMessage, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
+import type {
+  OutgoingMessage,
+  PlatformAdapter,
+  UpcomingEvent,
+} from '@swampratnz/agent-base/platforms/types.js';
 import type { ContextDigest } from '@swampratnz/agent-base/storage/repository.js';
 import type { MemberDigestContentDeps, MemberDigestRunDeps } from '../src/module/memberDigest.js';
 // formatMemberDigestMessage/buildMemberDigestContent render notice() text for
@@ -33,6 +37,7 @@ process.env.MEMBER_DIGEST_CHANNEL_ID = 'configured-channel-1';
 
 const { formatMemberDigestMessage, makeDefaultMemberDigestRun, startMemberDigest, buildMemberDigestContent } =
   await import('../src/module/memberDigest.js');
+const { EVENTS_LIST_LIMIT, formatUpcomingEvents } = await import('../src/module/agent/tools/info.js');
 const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
 const {
   wasMemberDigestSentRecently,
@@ -112,7 +117,16 @@ function mutable<T>(o: T): { -readonly [K in keyof T]: T[K] } {
   return o;
 }
 
-function makeAdapter(platform: 'discord' | 'whatsapp' = 'discord'): {
+// listUpcomingEvents (issue #1093) is left OMITTED, not stubbed to a no-op,
+// when a test doesn't pass one — PlatformAdapter declares it optional, and
+// makeDefaultMemberDigestRun's own `adapter.listUpcomingEvents ? ... : []`
+// guard has to be exercised against a real absence of the method, the same
+// way a WhatsApp adapter (which never implements it) reaches that branch in
+// production.
+function makeAdapter(
+  platform: 'discord' | 'whatsapp' = 'discord',
+  listUpcomingEvents?: (limit: number) => Promise<UpcomingEvent[]>,
+): {
   adapter: PlatformAdapter;
   sent: OutgoingMessage[];
 } {
@@ -135,6 +149,7 @@ function makeAdapter(platform: 'discord' | 'whatsapp' = 'discord'): {
     async performAdminAction() {
       return '';
     },
+    ...(listUpcomingEvents ? { listUpcomingEvents } : {}),
   };
   return { adapter, sent };
 }
@@ -1294,6 +1309,203 @@ test("SECURITY: makeDefaultMemberDigestRun never leaks a ContextDigest's distinc
     /alice|999888777|101|102|103|discord id/i,
     'only topic text and the question count ever reach the sent message',
   );
+});
+
+// --- makeDefaultMemberDigestRun: upcoming-events section (issue #1093) -----
+
+test('makeDefaultMemberDigestRun: appends an "Upcoming events" section, rendered via formatUpcomingEvents, after the existing content (issue #1093 acceptance criterion 1)', async () => {
+  const events: UpcomingEvent[] = [
+    {
+      id: 'evt-1',
+      name: 'Auckland meetup',
+      scheduledStartAt: '2026-09-01T00:00:00.000Z',
+      location: 'Auckland',
+    },
+  ];
+  let receivedLimit: number | undefined;
+  const { adapter, sent } = makeAdapter('discord', async (limit) => {
+    receivedLimit = limit;
+    return events;
+  });
+  const runOnce = makeDefaultMemberDigestRun([adapter], {
+    ...throwingRunDeps(),
+    wasSentRecently: async () => false,
+    getDigests: async () => [makeDigest({ topic: 'MCP server auth', questionCount: 1 })],
+    getNewKnowledgeTitles: async () => [],
+    getNewProjectCount: async () => 0,
+    getMemberTipCount: async () => 0,
+    getNewInterestCount: async () => 0,
+    getHelperMatchesCount: async () => 0,
+    getProjectConnectionsCount: async () => 0,
+    recordSent: async () => {},
+  });
+  await runOnce();
+  assert.equal(receivedLimit, EVENTS_LIST_LIMIT, 'capped at the existing EVENTS_LIST_LIMIT, no new constant');
+  assert.equal(sent.length, 1);
+  assert.equal(
+    sent[0].text,
+    `📅 This week's topics:\n• MCP server auth (1 question)\n\nUpcoming events:\n${formatUpcomingEvents(events)}`,
+    'the events section is appended to the existing content, not interleaved with it',
+  );
+});
+
+test("makeDefaultMemberDigestRun: zero upcoming events renders byte-identical to today's output — no header, no stray whitespace (issue #1093 acceptance criterion 2)", async () => {
+  const { adapter, sent } = makeAdapter('discord', async () => []);
+  const runOnce = makeDefaultMemberDigestRun([adapter], {
+    ...throwingRunDeps(),
+    wasSentRecently: async () => false,
+    getDigests: async () => [makeDigest({ topic: 'MCP server auth', questionCount: 4 })],
+    getNewKnowledgeTitles: async () => ['Setting up MCP auth'],
+    getNewProjectCount: async () => 0,
+    getMemberTipCount: async () => 0,
+    getNewInterestCount: async () => 0,
+    getHelperMatchesCount: async () => 0,
+    getProjectConnectionsCount: async () => 0,
+    recordSent: async () => {},
+  });
+  await runOnce();
+  assert.equal(sent.length, 1);
+  assert.equal(
+    sent[0].text,
+    "📅 This week's topics:\n• MCP server auth (4 questions)\n\n📚 New in the knowledge base (1): Setting up MCP auth",
+    'byte-identical to the pre-#1093 fixture — no events section, no stray whitespace',
+  );
+});
+
+test('SECURITY: makeDefaultMemberDigestRun never calls listUpcomingEvents (or sendMessage) on a fully quiet week, even when events exist — pins the v1 scope decision (issue #1093 acceptance criterion 3)', async () => {
+  let eventsCalled = false;
+  let recordCalled = false;
+  const { adapter, sent } = makeAdapter('discord', async () => {
+    eventsCalled = true;
+    return [{ id: 'evt-1', name: 'x', scheduledStartAt: '2026-09-01T00:00:00.000Z', location: 'Auckland' }];
+  });
+  const runOnce = makeDefaultMemberDigestRun([adapter], {
+    ...throwingRunDeps(),
+    wasSentRecently: async () => false,
+    getDigests: async () => [],
+    getNewKnowledgeTitles: async () => [],
+    getNewProjectCount: async () => 0,
+    getMemberTipCount: async () => 0,
+    getNewInterestCount: async () => 0,
+    getHelperMatchesCount: async () => 0,
+    getProjectConnectionsCount: async () => 0,
+    recordSent: async () => {
+      recordCalled = true;
+    },
+  });
+  await runOnce();
+  assert.equal(sent.length, 0, 'a quiet week posts nothing even when events exist');
+  assert.equal(eventsCalled, false, 'listUpcomingEvents is never invoked on a fully quiet week');
+  assert.equal(recordCalled, false);
+});
+
+test('SECURITY: makeDefaultMemberDigestRun invokes listUpcomingEvents only on the resolved Discord adapter — never on any other adapter in a mixed array (issue #1093 acceptance criterion 4)', async () => {
+  let whatsappEventsCalled = false;
+  const { adapter: whatsappAdapter } = makeAdapter('whatsapp', async () => {
+    whatsappEventsCalled = true;
+    return [];
+  });
+  let discordEventsCalled = false;
+  const { adapter: discordAdapter, sent } = makeAdapter('discord', async () => {
+    discordEventsCalled = true;
+    return [];
+  });
+  const runOnce = makeDefaultMemberDigestRun([whatsappAdapter, discordAdapter], {
+    ...throwingRunDeps(),
+    wasSentRecently: async () => false,
+    getDigests: async () => [makeDigest({ topic: 'MCP server auth', questionCount: 1 })],
+    getNewKnowledgeTitles: async () => [],
+    getNewProjectCount: async () => 0,
+    getMemberTipCount: async () => 0,
+    getNewInterestCount: async () => 0,
+    getHelperMatchesCount: async () => 0,
+    getProjectConnectionsCount: async () => 0,
+    recordSent: async () => {},
+  });
+  await runOnce();
+  assert.equal(sent.length, 1);
+  assert.equal(discordEventsCalled, true, 'the resolved Discord adapter is queried');
+  assert.equal(whatsappEventsCalled, false, "a non-Discord adapter's listUpcomingEvents is never called");
+});
+
+test("SECURITY: makeDefaultMemberDigestRun's events section is exactly formatUpcomingEvents's output — no field beyond what list_events already exposes to a member (issue #1093 acceptance criterion 5)", async () => {
+  const events: UpcomingEvent[] = [
+    {
+      id: 'evt-42',
+      name: 'Wellington meetup',
+      scheduledStartAt: '2026-09-01T00:00:00.000Z',
+      scheduledEndAt: '2026-09-01T02:00:00.000Z',
+      location: 'Wellington',
+      description: 'Monthly catch-up',
+    },
+  ];
+  const { adapter, sent } = makeAdapter('discord', async () => events);
+  const runOnce = makeDefaultMemberDigestRun([adapter], {
+    ...throwingRunDeps(),
+    wasSentRecently: async () => false,
+    getDigests: async () => [makeDigest({ topic: 'MCP server auth', questionCount: 1 })],
+    getNewKnowledgeTitles: async () => [],
+    getNewProjectCount: async () => 0,
+    getMemberTipCount: async () => 0,
+    getNewInterestCount: async () => 0,
+    getHelperMatchesCount: async () => 0,
+    getProjectConnectionsCount: async () => 0,
+    recordSent: async () => {},
+  });
+  await runOnce();
+  assert.equal(sent.length, 1);
+  assert.ok(
+    sent[0].text.endsWith(`Upcoming events:\n${formatUpcomingEvents(events)}`),
+    'the rendered section body is exactly formatUpcomingEvents(events) — no additional field introduced',
+  );
+});
+
+test('makeDefaultMemberDigestRun: a rejection from listUpcomingEvents is caught — the digest still sends its other sections, minus the events section, and recordSent still runs (issue #1093 acceptance criterion 6)', async () => {
+  let recordCalled = false;
+  const { adapter, sent } = makeAdapter('discord', async () => {
+    throw new Error('Discord API error');
+  });
+  const runOnce = makeDefaultMemberDigestRun([adapter], {
+    ...throwingRunDeps(),
+    wasSentRecently: async () => false,
+    getDigests: async () => [makeDigest({ topic: 'MCP server auth', questionCount: 4 })],
+    getNewKnowledgeTitles: async () => ['Setting up MCP auth'],
+    getNewProjectCount: async () => 0,
+    getMemberTipCount: async () => 0,
+    getNewInterestCount: async () => 0,
+    getHelperMatchesCount: async () => 0,
+    getProjectConnectionsCount: async () => 0,
+    recordSent: async () => {
+      recordCalled = true;
+    },
+  });
+  await runOnce();
+  assert.equal(sent.length, 1, 'the send is not blocked or failed by the events-read error');
+  assert.equal(
+    sent[0].text,
+    "📅 This week's topics:\n• MCP server auth (4 questions)\n\n📚 New in the knowledge base (1): Setting up MCP auth",
+    'the digest still sends with all its other sections intact, minus the events section',
+  );
+  assert.equal(recordCalled, true, 'recordSent still runs despite the events-read failure');
+});
+
+test("makeDefaultMemberDigestRun: a Discord adapter that doesn't implement listUpcomingEvents still sends its other sections, byte-identical to today", async () => {
+  const { adapter, sent } = makeAdapter('discord'); // no listUpcomingEvents stub — the method is absent, not stubbed
+  const runOnce = makeDefaultMemberDigestRun([adapter], {
+    ...throwingRunDeps(),
+    wasSentRecently: async () => false,
+    getDigests: async () => [makeDigest({ topic: 'MCP server auth', questionCount: 1 })],
+    getNewKnowledgeTitles: async () => [],
+    getNewProjectCount: async () => 0,
+    getMemberTipCount: async () => 0,
+    getNewInterestCount: async () => 0,
+    getHelperMatchesCount: async () => 0,
+    getProjectConnectionsCount: async () => 0,
+    recordSent: async () => {},
+  });
+  await runOnce();
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, "📅 This week's topics:\n• MCP server auth (1 question)");
 });
 
 test('startMemberDigest: MEMBER_DIGEST_ENABLED unset (default) creates no timer', () => {
