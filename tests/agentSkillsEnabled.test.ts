@@ -429,7 +429,11 @@ test(
       /agent-architecture-review/,
       'SKILL.md must hand off whole-pipeline concerns to agent-architecture-review',
     );
-    assert.match(body, /out of scope/i, 'SKILL.md must state whole-pipeline concerns are out of scope for this skill');
+    assert.match(
+      body,
+      /out of scope/i,
+      'SKILL.md must state whole-pipeline concerns are out of scope for this skill',
+    );
   },
 );
 
