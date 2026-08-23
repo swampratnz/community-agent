@@ -89,6 +89,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   #1036). `!kbhelpful` on WhatsApp and `/kbhelpful` on Discord now answer the
   same top-10-by-usage ranking instantly, with no model spend.
 
+### Fixed
+- **A dev-team job's completion DM no longer hammers the WhatsApp API every
+  minute while your window is closed.** (#1089) If a super admin dispatched a
+  `dev_team_*` job from WhatsApp and their 24-hour customer-service window
+  closed before the job finished (a normal case — these jobs typically run
+  ~1–20 minutes), the completion DM used to just retry a guaranteed-to-fail
+  send every poll tick for as long as the window stayed shut. It now queues
+  once and delivers the moment that window reopens, the same recovery every
+  other admin/member notification DM already had (#602/#644/#998/#1040).
+
 ## 2026-08-22
 
 ### Added

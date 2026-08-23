@@ -3859,6 +3859,22 @@ failure produces zero queue calls and isn't recorded as sent). No new
 mechanism, no new queue — the same already-reviewed per-recipient queue,
 now fed by 6 producers instead of 5.
 
+Issue #1089 closed the last remaining single-recipient producer:
+`backgroundJobs.ts`'s dev-team completion-DM poller
+(`runDevTeamWatchOnce`). Its `await adapter.sendDirectMessage(watch.requesterUserId, dm)`
+call is wrapped the same way — a `WindowClosedError` with a truthy
+`adapter.queueForWindowReopen` calls
+`queueForWindowReopen(watch.requesterUserId, dm, 'low')` and marks the watch
+notified in the same pass (queued = delivered, #998's precedent). Any other
+rejection, or an adapter with no `queueForWindowReopen`, falls through
+unchanged to log-and-retry-next-tick, leaving the watch unnotified
+(`SECURITY:` tests pin both: a non-`WindowClosedError` rejection never calls
+`queueForWindowReopen`, and a `WindowClosedError` on a Discord/Baileys-shaped
+adapter falls through with no crash). This closes the module-side
+#602/#644/#888/#998/#1040 series — the remaining named gaps
+(`router.ts`, `agent/core.ts`, `health.ts`'s `flushPendingAlerts`) now live
+in `@swampratnz/agent-base`, outside this repo.
+
 ### `/healthz` endpoint
 Opt-in (`HEALTH_PORT` unset = no listening port at all — matches this
 pipeline's "new surface is opt-in" pattern). Unauthenticated by design, but

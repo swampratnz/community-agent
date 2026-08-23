@@ -44,7 +44,7 @@
   "autoAnswerUsageRouter.test.ts": 1,
   "backgroundJobCost.test.ts": 3,
   "backgroundJobCostAlert.test.ts": 2,
-  "backgroundJobs.test.ts": 14,
+  "backgroundJobs.test.ts": 16,
   "backgroundJobsDisabled.test.ts": 2,
   "baileysAdapter.test.ts": 32,
   "baileysArchiving.test.ts": 2,

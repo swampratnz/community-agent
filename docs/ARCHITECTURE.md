@@ -3516,6 +3516,15 @@ dead" (e.g. a banned WhatsApp number stuck in Baileys' reconnect loop).
   logged-and-dropped, `succeeded` not incremented. No new queue, no new
   mechanism: the same capped-at-3-per-recipient, priority-aware queue above
   now has 6 producers instead of 5.
+- **Window-reopen recovery extended to `backgroundJobs.ts`'s dev-team
+  completion-DM poller** (issue #1089) — the last remaining single-recipient
+  producer in the #602/#644/#888/#998/#1040 series; `runDevTeamWatchOnce`'s
+  `await adapter.sendDirectMessage(watch.requesterUserId, dm)` now queues via
+  `queueForWindowReopen(watch.requesterUserId, dm, 'low')` on a
+  `WindowClosedError` and marks the watch notified in the same pass (queued =
+  delivered, per #998's precedent); any other rejection, or an adapter with
+  no `queueForWindowReopen`, falls through unchanged to log-and-retry-next-tick.
+  The module-side #888 series is now complete.
 - **`/healthz`** (opt-in via `HEALTH_PORT`) — unauthenticated `GET` returning
   `{status: "ok"|"degraded", db: boolean, adapters: {discord: boolean,
   whatsapp: boolean}}`. No message content or user ids in the response.
