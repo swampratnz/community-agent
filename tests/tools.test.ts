@@ -3908,14 +3908,19 @@ test(
     'a future WhatsApp shortcut that skips this file fails CI instead of shipping silently undiscoverable ' +
     '(issue #1044 acceptance criterion 2)',
   async () => {
-    // No command is currently exempt: every command whose platforms include
-    // 'whatsapp' is reachable by a member-tier-or-below caller (member-gated
-    // or ungated), so it must be discoverable via !help. Mirrors the
-    // documented `!kb` exemption from WHATSAPP_TEXT_COMMANDS_TEXT's own doc
-    // comment (`!kb` is excluded by its Discord-only `platforms`, not this
-    // list) — a future flag-gated beta shortcut would go here, named and
+    // Every command whose platforms include 'whatsapp' was previously
+    // reachable by a member-tier-or-below caller (member-gated or ungated),
+    // so it had to be discoverable via !help's MEMBER-tier rundown. `!reviewqueue`
+    // (issue #1095) is the first admin-tier exception: `communityInfoHandler`
+    // above is called with role 'member', and WHATSAPP_TEXT_COMMANDS_TEXT
+    // (`whatsappTextCommands` notice) is member-facing prose that must never
+    // advertise an admin-only shortcut to a member who cannot use it — so
+    // it's exempted here rather than added there. Mirrors the documented
+    // `!kb` exemption from WHATSAPP_TEXT_COMMANDS_TEXT's own doc comment
+    // (`!kb` is excluded by its Discord-only `platforms`, not this list) — a
+    // future flag-gated beta shortcut would go here too, named and
     // explained, rather than silently vanishing from the discovery block.
-    const WHATSAPP_DISCOVERY_EXEMPT_COMMANDS: readonly string[] = [];
+    const WHATSAPP_DISCOVERY_EXEMPT_COMMANDS: readonly string[] = ['reviewqueue'];
 
     const original = config.behaviour.whatsappTextCommandsEnabled;
     try {

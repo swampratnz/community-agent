@@ -15,7 +15,11 @@ import {
 import { EVENTS_LIST_LIMIT, formatUpcomingEvents } from '../../agent/tools/info.js';
 import {
   areKnowledgeEntriesLowRated,
+  countAccessRequests,
   countActiveWarnings,
+  countOpenAppeals,
+  countPendingKnowledgeCandidates,
+  countPendingSuggestions,
   countRepliesToUser,
   getLanguagePreference,
   getMyDataSummary,
@@ -32,6 +36,10 @@ import {
   listOwnSuggestions,
   listRecentInterests,
   listRecentProjects,
+  oldestAccessRequestAgeDays,
+  oldestOpenAppealAgeDays,
+  oldestPendingCandidateAgeDays,
+  oldestPendingSuggestionAgeDays,
   recordKnowledgeGap,
   recordKnowledgeRetrieval,
   recordShortcutHit,
@@ -48,6 +56,7 @@ import {
   formatKnowledgeTopics,
   formatMostHelpfulKnowledge,
   formatProjectResults,
+  formatReviewQueueSummary,
   KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD,
   LIST_PROJECTS_DEFAULT_LIMIT,
   MOST_HELPFUL_KNOWLEDGE_FETCH_CAP,
@@ -544,6 +553,58 @@ async function handleKbHelpful(
 }
 
 /**
+ * `review_queue` is structurally in ADMIN_TOOLS — the first admin-tier
+ * shortcut in this file (issue #1095) — mirrored here via `toolsForRole` +
+ * `atLeast(role, 'admin')`, same double-check shape as every member-tier
+ * handler above. No options: renders `formatReviewQueueSummary`'s four
+ * guild-wide/`discord`-platform-scoped lines, the SAME repository functions
+ * with the SAME arguments `review_queue`'s own handler uses — see that
+ * function (tools/helpers.ts) for why the reports line is never rendered.
+ */
+async function handleReviewQueue(
+  interaction: ChatInputCommandInteraction,
+  deps: SlashCommandDeps,
+): Promise<void> {
+  await deferEphemeral(interaction);
+  const role = await resolveRole('discord', interaction.user.id);
+  if (!toolsForRole(role, 'discord').includes('mcp__community__review_queue') || !atLeast(role, 'admin')) {
+    await replyEphemeral(interaction, NOT_AUTHORIZED_TEXT, deps);
+    return;
+  }
+  const [
+    accessRequestCount,
+    accessRequestAgeDays,
+    suggestionCount,
+    suggestionAgeDays,
+    candidateCount,
+    candidateAgeDays,
+    appealCount,
+    appealAgeDays,
+  ] = await Promise.all([
+    countAccessRequests(),
+    oldestAccessRequestAgeDays(),
+    countPendingSuggestions(),
+    oldestPendingSuggestionAgeDays(),
+    countPendingKnowledgeCandidates(),
+    oldestPendingCandidateAgeDays(),
+    countOpenAppeals('discord'),
+    oldestOpenAppealAgeDays('discord'),
+  ]);
+  const message = formatReviewQueueSummary({
+    accessRequestCount,
+    accessRequestAgeDays,
+    suggestionCount,
+    suggestionAgeDays,
+    candidateCount,
+    candidateAgeDays,
+    appealCount,
+    appealAgeDays,
+  });
+  recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
+  await replyEphemeral(interaction, message, deps);
+}
+
+/**
  * `list_events` is structurally in MEMBER_TOOLS with no extra runtime floor
  * beyond `toolsForRole` (unlike `/warnings`/`/whois`/`/projects`/`/digest`
  * above) — mirrored here exactly like `/kb`'s gate (issue #1004). Takes no
@@ -723,6 +784,16 @@ export function bindCommunitySlashCommands(adapter: PlatformAdapter): void {
         .setDescription('Show which community knowledge entries are most relied on.')
         .toJSON(),
     handle: handleKbHelpful,
+  });
+  bindDiscordCommand('reviewqueue', {
+    build: () =>
+      new SlashCommandBuilder()
+        .setName('reviewqueue')
+        .setDescription(
+          'Admin: pending access requests/suggestions/knowledge candidates/appeals at a glance.',
+        )
+        .toJSON(),
+    handle: handleReviewQueue,
   });
   bindDiscordCommand('events', {
     build: () =>

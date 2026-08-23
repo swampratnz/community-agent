@@ -106,6 +106,18 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   it now appends an "Upcoming events" section listing what's coming up, using
   the same event listing and formatting `list_events` already shows any
   member. A fully quiet week still posts nothing, even if events exist.
+- **Admins can now pull a zero-wait snapshot of the review queues from
+  WhatsApp or Discord — `!reviewqueue`/`/reviewqueue`.** (#1095) The
+  `review_queue` tool has always required a full agent turn to reach, unlike
+  every member-facing lookup (`!kbtopics`, `!kbhelpful`, `!status`, and
+  friends), even though admins get proactively nudged toward it by four
+  stale-queue alerts shipped in the last few days. The new command answers
+  instantly with the access-request, suggestion, knowledge-candidate and
+  appeal counts (each with an "oldest Nd" age once non-empty) — the reports
+  line is deliberately left out and pointed at `review_queue`/`list_reports`
+  instead, since it needs a live conversation-scope lookup this zero-model
+  shortcut path doesn't have, and approximating it guild-wide would widen
+  the admin-data-access boundary rather than respect it.
 
 ### Fixed
 - **A dev-team job's completion DM no longer hammers the WhatsApp API every

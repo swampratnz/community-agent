@@ -1,7 +1,11 @@
 import { atLeast } from '@swampratnz/agent-base/auth/rbac.js';
 import { config } from '@swampratnz/agent-base/config.js';
 import {
+  countAccessRequests,
   countActiveWarnings,
+  countOpenAppeals,
+  countPendingKnowledgeCandidates,
+  countPendingSuggestions,
   countRepliesToUser,
   getLanguagePreference,
   getMyDataSummary,
@@ -14,6 +18,10 @@ import {
   listOwnReports,
   listOwnSuggestions,
   listRecentProjects,
+  oldestAccessRequestAgeDays,
+  oldestOpenAppealAgeDays,
+  oldestPendingCandidateAgeDays,
+  oldestPendingSuggestionAgeDays,
 } from '@swampratnz/agent-base/storage/repository.js';
 import {
   formatCommunityInfoText,
@@ -21,6 +29,7 @@ import {
   formatKnowledgeTopics,
   formatMostHelpfulKnowledge,
   formatProjectResults,
+  formatReviewQueueSummary,
   LIST_PROJECTS_DEFAULT_LIMIT,
   MOST_HELPFUL_KNOWLEDGE_FETCH_CAP,
   rankKnowledgeByRetrieval,
@@ -45,9 +54,10 @@ import { formatStatusMessage, getStatusCache } from './status/anthropicStatus.js
  * homes; registry order is the previous `buildSlashCommands()` order (kb,
  * projects, whois, guidelines, digest), with `events` (issue #1004),
  * `status` (issue #995), `warnings` (issue #1000), `mysubmissions`/`mydata`
- * (issue #1018), `help` (issue #993), `kbtopics` (issue #1036), and
- * `kbhelpful` (issue #1087) appended — also safe for the WhatsApp side
- * because every `!` matcher is anchored and mutually exclusive.
+ * (issue #1018), `help` (issue #993), `kbtopics` (issue #1036),
+ * `kbhelpful` (issue #1087), and `reviewqueue` (issue #1095, the first
+ * admin-tier entry) appended — also safe for the WhatsApp side because every
+ * `!` matcher is anchored and mutually exclusive.
  *
  * The Discord halves are BOUND by `bindCommunitySlashCommands()`
  * (slashCommands.ts), which `createConfiguredAdapters()` calls — never at
@@ -349,6 +359,52 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
       });
       const ranked = rankKnowledgeByRetrieval(entries, 10);
       return formatMostHelpfulKnowledge(ranked);
+    },
+  },
+  {
+    // First admin-tier entry in this registry (issue #1095). Anchored,
+    // argument-rejecting matcher, same discipline as `warnings`/
+    // `mysubmissions`/`mydata`/`kbtopics`/`kbhelpful` above: `!reviewqueue
+    // anything` falls through to TEXT_COMMAND_UNMATCHED rather than
+    // matching, so no message-supplied text ever reaches a repository read.
+    // Renders review_queue's own guild-wide/caller.platform-scoped lines via
+    // the SAME repository functions with the SAME arguments that tool's
+    // handler uses — see formatReviewQueueSummary (tools/helpers.ts) for why
+    // the reports line is omitted rather than fabricated or approximated.
+    name: 'reviewqueue',
+    platforms: ['discord', 'whatsapp'],
+    whatsapp: async (text, msg, role) => {
+      if (!/^!reviewqueue$/i.test(text)) return TEXT_COMMAND_UNMATCHED;
+      if (!atLeast(role, 'admin')) return null;
+      const [
+        accessRequestCount,
+        accessRequestAgeDays,
+        suggestionCount,
+        suggestionAgeDays,
+        candidateCount,
+        candidateAgeDays,
+        appealCount,
+        appealAgeDays,
+      ] = await Promise.all([
+        countAccessRequests(),
+        oldestAccessRequestAgeDays(),
+        countPendingSuggestions(),
+        oldestPendingSuggestionAgeDays(),
+        countPendingKnowledgeCandidates(),
+        oldestPendingCandidateAgeDays(),
+        countOpenAppeals(msg.platform),
+        oldestOpenAppealAgeDays(msg.platform),
+      ]);
+      return formatReviewQueueSummary({
+        accessRequestCount,
+        accessRequestAgeDays,
+        suggestionCount,
+        suggestionAgeDays,
+        candidateCount,
+        candidateAgeDays,
+        appealCount,
+        appealAgeDays,
+      });
     },
   },
 ];

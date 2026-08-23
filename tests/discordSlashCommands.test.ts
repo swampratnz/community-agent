@@ -468,6 +468,7 @@ test('with DISCORD_SLASH_COMMANDS_ENABLED=true, all commands are registered guil
     'mydata',
     'mysubmissions',
     'projects',
+    'reviewqueue',
     'status',
     'warnings',
     'whois',
@@ -489,7 +490,7 @@ test("a slash-command registration failure is caught and logged, never thrown, m
   assert.ok(warnLog.mock.calls.length >= 1, 'a registration failure must be logged, not swallowed silently');
 });
 
-test('buildSlashCommands defines exactly the thirteen approved read-only commands, each with its expected required-ness', () => {
+test('buildSlashCommands defines exactly the fourteen approved read-only commands, each with its expected required-ness', () => {
   const commands = buildSlashCommands();
   const byName = new Map(commands.map((c) => [c.name, c]));
   assert.deepEqual([...byName.keys()].sort(), [
@@ -503,6 +504,7 @@ test('buildSlashCommands defines exactly the thirteen approved read-only command
     'mydata',
     'mysubmissions',
     'projects',
+    'reviewqueue',
     'status',
     'warnings',
     'whois',
@@ -585,6 +587,11 @@ test('buildSlashCommands defines exactly the thirteen approved read-only command
     [],
     "/kbhelpful takes no options — always the tool's own fixed top-10 default, never a caller-supplied limit " +
       '(issue #1087)',
+  );
+  assert.deepEqual(
+    (byName.get('reviewqueue') as { options?: unknown[] }).options ?? [],
+    [],
+    '/reviewqueue takes no options — a fixed roll-up of four review-queue counts, admin-tier only (issue #1095)',
   );
 });
 

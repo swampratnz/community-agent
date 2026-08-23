@@ -839,6 +839,49 @@ export function formatEngagementStats(s: Awaited<ReturnType<typeof engagementSta
   );
 }
 
+/**
+ * Pure renderer shared by the `!reviewqueue`/`/reviewqueue` admin shortcut
+ * (issue #1095) across both platforms, so WhatsApp and Discord render
+ * byte-identical text from one implementation rather than two hand-copied
+ * templates that could drift. Renders four of `review_queue`'s five lines —
+ * access requests, suggestions, knowledge candidates, appeals — each an
+ * integer with an "oldest Nd" suffix only when that queue is non-empty,
+ * exactly mirroring `review_queue`'s own `ageSuffix` behaviour (a `null` age
+ * means no suffix, never a fabricated "0d").
+ *
+ * Reports is deliberately never rendered here, not even as a guild-wide
+ * approximation: that line needs `callerScope()`/`resolveLinkedIdentities`
+ * (a live adapter/conversation-scope lookup unavailable to the WhatsApp
+ * text-command dispatch path's fixed, zero-opts deps shape — the same
+ * constraint `!projects seeking`/`!whois mine` document), and approximating
+ * it guild-wide would widen the SQL-scoped admin-data-access boundary
+ * docs/SECURITY.md pins ("Admin data access is scoped in SQL to
+ * conversations the admin is in"). The trailing note points at the full
+ * tool instead.
+ */
+export function formatReviewQueueSummary(counts: {
+  accessRequestCount: number;
+  accessRequestAgeDays: number | null;
+  suggestionCount: number;
+  suggestionAgeDays: number | null;
+  candidateCount: number;
+  candidateAgeDays: number | null;
+  appealCount: number;
+  appealAgeDays: number | null;
+}): string {
+  const ageSuffix = (ageDays: number | null) => (ageDays !== null ? ` (oldest ${ageDays}d)` : '');
+  const lines = [
+    `- Access requests: ${counts.accessRequestCount} pending${ageSuffix(counts.accessRequestAgeDays)}`,
+    `- Suggestions: ${counts.suggestionCount} pending${ageSuffix(counts.suggestionAgeDays)}`,
+    `- Knowledge candidates: ${counts.candidateCount} pending${ageSuffix(counts.candidateAgeDays)}`,
+    `- Appeals: ${counts.appealCount} open${ageSuffix(counts.appealAgeDays)}`,
+  ];
+  return (
+    `📋 Review queue\n${lines.join('\n')}\n\n` +
+    'Reports: see list_reports or review_queue (scoped to your conversations)'
+  );
+}
+
 /** One entry in the `feature_flags` allowlist (issue #559). */
 export interface FeatureFlagEntry {
   /** Exact `X_ENABLED` env var identifier, as it appears in config.ts — lets the anti-drift test tie this allowlist back to the real env schema without ever touching runtime `config` shape reflection. */
