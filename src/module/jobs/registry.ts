@@ -17,6 +17,7 @@ import { usageAlertJob } from '@swampratnz/agent-base/usageAlert.js';
 import { usageCostDigestJob } from '../usageCostDigest.js';
 import { backgroundJobCostAlertJob } from '@swampratnz/agent-base/backgroundJobCostAlert.js';
 import { adminDigestJob } from '../adminDigest.js';
+import { accessRequestStaleAlertJob } from '../accessRequestStaleAlert.js';
 import { appealStaleAlertJob } from '../appealStaleAlert.js';
 import { departedAdminAlertJob } from '../departedAdminAlert.js';
 import { engagementAlertJob } from '../engagementAlert.js';
@@ -64,4 +65,5 @@ export const JOB_REGISTRY: readonly JobSpec[] = [
   knowledgeCandidateStaleAlertJob,
   reportStaleAlertJob,
   suggestionStaleAlertJob,
+  accessRequestStaleAlertJob,
 ];

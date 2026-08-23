@@ -716,6 +716,25 @@ issue #787, the age), matching `list_appeals`. Access requests, suggestions,
 and knowledge candidates stay guild-wide, matching their own `list_*` tools'
 existing scope.
 
+All five of `review_queue`'s backlogs also have a **push** complement — a
+background job that DMs admins once when that queue's own stale backlog
+first appears, so an admin doesn't have to remember to pull:
+`src/module/appealStaleAlert.ts` (open appeals older than 72h, issue #1020),
+`src/module/knowledgeCandidateStaleAlert.ts` (pending knowledge candidates
+older than 168h, issue #1073), `src/module/reportStaleAlert.ts` (open
+content reports older than 48h, scoped per admin to their own
+`conversationsForUser` rather than guild-wide, issue #1084),
+`src/module/suggestionStaleAlert.ts` (pending suggestions older than 168h,
+issue #1091), and `src/module/accessRequestStaleAlert.ts` (pending access
+requests older than 168h, issue #1100 — the fifth and last queue to get
+one). Each of the guild-wide four is a `stepUsageAlertTracker` crossing
+latch computed fresh every tick from its own bounded `list_*` scan: it DMs
+once on the tick the stale count first leaves zero, stays silent while the
+count remains >=1 (including a partial decrease that never reaches zero),
+and re-arms once the count returns to zero. Every DM body is bare integers
+only — count and oldest-age-in-hours — never a member's identity, platform,
+or content, enforced by each alert's own fixed-signature formatter.
+
 `response_latency` (admin-tier, `days` optional default 7/max 30, `scope`
 optional `'all' | 'auto_answer' | 'mention'` default `'all'`, read-only,
 no CONFIRM; issue #877, pairing/scope fix issue #911) answers the one

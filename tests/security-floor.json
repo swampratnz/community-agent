@@ -2,6 +2,7 @@
   "abuseClassifierStructuredOutput.test.ts": 4,
   "accessRequestAlert.router.test.ts": 3,
   "accessRequestAlert.test.ts": 4,
+  "accessRequestStaleAlert.test.ts": 3,
   "ackShortcutRouter.test.ts": 3,
   "adminDigest.test.ts": 63,
   "adminLeverageAlert.test.ts": 3,
