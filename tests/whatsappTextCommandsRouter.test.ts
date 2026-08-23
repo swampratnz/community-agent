@@ -69,8 +69,12 @@ const { Router } = await import('@swampratnz/agent-base/router.js');
 const { makeRouterDeps } = await import('../src/module/routerWiring.js');
 const { countRepliesToUser, upsertMember, insertContextDigest, listKnowledge, setLanguagePreference } =
   await import('@swampratnz/agent-base/storage/repository.js');
-const { formatMostHelpfulKnowledge, MOST_HELPFUL_KNOWLEDGE_FETCH_CAP, rankKnowledgeByRetrieval } =
-  await import('../src/module/agent/tools.js');
+const {
+  formatMostHelpfulKnowledge,
+  formatReviewQueueSummary,
+  MOST_HELPFUL_KNOWLEDGE_FETCH_CAP,
+  rankKnowledgeByRetrieval,
+} = await import('../src/module/agent/tools.js');
 const { formatStatusMessage, getStatusCache, pollAnthropicStatus, resetStatusCacheForTests } =
   await import('../src/module/status/anthropicStatus.js');
 const { formatMyDataText, formatMySubmissionsText, formatMyWarningsText } =
@@ -2008,6 +2012,327 @@ test("a successful !kbhelpful invocation calls recordShortcutHit('whatsapp_text_
   router.register(adapter);
 
   await trigger(makeMessage({ text: '!kbhelpful', userId: 'member-1' }));
+
+  assert.equal(sent.length, 1);
+  assert.deepEqual(hits, ['whatsapp_text_command']);
+});
+
+// --- !reviewqueue (issue #1095) -----------------------------------------------
+
+/**
+ * Stubs `pool.query`'s role branch plus the four `review_queue`-shortcut
+ * repository reads (access requests, suggestions, knowledge candidates,
+ * appeals) — each table's count/age pair is distinguished by whether the SQL
+ * selects an `age_days` column, mirroring `mockPoolRoleAndWarnings`'s
+ * single-mock-per-test discipline above.
+ */
+function mockPoolRoleAndReviewQueue(
+  t: { mock: { method: typeof import('node:test').mock.method } },
+  role: 'admin' | 'member' | null,
+  counts: {
+    accessRequestCount?: number;
+    accessRequestAgeDays?: number | null;
+    suggestionCount?: number;
+    suggestionAgeDays?: number | null;
+    candidateCount?: number;
+    candidateAgeDays?: number | null;
+    appealCount?: number;
+    appealAgeDays?: number | null;
+  } = {},
+): void {
+  const {
+    accessRequestCount = 0,
+    accessRequestAgeDays = null,
+    suggestionCount = 0,
+    suggestionAgeDays = null,
+    candidateCount = 0,
+    candidateAgeDays = null,
+    appealCount = 0,
+    appealAgeDays = null,
+  } = counts;
+  t.mock.method(pool, 'query', (async (sql: string) => {
+    if (sql.includes('SELECT role FROM community_users')) {
+      return { rows: role ? [{ role }] : [], rowCount: 0 };
+    }
+    if (sql.includes('FROM access_requests')) {
+      return sql.includes('age_days')
+        ? { rows: [{ age_days: accessRequestAgeDays }], rowCount: 0 }
+        : { rows: [{ n: accessRequestCount }], rowCount: 0 };
+    }
+    if (sql.includes('FROM suggestions')) {
+      return sql.includes('age_days')
+        ? { rows: [{ age_days: suggestionAgeDays }], rowCount: 0 }
+        : { rows: [{ n: suggestionCount }], rowCount: 0 };
+    }
+    if (sql.includes('FROM knowledge_candidates')) {
+      return sql.includes('age_days')
+        ? { rows: [{ age_days: candidateAgeDays }], rowCount: 0 }
+        : { rows: [{ n: candidateCount }], rowCount: 0 };
+    }
+    if (sql.includes('FROM moderation_appeals')) {
+      return sql.includes('age_days')
+        ? { rows: [{ age_days: appealAgeDays }], rowCount: 0 }
+        : { rows: [{ n: appealCount }], rowCount: 0 };
+    }
+    return { rows: [], rowCount: 0 };
+  }) as typeof pool.query);
+}
+
+test(
+  '!reviewqueue renders the same four lines formatReviewQueueSummary produces for the given counts/ages, with ' +
+    'an "oldest Nd" suffix only when non-empty and no reports count anywhere in the output (issue #1095 ' +
+    'acceptance criteria 1, 3)',
+  async (t) => {
+    mockPoolRoleAndReviewQueue(t, 'admin', {
+      accessRequestCount: 3,
+      accessRequestAgeDays: 5,
+      suggestionCount: 0,
+      suggestionAgeDays: null,
+      candidateCount: 2,
+      candidateAgeDays: 1,
+      appealCount: 1,
+      appealAgeDays: 10,
+    });
+    const router = makeRouter({ runTurn: throwingRunTurn });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!reviewqueue', userId: 'admin-1' }));
+
+    const expected = formatReviewQueueSummary({
+      accessRequestCount: 3,
+      accessRequestAgeDays: 5,
+      suggestionCount: 0,
+      suggestionAgeDays: null,
+      candidateCount: 2,
+      candidateAgeDays: 1,
+      appealCount: 1,
+      appealAgeDays: 10,
+    });
+    assert.equal(sent[0].text, expected);
+    assert.match(sent[0].text, /Access requests: 3 pending \(oldest 5d\)/);
+    assert.match(
+      sent[0].text,
+      /Suggestions: 0 pending(?! \(oldest)/,
+      'an empty queue must render no age suffix',
+    );
+    assert.match(sent[0].text, /Knowledge candidates: 2 pending \(oldest 1d\)/);
+    assert.match(sent[0].text, /Appeals: 1 open \(oldest 10d\)/);
+    assert.doesNotMatch(sent[0].text, /Reports: \d+ open/, 'no fabricated/approximated reports count');
+    assert.match(
+      sent[0].text,
+      /Reports: see list_reports or review_queue \(scoped to your conversations\)/,
+      'the reports signpost note must be present',
+    );
+  },
+);
+
+test('!reviewqueue with every queue empty renders no age suffixes (issue #1095 acceptance criterion 1)', async (t) => {
+  mockPoolRoleAndReviewQueue(t, 'admin');
+  const router = makeRouter({ runTurn: throwingRunTurn });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!reviewqueue', userId: 'admin-1' }));
+
+  assert.equal(
+    sent[0].text,
+    formatReviewQueueSummary({
+      accessRequestCount: 0,
+      accessRequestAgeDays: null,
+      suggestionCount: 0,
+      suggestionAgeDays: null,
+      candidateCount: 0,
+      candidateAgeDays: null,
+      appealCount: 0,
+      appealAgeDays: null,
+    }),
+  );
+  assert.doesNotMatch(sent[0].text, /oldest/, 'every queue is empty, so no line may carry an age suffix');
+});
+
+test(
+  'a bare "!reviewqueuex" (no space, unrecognised) is not matched as the !reviewqueue command — anchored ' +
+    'matcher (issue #1095 acceptance criterion 2)',
+  async (t) => {
+    mockPoolRole(t, 'admin');
+    const router = makeRouter({});
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!reviewqueuex', userId: 'admin-1' }));
+
+    assert.equal(sent[0].text, REAL_TURN_REPLY);
+  },
+);
+
+test(
+  'SECURITY: "!reviewqueue <anything>" is never matched — the anchored matcher rejects any argument, so no ' +
+    'message-supplied text can ever reach a review-queue repository read (issue #1095 acceptance criterion 2)',
+  async (t) => {
+    let queried = false;
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users')) return { rows: [{ role: 'admin' }], rowCount: 0 };
+      if (
+        sql.includes('FROM access_requests') ||
+        sql.includes('FROM suggestions') ||
+        sql.includes('FROM knowledge_candidates') ||
+        sql.includes('FROM moderation_appeals')
+      ) {
+        queried = true;
+      }
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!reviewqueue; DROP TABLE access_requests', userId: 'admin-1' }));
+
+    assert.equal(sent[0].text, REAL_TURN_REPLY, 'an argument must fall through to a normal turn');
+    assert.equal(queried, false, 'no review-queue repository read must run when an argument is present');
+  },
+);
+
+test(
+  'SECURITY: a member-tier caller\'s "!reviewqueue" falls through to the normal turn — no review-queue count ' +
+    'is ever rendered and no review-queue repository read runs (issue #1095 acceptance criterion 4)',
+  async (t) => {
+    let queried = false;
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users'))
+        return { rows: [{ role: 'member' }], rowCount: 0 };
+      if (
+        sql.includes('FROM access_requests') ||
+        sql.includes('FROM suggestions') ||
+        sql.includes('FROM knowledge_candidates') ||
+        sql.includes('FROM moderation_appeals')
+      ) {
+        queried = true;
+      }
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!reviewqueue', userId: 'member-1' }));
+
+    assert.equal(sent.length, 1);
+    assert.equal(
+      sent[0].text,
+      REAL_TURN_REPLY,
+      'a member gets no distinguishing denial reply, per the family norm',
+    );
+    assert.equal(queried, false, 'no review-queue repository read must run for a member-tier caller');
+  },
+);
+
+test(
+  'SECURITY: a guest caller\'s "!reviewqueue" falls through to the normal turn — no review-queue count is ever ' +
+    'rendered and no review-queue repository read runs (issue #1095 acceptance criterion 4)',
+  async (t) => {
+    let queried = false;
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users')) return { rows: [], rowCount: 0 };
+      if (
+        sql.includes('FROM access_requests') ||
+        sql.includes('FROM suggestions') ||
+        sql.includes('FROM knowledge_candidates') ||
+        sql.includes('FROM moderation_appeals')
+      ) {
+        queried = true;
+      }
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!reviewqueue', userId: 'guest-1' }));
+
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].text, REAL_TURN_REPLY);
+    assert.equal(queried, false, 'no review-queue repository read must run for a guest caller');
+  },
+);
+
+test(
+  "SECURITY: !reviewqueue's appeals count/age are computed only from the caller's own msg.platform, never a " +
+    'cross-platform aggregate — and the three guild-wide counts use the SAME repository functions with the SAME ' +
+    "(no-argument) call review_queue's own handler uses (issue #1095 acceptance criterion 5)",
+  async (t) => {
+    const calls: Array<{ sql: string; params: unknown[] }> = [];
+    t.mock.method(pool, 'query', (async (sql: string, params: unknown[] = []) => {
+      calls.push({ sql, params });
+      if (sql.includes('SELECT role FROM community_users')) return { rows: [{ role: 'admin' }], rowCount: 0 };
+      if (sql.includes('FROM access_requests')) {
+        return sql.includes('age_days')
+          ? { rows: [{ age_days: 4 }], rowCount: 0 }
+          : { rows: [{ n: 7 }], rowCount: 0 };
+      }
+      if (sql.includes('FROM suggestions')) {
+        return sql.includes('age_days')
+          ? { rows: [{ age_days: 2 }], rowCount: 0 }
+          : { rows: [{ n: 5 }], rowCount: 0 };
+      }
+      if (sql.includes('FROM knowledge_candidates')) {
+        return sql.includes('age_days')
+          ? { rows: [{ age_days: 9 }], rowCount: 0 }
+          : { rows: [{ n: 3 }], rowCount: 0 };
+      }
+      if (sql.includes('FROM moderation_appeals')) {
+        return sql.includes('age_days')
+          ? { rows: [{ age_days: 1 }], rowCount: 0 }
+          : { rows: [{ n: 6 }], rowCount: 0 };
+      }
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: throwingRunTurn });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!reviewqueue', userId: 'admin-1' }));
+
+    const accessCalls = calls.filter((c) => c.sql.includes('FROM access_requests'));
+    const suggestionCalls = calls.filter((c) => c.sql.includes('FROM suggestions'));
+    const candidateCalls = calls.filter((c) => c.sql.includes('FROM knowledge_candidates'));
+    const appealCalls = calls.filter((c) => c.sql.includes('FROM moderation_appeals'));
+    assert.equal(accessCalls.length, 2, 'access requests must use the count+age pair, no arguments');
+    assert.equal(suggestionCalls.length, 2, 'suggestions must use the count+age pair, no arguments');
+    assert.equal(candidateCalls.length, 2, 'knowledge candidates must use the count+age pair, no arguments');
+    assert.equal(appealCalls.length, 2, 'appeals must use the count+age pair, scoped by platform');
+    for (const c of [...accessCalls, ...suggestionCalls, ...candidateCalls]) {
+      assert.deepEqual(c.params, [], 'guild-wide reads must take no arguments, matching review_queue');
+    }
+    for (const c of appealCalls) {
+      assert.deepEqual(
+        c.params,
+        ['whatsapp'],
+        "appeals must be scoped to the caller's own msg.platform only",
+      );
+    }
+    assert.match(sent[0].text, /Access requests: 7 pending \(oldest 4d\)/);
+    assert.match(sent[0].text, /Suggestions: 5 pending \(oldest 2d\)/);
+    assert.match(sent[0].text, /Knowledge candidates: 3 pending \(oldest 9d\)/);
+    assert.match(sent[0].text, /Appeals: 6 open \(oldest 1d\)/);
+    assert.doesNotMatch(sent[0].text, /Reports:.*\d+ open/, 'no reports count, guild-wide or otherwise');
+  },
+);
+
+test("a successful !reviewqueue invocation calls recordShortcutHit('whatsapp_text_command') exactly once (issue #1095)", async (t) => {
+  mockPoolRoleAndReviewQueue(t, 'admin');
+  const hits: string[] = [];
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    recordShortcutHitFn: async (kind) => {
+      hits.push(kind);
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!reviewqueue', userId: 'admin-1' }));
 
   assert.equal(sent.length, 1);
   assert.deepEqual(hits, ['whatsapp_text_command']);
