@@ -2,6 +2,7 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import type { OutgoingMessage, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 import type { BackgroundJobName } from '@swampratnz/agent-base/backgroundJobHealth.js';
+import type { JobStatus } from '../src/module/devTeam/client.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -59,6 +60,7 @@ const {
   defaultKnowledgeRefreshRun,
   defaultContextBuilderRun,
   defaultKnowledgeLinkCheckRun,
+  runDevTeamWatchOnce,
 } = await import('../src/module/backgroundJobs.js');
 const { startRetentionPurge } = await import('@swampratnz/agent-base/retention.js');
 const { startRosterRetentionPurge } = await import('@swampratnz/agent-base/retention.js');
@@ -762,6 +764,97 @@ test('alertSuperAdmins (via startDocsIngest): an adapter with no queueForWindowR
     await flush();
   });
   clearInterval(timer!);
+});
+
+// --- runDevTeamWatchOnce: per-recipient window-reopen queue (issue #1089) ---
+
+function devTeamStatusOf(state: JobStatus['state'], extra: Partial<JobStatus> = {}): JobStatus {
+  return {
+    id: 'x',
+    mode: 'assess',
+    repo: 'o/r',
+    state,
+    started: null,
+    ended: null,
+    cost_usd: null,
+    error: null,
+    progress: [],
+    ...extra,
+  };
+}
+
+const DEV_TEAM_WATCH = {
+  jobId: 'job-1089',
+  requesterPlatform: 'whatsapp' as const,
+  requesterUserId: 'admin-closed',
+  mode: 'assess',
+  repo: 'owner/name',
+};
+
+test("runDevTeamWatchOnce: a WindowClosedError completion-DM rejection is queued via queueForWindowReopen at 'low' priority and the watch is marked notified in the same pass (issue #1089 acceptance criterion 1/2)", async () => {
+  const { adapter, dms, queued } = makeCloudAdapter({
+    'admin-closed': new WindowClosedError('admin-closed'),
+  });
+  const marked: string[] = [];
+  await runDevTeamWatchOnce({
+    adapters: [adapter],
+    listWatches: async () => [{ ...DEV_TEAM_WATCH }],
+    getStatus: async () => devTeamStatusOf('succeeded'),
+    markNotified: async (jobId: string) => {
+      marked.push(jobId);
+    },
+  });
+  assert.equal(dms.length, 0, 'no live send for the closed-window recipient');
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0]?.userId, 'admin-closed');
+  assert.equal(queued[0]?.priority, 'low', "per-recipient tier, not #888's 'system' broadcast tier");
+  assert.match(queued[0]?.message ?? '', /job-1089/);
+  assert.deepEqual(marked, ['job-1089'], 'a queued send is treated as delivered (queued = delivered, #998)');
+});
+
+test('SECURITY: runDevTeamWatchOnce — a completion-DM rejection that is NOT a WindowClosedError is never queued via queueForWindowReopen and leaves the watch unnotified for the next tick (issue #1089 acceptance criterion 3)', async () => {
+  const { adapter, dms, queued } = makeCloudAdapter({
+    'admin-closed': new Error('502 from Graph API'),
+  });
+  const marked: string[] = [];
+  await runDevTeamWatchOnce({
+    adapters: [adapter],
+    listWatches: async () => [{ ...DEV_TEAM_WATCH }],
+    getStatus: async () => devTeamStatusOf('succeeded'),
+    markNotified: async (jobId: string) => {
+      marked.push(jobId);
+    },
+  });
+  assert.equal(dms.length, 0);
+  assert.deepEqual(
+    queued,
+    [],
+    'a non-WindowClosedError rejection must never populate the window-reopen queue',
+  );
+  assert.deepEqual(marked, [], 'the watch stays unnotified so the next tick retries');
+});
+
+test('SECURITY: runDevTeamWatchOnce — an adapter with no queueForWindowReopen (Discord/Baileys shape) falls through to log-and-retry for a WindowClosedError rejection, unnotified, no crash (issue #1089 acceptance criterion 4)', async () => {
+  const { adapter } = makeAdapter();
+  adapter.sendDirectMessage = async () => {
+    throw new WindowClosedError('admin-closed');
+  };
+  const marked: string[] = [];
+  await assert.doesNotReject(() =>
+    runDevTeamWatchOnce({
+      adapters: [adapter],
+      listWatches: async () => [{ ...DEV_TEAM_WATCH, requesterPlatform: 'discord' as const }],
+      getStatus: async () => devTeamStatusOf('succeeded'),
+      markNotified: async (jobId: string) => {
+        marked.push(jobId);
+      },
+    }),
+  );
+  assert.deepEqual(
+    marked,
+    [],
+    'no queueForWindowReopen on this adapter shape — falls through to unnotified retry',
+  );
 });
 
 test('SECURITY: the alert DM body never contains the caught error message or stack — only the fixed template (job name, failure count, last-success timestamp)', async (t) => {

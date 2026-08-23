@@ -41,6 +41,7 @@ import {
 import { alertSuperAdmins, startTrackedJob } from '@swampratnz/agent-base/jobs/trackedJob.js';
 import type { JobSpec } from '@swampratnz/agent-base/jobs/types.js';
 import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
+import { WindowClosedError } from '@swampratnz/agent-base/platforms/types.js';
 
 /**
  * `summarize` is injectable (tests only) so the consecutive-failure alerting
@@ -486,6 +487,15 @@ export interface DevTeamWatchDeps {
  * unnotified for the next tick (best-effort retry); a missing/disconnected
  * adapter is silently skipped, matching the AdapterLookup convention. Never
  * throws — a single bad watch can't wedge the rest of the pass.
+ *
+ * A completion-DM send that fails with `WindowClosedError` — the WhatsApp
+ * Cloud adapter's "still connected, this recipient's 24h window is shut"
+ * failure — is the one exception to the retry-next-tick rule: it is queued
+ * via the adapter's optional `queueForWindowReopen` at `'low'` priority
+ * (matching #644/#998's per-recipient tier) and the watch is stamped
+ * notified immediately, same "queued = delivered" precedent as #998 (issue
+ * #1089). Any other rejection, or an adapter with no `queueForWindowReopen`
+ * (Discord/Baileys), falls through unchanged to log-and-retry-next-tick.
  */
 export async function runDevTeamWatchOnce(deps: DevTeamWatchDeps): Promise<void> {
   const listWatches = deps.listWatches ?? listUnnotifiedDevTeamWatches;
@@ -541,8 +551,19 @@ export async function runDevTeamWatchOnce(deps: DevTeamWatchDeps): Promise<void>
     try {
       await adapter.sendDirectMessage(watch.requesterUserId, dm);
     } catch (err) {
-      logger.warn({ err, jobId: watch.jobId }, 'dev-team watch: completion DM failed; will retry next tick');
-      continue; // leave unnotified so the next tick retries
+      if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+        adapter.queueForWindowReopen(watch.requesterUserId, dm, 'low');
+        logger.warn(
+          { jobId: watch.jobId },
+          "dev-team watch: recipient's window is closed, queued for reopen",
+        );
+      } else {
+        logger.warn(
+          { err, jobId: watch.jobId },
+          'dev-team watch: completion DM failed; will retry next tick',
+        );
+        continue; // leave unnotified so the next tick retries
+      }
     }
     try {
       await markNotified(watch.jobId);
