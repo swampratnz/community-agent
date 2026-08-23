@@ -26,6 +26,7 @@ import {
   getPublishedInterestsForOwners,
   hasConflictAmongIds,
   type KnowledgeSearchHit,
+  type LanguagePreference,
   listKnowledge,
   listKnowledgeTopics,
   listOwnAppeals,
@@ -54,14 +55,15 @@ import {
   formatInterestResults,
   formatKnowledgeSearchResults,
   formatKnowledgeTopics,
+  formatListProjectsEmptyText,
   formatMostHelpfulKnowledge,
   formatProjectResults,
   formatReviewQueueSummary,
+  formatWhoIsIntoEmptyText,
   KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD,
   LIST_PROJECTS_DEFAULT_LIMIT,
   MOST_HELPFUL_KNOWLEDGE_FETCH_CAP,
   rankKnowledgeByRetrieval,
-  WHO_IS_INTO_NO_PROFILE_HINT,
 } from '../../agent/tools.js';
 import { chunkText } from '@swampratnz/agent-base/platforms/textChunk.js';
 import { bindDiscordCommand, type SlashCommandDeps } from '@swampratnz/agent-base/commands/registry.js';
@@ -75,6 +77,30 @@ import { bindDiscordCommand, type SlashCommandDeps } from '@swampratnz/agent-bas
 const DISCORD_REPLY_MAX_LEN = 2000;
 
 const NOT_AUTHORIZED_TEXT = "You don't have access to this command.";
+
+/**
+ * `handleWhois`'s own bare-`/whois`-no-profile hint (issue #1105) — worded
+ * for a Discord slash caller ("tell the bot", not "call set_my_interests")
+ * rather than `social.ts`'s `formatWhoIsIntoEmptyText('noProfile', …)`, so it
+ * stays a separate, locally-owned string rather than being folded into that
+ * shared function: consolidating it would change its English wording, not
+ * just add a language branch, and the acceptance criteria require the
+ * existing English text stay byte-identical.
+ *
+ * Exported (not just used locally) so the bare-`/whois`-no-profile branch's
+ * te reo Māori rendering can be pinned directly in tests, the same way
+ * `formatWhoIsIntoEmptyText`/`formatListProjectsEmptyText` are pinned from
+ * `tools.ts` — this is the one bot-authored 'mi' string in this file with no
+ * other exported source of truth to assert against.
+ */
+export function formatWhoIsIntoDiscordNoProfileHint(language: LanguagePreference): string {
+  return language === 'mi'
+    ? 'Kāore anō koe kia whakaputa i ō hiahia, kōrerotia mai ō hiahia ki te pouaka (hei tauira, "set my ' +
+        'interests to ...") i te tuatahi, kātahi, ki te kore he kaupapa e tohua ana ki `/whois`, ka rapu mā ' +
+        'ō hiahia kua whakaputaina.'
+    : 'You haven\'t published interests yet — tell the bot your interests (e.g. "set my interests to ' +
+        '...") first, then /whois with no topic will search using your own published interests.';
+}
 
 /**
  * Discord requires an interaction to be acknowledged within 3 seconds of
@@ -240,7 +266,9 @@ async function handleProjects(
   if (mine) {
     const projects = await listOwnProjects('discord', interaction.user.id);
     const reply =
-      projects.length === 0 ? "You haven't shared any projects yet." : await formatProjectResults(projects);
+      projects.length === 0
+        ? formatListProjectsEmptyText('mine', await getLanguagePreference('discord', interaction.user.id))
+        : await formatProjectResults(projects);
     recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
     await replyEphemeral(interaction, reply, deps);
     return;
@@ -253,11 +281,10 @@ async function handleProjects(
     : await listRecentProjects(LIST_PROJECTS_DEFAULT_LIMIT, opts);
   const reply =
     projects.length === 0
-      ? seekingCollaborators
-        ? 'No projects are currently looking for collaborators.'
-        : query
-          ? 'No shared projects match that.'
-          : 'No projects have been shared yet.'
+      ? formatListProjectsEmptyText(
+          seekingCollaborators ? 'seeking' : query ? 'query' : 'none',
+          await getLanguagePreference('discord', interaction.user.id),
+        )
       : await formatProjectResults(projects);
   recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
   await replyEphemeral(interaction, reply, deps);
@@ -288,12 +315,12 @@ async function handleWhois(interaction: ChatInputCommandInteraction, deps: Slash
     const own = interestsByOwner.get(`discord:${interaction.user.id}`);
     reply = own
       ? await formatInterestResults([{ platform: 'discord', userId: interaction.user.id, interests: own }])
-      : WHO_IS_INTO_NO_PROFILE_HINT;
+      : formatWhoIsIntoEmptyText('noProfile', await getLanguagePreference('discord', interaction.user.id));
   } else if (query) {
     const hits = await searchMemberInterests(query);
     reply =
       hits.length === 0
-        ? 'No members have published interests matching that yet.'
+        ? formatWhoIsIntoEmptyText('query', await getLanguagePreference('discord', interaction.user.id))
         : await formatInterestResults(hits);
   } else {
     const selfMatch = await searchMemberInterestsForSelf('discord', interaction.user.id);
@@ -301,15 +328,18 @@ async function handleWhois(interaction: ChatInputCommandInteraction, deps: Slash
       // Issue #920: same no-profile browse fallback as who_is_into's chat
       // path — this is a SEPARATE call site (no shared handler), so the
       // fallback is wired here independently.
-      const hint =
-        'You haven\'t published interests yet — tell the bot your interests (e.g. "set my interests to ' +
-        '...") first, then /whois with no topic will search using your own published interests.';
+      const hint = formatWhoIsIntoDiscordNoProfileHint(
+        await getLanguagePreference('discord', interaction.user.id),
+      );
       const recent = await listRecentInterests();
       reply = recent.length === 0 ? hint : `${await formatInterestResults(recent)}\n\n${hint}`;
     } else {
       reply =
         selfMatch.hits.length === 0
-          ? 'No other members have published interests matching yours yet.'
+          ? formatWhoIsIntoEmptyText(
+              'selfNoMatch',
+              await getLanguagePreference('discord', interaction.user.id),
+            )
           : await formatInterestResults(selfMatch.hits);
     }
   }

@@ -51,6 +51,17 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   `list_access_requests` to review it. No guest identity or platform is
   included in the alert — only the count and how long the oldest has
   waited.
+- **`/whois` and `/projects` (and their `!whois`/`!projects` mirrors) now
+  render in te reo Māori for a member with a standing `'mi'` language
+  preference.** (#1105) These two member-discovery/showcase shortcuts were
+  the last of the zero-model-call surfaces still answering in English only —
+  `my_warnings`/`my_submissions` (#1077), `my_data` (#1030), `community_digest`
+  (#1042) and `/kb` (#1038/#1063) already made this switch. The empty-state
+  and no-published-interests/no-shared-projects guidance strings now branch
+  on the caller's own stored language preference; the project/interest rows
+  themselves (other members' own words) stay untranslated, exactly as every
+  prior 'mi' proposal in this repo has done. Everyone else sees
+  byte-identical English output, exactly as before.
 
 ### Fixed
 - **`/kb`'s exact-string fallback no longer logs a false knowledge-base gap
