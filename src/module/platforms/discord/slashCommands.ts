@@ -22,6 +22,7 @@ import {
   getPublishedInterestsForOwners,
   hasConflictAmongIds,
   type KnowledgeSearchHit,
+  listKnowledge,
   listKnowledgeTopics,
   listOwnAppeals,
   listOwnKnowledgeCandidates,
@@ -45,9 +46,12 @@ import {
   formatInterestResults,
   formatKnowledgeSearchResults,
   formatKnowledgeTopics,
+  formatMostHelpfulKnowledge,
   formatProjectResults,
   KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD,
   LIST_PROJECTS_DEFAULT_LIMIT,
+  MOST_HELPFUL_KNOWLEDGE_FETCH_CAP,
+  rankKnowledgeByRetrieval,
   WHO_IS_INTO_NO_PROFILE_HINT,
 } from '../../agent/tools.js';
 import { chunkText } from '@swampratnz/agent-base/platforms/textChunk.js';
@@ -508,6 +512,34 @@ async function handleKbTopics(
 }
 
 /**
+ * `most_helpful_knowledge` is structurally in MEMBER_TOOLS but adds its own
+ * runtime floor (`minTier: 'member'`), same shape as `/kbtopics` above —
+ * mirrored here via `toolsForRole` + `atLeast`. No options: always the
+ * tool's own fixed default of 10 (no caller-supplied limit), and the query
+ * is always `scope: 'global'` — never derived from the interaction payload
+ * (issue #1087).
+ */
+async function handleKbHelpful(
+  interaction: ChatInputCommandInteraction,
+  deps: SlashCommandDeps,
+): Promise<void> {
+  await deferEphemeral(interaction);
+  const role = await resolveRole('discord', interaction.user.id);
+  if (
+    !toolsForRole(role, 'discord').includes('mcp__community__most_helpful_knowledge') ||
+    !atLeast(role, 'member')
+  ) {
+    await replyEphemeral(interaction, NOT_AUTHORIZED_TEXT, deps);
+    return;
+  }
+  const entries = await listKnowledge({ scope: 'global', offset: 0, limit: MOST_HELPFUL_KNOWLEDGE_FETCH_CAP });
+  const ranked = rankKnowledgeByRetrieval(entries, 10);
+  const message = formatMostHelpfulKnowledge(ranked);
+  recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
+  await replyEphemeral(interaction, message, deps);
+}
+
+/**
  * `list_events` is structurally in MEMBER_TOOLS with no extra runtime floor
  * beyond `toolsForRole` (unlike `/warnings`/`/whois`/`/projects`/`/digest`
  * above) — mirrored here exactly like `/kb`'s gate (issue #1004). Takes no
@@ -679,6 +711,14 @@ export function bindCommunitySlashCommands(adapter: PlatformAdapter): void {
         .setDescription('Browse the titles of what the community knowledge base covers.')
         .toJSON(),
     handle: handleKbTopics,
+  });
+  bindDiscordCommand('kbhelpful', {
+    build: () =>
+      new SlashCommandBuilder()
+        .setName('kbhelpful')
+        .setDescription('Show which community knowledge entries are most relied on.')
+        .toJSON(),
+    handle: handleKbHelpful,
   });
   bindDiscordCommand('events', {
     build: () =>

@@ -6,6 +6,7 @@ import {
   getLanguagePreference,
   getMyDataSummary,
   getPublishedInterestsForOwners,
+  listKnowledge,
   listKnowledgeTopics,
   listOwnAppeals,
   listOwnKnowledgeCandidates,
@@ -18,8 +19,11 @@ import {
   formatCommunityInfoText,
   formatInterestResults,
   formatKnowledgeTopics,
+  formatMostHelpfulKnowledge,
   formatProjectResults,
   LIST_PROJECTS_DEFAULT_LIMIT,
+  MOST_HELPFUL_KNOWLEDGE_FETCH_CAP,
+  rankKnowledgeByRetrieval,
   WHO_IS_INTO_NO_PROFILE_HINT,
 } from './agent/tools.js';
 import { buildMemberDigestContent } from './memberDigest.js';
@@ -41,9 +45,9 @@ import { formatStatusMessage, getStatusCache } from './status/anthropicStatus.js
  * homes; registry order is the previous `buildSlashCommands()` order (kb,
  * projects, whois, guidelines, digest), with `events` (issue #1004),
  * `status` (issue #995), `warnings` (issue #1000), `mysubmissions`/`mydata`
- * (issue #1018), `help` (issue #993), and `kbtopics` (issue #1036) appended
- * — also safe for the WhatsApp side because every `!` matcher is anchored
- * and mutually exclusive.
+ * (issue #1018), `help` (issue #993), `kbtopics` (issue #1036), and
+ * `kbhelpful` (issue #1087) appended — also safe for the WhatsApp side
+ * because every `!` matcher is anchored and mutually exclusive.
  *
  * The Discord halves are BOUND by `bindCommunitySlashCommands()`
  * (slashCommands.ts), which `createConfiguredAdapters()` calls — never at
@@ -318,6 +322,33 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
         config.behaviour.knowledgeTopicsListLimit,
       );
       return formatKnowledgeTopics(titles, totalCount);
+    },
+  },
+  {
+    // Anchored, argument-rejecting matcher, same discipline as `kbtopics`
+    // above (issue #1087 SECURITY criterion 2): `!kbhelpful anything` falls
+    // through to TEXT_COMMAND_UNMATCHED rather than matching, so no message-
+    // supplied text can ever reach the query. Unlike `kbtopics`, the read
+    // itself is never scoped by the caller's platform/conversation —
+    // `most_helpful_knowledge` (issue #1070) hardcodes `scope: 'global'`
+    // (that tool's own SECURITY comment: a member can never request a
+    // narrower scope), and this shortcut reuses that exact
+    // listKnowledge → rankKnowledgeByRetrieval → formatMostHelpfulKnowledge
+    // path, never a wider or differently-scoped query (issue #1087 SECURITY
+    // criterion 4), always the tool's own fixed default of 10 (no
+    // caller-supplied limit, issue #1087 acceptance criterion 1).
+    name: 'kbhelpful',
+    platforms: ['discord', 'whatsapp'],
+    whatsapp: async (text, _msg, role) => {
+      if (!/^!kbhelpful$/i.test(text)) return TEXT_COMMAND_UNMATCHED;
+      if (!atLeast(role, 'member')) return null;
+      const entries = await listKnowledge({
+        scope: 'global',
+        offset: 0,
+        limit: MOST_HELPFUL_KNOWLEDGE_FETCH_CAP,
+      });
+      const ranked = rankKnowledgeByRetrieval(entries, 10);
+      return formatMostHelpfulKnowledge(ranked);
     },
   },
 ];
