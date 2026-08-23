@@ -88,6 +88,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   shortcut, unlike its sibling `list_knowledge_topics` (`!kbtopics`/`/kbtopics`,
   #1036). `!kbhelpful` on WhatsApp and `/kbhelpful` on Discord now answer the
   same top-10-by-usage ranking instantly, with no model spend.
+- **Admins now get a proactive nudge when a member-submitted suggestion has
+  been sitting unreviewed for a week.** (#1091) Pending knowledge candidates
+  (#1074), open content reports (#1084), and moderation appeals (#1021) all
+  already got a one-time DM nudge once their backlog went stale — member
+  suggestions, the other admin-reviewed queue with only a bare digest count
+  and the `list_suggestions` pull, had no equivalent. Now, once any pending
+  suggestion has waited more than 7 days for review, every admin gets a
+  one-time DM (re-arming only after the backlog clears) pointing at
+  `list_suggestions` to review it. No suggestion content is included in the
+  alert — only the count and how long the oldest has waited.
 
 ### Fixed
 - **A dev-team job's completion DM no longer hammers the WhatsApp API every
