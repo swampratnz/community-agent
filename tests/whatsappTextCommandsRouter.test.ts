@@ -70,8 +70,10 @@ const { makeRouterDeps } = await import('../src/module/routerWiring.js');
 const { countRepliesToUser, upsertMember, insertContextDigest, listKnowledge, setLanguagePreference } =
   await import('@swampratnz/agent-base/storage/repository.js');
 const {
+  formatListProjectsEmptyText,
   formatMostHelpfulKnowledge,
   formatReviewQueueSummary,
+  formatWhoIsIntoEmptyText,
   MOST_HELPFUL_KNOWLEDGE_FETCH_CAP,
   rankKnowledgeByRetrieval,
 } = await import('../src/module/agent/tools.js');
@@ -165,7 +167,7 @@ interface RouterOpts {
   buildDigestContentFn?: () => Promise<string | null>;
   getConductGuidelinesFn?: () => Promise<string | null>;
   getLocalisedConductGuidelinesFn?: () => Promise<string | null>;
-  getLangPref?: () => Promise<'auto' | 'en' | 'mi'>;
+  getLangPref?: (platform: Platform, userId: string) => Promise<'auto' | 'en' | 'mi'>;
   recordShortcutHitFn?: (kind: ShortcutKind) => Promise<void>;
   listRecentInterestsFn?: (limit?: number) => Promise<MemberInterestRow[]>;
 }
@@ -701,6 +703,89 @@ test('SECURITY: "!whois mine 12345" (a message-body-supplied identifier) never r
   assert.equal(sent[0].text, 'No members have published interests matching that yet.');
 });
 
+// --- issue #1105: !whois honours a standing 'mi' language preference -------------
+
+test('"!whois mine" with no published interests renders the te reo Māori no-profile hint for a caller with a stored \'mi\' language preference, byte-identical English otherwise (issue #1105 acceptance criterion 1)', async (t) => {
+  mockPoolRoleAndInterests(t, 'member', []);
+  for (const language of ['mi', 'en'] as const) {
+    const router = makeRouter({ runTurn: throwingRunTurn, getLangPref: async () => language });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+    await trigger(makeMessage({ text: '!whois mine', userId: `member-mine-${language}` }));
+    assert.equal(sent[0].text, formatWhoIsIntoEmptyText('noProfile', language));
+  }
+});
+
+test('"!whois <query>" with no matches renders the te reo Māori empty-state text for a caller with a stored \'mi\' language preference, byte-identical English otherwise (issue #1105 acceptance criterion 1)', async (t) => {
+  mockPoolRole(t, 'member');
+  for (const language of ['mi', 'en'] as const) {
+    const router = makeRouter({
+      runTurn: throwingRunTurn,
+      searchMemberInterestsFn: async () => [],
+      getLangPref: async () => language,
+    });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+    await trigger(makeMessage({ text: '!whois someone', userId: `member-query-${language}` }));
+    assert.equal(sent[0].text, formatWhoIsIntoEmptyText('query', language));
+  }
+});
+
+test('bare "!whois" from a member with no published profile and nothing to browse renders the te reo Māori hint for a caller with a stored \'mi\' language preference, byte-identical English otherwise (issue #1105 acceptance criterion 1)', async (t) => {
+  mockPoolRole(t, 'member');
+  for (const language of ['mi', 'en'] as const) {
+    const router = makeRouter({
+      runTurn: throwingRunTurn,
+      searchMemberInterestsForSelfFn: async () => ({ hasProfile: false }),
+      listRecentInterestsFn: async () => [],
+      getLangPref: async () => language,
+    });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+    await trigger(makeMessage({ text: '!whois', userId: `member-bare-${language}` }));
+    assert.equal(sent[0].text, formatWhoIsIntoEmptyText('noProfile', language));
+  }
+});
+
+test('bare "!whois" from a member with a published profile but zero hits renders the te reo Māori no-match text for a caller with a stored \'mi\' language preference, byte-identical English otherwise (issue #1105 acceptance criterion 1)', async (t) => {
+  mockPoolRole(t, 'member');
+  for (const language of ['mi', 'en'] as const) {
+    const router = makeRouter({
+      runTurn: throwingRunTurn,
+      searchMemberInterestsForSelfFn: async () => ({ hasProfile: true, hits: [] }),
+      getLangPref: async () => language,
+    });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+    await trigger(makeMessage({ text: '!whois', userId: `member-selfempty-${language}` }));
+    assert.equal(sent[0].text, formatWhoIsIntoEmptyText('query', language));
+  }
+});
+
+test("SECURITY: !whois's language-preference read is scoped to the sender's own platform/userId, never a message-body-supplied identifier (issue #1105 SECURITY criterion)", async (t) => {
+  mockPoolRole(t, 'member');
+  let calledWith: [string, string] | undefined;
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    searchMemberInterestsFn: async () => [],
+    getLangPref: async (platform, userId) => {
+      calledWith = [platform, userId];
+      return 'mi';
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!whois member-2', userId: 'member-1' }));
+
+  assert.deepEqual(
+    calledWith,
+    ['whatsapp', 'member-1'],
+    "the language_prefs read must be keyed on the sender's own platform/userId, never text parsed from the query",
+  );
+  assert.equal(sent[0].text, formatWhoIsIntoEmptyText('query', 'mi'));
+});
+
 // --- !projects ------------------------------------------------------------------
 
 test('!projects (no query) from a member uses listRecentProjectsFn, never searchProjectsFn', async (t) => {
@@ -949,6 +1034,88 @@ test(
     );
   },
 );
+
+// --- issue #1105: !projects honours a standing 'mi' language preference ----------
+
+test('"!projects mine" with no shared projects renders the te reo Māori empty-state text for a caller with a stored \'mi\' language preference, byte-identical English otherwise (issue #1105 acceptance criterion 2)', async (t) => {
+  mockPoolRole(t, 'member');
+  for (const language of ['mi', 'en'] as const) {
+    const router = makeRouter({
+      runTurn: throwingRunTurn,
+      listOwnProjectsFn: async () => [],
+      getLangPref: async () => language,
+    });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+    await trigger(makeMessage({ text: '!projects mine', userId: `member-mine-${language}` }));
+    assert.equal(sent[0].text, formatListProjectsEmptyText('mine', language));
+  }
+});
+
+test('"!projects seeking" with no matching projects renders the te reo Māori empty-state text for a caller with a stored \'mi\' language preference, byte-identical English otherwise (issue #1105 acceptance criterion 2)', async (t) => {
+  mockPoolRoleAndProjects(t, 'member', []);
+  for (const language of ['mi', 'en'] as const) {
+    const router = makeRouter({ runTurn: throwingRunTurn, getLangPref: async () => language });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+    await trigger(makeMessage({ text: '!projects seeking', userId: `member-seeking-${language}` }));
+    assert.equal(sent[0].text, formatListProjectsEmptyText('seeking', language));
+  }
+});
+
+test('"!projects <query>" with no matches renders the te reo Māori empty-state text for a caller with a stored \'mi\' language preference, byte-identical English otherwise (issue #1105 acceptance criterion 2)', async (t) => {
+  mockPoolRole(t, 'member');
+  for (const language of ['mi', 'en'] as const) {
+    const router = makeRouter({
+      runTurn: throwingRunTurn,
+      searchProjectsFn: async () => [],
+      getLangPref: async () => language,
+    });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+    await trigger(makeMessage({ text: '!projects rag pipelines', userId: `member-query-${language}` }));
+    assert.equal(sent[0].text, formatListProjectsEmptyText('query', language));
+  }
+});
+
+test('"!projects" (no query) with nothing shared renders the te reo Māori empty-state text for a caller with a stored \'mi\' language preference, byte-identical English otherwise (issue #1105 acceptance criterion 2)', async (t) => {
+  mockPoolRole(t, 'member');
+  for (const language of ['mi', 'en'] as const) {
+    const router = makeRouter({
+      runTurn: throwingRunTurn,
+      listRecentProjectsFn: async () => [],
+      getLangPref: async () => language,
+    });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+    await trigger(makeMessage({ text: '!projects', userId: `member-none-${language}` }));
+    assert.equal(sent[0].text, formatListProjectsEmptyText('none', language));
+  }
+});
+
+test("SECURITY: !projects's language-preference read is scoped to the sender's own platform/userId, never a message-body-supplied identifier (issue #1105 SECURITY criterion)", async (t) => {
+  mockPoolRole(t, 'member');
+  let calledWith: [string, string] | undefined;
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    searchProjectsFn: async () => [],
+    getLangPref: async (platform, userId) => {
+      calledWith = [platform, userId];
+      return 'mi';
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!projects member-2', userId: 'member-1' }));
+
+  assert.deepEqual(
+    calledWith,
+    ['whatsapp', 'member-1'],
+    "the language_prefs read must be keyed on the sender's own platform/userId, never text parsed from the query",
+  );
+  assert.equal(sent[0].text, formatListProjectsEmptyText('query', 'mi'));
+});
 
 test('acceptance criterion 4: a default `new Router(makeRouterDeps())` with no listOwnProjectsFn override still constructs, and an unrelated existing command (!guidelines) behaves unchanged (trailing defaulted field)', async (t) => {
   mockPoolRole(t, null);

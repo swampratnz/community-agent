@@ -79,7 +79,9 @@ const {
   formatFoundKnowledge,
   formatKnowledgeSearchResults,
   formatKnowledgeTopics,
+  formatListProjectsEmptyText,
   formatMostHelpfulKnowledge,
+  formatWhoIsIntoEmptyText,
   rankKnowledgeByRetrieval,
   formatUsageStats,
   formatAdminActivity,
@@ -17733,6 +17735,139 @@ function listProjectsHandler(caller: {
     }
   )._registeredTools['list_projects'];
 }
+
+// --- issue #1105: list_projects/who_is_into honour a standing 'mi' language preference ---
+
+test("formatListProjectsEmptyText/formatWhoIsIntoEmptyText render the te reo Māori variant for every kind when language is 'mi', and the exact pre-existing English string for 'auto'/'en' otherwise (issue #1105)", () => {
+  for (const language of ['auto', 'en'] as const) {
+    assert.equal(formatListProjectsEmptyText('mine', language), "You haven't shared any projects yet.");
+    assert.equal(
+      formatListProjectsEmptyText('seeking', language),
+      'No projects are currently looking for collaborators.',
+    );
+    assert.equal(formatListProjectsEmptyText('query', language), 'No shared projects match that.');
+    assert.equal(formatListProjectsEmptyText('none', language), 'No projects have been shared yet.');
+    assert.equal(
+      formatWhoIsIntoEmptyText('noProfile', language),
+      "You haven't published interests yet — call set_my_interests first, then who_is_into with no " +
+        'topic will search using your own published interests.',
+    );
+    assert.equal(
+      formatWhoIsIntoEmptyText('query', language),
+      'No members have published interests matching that yet.',
+    );
+    assert.equal(
+      formatWhoIsIntoEmptyText('selfNoMatch', language),
+      'No other members have published interests matching yours yet.',
+    );
+  }
+
+  for (const kind of ['mine', 'seeking', 'query', 'none'] as const) {
+    assert.notEqual(
+      formatListProjectsEmptyText(kind, 'mi'),
+      formatListProjectsEmptyText(kind, 'en'),
+      `list_projects' '${kind}' empty state must actually differ between 'mi' and 'en'`,
+    );
+  }
+  for (const kind of ['noProfile', 'query', 'selfNoMatch'] as const) {
+    assert.notEqual(
+      formatWhoIsIntoEmptyText(kind, 'mi'),
+      formatWhoIsIntoEmptyText(kind, 'en'),
+      `who_is_into's '${kind}' empty state must actually differ between 'mi' and 'en'`,
+    );
+  }
+});
+
+test(
+  "SECURITY: list_projects/who_is_into thread the caller's own stored 'mi' language preference through to their empty-state text, byte-identical English for a distinct caller with no stored preference — never leaking between the two identities (issue #1105 acceptance criteria 4, 5; SECURITY criterion)",
+  { skip },
+  async () => {
+    const miUser = `${RUN}-social-mi-empty`;
+    const enUser = `${RUN}-social-en-empty`;
+    await setLanguagePreferenceHandler({ platform: 'discord', userId: miUser }).handler({ language: 'mi' });
+    // enUser deliberately has NO stored preference at all — proves a caller
+    // with nothing set never inherits another caller's 'mi' preference.
+
+    const miProjects = listProjectsHandler({ platform: 'discord', userId: miUser });
+    const enProjects = listProjectsHandler({ platform: 'discord', userId: enUser });
+    const miWho = whoIsIntoHandler({ platform: 'discord', userId: miUser });
+    const enWho = whoIsIntoHandler({ platform: 'discord', userId: enUser });
+
+    const miMineResult = await miProjects.handler({ mine: true });
+    assert.equal(miMineResult.content[0]?.text, formatListProjectsEmptyText('mine', 'mi'));
+    const enMineResult = await enProjects.handler({ mine: true });
+    assert.equal(enMineResult.content[0]?.text, formatListProjectsEmptyText('mine', 'auto'));
+
+    const miQueryResult = await miWho.handler({ query: `${RUN}-nonexistent-interest-topic-xyz` });
+    assert.equal(miQueryResult.content[0]?.text, formatWhoIsIntoEmptyText('query', 'mi'));
+    const enQueryResult = await enWho.handler({ query: `${RUN}-nonexistent-interest-topic-xyz` });
+    assert.equal(enQueryResult.content[0]?.text, formatWhoIsIntoEmptyText('query', 'auto'));
+
+    const miWhoMineResult = await miWho.handler({ mine: true });
+    assert.equal(miWhoMineResult.content[0]?.text, formatWhoIsIntoEmptyText('noProfile', 'mi'));
+    const enWhoMineResult = await enWho.handler({ mine: true });
+    assert.equal(enWhoMineResult.content[0]?.text, formatWhoIsIntoEmptyText('noProfile', 'auto'));
+
+    await pool.query(`DELETE FROM language_prefs WHERE platform = 'discord' AND user_id = $1`, [miUser]);
+  },
+);
+
+test(
+  "list_projects/who_is_into's non-empty results render byte-identical member-supplied row content regardless of the caller's language preference — only the surrounding empty-state prose is ever translated (issue #1105 acceptance criterion 5)",
+  { skip },
+  async () => {
+    const owner = `${RUN}-social-rows-owner`;
+    const miViewer = `${RUN}-social-rows-mi-viewer`;
+    const enViewer = `${RUN}-social-rows-en-viewer`;
+    await setLanguagePreferenceHandler({ platform: 'discord', userId: miViewer }).handler({ language: 'mi' });
+    await setLanguagePreferenceHandler({ platform: 'discord', userId: enViewer }).handler({ language: 'en' });
+
+    const shareTool = shareProjectHandler({ platform: 'discord', userId: owner, userName: 'Builder' });
+    assert.equal(
+      (
+        await shareTool.handler({
+          name: `${RUN}-mi-row-project`,
+          description: 'a project description that must never be translated',
+        })
+      ).isError,
+      false,
+    );
+    const setInterestsTool = setMyInterestsHandler({ platform: 'discord', userId: owner });
+    assert.equal(
+      (await setInterestsTool.handler({ interests: `${RUN}-mi-row-interests topic never translated` }))
+        .isError,
+      false,
+    );
+
+    const miProjectsResult = await listProjectsHandler({ platform: 'discord', userId: miViewer }).handler({
+      query: `${RUN}-mi-row-project`,
+    });
+    const enProjectsResult = await listProjectsHandler({ platform: 'discord', userId: enViewer }).handler({
+      query: `${RUN}-mi-row-project`,
+    });
+    assert.equal(miProjectsResult.content[0]?.text, enProjectsResult.content[0]?.text);
+    assert.match(
+      miProjectsResult.content[0]?.text ?? '',
+      /a project description that must never be translated/,
+    );
+
+    const miInterestsResult = await whoIsIntoHandler({ platform: 'discord', userId: miViewer }).handler({
+      query: `${RUN}-mi-row-interests`,
+    });
+    const enInterestsResult = await whoIsIntoHandler({ platform: 'discord', userId: enViewer }).handler({
+      query: `${RUN}-mi-row-interests`,
+    });
+    assert.equal(miInterestsResult.content[0]?.text, enInterestsResult.content[0]?.text);
+    assert.match(miInterestsResult.content[0]?.text ?? '', /topic never translated/);
+
+    await pool.query(`DELETE FROM member_projects WHERE platform = 'discord' AND user_id = $1`, [owner]);
+    await pool.query(`DELETE FROM member_interests WHERE platform = 'discord' AND user_id = $1`, [owner]);
+    await pool.query(`DELETE FROM language_prefs WHERE platform = 'discord' AND user_id IN ($1, $2)`, [
+      miViewer,
+      enViewer,
+    ]);
+  },
+);
 
 test('SECURITY: share_project and list_projects refuse a guest-tier caller before any DB write/read (assertAtLeast re-check, issue #646)', async () => {
   const shareTool = shareProjectHandler({ platform: 'discord', userId: 'guest-1', role: 'guest' });

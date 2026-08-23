@@ -74,7 +74,7 @@
   "discordAdapter.test.ts": 62,
   "discordEditModerationScan.test.ts": 3,
   "discordImageInput.test.ts": 7,
-  "discordSlashCommands.test.ts": 52,
+  "discordSlashCommands.test.ts": 54,
   "discordThreadArchive.test.ts": 2,
   "docsIngest.test.ts": 2,
   "embeddingHealthCheck.test.ts": 2,
@@ -145,7 +145,7 @@
   "systemPromptSlots.test.ts": 5,
   "toolRegistry.test.ts": 4,
   "toolTierMap.test.ts": 2,
-  "tools.test.ts": 350,
+  "tools.test.ts": 351,
   "unhelpfulAnswerEscalationRouter.test.ts": 2,
   "usageAlertPendingQueue.test.ts": 3,
   "usageCostDigest.test.ts": 4,
@@ -159,6 +159,6 @@
   "whatsappCloudImageInputSystemPromptEnabled.test.ts": 1,
   "whatsappCloudVoiceInput.test.ts": 9,
   "whatsappImageInputSystemPromptEnabled.test.ts": 1,
-  "whatsappTextCommandsRouter.test.ts": 34,
+  "whatsappTextCommandsRouter.test.ts": 36,
   "whoIsIntoBrowseEmbedCount.test.ts": 1
 }
