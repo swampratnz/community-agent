@@ -98,6 +98,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   one-time DM (re-arming only after the backlog clears) pointing at
   `list_suggestions` to review it. No suggestion content is included in the
   alert — only the count and how long the oldest has waited.
+- **The weekly member digest now mentions upcoming Discord events.** (#1093)
+  Previously the only way to learn about a scheduled meetup was to catch the
+  original `create_event` announcement before it scrolled away, or to think
+  to ask `list_events`/`/events` — a member who missed both had no passive
+  way to find out. On a week the digest already has other content to post,
+  it now appends an "Upcoming events" section listing what's coming up, using
+  the same event listing and formatting `list_events` already shows any
+  member. A fully quiet week still posts nothing, even if events exist.
 
 ### Fixed
 - **A dev-team job's completion DM no longer hammers the WhatsApp API every
