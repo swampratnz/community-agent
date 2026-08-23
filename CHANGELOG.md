@@ -82,6 +82,12 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   their own backlog clears) pointing at `list_reports` to review it. No
   report content is included — only the count and how long the oldest has
   waited, and only for that admin's own scope.
+- **Seeing the knowledge base's most-relied-on entries no longer costs a
+  model turn.** (#1087) `most_helpful_knowledge` (#1070) is a fully
+  deterministic ranking — no search, no model call — but had no zero-wait
+  shortcut, unlike its sibling `list_knowledge_topics` (`!kbtopics`/`/kbtopics`,
+  #1036). `!kbhelpful` on WhatsApp and `/kbhelpful` on Discord now answer the
+  same top-10-by-usage ranking instantly, with no model spend.
 
 ## 2026-08-22
 

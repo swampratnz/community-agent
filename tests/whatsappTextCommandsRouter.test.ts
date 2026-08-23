@@ -67,8 +67,10 @@ await import('./support/registerCommands.js');
 await import('./support/registerPolicyKeys.js');
 const { Router } = await import('@swampratnz/agent-base/router.js');
 const { makeRouterDeps } = await import('../src/module/routerWiring.js');
-const { countRepliesToUser, upsertMember, insertContextDigest, setLanguagePreference } =
+const { countRepliesToUser, upsertMember, insertContextDigest, listKnowledge, setLanguagePreference } =
   await import('@swampratnz/agent-base/storage/repository.js');
+const { formatMostHelpfulKnowledge, MOST_HELPFUL_KNOWLEDGE_FETCH_CAP, rankKnowledgeByRetrieval } =
+  await import('../src/module/agent/tools.js');
 const { formatStatusMessage, getStatusCache, pollAnthropicStatus, resetStatusCacheForTests } =
   await import('../src/module/status/anthropicStatus.js');
 const { formatMyDataText, formatMySubmissionsText, formatMyWarningsText } =
@@ -1834,6 +1836,178 @@ test("a successful !kbtopics invocation calls recordShortcutHit('whatsapp_text_c
   router.register(adapter);
 
   await trigger(makeMessage({ text: '!kbtopics', userId: 'member-1' }));
+
+  assert.equal(sent.length, 1);
+  assert.deepEqual(hits, ['whatsapp_text_command']);
+});
+
+// --- !kbhelpful (issue #1087) -------------------------------------------------
+
+test(
+  '!kbhelpful returns the same content formatMostHelpfulKnowledge(rankKnowledgeByRetrieval(...)) renders for ' +
+    'the given rows as most_helpful_knowledge would produce (issue #1087 acceptance criteria 1, 4, 6)',
+  async (t) => {
+    const rows = [
+      {
+        id: 1,
+        scope: 'global',
+        title: 'Low count',
+        content: 'ENTRY_LOW',
+        created_by_role: 'admin',
+        updated_at: new Date(),
+        retrieval_count: 2,
+        last_retrieved_at: new Date(),
+      },
+      {
+        id: 2,
+        scope: 'global',
+        title: 'High count',
+        content: 'ENTRY_HIGH',
+        created_by_role: 'admin',
+        updated_at: new Date(),
+        retrieval_count: 9,
+        last_retrieved_at: new Date(),
+      },
+    ];
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users'))
+        return { rows: [{ role: 'member' }], rowCount: 0 };
+      if (sql.includes('retrieval_count') && sql.includes('FROM knowledge')) {
+        return { rows, rowCount: 0 };
+      }
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: throwingRunTurn });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!kbhelpful', userId: 'member-1' }));
+
+    const entries = await listKnowledge({
+      scope: 'global',
+      offset: 0,
+      limit: MOST_HELPFUL_KNOWLEDGE_FETCH_CAP,
+    });
+    const expected = formatMostHelpfulKnowledge(rankKnowledgeByRetrieval(entries, 10));
+    assert.equal(sent[0].text, expected);
+    assert.ok(sent[0].text.indexOf('ENTRY_HIGH') < sent[0].text.indexOf('ENTRY_LOW'));
+  },
+);
+
+test("!kbhelpful on an empty KB returns formatMostHelpfulKnowledge([])'s output (issue #1087 acceptance criterion 1)", async (t) => {
+  mockPoolRole(t, 'member');
+  const router = makeRouter({ runTurn: throwingRunTurn });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!kbhelpful', userId: 'member-1' }));
+
+  assert.equal(sent[0].text, 'No knowledge entries yet — check back once the community has saved some.');
+});
+
+test('a bare "!kbhelpfulx" (no space, unrecognised) is not matched as the !kbhelpful command — anchored matcher (issue #1087 SECURITY criterion 2)', async (t) => {
+  mockPoolRole(t, 'member');
+  const router = makeRouter({});
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!kbhelpfulx', userId: 'member-1' }));
+
+  assert.equal(sent[0].text, REAL_TURN_REPLY);
+});
+
+test(
+  'SECURITY: "!kbhelpful <anything>" is never matched — the anchored matcher rejects any argument, so no ' +
+    'message-supplied text can ever reach listKnowledge (issue #1087 SECURITY criterion 2)',
+  async (t) => {
+    let helpfulQueried = false;
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users'))
+        return { rows: [{ role: 'member' }], rowCount: 0 };
+      if (sql.includes('retrieval_count') && sql.includes('FROM knowledge')) {
+        helpfulQueried = true;
+        return { rows: [], rowCount: 0 };
+      }
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!kbhelpful; DROP TABLE knowledge', userId: 'member-1' }));
+
+    assert.equal(sent[0].text, REAL_TURN_REPLY, 'an argument must fall through to a normal turn');
+    assert.equal(helpfulQueried, false, 'listKnowledge must never run when an argument is present');
+  },
+);
+
+test(
+  'SECURITY: a guest caller\'s "!kbhelpful" falls through to the normal turn — listKnowledge is never invoked ' +
+    '(issue #1087 acceptance criterion 3)',
+  async (t) => {
+    let helpfulQueried = false;
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users')) return { rows: [], rowCount: 0 };
+      if (sql.includes('retrieval_count') && sql.includes('FROM knowledge')) {
+        helpfulQueried = true;
+        return { rows: [], rowCount: 0 };
+      }
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!kbhelpful', userId: 'guest-1' }));
+
+    assert.equal(sent.length, 1);
+    assert.equal(
+      sent[0].text,
+      REAL_TURN_REPLY,
+      'a guest gets no distinguishing denial reply, per the family norm',
+    );
+    assert.equal(helpfulQueried, false, 'listKnowledge must never run for a rejected caller');
+  },
+);
+
+test(
+  "SECURITY: !kbhelpful's query is always scope: 'global' — never derived from the caller's conversation or " +
+    'anything else on the message (issue #1087 acceptance criterion 4)',
+  async (t) => {
+    const calls: Array<{ sql: string; params: unknown[] }> = [];
+    t.mock.method(pool, 'query', (async (sql: string, params: unknown[] = []) => {
+      calls.push({ sql, params });
+      if (sql.includes('SELECT role FROM community_users'))
+        return { rows: [{ role: 'member' }], rowCount: 0 };
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: throwingRunTurn });
+    const { adapter, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!kbhelpful', userId: 'member-1', conversationId: 'wa-conv-scoped' }));
+
+    const helpfulQuery = calls.find(
+      (c) => c.sql.includes('retrieval_count') && c.sql.includes('FROM knowledge'),
+    );
+    assert.ok(helpfulQuery, '!kbhelpful must call listKnowledge');
+    assert.deepEqual(helpfulQuery?.params, ['global', MOST_HELPFUL_KNOWLEDGE_FETCH_CAP, 0]);
+  },
+);
+
+test("a successful !kbhelpful invocation calls recordShortcutHit('whatsapp_text_command') exactly once (issue #1087)", async (t) => {
+  mockPoolRole(t, 'member');
+  const hits: string[] = [];
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    recordShortcutHitFn: async (kind) => {
+      hits.push(kind);
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!kbhelpful', userId: 'member-1' }));
 
   assert.equal(sent.length, 1);
   assert.deepEqual(hits, ['whatsapp_text_command']);

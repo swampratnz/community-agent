@@ -532,7 +532,11 @@ async function handleKbHelpful(
     await replyEphemeral(interaction, NOT_AUTHORIZED_TEXT, deps);
     return;
   }
-  const entries = await listKnowledge({ scope: 'global', offset: 0, limit: MOST_HELPFUL_KNOWLEDGE_FETCH_CAP });
+  const entries = await listKnowledge({
+    scope: 'global',
+    offset: 0,
+    limit: MOST_HELPFUL_KNOWLEDGE_FETCH_CAP,
+  });
   const ranked = rankKnowledgeByRetrieval(entries, 10);
   const message = formatMostHelpfulKnowledge(ranked);
   recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
