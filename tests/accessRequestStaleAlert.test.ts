@@ -166,7 +166,11 @@ test('SECURITY: the crossing-tick alert DM contains no guest userName, userId, o
   ];
   const listPendingAccessRequests = async () => staleRequests;
   const listAdminIdentities = async () => admins([{}]);
-  const runOnce = makeDefaultAccessRequestStaleAlertRun([adapter], listPendingAccessRequests, listAdminIdentities);
+  const runOnce = makeDefaultAccessRequestStaleAlertRun(
+    [adapter],
+    listPendingAccessRequests,
+    listAdminIdentities,
+  );
 
   await runOnce();
 
@@ -189,7 +193,11 @@ test('makeDefaultAccessRequestStaleAlertRun: a pending-access-request set with n
     accessRequest({ ageHours: ACCESS_REQUEST_STALE_ALERT_THRESHOLD_HOURS - 1 }),
   ];
   const listAdminIdentities = async () => admins([{}]);
-  const runOnce = makeDefaultAccessRequestStaleAlertRun([adapter], listPendingAccessRequests, listAdminIdentities);
+  const runOnce = makeDefaultAccessRequestStaleAlertRun(
+    [adapter],
+    listPendingAccessRequests,
+    listAdminIdentities,
+  );
 
   await runOnce();
 
@@ -202,7 +210,11 @@ test('makeDefaultAccessRequestStaleAlertRun: an access request exactly at the th
     accessRequest({ ageHours: ACCESS_REQUEST_STALE_ALERT_THRESHOLD_HOURS }),
   ];
   const listAdminIdentities = async () => admins([{}]);
-  const runOnce = makeDefaultAccessRequestStaleAlertRun([adapter], listPendingAccessRequests, listAdminIdentities);
+  const runOnce = makeDefaultAccessRequestStaleAlertRun(
+    [adapter],
+    listPendingAccessRequests,
+    listAdminIdentities,
+  );
 
   await runOnce();
 
@@ -215,7 +227,11 @@ test('makeDefaultAccessRequestStaleAlertRun: alerts exactly once on the tick the
   const listPendingAccessRequests = async () =>
     Array.from({ length: staleCount }, (_, i) => accessRequest({ ageHours: 200, userId: `user-${i}` }));
   const listAdminIdentities = async () => admins([{}]);
-  const runOnce = makeDefaultAccessRequestStaleAlertRun([adapter], listPendingAccessRequests, listAdminIdentities);
+  const runOnce = makeDefaultAccessRequestStaleAlertRun(
+    [adapter],
+    listPendingAccessRequests,
+    listAdminIdentities,
+  );
 
   await runOnce(); // 0 -> no alert
   assert.equal(dms.length, 0);
@@ -239,7 +255,11 @@ test('makeDefaultAccessRequestStaleAlertRun: the latch re-arms once the stale co
   const listPendingAccessRequests = async () =>
     Array.from({ length: staleCount }, (_, i) => accessRequest({ ageHours: 200, userId: `user-${i}` }));
   const listAdminIdentities = async () => admins([{}]);
-  const runOnce = makeDefaultAccessRequestStaleAlertRun([adapter], listPendingAccessRequests, listAdminIdentities);
+  const runOnce = makeDefaultAccessRequestStaleAlertRun(
+    [adapter],
+    listPendingAccessRequests,
+    listAdminIdentities,
+  );
 
   await runOnce(); // 0 -> 2, crosses
   assert.equal(dms.length, 1);
@@ -262,11 +282,19 @@ test('an access request resolved before crossing the threshold never contributes
   // crossed the threshold had it stayed pending.
   const listPendingAccessRequests = async () => [];
   const listAdminIdentities = async () => admins([{}]);
-  const runOnce = makeDefaultAccessRequestStaleAlertRun([adapter], listPendingAccessRequests, listAdminIdentities);
+  const runOnce = makeDefaultAccessRequestStaleAlertRun(
+    [adapter],
+    listPendingAccessRequests,
+    listAdminIdentities,
+  );
 
   await runOnce();
 
-  assert.equal(dms.length, 0, 'a resolved access request (absent from the pending scan) never triggers an alert');
+  assert.equal(
+    dms.length,
+    0,
+    'a resolved access request (absent from the pending scan) never triggers an alert',
+  );
 });
 
 test('SECURITY: a WindowClosedError for one admin is queued via queueForWindowReopen (not dropped) and does not block delivery to the rest', async () => {
@@ -279,7 +307,11 @@ test('SECURITY: a WindowClosedError for one admin is queued via queueForWindowRe
       { platform: 'whatsapp', platformUserId: 'admin-open' },
       { platform: 'whatsapp', platformUserId: 'admin-closed' },
     ]);
-  const runOnce = makeDefaultAccessRequestStaleAlertRun([adapter], listPendingAccessRequests, listAdminIdentities);
+  const runOnce = makeDefaultAccessRequestStaleAlertRun(
+    [adapter],
+    listPendingAccessRequests,
+    listAdminIdentities,
+  );
 
   await runOnce();
 
@@ -303,7 +335,7 @@ test('startAccessRequestStaleAlert: always-on, no enable flag — creates a time
 
 test(
   'the default listPendingAccessRequests asks listAccessRequests for ACCESS_REQUEST_STALE_ALERT_SCAN_LIMIT, ' +
-    "never its 50-row default — listAccessRequests is ordered last_requested_at DESC with no ordering override, " +
+    'never its 50-row default — listAccessRequests is ordered last_requested_at DESC with no ordering override, ' +
     'so a bare call hands this job the MOST-RECENTLY-PINGED pending requests and then filters them for the ' +
     'OLDEST first-requested ones, which can miss a guest who pinged once long ago and never again',
   async () => {
