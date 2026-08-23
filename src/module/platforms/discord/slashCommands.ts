@@ -134,20 +134,15 @@ async function handleKb(interaction: ChatInputCommandInteraction, deps: SlashCom
   // (issue #1052) — /kb exists to divert lookups off the model path for cost
   // (#744/#1036), so every diverted lookup was previously invisible to both
   // list_top_knowledge's retrieval_count ranking and list_knowledge_gaps'
-  // below-floor-miss clustering. Both calls key off the same trusted/
-  // relevantIds sets already computed above, fire-and-forget with a
-  // swallowed rejection so a write failure can never delay or change this
-  // reply. Unlike the chat path, /kb has no lexical fallback, so the gap
-  // guard below fires before any lexical rescue would — accepted as a
-  // deliberate, marginally noisier v1 rather than in-scope for this PR.
+  // below-floor-miss clustering. This call keys off the same relevantIds set
+  // already computed above, fire-and-forget with a swallowed rejection so a
+  // write failure can never delay or change this reply. The gap write is
+  // deferred until after the lexical fallback below (issue #1103) — mirroring
+  // knowledgeMember.ts's own lexicalHits/else-if shape — so a query the
+  // lexical retry rescues never logs a false gap.
   recordKnowledgeRetrieval(relevantIds).catch((err) =>
     logger.warn({ err }, 'Knowledge retrieval count update failed'),
   );
-  if (hits.length > 0 && relevantIds.length === 0) {
-    recordKnowledgeGap('discord', interaction.channelId, interaction.user.id, query).catch((err) =>
-      logger.warn({ err }, 'Knowledge gap recording failed'),
-    );
-  }
   const hasConflict =
     relevantIds.length >= 2
       ? await hasConflictAmongIds(relevantIds).catch((err) => {
@@ -185,6 +180,19 @@ async function handleKb(interaction: ChatInputCommandInteraction, deps: SlashCom
       logger.warn({ err }, 'Knowledge lexical fallback failed; returning semantic results only');
       return [];
     });
+  }
+  // Curation-signal reorder (issue #1103): a lexical rescue bumps
+  // retrieval_count for the rescued entries and records no gap; only a
+  // genuine miss on BOTH semantic and lexical search still logs a gap.
+  // Mirrors knowledgeMember.ts's own lexicalHits/else-if shape exactly.
+  if (lexicalHits.length > 0) {
+    recordKnowledgeRetrieval(lexicalHits.map((h) => h.id)).catch((err) =>
+      logger.warn({ err }, 'Knowledge retrieval count update failed'),
+    );
+  } else if (hits.length > 0 && relevantIds.length === 0) {
+    recordKnowledgeGap('discord', interaction.channelId, interaction.user.id, query).catch((err) =>
+      logger.warn({ err }, 'Knowledge gap recording failed'),
+    );
   }
   // Auto-generated lexical hits are filtered out same as `trusted` above —
   // this zero-model path never direct-serves unreviewed machine-researched

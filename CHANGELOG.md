@@ -52,6 +52,18 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   included in the alert — only the count and how long the oldest has
   waited.
 
+### Fixed
+- **`/kb`'s exact-string fallback no longer logs a false knowledge-base gap
+  for a question it just answered.** (#1103) When `/kb`'s lexical fallback
+  (#1061) rescues a query that missed semantic search but matches an entry's
+  exact text (an error code, an env var name), `/kb` was still recording it
+  as an unanswered gap on `list_knowledge_gaps` — noise on an admin curation
+  signal for a question the bot had, in fact, just answered — and never
+  credited the rescued entry's usage count, so `most_helpful_knowledge` and
+  `list_top_knowledge` under-ranked entries actually being served this way.
+  Both signals now follow the lexical rescue correctly, matching how the
+  chat-path `knowledge_search` tool already handled the same case.
+
 ## 2026-08-23
 
 ### Added
