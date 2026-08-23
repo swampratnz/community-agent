@@ -2048,6 +2048,63 @@ test('SECURITY: /kb serves a lexical-fallback hit when semantic search misses th
   );
 });
 
+test(
+  'SECURITY: /kb records zero knowledge_gaps rows and one recordKnowledgeRetrieval update keyed on the ' +
+    'lexical hit ids when the lexical fallback rescues a query (issue #1103 acceptance criteria 1, 2)',
+  async (t) => {
+    const calls = mockPool(t, {
+      memberRole: 'member',
+      knowledgeRows: [
+        {
+          id: 1,
+          title: 'Unrelated',
+          content: 'a distant semantic neighbour',
+          created_by_role: 'admin',
+          similarity: 0.1,
+          updated_at: new Date(),
+        },
+      ],
+      knowledgeLexicalRows: [
+        {
+          id: 2,
+          title: 'Error code entry',
+          content: 'LEXICAL_RESCUED_TEXT',
+          created_by_role: 'admin',
+          similarity: 0.4,
+          updated_at: new Date(),
+        },
+      ],
+    });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({
+      commandName: 'kb',
+      userId: 'member-1',
+      options: { query: 'SOME_ERROR_CODE' },
+    });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.ok(replies[0].content.includes('LEXICAL_RESCUED_TEXT'));
+    assert.equal(
+      knowledgeGapInsertCalls(calls).length,
+      0,
+      'a query the lexical fallback rescues must never record a knowledge_gaps row',
+    );
+    const updates = retrievalCountCalls(calls);
+    assert.equal(
+      updates.length,
+      1,
+      'recordKnowledgeRetrieval must fire exactly once — the earlier call with the empty relevantIds set ' +
+        'is a no-op (recordKnowledgeRetrieval returns before issuing SQL for an empty id array)',
+    );
+    assert.deepEqual(
+      updates[0].params,
+      [[2]],
+      'the recorded update must carry exactly the lexical hits’ ids',
+    );
+  },
+);
+
 test('SECURITY: /kb never calls searchKnowledgeLexical when semantic search already clears the relevance floor (acceptance criterion 2)', async (t) => {
   const calls = mockPool(t, {
     memberRole: 'member',
@@ -2566,7 +2623,7 @@ test('/kb records zero recordKnowledgeRetrieval writes when no trusted hit clear
   await waitFor(() => knowledgeGapInsertCalls(calls).length > 0);
 });
 
-test('/kb records exactly one knowledge_gaps row, keyed on (discord, channelId, userId, query), on a genuine below-floor miss, and never drives the real-time cluster DM (issue #1052 acceptance criteria 2, 7)', async (t) => {
+test('SECURITY: /kb records exactly one knowledge_gaps row, keyed on (discord, channelId, userId, query), on a genuine below-floor miss, and never drives the real-time cluster DM (issue #1052 acceptance criteria 2, 7; issue #1103 acceptance criteria 3, 5)', async (t) => {
   const calls = mockPool(t, {
     memberRole: 'member',
     knowledgeRows: [
