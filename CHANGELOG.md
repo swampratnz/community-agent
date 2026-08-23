@@ -24,6 +24,21 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #963 #964 #965 #968 #971 #983 #988 #989 #991 #992 #994 #1017 #1071
 -->
 
+## 2026-08-24
+
+### Added
+- **Admins now get a proactive nudge when a guest's access request has been
+  sitting unreviewed for a week.** (#1100) `access_requests` was the last of
+  `review_queue`'s five admin queues (access requests, suggestions,
+  knowledge candidates, reports, appeals) with only a pull-based signal — an
+  admin had to remember to run `review_queue` or read the weekly digest
+  closely to notice a gated guest waiting. Now, once any pending access
+  request has waited more than 7 days, every admin gets a one-time DM nudge
+  (re-arming only after the backlog clears), pointing at
+  `list_access_requests` to review it. No guest identity or platform is
+  included in the alert — only the count and how long the oldest has
+  waited.
+
 ## 2026-08-23
 
 ### Added
