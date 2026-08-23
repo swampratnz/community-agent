@@ -8,6 +8,7 @@ import {
   createKnowledgeTip,
   findCrossedKnowledgeGapCluster,
   findKnowledgeCoveringTopic,
+  getLanguagePreference,
   hasConflictAmongIds,
   isKnowledgeStale,
   KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD,
@@ -230,7 +231,8 @@ export const knowledgeMemberTools = [
         { platform: caller.platform, conversationId: caller.conversationId },
         config.behaviour.knowledgeTopicsListLimit,
       );
-      return text(formatKnowledgeTopics(titles, totalCount));
+      const language = await getLanguagePreference(caller.platform, caller.userId);
+      return text(formatKnowledgeTopics(titles, totalCount, language));
     },
   }),
 
@@ -270,7 +272,8 @@ export const knowledgeMemberTools = [
         limit: MOST_HELPFUL_KNOWLEDGE_FETCH_CAP,
       });
       const ranked = rankKnowledgeByRetrieval(entries, limit);
-      return text(formatMostHelpfulKnowledge(ranked));
+      const language = await getLanguagePreference(caller.platform, caller.userId);
+      return text(formatMostHelpfulKnowledge(ranked, language));
     },
   }),
 

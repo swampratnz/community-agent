@@ -1725,7 +1725,7 @@ test('!kbtopics returns the same content formatKnowledgeTopics renders for the g
 
   await trigger(makeMessage({ text: '!kbtopics', userId: 'member-1' }));
 
-  assert.equal(sent[0].text, formatKnowledgeTopics(['Getting started', 'Code of conduct'], 2));
+  assert.equal(sent[0].text, formatKnowledgeTopics(['Getting started', 'Code of conduct'], 2, 'auto'));
 });
 
 test("!kbtopics on an empty KB returns formatKnowledgeTopics([], 0)'s output (issue #1036 acceptance criterion 5)", async (t) => {
@@ -1738,6 +1738,45 @@ test("!kbtopics on an empty KB returns formatKnowledgeTopics([], 0)'s output (is
 
   assert.equal(sent[0].text, 'No knowledge topics have been added yet.');
 });
+
+test(
+  "!kbtopics renders te reo Māori for a caller with a standing 'mi' language preference — both the " +
+    'empty-state and truncation-note branches (issue #1107 acceptance criteria 1, 4)',
+  async (t) => {
+    mockPoolRole(t, 'member');
+    const router = makeRouter({ runTurn: throwingRunTurn, getLangPref: async () => 'mi' });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!kbtopics', userId: 'member-1' }));
+
+    assert.match(sent[0].text, /pātengi mōhiotanga/);
+  },
+);
+
+test(
+  "!kbtopics renders the te reo Māori truncation note for a caller with a standing 'mi' language " +
+    'preference (issue #1107 acceptance criteria 1, 4)',
+  async (t) => {
+    const { formatKnowledgeTopics } = await import('../src/module/agent/tools.js');
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users'))
+        return { rows: [{ role: 'member' }], rowCount: 0 };
+      if (sql.includes('COUNT(*) OVER()')) {
+        return { rows: [{ title: 'One topic', total_count: 5 }], rowCount: 0 };
+      }
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: throwingRunTurn, getLangPref: async () => 'mi' });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!kbtopics', userId: 'member-1' }));
+
+    assert.equal(sent[0].text, formatKnowledgeTopics(['One topic'], 5, 'mi'));
+    assert.match(sent[0].text, /\+4 atu/);
+  },
+);
 
 test('a bare "!kbtopicsx" (no space, unrecognised) is not matched as the !kbtopics command — anchored matcher (issue #1036 SECURITY criterion 3)', async (t) => {
   mockPoolRole(t, 'member');
@@ -1892,7 +1931,7 @@ test(
       offset: 0,
       limit: MOST_HELPFUL_KNOWLEDGE_FETCH_CAP,
     });
-    const expected = formatMostHelpfulKnowledge(rankKnowledgeByRetrieval(entries, 10));
+    const expected = formatMostHelpfulKnowledge(rankKnowledgeByRetrieval(entries, 10), 'auto');
     assert.equal(sent[0].text, expected);
     assert.ok(sent[0].text.indexOf('ENTRY_HIGH') < sent[0].text.indexOf('ENTRY_LOW'));
   },
@@ -1908,6 +1947,22 @@ test("!kbhelpful on an empty KB returns formatMostHelpfulKnowledge([])'s output 
 
   assert.equal(sent[0].text, 'No knowledge entries yet — check back once the community has saved some.');
 });
+
+test(
+  "!kbhelpful renders te reo Māori for a caller with a standing 'mi' language preference, both empty and " +
+    'non-empty (issue #1107 acceptance criteria 2, 4)',
+  async (t) => {
+    mockPoolRole(t, 'member');
+    const router = makeRouter({ runTurn: throwingRunTurn, getLangPref: async () => 'mi' });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!kbhelpful', userId: 'member-1' }));
+
+    assert.equal(sent[0].text, formatMostHelpfulKnowledge([], 'mi'));
+    assert.match(sent[0].text, /mōhiotanga/);
+  },
+);
 
 test('a bare "!kbhelpfulx" (no space, unrecognised) is not matched as the !kbhelpful command — anchored matcher (issue #1087 SECURITY criterion 2)', async (t) => {
   mockPoolRole(t, 'member');
