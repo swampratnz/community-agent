@@ -62,6 +62,21 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   themselves (other members' own words) stay untranslated, exactly as every
   prior 'mi' proposal in this repo has done. Everyone else sees
   byte-identical English output, exactly as before.
+- **New Agent Skill: `rag-and-retrieval-design`, for members designing their
+  own retrieval/RAG system against Claude/the API.** (#1110) "How should I
+  chunk my docs?", "which embedding model?", "do I need a vector DB, or is
+  long context/prompt caching enough?" were a distinct, common builder
+  question this bot's ten existing skills didn't cover — the nearest
+  siblings (`api-cost-and-latency`, `agent-architecture-review`) are each
+  scoped to a different stage (trimming an already-built integration,
+  critiquing a whole pipeline). The new skill starts with the RAG-or-not
+  decision point, then walks chunking, embedding-model choice, retrieval
+  mode (semantic vs. hybrid), vector-store sizing and evaluation as a
+  branch-by-lever diagnostic, handing off model-choice and whole-pipeline
+  questions to the existing skills rather than restating them. Same
+  bundled-markdown shape as every other skill: no new tool, tier, or data
+  access, and reachable only behind the existing off-by-default
+  `AGENT_SKILLS_ENABLED` gate.
 
 ### Fixed
 - **`/kb`'s exact-string fallback no longer logs a false knowledge-base gap
