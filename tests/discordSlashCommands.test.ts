@@ -57,8 +57,15 @@ await import('./support/registerPolicyKeys.js');
 // every module-scope `notice()` render (the pack is registered by
 // `createAgent`, after imports). Same catalogue entries, same selection — the
 // assertions below pin exactly what they did before.
-const { formatKnowledgeTopics, KNOWLEDGE_CONFLICT_CAVEAT_TEXT, buildToolServer } =
-  await import('../src/module/agent/tools.js');
+const {
+  formatKnowledgeTopics,
+  formatMostHelpfulKnowledge,
+  KNOWLEDGE_CONFLICT_CAVEAT_TEXT,
+  MOST_HELPFUL_KNOWLEDGE_FETCH_CAP,
+  rankKnowledgeByRetrieval,
+  buildToolServer,
+} = await import('../src/module/agent/tools.js');
+const { listKnowledge } = await import('@swampratnz/agent-base/storage/repository.js');
 const { EVENTS_LIST_LIMIT, formatUpcomingEvents } = await import('../src/module/agent/tools/info.js');
 const { createConfiguredAdapters } = await import('../src/module/platforms/factories.js');
 const { notice } = await import('../src/module/strings/notices.js');
@@ -130,6 +137,8 @@ function mockPool(
     knowledgeTopicTitles?: string[];
     /** `listKnowledgeTopics`' `COUNT(*) OVER()` total — defaults to `knowledgeTopicTitles.length` (no truncation). */
     knowledgeTopicTotalCount?: number;
+    /** `listKnowledge`'s rows for `/kbhelpful` (issue #1087), raw snake_case DB shape. */
+    mostHelpfulKnowledgeRows?: PoolRow[];
     /** `searchKnowledgeLexical`'s rows (issue #1061) — distinct from `knowledgeRows` (searchKnowledge's semantic hits); defaults to no lexical hits. */
     knowledgeLexicalRows?: PoolRow[];
   } = {},
@@ -171,6 +180,15 @@ function mockPool(
     // for the same reason as every other knowledge-table variant above.
     if (sql.includes("word_similarity($1, COALESCE(title, '')")) {
       return { rows: opts.knowledgeLexicalRows ?? [], rowCount: 0 };
+    }
+    // listKnowledge's plain bounded browse (issue #1087's /kbhelpful, and
+    // list_top_knowledge admin-side) is distinguished from searchKnowledge's
+    // semantic-search "FROM knowledge" by its distinctive `retrieval_count`
+    // SELECT column (searchKnowledge selects `similarity` instead) — checked
+    // BEFORE the generic branch below for the same reason as the other
+    // knowledge-table variants above.
+    if (sql.includes('retrieval_count') && sql.includes('FROM knowledge')) {
+      return { rows: opts.mostHelpfulKnowledgeRows ?? [], rowCount: 0 };
     }
     if (sql.includes('FROM knowledge')) {
       return { rows: opts.knowledgeRows ?? [], rowCount: 0 };
@@ -445,6 +463,7 @@ test('with DISCORD_SLASH_COMMANDS_ENABLED=true, all commands are registered guil
     'guidelines',
     'help',
     'kb',
+    'kbhelpful',
     'kbtopics',
     'mydata',
     'mysubmissions',
@@ -470,7 +489,7 @@ test("a slash-command registration failure is caught and logged, never thrown, m
   assert.ok(warnLog.mock.calls.length >= 1, 'a registration failure must be logged, not swallowed silently');
 });
 
-test('buildSlashCommands defines exactly the twelve approved read-only commands, each with its expected required-ness', () => {
+test('buildSlashCommands defines exactly the thirteen approved read-only commands, each with its expected required-ness', () => {
   const commands = buildSlashCommands();
   const byName = new Map(commands.map((c) => [c.name, c]));
   assert.deepEqual([...byName.keys()].sort(), [
@@ -479,6 +498,7 @@ test('buildSlashCommands defines exactly the twelve approved read-only commands,
     'guidelines',
     'help',
     'kb',
+    'kbhelpful',
     'kbtopics',
     'mydata',
     'mysubmissions',
@@ -559,6 +579,12 @@ test('buildSlashCommands defines exactly the twelve approved read-only commands,
     (byName.get('kbtopics') as { options?: unknown[] }).options ?? [],
     [],
     '/kbtopics takes no options — titles-only browse, scope is always the adapter-resolved channel (issue #1036)',
+  );
+  assert.deepEqual(
+    (byName.get('kbhelpful') as { options?: unknown[] }).options ?? [],
+    [],
+    "/kbhelpful takes no options — always the tool's own fixed top-10 default, never a caller-supplied limit " +
+      '(issue #1087)',
   );
 });
 
@@ -1503,6 +1529,139 @@ test('/kbtopics replies ephemerally, deferring before its DB round trip', async 
   mockPool(t, { memberRole: 'member', knowledgeTopicTitles: [] });
   const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction, replies, order } = fakeInteraction({ commandName: 'kbtopics', userId: 'member-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies[0].ephemeral, true);
+  assert.deepEqual(order, ['deferReply', 'editReply']);
+});
+
+// --- Issue #1087: /kbhelpful ---------------------------------------------------
+
+test(
+  '/kbhelpful returns output byte-identical to formatMostHelpfulKnowledge(rankKnowledgeByRetrieval(...)) for ' +
+    'the same rows as most_helpful_knowledge would produce (issue #1087 acceptance criteria 1, 4, 6)',
+  async (t) => {
+    const mostHelpfulKnowledgeRows: PoolRow[] = [
+      {
+        id: 1,
+        scope: 'global',
+        title: 'Low count',
+        content: 'ENTRY_LOW',
+        created_by_role: 'admin',
+        updated_at: new Date(),
+        retrieval_count: 2,
+        last_retrieved_at: new Date(),
+      },
+      {
+        id: 2,
+        scope: 'global',
+        title: 'High count',
+        content: 'ENTRY_HIGH',
+        created_by_role: 'admin',
+        updated_at: new Date(),
+        retrieval_count: 9,
+        last_retrieved_at: new Date(),
+      },
+    ];
+    mockPool(t, { memberRole: 'member', mostHelpfulKnowledgeRows });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'kbhelpful', userId: 'member-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    const entries = await listKnowledge({
+      scope: 'global',
+      offset: 0,
+      limit: MOST_HELPFUL_KNOWLEDGE_FETCH_CAP,
+    });
+    const expected = formatMostHelpfulKnowledge(rankKnowledgeByRetrieval(entries, 10));
+    assert.equal(replies[0].content, stripEmDashes(expected));
+    // The high-retrieval-count entry must rank first — proves this is the
+    // real rankKnowledgeByRetrieval ordering, not just any render of the rows.
+    assert.ok(replies[0].content.indexOf('ENTRY_HIGH') < replies[0].content.indexOf('ENTRY_LOW'));
+  },
+);
+
+test("/kbhelpful on an empty KB replies with formatMostHelpfulKnowledge([])'s output (issue #1087 acceptance criterion 1)", async (t) => {
+  mockPool(t, { memberRole: 'member', mostHelpfulKnowledgeRows: [] });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({ commandName: 'kbhelpful', userId: 'member-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies[0].content, stripEmDashes(formatMostHelpfulKnowledge([])));
+  assert.equal(replies[0].content, 'No knowledge entries yet, check back once the community has saved some.');
+});
+
+test('SECURITY: a guest caller is rejected on /kbhelpful without listKnowledge ever being invoked (issue #1087 acceptance criterion 3)', async (t) => {
+  const calls = mockPool(t, {
+    memberRole: null,
+    mostHelpfulKnowledgeRows: [
+      { id: 1, scope: 'global', title: 'Should never be seen', content: 'X', retrieval_count: 1 },
+    ],
+  });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({ commandName: 'kbhelpful', userId: 'guest-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].ephemeral, true);
+  assert.match(replies[0].content, /don't have access/i);
+  assert.ok(
+    !calls.some((c) => c.sql.includes('retrieval_count') && c.sql.includes('FROM knowledge')),
+    'listKnowledge must never run for a rejected caller',
+  );
+});
+
+test(
+  "SECURITY: /kbhelpful's query is always scope: 'global' — never derived from the interaction's channel or " +
+    'anything else on the payload (issue #1087 acceptance criterion 4)',
+  async (t) => {
+    const calls = mockPool(t, { memberRole: 'member', mostHelpfulKnowledgeRows: [] });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction } = fakeInteraction({
+      commandName: 'kbhelpful',
+      userId: 'member-1',
+      channelId: 'chan-should-be-ignored',
+    });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    const helpfulQuery = calls.find(
+      (c) => c.sql.includes('retrieval_count') && c.sql.includes('FROM knowledge'),
+    );
+    assert.ok(helpfulQuery, '/kbhelpful must call listKnowledge');
+    assert.deepEqual(helpfulQuery?.params, ['global', MOST_HELPFUL_KNOWLEDGE_FETCH_CAP, 0]);
+  },
+);
+
+test("a successful /kbhelpful invocation calls recordShortcutHit('slash_command') exactly once (issue #1087)", async (t) => {
+  const calls = mockPool(t, { memberRole: 'member', mostHelpfulKnowledgeRows: [] });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction } = fakeInteraction({ commandName: 'kbhelpful', userId: 'member-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(shortcutHitCalls(calls).length, 1, '/kbhelpful must record exactly one slash_command hit');
+});
+
+test('SECURITY: recordShortcutHit is never called on the NOT_AUTHORIZED_TEXT branch for /kbhelpful (issue #1087)', async (t) => {
+  const calls = mockPool(t, { memberRole: null });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({ commandName: 'kbhelpful', userId: 'guest-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.match(replies[0].content, /don't have access/i, 'sanity check: /kbhelpful was actually denied');
+  assert.equal(shortcutHitCalls(calls).length, 0, 'an auth-denied reply must never record a shortcut hit');
+});
+
+test('/kbhelpful replies ephemerally, deferring before its DB round trip', async (t) => {
+  mockPool(t, { memberRole: 'member', mostHelpfulKnowledgeRows: [] });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies, order } = fakeInteraction({ commandName: 'kbhelpful', userId: 'member-1' });
 
   await handleInteraction(interaction as never, adapterDeps(adapter));
 

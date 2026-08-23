@@ -558,7 +558,9 @@ const NOTICE_ENTRIES = {
    * scope. Never interpolates caller or message data — same trust level as
    * the member capabilities notice above. `!kbtopics` (issue #1036) was
    * added to both variants by issue #1044/#1034, closing a gap where it
-   * shipped without ever being added to this list.
+   * shipped without ever being added to this list. `!kbhelpful` (issue
+   * #1087) was added to both variants in the SAME PR as the command itself,
+   * precisely to avoid repeating that gap.
    */
   whatsappTextCommands: {
     base:
@@ -569,6 +571,7 @@ const NOTICE_ENTRIES = {
       "- `!digest` — this week's digest\n" +
       '- `!status` — check for a known Anthropic outage\n' +
       '- `!kbtopics` — browse what the knowledge base covers\n' +
+      '- `!kbhelpful` — see the most relied-on knowledge entries\n' +
       '- `!warnings` — your own active warning count\n' +
       '- `!mysubmissions` — status of your filed suggestions/reports\n' +
       '- `!mydata` — what the bot has stored about you\n' +
@@ -582,6 +585,7 @@ const NOTICE_ENTRIES = {
         '- `!digest` — te whakarāpopototanga o tēnei wiki\n' +
         '- `!status` — tirotiro mehemea he raru mōhiotia nā Anthropic\n' +
         '- `!kbtopics` — tirotiro i ngā kaupapa e kapi ana e te pātengi mōhiotanga\n' +
+        '- `!kbhelpful` — tiro i ngā mōhiotanga e whakawhirinaki nuitia ana\n' +
         '- `!warnings` — te tatau o ō whakatūpato e mahi tonu ana\n' +
         '- `!mysubmissions` — te āhua o ō tono/pūrongo kua tukuna\n' +
         '- `!mydata` — he aha kua rongoātia e ahau mōu\n' +

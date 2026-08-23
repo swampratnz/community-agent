@@ -39,8 +39,11 @@ import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 // scope stays one bounded read rather than paging. Kept as this file's own
 // constant rather than importing the admin one — the two tools are
 // independent read paths over the same repository call, not a shared
-// admin/member dependency.
-const MOST_HELPFUL_KNOWLEDGE_FETCH_CAP = 500;
+// admin/member dependency. Exported (issue #1087) so the zero-model-call
+// `!kbhelpful`/`/kbhelpful` shortcut (commands.ts) reuses the exact same cap
+// rather than re-declaring it, mirroring how LIST_PROJECTS_DEFAULT_LIMIT is
+// exported from social.ts and reused in commands.ts.
+export const MOST_HELPFUL_KNOWLEDGE_FETCH_CAP = 500;
 
 export const knowledgeMemberTools = [
   defineTool({

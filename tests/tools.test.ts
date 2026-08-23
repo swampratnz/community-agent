@@ -3870,6 +3870,7 @@ test('SECURITY: community_info for a WhatsApp caller with whatsappTextCommandsEn
         "- `!digest` — this week's digest\n" +
         '- `!status` — check for a known Anthropic outage\n' +
         '- `!kbtopics` — browse what the knowledge base covers\n' +
+        '- `!kbhelpful` — see the most relied-on knowledge entries\n' +
         '- `!warnings` — your own active warning count\n' +
         '- `!mysubmissions` — status of your filed suggestions/reports\n' +
         '- `!mydata` — what the bot has stored about you\n' +
@@ -4193,6 +4194,7 @@ test(
       "- `!digest` — this week's digest\n" +
       '- `!status` — check for a known Anthropic outage\n' +
       '- `!kbtopics` — browse what the knowledge base covers\n' +
+      '- `!kbhelpful` — see the most relied-on knowledge entries\n' +
       '- `!warnings` — your own active warning count\n' +
       '- `!mysubmissions` — status of your filed suggestions/reports\n' +
       '- `!mydata` — what the bot has stored about you\n' +
