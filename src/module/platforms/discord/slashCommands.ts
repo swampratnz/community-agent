@@ -86,8 +86,14 @@ const NOT_AUTHORIZED_TEXT = "You don't have access to this command.";
  * shared function: consolidating it would change its English wording, not
  * just add a language branch, and the acceptance criteria require the
  * existing English text stay byte-identical.
+ *
+ * Exported (not just used locally) so the bare-`/whois`-no-profile branch's
+ * te reo Māori rendering can be pinned directly in tests, the same way
+ * `formatWhoIsIntoEmptyText`/`formatListProjectsEmptyText` are pinned from
+ * `tools.ts` — this is the one bot-authored 'mi' string in this file with no
+ * other exported source of truth to assert against.
  */
-function formatWhoIsIntoDiscordNoProfileHint(language: LanguagePreference): string {
+export function formatWhoIsIntoDiscordNoProfileHint(language: LanguagePreference): string {
   return language === 'mi'
     ? 'Kāore anō koe kia whakaputa i ō hiahia, kōrerotia mai ō hiahia ki te pouaka (hei tauira, "set my ' +
         'interests to ...") i te tuatahi, kātahi, ki te kore he kaupapa e tohua ana ki `/whois`, ka rapu mā ' +

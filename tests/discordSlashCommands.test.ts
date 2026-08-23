@@ -37,7 +37,8 @@ const { resetPolicyCacheForTests } = await import('@swampratnz/agent-base/storag
 // createConfiguredAdapters() makes it, after createAgent has registered the
 // list; here this file makes it, in the same order.
 await import('./support/registerCommands.js');
-const { bindCommunitySlashCommands } = await import('../src/module/platforms/discord/slashCommands.js');
+const { bindCommunitySlashCommands, formatWhoIsIntoDiscordNoProfileHint } =
+  await import('../src/module/platforms/discord/slashCommands.js');
 // /events needs a live adapter threaded in (issue #1004) — the initial bind
 // just needs SOME adapter to satisfy the signature; events-specific tests
 // below rebind with their own adapter (bindCommunitySlashCommands refreshes
@@ -112,6 +113,18 @@ function mockPool(
     interestRows?: PoolRow[];
     /** listRecentInterests' browse-all rows (issue #920) — distinct from `interestRows` (the search/self-match rows), since both queries hit `member_interests`. */
     recentInterestRows?: PoolRow[];
+    /**
+     * `searchMemberInterestsForSelf`'s disambiguating existence check (issue
+     * #1105) — when its similarity search returns zero rows (`interestRows:
+     * []`), that alone is ambiguous between "no profile" and "profile with no
+     * matches", so it re-queries `SELECT 1 FROM member_interests WHERE ...
+     * embedding IS NOT NULL` for the caller's own row. `true` here answers
+     * that second query with a row (a profile exists, zero matches ->
+     * `selfNoMatch`); left unset/`false`, it answers with none (no profile ->
+     * the no-profile hint), matching every existing test's assumption that an
+     * empty `interestRows` alone means no profile at all.
+     */
+    selfProfileNoMatch?: boolean;
     projectRows?: PoolRow[];
     guidelines?: string | null;
     guidelinesMi?: string | null;
@@ -275,6 +288,14 @@ function mockPool(
     // queries order by embedding distance instead, so this never shadows them.
     if (sql.includes('FROM member_interests') && sql.includes('ORDER BY updated_at DESC')) {
       return { rows: opts.recentInterestRows ?? [], rowCount: 0 };
+    }
+    // searchMemberInterestsForSelf's own-row existence check (issue #1105) —
+    // its distinguishing `SELECT 1 FROM member_interests` prefix, matched
+    // BEFORE the generic branch below for the same reason as every other
+    // multi-query table in this file. Only reached when the similarity
+    // search just above already returned zero rows.
+    if (sql.includes('SELECT 1 FROM member_interests')) {
+      return { rows: opts.selfProfileNoMatch ? [{ '?column?': 1 }] : [], rowCount: 0 };
     }
     if (sql.includes('FROM member_interests')) {
       return { rows: opts.interestRows ?? [], rowCount: 0 };
@@ -947,6 +968,45 @@ test("SECURITY: /whois's language-preference read is scoped to the calling inter
     ['discord', 'member-scoped'],
     "the language_prefs read must be keyed on the caller's own platform/userId",
   );
+});
+
+test("bare /whois (no options) with no published interests renders the te reo Māori no-profile hint for a caller with a stored 'mi' language preference, byte-identical English otherwise (issue #1105 acceptance criterion 3)", async (t) => {
+  for (const language of ['mi', 'en'] as const) {
+    mockPool(t, { memberRole: 'member', interestRows: [], recentInterestRows: [], languagePref: language });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({
+      commandName: 'whois',
+      userId: `member-bare-noprofile-${language}`,
+      options: {},
+    });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    // Same em-dash-through-the-outbound-filter rewrite as the mine:true
+    // no-profile test above — the English hint carries one too.
+    assert.equal(replies[0].content, stripEmDashes(formatWhoIsIntoDiscordNoProfileHint(language)));
+  }
+});
+
+test("bare /whois (no options) with a published profile but zero self-matches renders the te reo Māori empty-state text for a caller with a stored 'mi' language preference, byte-identical English otherwise (issue #1105 acceptance criterion 3)", async (t) => {
+  for (const language of ['mi', 'en'] as const) {
+    mockPool(t, {
+      memberRole: 'member',
+      interestRows: [],
+      selfProfileNoMatch: true,
+      languagePref: language,
+    });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({
+      commandName: 'whois',
+      userId: `member-bare-selfnomatch-${language}`,
+      options: {},
+    });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies[0].content, formatWhoIsIntoEmptyText('selfNoMatch', language));
+  }
 });
 
 test("/projects mine:true with no shared projects renders the te reo Māori empty-state text for a caller with a stored 'mi' language preference, byte-identical English otherwise (issue #1105 acceptance criterion 3)", async (t) => {

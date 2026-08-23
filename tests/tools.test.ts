@@ -17606,7 +17606,7 @@ test("formatListProjectsEmptyText/formatWhoIsIntoEmptyText render the te reo Mā
 });
 
 test(
-  "list_projects/who_is_into thread the caller's own stored 'mi' language preference through to their empty-state text, byte-identical English for a distinct caller with no stored preference — never leaking between the two identities (issue #1105 acceptance criteria 4, 5; SECURITY criterion)",
+  "SECURITY: list_projects/who_is_into thread the caller's own stored 'mi' language preference through to their empty-state text, byte-identical English for a distinct caller with no stored preference — never leaking between the two identities (issue #1105 acceptance criteria 4, 5; SECURITY criterion)",
   { skip },
   async () => {
     const miUser = `${RUN}-social-mi-empty`;
