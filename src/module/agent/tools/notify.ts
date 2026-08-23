@@ -331,7 +331,13 @@ export async function notifyAdminApproved(
  * `queueForWindowReopen` at `'low'` priority instead of logged-and-dropped
  * (issue #644 — the same #602 recovery `handleAdminAlertSendFailure` gives
  * admin alerts, extended to this member-facing DM); any other rejection is
- * unaffected.
+ * unaffected. `adminReason` (issue #1099, mirroring `decline_knowledge_
+ * candidate`'s #1050 field) is an optional, admin-authored, one-line
+ * explanation appended via `truncateForEcho`, distinct from the echoed
+ * suggestion content, on the `declined` branch only — supplied on any other
+ * status it is ignored, and omitted entirely the message stays byte-
+ * identical to before #1099. Never persisted: the caller keeps it out of
+ * `audited()`'s params, same as #1050.
  */
 export async function notifySuggestionResolved(
   adapter: PlatformAdapter,
@@ -340,10 +346,11 @@ export async function notifySuggestionResolved(
   content: string,
   platform: Platform,
   getLangPref: typeof getLanguagePreference = getLanguagePreference,
+  adminReason?: string,
 ): Promise<void> {
   const echoed = truncateForEcho(content);
   const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
-  const message =
+  const base =
     lang === 'mi'
       ? status === 'declined'
         ? `Ngā mihi mō tō whakaaro — i muri i te arotake, kāore e hangaia ā tōna wā: "${echoed}"`
@@ -355,6 +362,8 @@ export async function notifySuggestionResolved(
         : status === 'done'
           ? `Your suggestion has been marked **done** — thanks for the input! ("${echoed}")`
           : `Your suggestion has been reviewed — thanks for the input! ("${echoed}")`;
+  const echoedReason = status === 'declined' && adminReason ? truncateForEcho(adminReason) : null;
+  const message = echoedReason ? `${base} ${lang === 'mi' ? 'Take' : 'Reason'}: "${echoedReason}"` : base;
   await adapter.sendDirectMessage(userId, message).catch((err) => {
     if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
       adapter.queueForWindowReopen(userId, message, 'low');
@@ -389,7 +398,13 @@ export async function notifySuggestionResolved(
  * `WindowClosedError` rejection is queued via `queueForWindowReopen` at
  * `'low'` priority instead of logged-and-dropped (issue #644, same #602
  * recovery extended to this member-facing DM); any other rejection is
- * unaffected.
+ * unaffected. `adminReason` (issue #1099, mirroring `decline_knowledge_
+ * candidate`'s #1050 field) is an optional, admin-authored, one-line
+ * explanation appended via `truncateForEcho`, distinct from the echoed
+ * reporter-filed reason, on the `dismissed` branch only — supplied on any
+ * other status it is ignored, and omitted entirely the message stays
+ * byte-identical to before #1099. Never persisted: the caller keeps it out
+ * of `audited()`'s params, same as #1050.
  */
 export async function notifyReportResolved(
   adapter: PlatformAdapter,
@@ -398,10 +413,11 @@ export async function notifyReportResolved(
   reason: string,
   platform: Platform,
   getLangPref: typeof getLanguagePreference = getLanguagePreference,
+  adminReason?: string,
 ): Promise<void> {
   const echoed = truncateForEcho(reason);
   const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
-  const message =
+  const base =
     lang === 'mi'
       ? status === 'dismissed'
         ? `Kua arotakehia tō pūrongo. I muri i te wātea, kāore he mahi anō i mahia — ngā mihi mō te whakamōhio mai: "${echoed}"`
@@ -409,6 +425,8 @@ export async function notifyReportResolved(
       : status === 'dismissed'
         ? `Your report has been reviewed. After triage, no further action was taken — thanks for flagging it: "${echoed}"`
         : `Your report has been reviewed and resolved — thanks for flagging it: "${echoed}"`;
+  const echoedReason = status === 'dismissed' && adminReason ? truncateForEcho(adminReason) : null;
+  const message = echoedReason ? `${base} ${lang === 'mi' ? 'Take' : 'Reason'}: "${echoedReason}"` : base;
   await adapter.sendDirectMessage(userId, message).catch((err) => {
     if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
       adapter.queueForWindowReopen(userId, message, 'low');
@@ -558,7 +576,13 @@ export async function notifyAppealFiled(
  * failure shape. A `WindowClosedError` rejection is queued via
  * `queueForWindowReopen` at `'low'` priority instead of logged-and-dropped
  * (issue #644, same #602 recovery extended to this member-facing DM); any
- * other rejection is unaffected.
+ * other rejection is unaffected. `adminReason` (issue #1099, mirroring
+ * `decline_knowledge_candidate`'s #1050 field) is an optional, admin-authored,
+ * one-line explanation appended via `truncateForEcho`, distinct from the
+ * echoed appellant-filed reason, on the `dismissed` branch only — supplied on
+ * any other status it is ignored, and omitted entirely the message stays
+ * byte-identical to before #1099. Never persisted: the caller keeps it out of
+ * `audited()`'s params, same as #1050.
  */
 export async function notifyAppealResolved(
   adapter: PlatformAdapter,
@@ -567,10 +591,11 @@ export async function notifyAppealResolved(
   reason: string | null,
   platform: Platform,
   getLangPref: typeof getLanguagePreference = getLanguagePreference,
+  adminReason?: string,
 ): Promise<void> {
   const echoed = reason ? truncateForEcho(reason) : null;
   const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
-  const message =
+  const base =
     lang === 'mi'
       ? status === 'dismissed'
         ? `Kua arotakehia tō pīra. I muri i te wātea, kāore he mahi anō i mahia — ngā mihi mō tō whakamōhio mai.${echoed ? ` "${echoed}"` : ''}`
@@ -578,6 +603,8 @@ export async function notifyAppealResolved(
       : status === 'dismissed'
         ? `Your appeal has been reviewed. After triage, no further action was taken — thanks for reaching out.${echoed ? ` "${echoed}"` : ''}`
         : `Your appeal has been reviewed and resolved — thanks for reaching out.${echoed ? ` "${echoed}"` : ''}`;
+  const echoedReason = status === 'dismissed' && adminReason ? truncateForEcho(adminReason) : null;
+  const message = echoedReason ? `${base} ${lang === 'mi' ? 'Take' : 'Reason'}: "${echoedReason}"` : base;
   await adapter.sendDirectMessage(userId, message).catch((err) => {
     if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
       adapter.queueForWindowReopen(userId, message, 'low');

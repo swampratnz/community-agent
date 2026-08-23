@@ -7,7 +7,7 @@ import {
   resolveContentReport,
   resolveLinkedIdentities,
 } from '@swampratnz/agent-base/storage/repository.js';
-import { text, untrusted } from './helpers.js';
+import { SUGGESTION_RESOLUTION_ECHO_CHARS, text, untrusted } from './helpers.js';
 import { notifyReportResolved } from './notify.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
@@ -67,6 +67,15 @@ export const reportsAdminTools = [
     schema: {
       id: z.number().describe('Report id (from list_reports)'),
       status: z.enum(['resolved', 'dismissed']).describe('New status'),
+      reason: z
+        .string()
+        .max(SUGGESTION_RESOLUTION_ECHO_CHARS)
+        .optional()
+        .describe(
+          'Optional, one-line, member-facing explanation appended verbatim to the resolution DM sent to ' +
+            'the reporter when dismissing a report, so they know why — omit for the existing neutral ' +
+            'dismissal message with no reason. Ignored for a `resolved` status. Never persisted.',
+        ),
     },
     handler: async (args, { caller, callerScope, audited, adapterFor }) => {
       assertAtLeast(caller.role, 'admin', 'resolve_report');
@@ -95,7 +104,10 @@ export const reportsAdminTools = [
       // Cross-platform resolution DMs (issue #157), identical mechanism to
       // resolve_suggestion above: routes through the report's ORIGIN
       // platform's adapter via Router's registry, degrading to a silent skip
-      // if that platform isn't registered in this deployment.
+      // if that platform isn't registered in this deployment. args.reason is
+      // never persisted (not in the audited params above) — it only ever
+      // reaches this one DM, same non-persistence convention as
+      // decline_knowledge_candidate's (#1050) reason field.
       if (success && state.row) {
         const target = adapterFor(state.row.platform);
         if (target)
@@ -105,6 +117,8 @@ export const reportsAdminTools = [
             args.status,
             state.row.reason,
             state.row.platform,
+            undefined,
+            args.reason,
           );
       }
       return text(success ? `Report #${args.id} marked ${args.status}.` : `Failed: ${result}`, !success);

@@ -8,7 +8,7 @@ import {
   listSuggestions,
   resolveSuggestion,
 } from '@swampratnz/agent-base/storage/repository.js';
-import { platformArg, text, untrusted } from './helpers.js';
+import { platformArg, SUGGESTION_RESOLUTION_ECHO_CHARS, text, untrusted } from './helpers.js';
 import { notifySuggestionResolved } from './notify.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
@@ -124,6 +124,15 @@ export const accessAndSuggestionsTools = [
     schema: {
       id: z.number().describe('Suggestion id (from list_suggestions)'),
       status: z.enum(['reviewed', 'declined', 'done']).describe('New status'),
+      reason: z
+        .string()
+        .max(SUGGESTION_RESOLUTION_ECHO_CHARS)
+        .optional()
+        .describe(
+          'Optional, one-line, member-facing explanation appended verbatim to the resolution DM sent to ' +
+            'the submitter when declining a suggestion, so they know why — omit for the existing neutral ' +
+            'decline message with no reason. Ignored for `reviewed`/`done` statuses. Never persisted.',
+        ),
     },
     handler: async (args, { caller, audited, adapterFor }) => {
       assertAtLeast(caller.role, 'admin', 'resolve_suggestion');
@@ -143,7 +152,10 @@ export const accessAndSuggestionsTools = [
       // current-turn one, via Router's adapter registry — never misaddresses
       // a DM to the wrong platform. Degrades to today's silent skip if that
       // platform isn't registered in this deployment (e.g. WhatsApp not
-      // configured).
+      // configured). args.reason is never persisted (not in the audited
+      // params above) — it only ever reaches this one DM, same
+      // non-persistence convention as decline_knowledge_candidate's (#1050)
+      // reason field.
       if (success && state.row) {
         const target = adapterFor(state.row.platform);
         if (target)
@@ -153,6 +165,8 @@ export const accessAndSuggestionsTools = [
             args.status,
             state.row.content,
             state.row.platform,
+            undefined,
+            args.reason,
           );
       }
       return text(success ? `Suggestion #${args.id} marked ${args.status}.` : `Failed: ${result}`, !success);
