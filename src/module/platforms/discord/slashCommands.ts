@@ -553,7 +553,8 @@ async function handleKbTopics(
     { platform: 'discord', conversationId: interaction.channelId },
     config.behaviour.knowledgeTopicsListLimit,
   );
-  const message = formatKnowledgeTopics(titles, totalCount);
+  const language = await getLanguagePreference('discord', interaction.user.id);
+  const message = formatKnowledgeTopics(titles, totalCount, language);
   recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
   await replyEphemeral(interaction, message, deps);
 }
@@ -585,7 +586,8 @@ async function handleKbHelpful(
     limit: MOST_HELPFUL_KNOWLEDGE_FETCH_CAP,
   });
   const ranked = rankKnowledgeByRetrieval(entries, 10);
-  const message = formatMostHelpfulKnowledge(ranked);
+  const language = await getLanguagePreference('discord', interaction.user.id);
+  const message = formatMostHelpfulKnowledge(ranked, language);
   recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
   await replyEphemeral(interaction, message, deps);
 }

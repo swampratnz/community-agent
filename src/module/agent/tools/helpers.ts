@@ -468,14 +468,32 @@ export function formatKnowledgeEntryLine(e: KnowledgeEntry): string {
  * level `knowledge_search` already grants them (shown verbatim there too), so
  * no `untrusted()`-style sanitizing here. `totalCount` is the full match
  * count `listKnowledgeTopics` returns via `COUNT(*) OVER()` — greater than
- * `titles.length` only when the cap truncated the page.
+ * `titles.length` only when the cap truncated the page. `language` is the
+ * caller's own `getLanguagePreference` value, threaded in as an explicit
+ * parameter (rather than read inside this function) so the render stays
+ * pure — same `mi ? … : …` inline shape `formatMyWarningsText` uses (issue
+ * #1107). Only the fixed empty-state/truncation-note prose branches; titles
+ * themselves are unchanged in both languages.
  */
-export function formatKnowledgeTopics(titles: string[], totalCount: number): string {
-  if (titles.length === 0) return 'No knowledge topics have been added yet.';
+export function formatKnowledgeTopics(
+  titles: string[],
+  totalCount: number,
+  language: LanguagePreference,
+): string {
+  const mi = language === 'mi';
+  if (titles.length === 0) {
+    return mi
+      ? 'Kāore anō he kaupapa kua tāpirihia ki te pātengi mōhiotanga.'
+      : 'No knowledge topics have been added yet.';
+  }
   const remaining = totalCount - titles.length;
   const body = titles.map((t) => `- ${t}`).join('\n');
   const truncationNote =
-    remaining > 0 ? `\n\n+${remaining} more — ask a specific question and I'll search everything.` : '';
+    remaining > 0
+      ? mi
+        ? `\n\n+${remaining} atu — pātaingia he pātai whāiti ā, ka rapua e ahau ngā mea katoa.`
+        : `\n\n+${remaining} more — ask a specific question and I'll search everything.`
+      : '';
   return body + truncationNote;
 }
 
@@ -518,9 +536,23 @@ export function formatKnowledgeTopics(titles: string[], totalCount: number): str
  * The `'auto'` marker is provenance, not just injection defence — it tells
  * the model an entry was machine-researched and unverified, exactly as the
  * search path does, so a high retrieval count cannot lend it false weight.
+ *
+ * `language` is the caller's own `getLanguagePreference` value, threaded in
+ * as an explicit parameter (rather than read inside this function) so the
+ * render stays pure — same `mi ? … : …` inline shape `formatMyWarningsText`/
+ * `formatKnowledgeTopics` use (issue #1107). Only the fixed empty-state
+ * prose branches; rendered entry titles/content are unchanged in both
+ * languages.
  */
-export function formatMostHelpfulKnowledge(entries: readonly KnowledgeEntry[]): string {
-  if (entries.length === 0) return 'No knowledge entries yet — check back once the community has saved some.';
+export function formatMostHelpfulKnowledge(
+  entries: readonly KnowledgeEntry[],
+  language: LanguagePreference,
+): string {
+  if (entries.length === 0) {
+    return language === 'mi'
+      ? 'Kāore anō he mōhiotanga — tirotiro anō ā muri ake kua tāpirihia ētahi e te hapori.'
+      : 'No knowledge entries yet — check back once the community has saved some.';
+  }
   const lines = entries.map((e) => {
     const provenance = e.createdByRole === 'auto' ? '[auto-researched, unverified] ' : '';
     const title = e.title ? `${untrustedEntryContent(e.title)}: ` : '';

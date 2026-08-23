@@ -1733,7 +1733,7 @@ test('/kbtopics returns output byte-identical to formatKnowledgeTopics for the s
 
   await handleInteraction(interaction as never, adapterDeps(adapter));
 
-  assert.equal(replies[0].content, formatKnowledgeTopics(['Getting started', 'Code of conduct'], 2));
+  assert.equal(replies[0].content, formatKnowledgeTopics(['Getting started', 'Code of conduct'], 2, 'auto'));
 });
 
 test("/kbtopics on an empty KB replies with formatKnowledgeTopics([], 0)'s output (issue #1036 acceptance criterion 5)", async (t) => {
@@ -1743,7 +1743,7 @@ test("/kbtopics on an empty KB replies with formatKnowledgeTopics([], 0)'s outpu
 
   await handleInteraction(interaction as never, adapterDeps(adapter));
 
-  assert.equal(replies[0].content, formatKnowledgeTopics([], 0));
+  assert.equal(replies[0].content, formatKnowledgeTopics([], 0, 'auto'));
   assert.equal(replies[0].content, 'No knowledge topics have been added yet.');
 });
 
@@ -1758,9 +1758,49 @@ test('/kbtopics renders the truncation note when totalCount exceeds the returned
   // rewrites em dashes into a comma (stripEmDashes in outbound.ts) — same
   // treatment the KNOWLEDGE_LOW_RATED_CAVEAT_TEXT assertions elsewhere in
   // this file already account for, so the expectation is the rewritten form.
-  assert.equal(replies[0].content, stripEmDashes(formatKnowledgeTopics(['One topic'], 5)));
+  assert.equal(replies[0].content, stripEmDashes(formatKnowledgeTopics(['One topic'], 5, 'auto')));
   assert.match(replies[0].content, /\+4 more/);
 });
+
+test(
+  "/kbtopics renders te reo Māori for a caller with a standing 'mi' language preference — both the " +
+    'empty-state and truncation-note branches (issue #1107 acceptance criteria 1, 4)',
+  async (t) => {
+    mockPool(t, {
+      memberRole: 'member',
+      knowledgeTopicTitles: [],
+      languagePref: 'mi',
+    });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'kbtopics', userId: 'member-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies[0].content, formatKnowledgeTopics([], 0, 'mi'));
+    assert.match(replies[0].content, /pātengi mōhiotanga/);
+  },
+);
+
+test(
+  "/kbtopics renders the te reo Māori truncation note for a caller with a standing 'mi' language preference " +
+    '(issue #1107 acceptance criteria 1, 4)',
+  async (t) => {
+    mockPool(t, {
+      memberRole: 'member',
+      knowledgeTopicTitles: ['One topic'],
+      knowledgeTopicTotalCount: 5,
+      languagePref: 'mi',
+    });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'kbtopics', userId: 'member-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies[0].content, stripEmDashes(formatKnowledgeTopics(['One topic'], 5, 'mi')));
+    assert.match(replies[0].content, /\+4 atu/);
+    assert.doesNotMatch(replies[0].content, /ask a specific question/i);
+  },
+);
 
 test('SECURITY: a guest caller is rejected on /kbtopics without listKnowledgeTopics ever being invoked (issue #1036 acceptance criterion 4)', async (t) => {
   const calls = mockPool(t, { memberRole: null, knowledgeTopicTitles: ['Should never be seen'] });
@@ -1869,7 +1909,7 @@ test(
       offset: 0,
       limit: MOST_HELPFUL_KNOWLEDGE_FETCH_CAP,
     });
-    const expected = formatMostHelpfulKnowledge(rankKnowledgeByRetrieval(entries, 10));
+    const expected = formatMostHelpfulKnowledge(rankKnowledgeByRetrieval(entries, 10), 'auto');
     assert.equal(replies[0].content, stripEmDashes(expected));
     // The high-retrieval-count entry must rank first — proves this is the
     // real rankKnowledgeByRetrieval ordering, not just any render of the rows.
@@ -1884,9 +1924,24 @@ test("/kbhelpful on an empty KB replies with formatMostHelpfulKnowledge([])'s ou
 
   await handleInteraction(interaction as never, adapterDeps(adapter));
 
-  assert.equal(replies[0].content, stripEmDashes(formatMostHelpfulKnowledge([])));
+  assert.equal(replies[0].content, stripEmDashes(formatMostHelpfulKnowledge([], 'auto')));
   assert.equal(replies[0].content, 'No knowledge entries yet, check back once the community has saved some.');
 });
+
+test(
+  "/kbhelpful renders te reo Māori for a caller with a standing 'mi' language preference, both empty and " +
+    'non-empty (issue #1107 acceptance criteria 2, 4)',
+  async (t) => {
+    mockPool(t, { memberRole: 'member', mostHelpfulKnowledgeRows: [], languagePref: 'mi' });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'kbhelpful', userId: 'member-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies[0].content, stripEmDashes(formatMostHelpfulKnowledge([], 'mi')));
+    assert.match(replies[0].content, /mōhiotanga/);
+  },
+);
 
 test('SECURITY: a guest caller is rejected on /kbhelpful without listKnowledge ever being invoked (issue #1087 acceptance criterion 3)', async (t) => {
   const calls = mockPool(t, {

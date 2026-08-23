@@ -324,14 +324,15 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
     // from `text`.
     name: 'kbtopics',
     platforms: ['discord', 'whatsapp'],
-    whatsapp: async (text, msg, role) => {
+    whatsapp: async (text, msg, role, deps) => {
       if (!/^!kbtopics$/i.test(text)) return TEXT_COMMAND_UNMATCHED;
       if (!atLeast(role, 'member')) return null;
       const { titles, totalCount } = await listKnowledgeTopics(
         { platform: msg.platform, conversationId: msg.conversationId },
         config.behaviour.knowledgeTopicsListLimit,
       );
-      return formatKnowledgeTopics(titles, totalCount);
+      const language = await deps.getLangPref(msg.platform, msg.userId);
+      return formatKnowledgeTopics(titles, totalCount, language);
     },
   },
   {
@@ -349,7 +350,7 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
     // caller-supplied limit, issue #1087 acceptance criterion 1).
     name: 'kbhelpful',
     platforms: ['discord', 'whatsapp'],
-    whatsapp: async (text, _msg, role) => {
+    whatsapp: async (text, msg, role, deps) => {
       if (!/^!kbhelpful$/i.test(text)) return TEXT_COMMAND_UNMATCHED;
       if (!atLeast(role, 'member')) return null;
       const entries = await listKnowledge({
@@ -358,7 +359,8 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
         limit: MOST_HELPFUL_KNOWLEDGE_FETCH_CAP,
       });
       const ranked = rankKnowledgeByRetrieval(entries, 10);
-      return formatMostHelpfulKnowledge(ranked);
+      const language = await deps.getLangPref(msg.platform, msg.userId);
+      return formatMostHelpfulKnowledge(ranked, language);
     },
   },
   {

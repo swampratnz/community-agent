@@ -12983,19 +12983,52 @@ test(
 // only browse of the knowledge base — the proactive "what's covered"
 // counterpart to knowledge_search's reactive search.
 test('formatKnowledgeTopics renders a clear "no topics yet" message for an empty knowledge base, not an error or blank reply', () => {
-  assert.equal(formatKnowledgeTopics([], 0), 'No knowledge topics have been added yet.');
+  assert.equal(formatKnowledgeTopics([], 0, 'en'), 'No knowledge topics have been added yet.');
 });
 
 test('formatKnowledgeTopics appends no truncation note when the match count does not exceed the cap', () => {
-  const reply = formatKnowledgeTopics(['Alpha', 'Beta'], 2);
+  const reply = formatKnowledgeTopics(['Alpha', 'Beta'], 2, 'en');
   assert.equal(reply, '- Alpha\n- Beta');
   assert.doesNotMatch(reply, /more/i);
 });
 
 test('formatKnowledgeTopics appends an exact "+N more" truncation note when the match count exceeds the cap', () => {
-  const reply = formatKnowledgeTopics(['Alpha', 'Beta'], 5);
+  const reply = formatKnowledgeTopics(['Alpha', 'Beta'], 5, 'en');
   assert.match(reply, /\+3 more — ask a specific question and I'll search everything\.$/);
 });
+
+test(
+  'SECURITY: formatKnowledgeTopics renders te reo Māori for language "mi" in both the empty-state and ' +
+    'truncation-note branches, byte-identical English text for "en"/"auto", and carries the same titles/' +
+    'counts in both languages — the language branch only swaps surrounding text, never the rendered titles ' +
+    '(issue #1107 acceptance criteria 1, 4)',
+  () => {
+    // Empty-state branch.
+    const enEmpty = formatKnowledgeTopics([], 0, 'en');
+    assert.equal(formatKnowledgeTopics([], 0, 'auto'), enEmpty);
+    assert.match(formatKnowledgeTopics([], 0, 'mi'), /pātengi mōhiotanga/);
+
+    // Populated, no truncation.
+    const enNoTrunc = formatKnowledgeTopics(['Alpha', 'Beta'], 2, 'en');
+    assert.equal(formatKnowledgeTopics(['Alpha', 'Beta'], 2, 'auto'), enNoTrunc);
+    const miNoTrunc = formatKnowledgeTopics(['Alpha', 'Beta'], 2, 'mi');
+    assert.match(miNoTrunc, /Alpha/);
+    assert.match(miNoTrunc, /Beta/);
+    assert.doesNotMatch(
+      miNoTrunc,
+      /more/i,
+      'no truncation note when the cap is not exceeded, in either language',
+    );
+
+    // Populated, with truncation.
+    const enTrunc = formatKnowledgeTopics(['Alpha', 'Beta'], 5, 'en');
+    assert.equal(formatKnowledgeTopics(['Alpha', 'Beta'], 5, 'auto'), enTrunc);
+    const miTrunc = formatKnowledgeTopics(['Alpha', 'Beta'], 5, 'mi');
+    assert.match(miTrunc, /Alpha/);
+    assert.match(miTrunc, /Beta/);
+    assert.match(miTrunc, /\+3\b/, 'the remaining count appears, unchanged, in the te reo truncation note');
+  },
+);
 
 const LIST_KNOWLEDGE_TOPICS_SCOPE_PREFIX = `${RUN}-list-knowledge-topics`;
 
@@ -13241,6 +13274,112 @@ test(
   },
 );
 
+test(
+  "list_knowledge_topics tool handler renders te reo Māori for a caller with a standing 'mi' language " +
+    'preference, and the fixed English default for a caller with none, including the truncation-note ' +
+    'branch (issue #1107 acceptance criterion 1)',
+  { skip },
+  async () => {
+    const scope = `${LIST_KNOWLEDGE_TOPICS_SCOPE_PREFIX}-lang-${RUN}`;
+    // Two fixture titles (not one): the cap-derivation below sets the limit to
+    // (actualTotal - 1), and with a lone fixture and zero ambient 'global'
+    // rows that would floor to 0, which hits the EMPTY branch instead of the
+    // truncation-note branch this test means to exercise — mirrors the
+    // 3-title cap test above for the same reason.
+    const titles = [`Lang-topic-1-${RUN}`, `Lang-topic-2-${RUN}`];
+    const ids: number[] = [];
+    for (const title of titles) {
+      const { rows } = await pool.query(
+        `INSERT INTO knowledge (scope, title, content, created_by_role) VALUES ($1,$2,$3,'admin') RETURNING id`,
+        [scope, title, 'content'],
+      );
+      ids.push(Number(rows[0].id));
+    }
+
+    const miUser = `${RUN}-list-topics-mi-pref`;
+    const enUser = `${RUN}-list-topics-no-pref`;
+    await setLanguagePreference('discord', miUser, 'mi');
+
+    const miCaller = {
+      platform: 'discord' as const,
+      userId: miUser,
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: scope,
+    };
+    const enCaller = {
+      platform: 'discord' as const,
+      userId: enUser,
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: scope,
+    };
+
+    // Same real-total-derived cap as the truncation-note test above, so the
+    // "+N more" branch is guaranteed to fire regardless of ambient rows
+    // (this test runs against a real, cross-file-shared Postgres).
+    const { rows: countRows } = await pool.query(
+      `SELECT COUNT(*)::int AS c FROM knowledge
+        WHERE scope IN ('global', $1, $2) AND created_by_role != 'auto'
+          AND title IS NOT NULL AND trim(title) != ''`,
+      [miCaller.platform, scope],
+    );
+    const cappedLimit = (countRows[0].c as number) - 1;
+    const originalLimit = config.behaviour.knowledgeTopicsListLimit;
+    config.behaviour.knowledgeTopicsListLimit = cappedLimit;
+    try {
+      const miResult = await getListKnowledgeTopicsHandler(miCaller).handler({});
+      const miText = miResult.content[0]?.text ?? '';
+      assert.match(miText, /\+1 atu/, 'the te reo truncation note fires for a mi-preference caller');
+      assert.doesNotMatch(
+        miText,
+        /ask a specific question/i,
+        'the English truncation note must not also appear',
+      );
+
+      const enResult = await getListKnowledgeTopicsHandler(enCaller).handler({});
+      const enText = enResult.content[0]?.text ?? '';
+      assert.match(
+        enText,
+        /\+1 more — ask a specific question and I'll search everything\.$/,
+        'a caller with no stored preference must still get the English truncation note',
+      );
+    } finally {
+      config.behaviour.knowledgeTopicsListLimit = originalLimit;
+      await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [ids]);
+      await pool.query(`DELETE FROM language_prefs WHERE platform = 'discord' AND user_id = $1`, [miUser]);
+    }
+  },
+);
+
+test(
+  "SECURITY: list_knowledge_topics reads the language branch only via the caller's OWN " +
+    "getLanguagePreference(platform, userId) — a DIFFERENT member's stored 'mi' preference can never leak " +
+    "into or spoof this caller's reply (issue #1107 acceptance criterion 5)",
+  { skip },
+  async () => {
+    const otherMiUser = `${RUN}-list-topics-other-mi`;
+    const callerUser = `${RUN}-list-topics-self-scoped`;
+    await setLanguagePreference('discord', otherMiUser, 'mi');
+
+    const caller = {
+      platform: 'discord' as const,
+      userId: callerUser,
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: `${LIST_KNOWLEDGE_TOPICS_SCOPE_PREFIX}-self-scoped-${RUN}`,
+    };
+    const result = await getListKnowledgeTopicsHandler(caller).handler({});
+    assert.doesNotMatch(
+      result.content[0]?.text ?? '',
+      /pātengi mōhiotanga|atu —/,
+      "SECURITY: another member's 'mi' preference must never be reachable for this caller's own reply",
+    );
+
+    await pool.query(`DELETE FROM language_prefs WHERE platform = 'discord' AND user_id = $1`, [otherMiUser]);
+  },
+);
+
 // most_helpful_knowledge (issue #1070): the member-facing, retrieval-count-
 // ranked browse of the knowledge base — the positive-signal counterpart to
 // list_knowledge_topics (unranked titles) and the member-tier counterpart to
@@ -13249,10 +13388,44 @@ test(
 
 test('formatMostHelpfulKnowledge renders a clear "no entries yet" message for an empty knowledge base, not an error or blank reply', () => {
   assert.equal(
-    formatMostHelpfulKnowledge([]),
+    formatMostHelpfulKnowledge([], 'en'),
     'No knowledge entries yet — check back once the community has saved some.',
   );
 });
+
+test(
+  'SECURITY: formatMostHelpfulKnowledge renders te reo Māori for language "mi" in both the empty and ' +
+    'non-empty states, byte-identical English text for "en"/"auto", and carries the same rendered entry ' +
+    'title/content/usage-count in both languages — the language branch only swaps surrounding text, never ' +
+    'the rendered entries (issue #1107 acceptance criteria 2, 4)',
+  () => {
+    const enEmpty = formatMostHelpfulKnowledge([], 'en');
+    assert.equal(formatMostHelpfulKnowledge([], 'auto'), enEmpty);
+    assert.match(formatMostHelpfulKnowledge([], 'mi'), /mōhiotanga/);
+
+    const entry = {
+      id: 1,
+      scope: 'global',
+      createdByRole: 'admin',
+      title: 'Fixture title',
+      content: 'Fixture content body',
+      retrievalCount: 7,
+      updatedAt: new Date('2024-01-01T00:00:00Z'),
+      lastRetrievedAt: null,
+      sourceUrl: null,
+      sourceTitle: null,
+      verifiedAt: null,
+      sourceUnreachable: null,
+      sourceCheckedAt: null,
+    };
+    const enPopulated = formatMostHelpfulKnowledge([entry], 'en');
+    assert.equal(formatMostHelpfulKnowledge([entry], 'auto'), enPopulated);
+    const miPopulated = formatMostHelpfulKnowledge([entry], 'mi');
+    assert.match(miPopulated, /Fixture title/, 'rendered entry title is unchanged in te reo');
+    assert.match(miPopulated, /Fixture content body/, 'rendered entry content is unchanged in te reo');
+    assert.match(miPopulated, /used 7x/, 'rendered usage count is unchanged in te reo');
+  },
+);
 
 test(
   'SECURITY: formatMostHelpfulKnowledge renders title, content preview, and a plain "used Nx" suffix, but ' +
@@ -13274,7 +13447,7 @@ test(
       sourceUnreachable: null,
       sourceCheckedAt: null,
     };
-    const output = formatMostHelpfulKnowledge([entry]);
+    const output = formatMostHelpfulKnowledge([entry], 'en');
     assert.match(output, /Fixture title/, 'must render the title');
     assert.match(output, /Fixture content body/, 'must render the content preview');
     assert.match(output, /used 7x/, 'must render a plain "used Nx" usage suffix');
@@ -13310,14 +13483,14 @@ test(
     };
     const human = { ...auto, id: 2, createdByRole: 'admin', title: 'Human title', content: 'Human body' };
 
-    const autoOut = formatMostHelpfulKnowledge([auto]);
+    const autoOut = formatMostHelpfulKnowledge([auto], 'en');
     assert.match(
       autoOut,
       /auto-researched, unverified/,
       'SECURITY: an auto-researched entry must be marked as unverified',
     );
 
-    const humanOut = formatMostHelpfulKnowledge([human]);
+    const humanOut = formatMostHelpfulKnowledge([human], 'en');
     assert.doesNotMatch(
       humanOut,
       /auto-researched/,
@@ -13352,7 +13525,7 @@ test(
       sourceUnreachable: null,
       sourceCheckedAt: null,
     };
-    const output = formatMostHelpfulKnowledge([hostile]);
+    const output = formatMostHelpfulKnowledge([hostile], 'en');
 
     // The block must open and close exactly once — a forged closer inside the
     // entry would otherwise end the quarantine early and promote everything
