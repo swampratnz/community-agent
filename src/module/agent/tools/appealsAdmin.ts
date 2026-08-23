@@ -6,7 +6,7 @@ import {
   type ModerationAppeal,
   resolveModerationAppeal,
 } from '@swampratnz/agent-base/storage/repository.js';
-import { text, untrusted } from './helpers.js';
+import { SUGGESTION_RESOLUTION_ECHO_CHARS, text, untrusted } from './helpers.js';
 import { notifyAppealResolved } from './notify.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
@@ -65,6 +65,15 @@ export const appealsAdminTools = [
     schema: {
       id: z.number().describe('Appeal id (from list_appeals)'),
       status: z.enum(['resolved', 'dismissed']).describe('New status'),
+      reason: z
+        .string()
+        .max(SUGGESTION_RESOLUTION_ECHO_CHARS)
+        .optional()
+        .describe(
+          'Optional, one-line, member-facing explanation appended verbatim to the resolution DM sent to ' +
+            'the appellant when dismissing an appeal, so they know why — omit for the existing neutral ' +
+            'dismissal message with no reason. Ignored for a `resolved` status. Never persisted.',
+        ),
     },
     handler: async (args, { caller, audited, adapterFor }) => {
       assertAtLeast(caller.role, 'admin', 'resolve_appeal');
@@ -85,6 +94,9 @@ export const appealsAdminTools = [
       // silent skip if that platform isn't registered in this deployment.
       // The target is always state.row's own userId/platform — never any
       // resolve_appeal argument — so no caller-supplied value can redirect it.
+      // args.reason is never persisted (not in the audited params above) — it
+      // only ever reaches this one DM, same non-persistence convention as
+      // decline_knowledge_candidate's (#1050) reason field.
       if (success && state.row) {
         const target = adapterFor(state.row.platform);
         if (target)
@@ -94,6 +106,8 @@ export const appealsAdminTools = [
             args.status,
             state.row.reason,
             state.row.platform,
+            undefined,
+            args.reason,
           );
       }
       return text(success ? `Appeal #${args.id} marked ${args.status}.` : `Failed: ${result}`, !success);
