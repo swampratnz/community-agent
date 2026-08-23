@@ -60,6 +60,7 @@ await import('./support/registerPolicyKeys.js');
 const {
   formatKnowledgeTopics,
   formatMostHelpfulKnowledge,
+  formatReviewQueueSummary,
   KNOWLEDGE_CONFLICT_CAVEAT_TEXT,
   MOST_HELPFUL_KNOWLEDGE_FETCH_CAP,
   rankKnowledgeByRetrieval,
@@ -141,6 +142,22 @@ function mockPool(
     mostHelpfulKnowledgeRows?: PoolRow[];
     /** `searchKnowledgeLexical`'s rows (issue #1061) — distinct from `knowledgeRows` (searchKnowledge's semantic hits); defaults to no lexical hits. */
     knowledgeLexicalRows?: PoolRow[];
+    /** `countAccessRequests`'s count for `/reviewqueue` (issue #1095). */
+    accessRequestCount?: number;
+    /** `oldestAccessRequestAgeDays`'s age for `/reviewqueue` (issue #1095) — `null` means the queue is empty. */
+    accessRequestAgeDays?: number | null;
+    /** `countPendingSuggestions`'s count for `/reviewqueue` (issue #1095) — distinct from `suggestionRows` (listOwnSuggestions' per-user browse). */
+    suggestionCount?: number;
+    /** `oldestPendingSuggestionAgeDays`'s age for `/reviewqueue` (issue #1095) — `null` means the queue is empty. */
+    suggestionAgeDays?: number | null;
+    /** `countPendingKnowledgeCandidates`'s count for `/reviewqueue` (issue #1095) — distinct from `knowledgeCandidateRows` (listOwnKnowledgeCandidates' per-user browse). */
+    candidateCount?: number;
+    /** `oldestPendingCandidateAgeDays`'s age for `/reviewqueue` (issue #1095) — `null` means the queue is empty. */
+    candidateAgeDays?: number | null;
+    /** `countOpenAppeals`'s count for `/reviewqueue` (issue #1095) — distinct from `appealRows` (listOwnAppeals' per-user browse). */
+    appealCount?: number;
+    /** `oldestOpenAppealAgeDays`'s age for `/reviewqueue` (issue #1095) — `null` means the queue is empty. */
+    appealAgeDays?: number | null;
   } = {},
 ): Array<{ sql: string; params: unknown[] }> {
   const calls: Array<{ sql: string; params: unknown[] }> = [];
@@ -148,6 +165,15 @@ function mockPool(
     calls.push({ sql, params });
     if (sql.includes('SELECT role FROM community_users')) {
       return { rows: opts.memberRole ? [{ role: opts.memberRole }] : [], rowCount: 0 };
+    }
+    // countAccessRequests/oldestAccessRequestAgeDays (issue #1095's
+    // /reviewqueue) — the only two queries against this table in this file,
+    // told apart by the distinguishing 'age_days' column, same convention as
+    // every count/age pair below.
+    if (sql.includes('FROM access_requests')) {
+      return sql.includes('age_days')
+        ? { rows: [{ age_days: opts.accessRequestAgeDays ?? null }], rowCount: 0 }
+        : { rows: [{ n: opts.accessRequestCount ?? 0 }], rowCount: 0 };
     }
     // hasConflictAmongIds's self-join ("...FROM knowledge a JOIN knowledge b...")
     // and areKnowledgeEntriesLowRated's join ("FROM answer_feedback JOIN ...
@@ -161,6 +187,16 @@ function mockPool(
     }
     if (sql.includes('FROM answer_feedback')) {
       return { rows: (opts.lowRatedIds ?? []).map((id) => ({ id })), rowCount: 0 };
+    }
+    // countPendingKnowledgeCandidates/oldestPendingCandidateAgeDays (issue
+    // #1095's /reviewqueue) select a bare count/age aggregate, distinguished
+    // from listOwnKnowledgeCandidates' per-user browse below (which selects
+    // named columns, never 'n'/'age_days') — checked first, same
+    // specific-first discipline as every other multi-query table in this file.
+    if (sql.includes('FROM knowledge_candidates') && (sql.includes('AS n') || sql.includes('age_days'))) {
+      return sql.includes('age_days')
+        ? { rows: [{ age_days: opts.candidateAgeDays ?? null }], rowCount: 0 }
+        : { rows: [{ n: opts.candidateCount ?? 0 }], rowCount: 0 };
     }
     if (sql.includes('FROM knowledge_candidates')) {
       return { rows: opts.knowledgeCandidateRows ?? [], rowCount: 0 };
@@ -193,11 +229,27 @@ function mockPool(
     if (sql.includes('FROM knowledge')) {
       return { rows: opts.knowledgeRows ?? [], rowCount: 0 };
     }
+    // countPendingSuggestions/oldestPendingSuggestionAgeDays (issue #1095's
+    // /reviewqueue) — same specific-first discipline as the knowledge_candidates
+    // pair above, told apart from listOwnSuggestions' per-user browse below.
+    if (sql.includes('FROM suggestions') && (sql.includes('AS n') || sql.includes('age_days'))) {
+      return sql.includes('age_days')
+        ? { rows: [{ age_days: opts.suggestionAgeDays ?? null }], rowCount: 0 }
+        : { rows: [{ n: opts.suggestionCount ?? 0 }], rowCount: 0 };
+    }
     if (sql.includes('FROM suggestions')) {
       return { rows: opts.suggestionRows ?? [], rowCount: 0 };
     }
     if (sql.includes('FROM content_reports')) {
       return { rows: opts.reportRows ?? [], rowCount: 0 };
+    }
+    // countOpenAppeals/oldestOpenAppealAgeDays (issue #1095's /reviewqueue) —
+    // same specific-first discipline as above, told apart from listOwnAppeals'
+    // per-user browse below.
+    if (sql.includes('FROM moderation_appeals') && (sql.includes('AS n') || sql.includes('age_days'))) {
+      return sql.includes('age_days')
+        ? { rows: [{ age_days: opts.appealAgeDays ?? null }], rowCount: 0 }
+        : { rows: [{ n: opts.appealCount ?? 0 }], rowCount: 0 };
     }
     if (sql.includes('FROM moderation_appeals')) {
       return { rows: opts.appealRows ?? [], rowCount: 0 };
@@ -1669,6 +1721,214 @@ test('/kbhelpful replies ephemerally, deferring before its DB round trip', async
   mockPool(t, { memberRole: 'member', mostHelpfulKnowledgeRows: [] });
   const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction, replies, order } = fakeInteraction({ commandName: 'kbhelpful', userId: 'member-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies[0].ephemeral, true);
+  assert.deepEqual(order, ['deferReply', 'editReply']);
+});
+
+// --- Issue #1095: /reviewqueue (the first admin-tier slash command) ---------
+
+test(
+  "/reviewqueue renders formatReviewQueueSummary's output for the same counts/ages the repository returns, " +
+    'with no reports line anywhere (issue #1095 acceptance criteria 1, 3)',
+  async (t) => {
+    mockPool(t, {
+      memberRole: 'admin',
+      accessRequestCount: 3,
+      accessRequestAgeDays: 5,
+      suggestionCount: 0,
+      suggestionAgeDays: null,
+      candidateCount: 2,
+      candidateAgeDays: 1,
+      appealCount: 1,
+      appealAgeDays: 10,
+    });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'reviewqueue', userId: 'admin-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    const expected = formatReviewQueueSummary({
+      accessRequestCount: 3,
+      accessRequestAgeDays: 5,
+      suggestionCount: 0,
+      suggestionAgeDays: null,
+      candidateCount: 2,
+      candidateAgeDays: 1,
+      appealCount: 1,
+      appealAgeDays: 10,
+    });
+    assert.equal(replies[0].content, stripEmDashes(expected));
+    assert.match(replies[0].content, /Access requests: 3 pending \(oldest 5d\)/);
+    assert.match(
+      replies[0].content,
+      /Suggestions: 0 pending(?! \(oldest)/,
+      'an empty queue must render no age suffix',
+    );
+    assert.match(replies[0].content, /Knowledge candidates: 2 pending \(oldest 1d\)/);
+    assert.match(replies[0].content, /Appeals: 1 open \(oldest 10d\)/);
+    assert.doesNotMatch(replies[0].content, /Reports: \d+ open/, 'no fabricated/approximated reports count');
+  },
+);
+
+test(
+  'SECURITY: a guest caller is rejected on /reviewqueue without any review-queue repository read ever being ' +
+    'invoked (issue #1095 acceptance criterion 4)',
+  async (t) => {
+    const calls = mockPool(t, {
+      memberRole: null,
+      accessRequestCount: 9,
+      suggestionCount: 9,
+      candidateCount: 9,
+      appealCount: 9,
+    });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'reviewqueue', userId: 'guest-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].ephemeral, true);
+    assert.match(replies[0].content, /don't have access/i);
+    assert.ok(
+      !calls.some(
+        (c) =>
+          c.sql.includes('FROM access_requests') ||
+          (c.sql.includes('FROM suggestions') && (c.sql.includes('AS n') || c.sql.includes('age_days'))) ||
+          (c.sql.includes('FROM knowledge_candidates') &&
+            (c.sql.includes('AS n') || c.sql.includes('age_days'))) ||
+          (c.sql.includes('FROM moderation_appeals') &&
+            (c.sql.includes('AS n') || c.sql.includes('age_days'))),
+      ),
+      'no review-queue repository read must run for a rejected caller',
+    );
+  },
+);
+
+test(
+  "SECURITY: a member-tier caller is rejected on /reviewqueue — the first admin-tier command's atLeast(role, " +
+    "'admin') gate, not just the member-tier toolsForRole check every other command uses (issue #1095 " +
+    'acceptance criterion 4)',
+  async (t) => {
+    const calls = mockPool(t, {
+      memberRole: 'member',
+      accessRequestCount: 9,
+      suggestionCount: 9,
+      candidateCount: 9,
+      appealCount: 9,
+    });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'reviewqueue', userId: 'member-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].ephemeral, true);
+    assert.match(
+      replies[0].content,
+      /don't have access/i,
+      'a member-tier caller must be denied, not just a guest',
+    );
+    assert.ok(
+      !calls.some(
+        (c) =>
+          c.sql.includes('FROM access_requests') ||
+          (c.sql.includes('FROM suggestions') && (c.sql.includes('AS n') || c.sql.includes('age_days'))) ||
+          (c.sql.includes('FROM knowledge_candidates') &&
+            (c.sql.includes('AS n') || c.sql.includes('age_days'))) ||
+          (c.sql.includes('FROM moderation_appeals') &&
+            (c.sql.includes('AS n') || c.sql.includes('age_days'))),
+      ),
+      'no review-queue repository read must run for a member-tier caller',
+    );
+  },
+);
+
+test(
+  "SECURITY: /reviewqueue's appeals count/age are scoped to the 'discord' platform only, and the other three " +
+    "counts use the same no-argument calls review_queue's own handler uses (issue #1095 acceptance criterion 5)",
+  async (t) => {
+    const calls = mockPool(t, {
+      memberRole: 'admin',
+      accessRequestCount: 7,
+      accessRequestAgeDays: 4,
+      suggestionCount: 5,
+      suggestionAgeDays: 2,
+      candidateCount: 3,
+      candidateAgeDays: 9,
+      appealCount: 6,
+      appealAgeDays: 1,
+    });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'reviewqueue', userId: 'admin-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    const accessCalls = calls.filter((c) => c.sql.includes('FROM access_requests'));
+    const suggestionCalls = calls.filter(
+      (c) => c.sql.includes('FROM suggestions') && (c.sql.includes('AS n') || c.sql.includes('age_days')),
+    );
+    const candidateCalls = calls.filter(
+      (c) =>
+        c.sql.includes('FROM knowledge_candidates') && (c.sql.includes('AS n') || c.sql.includes('age_days')),
+    );
+    const appealCalls = calls.filter(
+      (c) =>
+        c.sql.includes('FROM moderation_appeals') && (c.sql.includes('AS n') || c.sql.includes('age_days')),
+    );
+    assert.equal(accessCalls.length, 2, 'access requests must use the count+age pair, no arguments');
+    assert.equal(suggestionCalls.length, 2, 'suggestions must use the count+age pair, no arguments');
+    assert.equal(candidateCalls.length, 2, 'knowledge candidates must use the count+age pair, no arguments');
+    assert.equal(appealCalls.length, 2, 'appeals must use the count+age pair, scoped by platform');
+    for (const c of [...accessCalls, ...suggestionCalls, ...candidateCalls]) {
+      assert.deepEqual(c.params, [], 'guild-wide reads must take no arguments, matching review_queue');
+    }
+    for (const c of appealCalls) {
+      assert.deepEqual(
+        c.params,
+        ['discord'],
+        "appeals must be scoped to the Discord command's own platform only",
+      );
+    }
+    assert.match(replies[0].content, /Access requests: 7 pending \(oldest 4d\)/);
+    assert.match(replies[0].content, /Suggestions: 5 pending \(oldest 2d\)/);
+    assert.match(replies[0].content, /Knowledge candidates: 3 pending \(oldest 9d\)/);
+    assert.match(replies[0].content, /Appeals: 6 open \(oldest 1d\)/);
+    assert.doesNotMatch(
+      replies[0].content,
+      /Reports:.*\d+ open/,
+      'no reports count, guild-wide or otherwise',
+    );
+  },
+);
+
+test("a successful /reviewqueue invocation calls recordShortcutHit('slash_command') exactly once (issue #1095)", async (t) => {
+  const calls = mockPool(t, { memberRole: 'admin' });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction } = fakeInteraction({ commandName: 'reviewqueue', userId: 'admin-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(shortcutHitCalls(calls).length, 1, '/reviewqueue must record exactly one slash_command hit');
+});
+
+test('SECURITY: recordShortcutHit is never called on the NOT_AUTHORIZED_TEXT branch for /reviewqueue (issue #1095)', async (t) => {
+  const calls = mockPool(t, { memberRole: null });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({ commandName: 'reviewqueue', userId: 'guest-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.match(replies[0].content, /don't have access/i, 'sanity check: /reviewqueue was actually denied');
+  assert.equal(shortcutHitCalls(calls).length, 0, 'an auth-denied reply must never record a shortcut hit');
+});
+
+test('/reviewqueue replies ephemerally, deferring before its DB round trip', async (t) => {
+  mockPool(t, { memberRole: 'admin' });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies, order } = fakeInteraction({ commandName: 'reviewqueue', userId: 'admin-1' });
 
   await handleInteraction(interaction as never, adapterDeps(adapter));
 
