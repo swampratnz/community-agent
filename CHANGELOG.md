@@ -118,6 +118,13 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   instead, since it needs a live conversation-scope lookup this zero-model
   shortcut path doesn't have, and approximating it guild-wide would widen
   the admin-data-access boundary rather than respect it.
+- **Admins on WhatsApp are now told `!reviewqueue` exists.** (#1097)
+  `!reviewqueue` (#1095) shipped with no mention in the "zero-wait shortcuts"
+  rundown `community_info`/`/help`/`!help` shows WhatsApp callers — the exact
+  discoverability gap already fixed twice before for member-tier shortcuts
+  (#872, #1044). An admin-tier caller on WhatsApp now sees `!reviewqueue`
+  named alongside the rest of their admin capabilities; members and Discord
+  callers see no change.
 
 ### Fixed
 - **A dev-team job's completion DM no longer hammers the WhatsApp API every

@@ -30,7 +30,11 @@ export const EVENTS_LIST_LIMIT = 10;
  * variant-selection logic exist in exactly one place. Issue #1056 extended
  * that same `language` value to the admin/super-admin segments (previously
  * unconditionally English), closing the mid-message language mix #1028 left
- * for any admin/super-admin caller with a standing `'mi'` preference. Depends
+ * for any admin/super-admin caller with a standing `'mi'` preference. Issue
+ * #1097 appended `whatsappAdminTextCommands` (the `!reviewqueue` shortcut) to
+ * the `admin`/`super_admin` branches only, directly after
+ * `communityInfoAdminCapabilities` — never to `memberSegment`, so a
+ * member-tier caller's output stays unchanged. Depends
  * only on its
  * arguments plus `config.behaviour.whatsappTextCommandsEnabled` (the same
  * flag the tool handler already read) and the caller's own stored language
@@ -48,13 +52,17 @@ export async function formatCommunityInfoText(
     platform === 'whatsapp' && config.behaviour.whatsappTextCommandsEnabled && atLeast(role, 'member')
       ? `${memberCapabilitiesText}\n${notice('whatsappTextCommands', { language })}`
       : memberCapabilitiesText;
+  const adminWhatsappShortcuts =
+    platform === 'whatsapp' && config.behaviour.whatsappTextCommandsEnabled
+      ? `\n${notice('whatsappAdminTextCommands', { language })}`
+      : '';
   if (role === 'super_admin') {
     const adminCapabilitiesText = notice('communityInfoAdminCapabilities', { language });
     const superAdminCapabilitiesText = notice('communityInfoSuperAdminCapabilities', { language });
-    return `${memberSegment}\n${adminCapabilitiesText}\n${superAdminCapabilitiesText}`;
+    return `${memberSegment}\n${adminCapabilitiesText}${adminWhatsappShortcuts}\n${superAdminCapabilitiesText}`;
   }
   if (role === 'admin') {
-    return `${memberSegment}\n${notice('communityInfoAdminCapabilities', { language })}`;
+    return `${memberSegment}\n${notice('communityInfoAdminCapabilities', { language })}${adminWhatsappShortcuts}`;
   }
   return memberSegment;
 }

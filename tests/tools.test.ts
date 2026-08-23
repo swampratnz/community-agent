@@ -3971,6 +3971,146 @@ test('SECURITY: community_info for a guest-tier WhatsApp caller never advertises
   }
 });
 
+// --- issue #1097: !reviewqueue (issue #1095) discovery for admin-tier
+// WhatsApp callers, the admin-tier sibling of #872's member-only block.
+
+test(
+  'community_info/formatCommunityInfoText mention !reviewqueue for an admin-tier WhatsApp caller with ' +
+    'whatsappTextCommandsEnabled on, in both the default/en and mi language variants (issue #1097 ' +
+    'acceptance criterion 1)',
+  { skip },
+  async () => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    try {
+      config.behaviour.whatsappTextCommandsEnabled = true;
+
+      const enAdmin = `${RUN}-info-admin-reviewqueue-en`;
+      const enReply = (await communityInfoHandler('admin', 'whatsapp', enAdmin)).content[0]?.text ?? '';
+      assert.match(enReply, /!reviewqueue/, 'an admin-tier WhatsApp caller must be told about !reviewqueue');
+
+      const miAdmin = `${RUN}-info-admin-reviewqueue-mi`;
+      await setLanguagePreferenceHandler({ platform: 'whatsapp', userId: miAdmin }).handler({
+        language: 'mi',
+      });
+      const miReply = (await communityInfoHandler('admin', 'whatsapp', miAdmin)).content[0]?.text ?? '';
+      assert.match(
+        miReply,
+        /!reviewqueue/,
+        "an admin-tier WhatsApp caller with a 'mi' preference must also be told about !reviewqueue",
+      );
+
+      assert.equal(
+        await formatCommunityInfoText('admin', 'whatsapp', enAdmin),
+        enReply,
+        "formatCommunityInfoText's own output must match the tool handler's (single source of truth)",
+      );
+    } finally {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    }
+  },
+);
+
+test(
+  'community_info/formatCommunityInfoText mention !reviewqueue for a super_admin-tier WhatsApp caller with ' +
+    'whatsappTextCommandsEnabled on, in both the default/en and mi language variants (issue #1097 ' +
+    'acceptance criterion 1)',
+  { skip },
+  async () => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    try {
+      config.behaviour.whatsappTextCommandsEnabled = true;
+
+      const enSuperAdmin = `${RUN}-info-super-admin-reviewqueue-en`;
+      const enReply =
+        (await communityInfoHandler('super_admin', 'whatsapp', enSuperAdmin)).content[0]?.text ?? '';
+      assert.match(
+        enReply,
+        /!reviewqueue/,
+        'a super_admin-tier WhatsApp caller must be told about !reviewqueue',
+      );
+
+      const miSuperAdmin = `${RUN}-info-super-admin-reviewqueue-mi`;
+      await setLanguagePreferenceHandler({ platform: 'whatsapp', userId: miSuperAdmin }).handler({
+        language: 'mi',
+      });
+      const miReply =
+        (await communityInfoHandler('super_admin', 'whatsapp', miSuperAdmin)).content[0]?.text ?? '';
+      assert.match(
+        miReply,
+        /!reviewqueue/,
+        "a super_admin-tier WhatsApp caller with a 'mi' preference must also be told about !reviewqueue",
+      );
+    } finally {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    }
+  },
+);
+
+test(
+  'SECURITY: !reviewqueue is never mentioned in community_info/formatCommunityInfoText output for a ' +
+    'member or guest WhatsApp caller (whatsappTextCommandsEnabled on), nor for a Discord caller at any tier ' +
+    '(issue #1097 acceptance criterion 2/3)',
+  async () => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    try {
+      config.behaviour.whatsappTextCommandsEnabled = true;
+
+      const memberReply = (await communityInfoHandler('member', 'whatsapp')).content[0]?.text ?? '';
+      assert.doesNotMatch(
+        memberReply,
+        /!reviewqueue/,
+        'a member-tier WhatsApp caller must never be told about the admin-only !reviewqueue shortcut',
+      );
+
+      const guestReply = (await communityInfoHandler('guest', 'whatsapp')).content[0]?.text ?? '';
+      assert.doesNotMatch(
+        guestReply,
+        /!reviewqueue/,
+        'a guest-tier WhatsApp caller must never be told about the admin-only !reviewqueue shortcut',
+      );
+
+      const roles = ['guest', 'member', 'admin', 'super_admin'] as const;
+      for (const role of roles) {
+        const discordReply = (await communityInfoHandler(role, 'discord')).content[0]?.text ?? '';
+        assert.doesNotMatch(
+          discordReply,
+          /!reviewqueue/,
+          `a Discord caller (${role}) must never see the WhatsApp-only !reviewqueue shortcut block — ` +
+            'Discord already surfaces /reviewqueue via its own slash-command autocomplete',
+        );
+      }
+    } finally {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    }
+  },
+);
+
+test(
+  'community_info/formatCommunityInfoText output for an admin caller is byte-identical to before issue ' +
+    '#1097 when whatsappTextCommandsEnabled is off (issue #1097 acceptance criterion 4)',
+  async () => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    try {
+      config.behaviour.whatsappTextCommandsEnabled = false;
+      const adminReply = (await communityInfoHandler('admin', 'whatsapp')).content[0]?.text ?? '';
+      assert.doesNotMatch(
+        adminReply,
+        /!reviewqueue/,
+        'with the flag off, !reviewqueue must not be mentioned even for an admin-tier WhatsApp caller',
+      );
+
+      const superAdminReply = (await communityInfoHandler('super_admin', 'whatsapp')).content[0]?.text ?? '';
+      assert.doesNotMatch(
+        superAdminReply,
+        /!reviewqueue/,
+        'with the flag off, !reviewqueue must not be mentioned even for a super_admin-tier WhatsApp caller',
+      );
+    } finally {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    }
+  },
+);
+
 // --- issue #993: community_info and /help, !help share ONE formatter --------
 
 test('community_info renders byte-identical text to formatCommunityInfoText for every (role, platform) combination — the single source of truth /help and !help also call (issue #993 authoritative criterion 1)', async () => {

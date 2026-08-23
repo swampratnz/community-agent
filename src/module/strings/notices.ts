@@ -592,6 +592,27 @@ const NOTICE_ENTRIES = {
         '- `!help` — tēnei whakarāpopototanga pūkenga',
     },
   },
+  /**
+   * The admin-tier sibling of `whatsappTextCommands` above (issue #1097) —
+   * `!reviewqueue` (issue #1095) is the first admin-tier `!`-shortcut, and
+   * the member-only block above is unconditionally shown to every member+
+   * caller, so it can never carry an admin-only entry without advertising a
+   * command a plain member would be silently refused. `formatCommunityInfoText`
+   * appends this only in the WhatsApp `admin`/`super_admin` branches, directly
+   * after `communityInfoAdminCapabilities` — never to `memberSegment`. No
+   * intro sentence: the member block above (already shown first to every
+   * admin/super-admin caller on WhatsApp) carries the "zero-wait shortcuts"
+   * framing once; this is just the one additional bullet. The `!`-prefixed
+   * token stays literal/untranslated in the `mi` variant, matching the
+   * sibling block's convention. No `style` variant, matching
+   * `whatsappTextCommands`'s own scope.
+   */
+  whatsappAdminTextCommands: {
+    base: '- `!reviewqueue` — access-request/suggestion/knowledge-candidate/appeal backlog at a glance',
+    language: {
+      mi: '- `!reviewqueue` — te whakarāpopototanga o ngā ratonga arotake e rima i te tirohanga kotahi',
+    },
+  },
   // --- member digest section labels (memberDigest.ts) ----------------------
   /**
    * The fixed label/frame fragments behind `formatMemberDigestMessage`'s six
