@@ -34,6 +34,7 @@ export const ENABLED_SKILLS = [
   'member-connection',
   'api-cost-and-latency',
   'rag-and-retrieval-design',
+  'mcp-server-design',
 ] as const;
 
 /**

@@ -77,6 +77,21 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   bundled-markdown shape as every other skill: no new tool, tier, or data
   access, and reachable only behind the existing off-by-default
   `AGENT_SKILLS_ENABLED` gate.
+- **New Agent Skill: `mcp-server-design`, for members building or connecting
+  an MCP (Model Context Protocol) server.** (#1124) "Stdio or HTTP
+  transport?", "why isn't Claude picking up my tools?", "how do I structure
+  tool descriptions so the model actually uses them well?" were a distinct,
+  common builder question none of the eleven existing skills covered —
+  `claude-code-setup` only troubleshoots the client side of an MCP
+  connection, and `agent-architecture-review`/`prompt-review` each critique
+  an already-built pipeline or an already-pasted schema, not a server's
+  design. The new skill branches first on server-building vs.
+  client-connecting (handing the latter straight to `claude-code-setup`),
+  then walks transport choice, tool/resource/prompt surface design,
+  discovery/description quality, auth, and isolated-server debugging as a
+  branch-by-lever diagnostic. Same bundled-markdown shape as every other
+  skill: no new tool, tier, or data access, and reachable only behind the
+  existing off-by-default `AGENT_SKILLS_ENABLED` gate.
 
 ### Fixed
 - **`/kb`'s exact-string fallback no longer logs a false knowledge-base gap
