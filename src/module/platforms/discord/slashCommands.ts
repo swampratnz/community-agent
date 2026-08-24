@@ -29,6 +29,7 @@ import {
   type LanguagePreference,
   listKnowledge,
   listKnowledgeTopics,
+  listMutedMembers,
   listOwnAppeals,
   listOwnKnowledgeCandidates,
   listOwnProjectConnectionRequests,
@@ -57,6 +58,7 @@ import {
   formatKnowledgeTopics,
   formatListProjectsEmptyText,
   formatMostHelpfulKnowledge,
+  formatMutedMembersList,
   formatProjectResults,
   formatReviewQueueSummary,
   formatWhoIsIntoEmptyText,
@@ -645,6 +647,30 @@ async function handleReviewQueue(
 }
 
 /**
+ * `list_muted_members` is structurally in ADMIN_TOOLS — the second
+ * admin-tier shortcut in this file (issue #1114), mirrored here via
+ * `toolsForRole` + `atLeast(role, 'admin')`, same double-check shape as
+ * `handleReviewQueue` above. No options: renders `formatMutedMembersList`'s
+ * output for `listMutedMembers(caller.platform, ...)` — the SAME repository
+ * call with the SAME arguments `list_muted_members`'s own handler uses.
+ */
+async function handleMutedList(
+  interaction: ChatInputCommandInteraction,
+  deps: SlashCommandDeps,
+): Promise<void> {
+  await deferEphemeral(interaction);
+  const role = await resolveRole('discord', interaction.user.id);
+  if (!toolsForRole(role, 'discord').includes('mcp__community__list_muted_members') || !atLeast(role, 'admin')) {
+    await replyEphemeral(interaction, NOT_AUTHORIZED_TEXT, deps);
+    return;
+  }
+  const rows = await listMutedMembers('discord', config.moderation.strikeLimit, config.moderation.strikeWindowDays);
+  const message = formatMutedMembersList(rows);
+  recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
+  await replyEphemeral(interaction, message, deps);
+}
+
+/**
  * `list_events` is structurally in MEMBER_TOOLS with no extra runtime floor
  * beyond `toolsForRole` (unlike `/warnings`/`/whois`/`/projects`/`/digest`
  * above) — mirrored here exactly like `/kb`'s gate (issue #1004). Takes no
@@ -834,6 +860,14 @@ export function bindCommunitySlashCommands(adapter: PlatformAdapter): void {
         )
         .toJSON(),
     handle: handleReviewQueue,
+  });
+  bindDiscordCommand('mutedlist', {
+    build: () =>
+      new SlashCommandBuilder()
+        .setName('mutedlist')
+        .setDescription('Admin: enumerate currently muted members by identity.')
+        .toJSON(),
+    handle: handleMutedList,
   });
   bindDiscordCommand('events', {
     build: () =>

@@ -12,6 +12,7 @@ import {
   getPublishedInterestsForOwners,
   listKnowledge,
   listKnowledgeTopics,
+  listMutedMembers,
   listOwnAppeals,
   listOwnKnowledgeCandidates,
   listOwnProjectConnectionRequests,
@@ -29,6 +30,7 @@ import {
   formatKnowledgeTopics,
   formatListProjectsEmptyText,
   formatMostHelpfulKnowledge,
+  formatMutedMembersList,
   formatProjectResults,
   formatReviewQueueSummary,
   formatWhoIsIntoEmptyText,
@@ -56,9 +58,10 @@ import { formatStatusMessage, getStatusCache } from './status/anthropicStatus.js
  * projects, whois, guidelines, digest), with `events` (issue #1004),
  * `status` (issue #995), `warnings` (issue #1000), `mysubmissions`/`mydata`
  * (issue #1018), `help` (issue #993), `kbtopics` (issue #1036),
- * `kbhelpful` (issue #1087), and `reviewqueue` (issue #1095, the first
- * admin-tier entry) appended — also safe for the WhatsApp side because every
- * `!` matcher is anchored and mutually exclusive.
+ * `kbhelpful` (issue #1087), `reviewqueue` (issue #1095, the first
+ * admin-tier entry), and `mutedlist` (issue #1114, the second) appended —
+ * also safe for the WhatsApp side because every `!` matcher is anchored and
+ * mutually exclusive.
  *
  * The Discord halves are BOUND by `bindCommunitySlashCommands()`
  * (slashCommands.ts), which `createConfiguredAdapters()` calls — never at
@@ -407,6 +410,28 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
         appealCount,
         appealAgeDays,
       });
+    },
+  },
+  {
+    // Second admin-tier entry (issue #1114), same shape as `reviewqueue`
+    // directly above. Anchored, argument-rejecting matcher: `!mutedlist
+    // anything` falls through to TEXT_COMMAND_UNMATCHED rather than
+    // matching, so no message-supplied text ever reaches a repository read.
+    // Calls listMutedMembers with the exact same (platform, strikeLimit,
+    // strikeWindowDays) arguments list_muted_members's own handler uses, and
+    // renders through the SAME shared formatMutedMembersList (tools/helpers.ts)
+    // that handler now uses too, so the two can never drift.
+    name: 'mutedlist',
+    platforms: ['discord', 'whatsapp'],
+    whatsapp: async (text, msg, role) => {
+      if (!/^!mutedlist$/i.test(text)) return TEXT_COMMAND_UNMATCHED;
+      if (!atLeast(role, 'admin')) return null;
+      const rows = await listMutedMembers(
+        msg.platform,
+        config.moderation.strikeLimit,
+        config.moderation.strikeWindowDays,
+      );
+      return formatMutedMembersList(rows);
     },
   },
 ];
