@@ -4632,37 +4632,46 @@ const agentSkillsFlag = config.agentSkills as MutableAgentSkillsFlag;
 const AGENT_SKILLS_DISCOVERABILITY_TEXT_EN = notice('communityInfoSkillsCapabilities');
 const AGENT_SKILLS_DISCOVERABILITY_TEXT_MI = notice('communityInfoSkillsCapabilities', { language: 'mi' });
 
-test('community_info/formatCommunityInfoText: member-tier caller sees the Agent Skills discoverability line when config.agentSkills.enabled is true, in English by default and te reo Māori for a standing mi preference (issue #1116 acceptance criterion 3)', async () => {
-  const original = agentSkillsFlag.enabled;
-  try {
-    agentSkillsFlag.enabled = true;
+test(
+  'community_info/formatCommunityInfoText: member-tier caller sees the Agent Skills discoverability line when config.agentSkills.enabled is true, in English by default and te reo Māori for a standing mi preference (issue #1116 acceptance criterion 3)',
+  // DB-backed: the 'mi' half sets a standing language preference, which is a
+  // real write. Preference READS degrade to the default on a dead pool (hence
+  // the sibling criterion-4 test passing without a database), but a write
+  // throws — so without this guard the whole file goes red on a machine with
+  // no Postgres, which is the one thing a skip marker exists to prevent.
+  { skip },
+  async () => {
+    const original = agentSkillsFlag.enabled;
+    try {
+      agentSkillsFlag.enabled = true;
 
-    const enUser = `${RUN}-info-skills-member-en`;
-    const enReply = (await communityInfoHandler('member', 'discord', enUser)).content[0]?.text ?? '';
-    assert.match(
-      enReply,
-      new RegExp(AGENT_SKILLS_DISCOVERABILITY_TEXT_EN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
-      'a member-tier caller must see the Agent Skills discoverability line when the flag is on',
-    );
+      const enUser = `${RUN}-info-skills-member-en`;
+      const enReply = (await communityInfoHandler('member', 'discord', enUser)).content[0]?.text ?? '';
+      assert.match(
+        enReply,
+        new RegExp(AGENT_SKILLS_DISCOVERABILITY_TEXT_EN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+        'a member-tier caller must see the Agent Skills discoverability line when the flag is on',
+      );
 
-    const miUser = `${RUN}-info-skills-member-mi`;
-    await setLanguagePreferenceHandler({ platform: 'discord', userId: miUser }).handler({ language: 'mi' });
-    const miReply = (await communityInfoHandler('member', 'discord', miUser)).content[0]?.text ?? '';
-    assert.match(
-      miReply,
-      new RegExp(AGENT_SKILLS_DISCOVERABILITY_TEXT_MI.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
-      "a member-tier caller with a standing 'mi' preference must see the te reo Māori variant",
-    );
+      const miUser = `${RUN}-info-skills-member-mi`;
+      await setLanguagePreferenceHandler({ platform: 'discord', userId: miUser }).handler({ language: 'mi' });
+      const miReply = (await communityInfoHandler('member', 'discord', miUser)).content[0]?.text ?? '';
+      assert.match(
+        miReply,
+        new RegExp(AGENT_SKILLS_DISCOVERABILITY_TEXT_MI.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+        "a member-tier caller with a standing 'mi' preference must see the te reo Māori variant",
+      );
 
-    assert.equal(
-      await formatCommunityInfoText('member', 'discord', enUser),
-      enReply,
-      "formatCommunityInfoText's own output must match the tool handler's (single source of truth)",
-    );
-  } finally {
-    agentSkillsFlag.enabled = original;
-  }
-});
+      assert.equal(
+        await formatCommunityInfoText('member', 'discord', enUser),
+        enReply,
+        "formatCommunityInfoText's own output must match the tool handler's (single source of truth)",
+      );
+    } finally {
+      agentSkillsFlag.enabled = original;
+    }
+  },
+);
 
 test('community_info/formatCommunityInfoText: admin and super_admin callers also receive the Agent Skills discoverability line exactly once, with the admin/super-admin segments still appended after it in the existing order (issue #1116 acceptance criterion 4)', async () => {
   const original = agentSkillsFlag.enabled;
