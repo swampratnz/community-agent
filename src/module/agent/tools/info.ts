@@ -3,7 +3,7 @@ import type { Tier } from '@swampratnz/agent-base/auth/tiers.js';
 import type { Platform } from '@swampratnz/agent-base/platforms/types.js';
 import { config } from '@swampratnz/agent-base/config.js';
 import { getCommunityGuidelines, getCommunityGuidelinesMi } from '../../storage/policies.js';
-import { getLanguagePreference } from '@swampratnz/agent-base/storage/repository.js';
+import { getLanguagePreference, type LanguagePreference } from '@swampratnz/agent-base/storage/repository.js';
 import { formatStatusMessage, getStatusCache } from '../../status/anthropicStatus.js';
 import { formatEventTime } from '@swampratnz/agent-base/util/eventTime.js';
 import type { UpcomingEvent } from '@swampratnz/agent-base/platforms/types.js';
@@ -74,13 +74,39 @@ export async function formatCommunityInfoText(
 }
 
 /**
+ * `list_events`' two bot-authored empty/unavailable strings — same
+ * "one function, two entry points" shape as `formatListProjectsEmptyText`/
+ * `formatWhoIsIntoEmptyText` (`social.ts`, issue #1105), applied here (issue
+ * #1119) so this tool's handler and its `/events` slash command mirror
+ * (`slashCommands.ts`) can never drift from each other or from this one
+ * source of truth. `formatUpcomingEvents` below (the rendered event rows) is
+ * untouched — those are Discord-authored member/admin free text, out of
+ * scope for this translation, same boundary #1105 drew for project rows.
+ */
+export function formatListEventsEmptyText(
+  kind: 'noAdapter' | 'none',
+  language: LanguagePreference,
+  platform: Platform,
+): string {
+  const mi = language === 'mi';
+  switch (kind) {
+    case 'noAdapter':
+      return mi
+        ? `Kāore he rārangi kaupapa e wātea ana i ${platform}.`
+        : `Event listings aren't available on ${platform}.`;
+    case 'none':
+      return mi ? 'Kāore he kaupapa e whai ake nei.' : 'No upcoming events.';
+  }
+}
+
+/**
  * Pure render of `listUpcomingEvents`' rows into `list_events`' reply text —
  * hoisted out of the tool handler (issue #1004) so the `/events` slash
  * command can call the exact same formatting, mirroring how
  * `formatProjectResults`/`formatInterestResults` were hoisted out of
  * `agent/tools.ts`'s tool-factory closure for the same reason. Caller must
- * handle the empty-list case ("No upcoming events.") itself, matching the
- * tool handler below.
+ * handle the empty-list case (`formatListEventsEmptyText('none', …)`) itself,
+ * matching the tool handler below.
  */
 export function formatUpcomingEvents(events: readonly UpcomingEvent[]): string {
   return events
@@ -165,11 +191,12 @@ export const infoTools = [
     readOnlyHint: true,
     schema: {},
     handler: async (_args, { caller, adapter }) => {
+      const language = await getLanguagePreference(caller.platform, caller.userId);
       if (!adapter.listUpcomingEvents) {
-        return text(`Event listings aren't available on ${caller.platform}.`, true);
+        return text(formatListEventsEmptyText('noAdapter', language, caller.platform), true);
       }
       const events = await adapter.listUpcomingEvents(EVENTS_LIST_LIMIT);
-      if (events.length === 0) return text('No upcoming events.');
+      if (events.length === 0) return text(formatListEventsEmptyText('none', language, caller.platform));
       return text(formatUpcomingEvents(events));
     },
   }),

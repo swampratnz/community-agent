@@ -71,7 +71,8 @@ const {
   buildToolServer,
 } = await import('../src/module/agent/tools.js');
 const { listKnowledge } = await import('@swampratnz/agent-base/storage/repository.js');
-const { EVENTS_LIST_LIMIT, formatUpcomingEvents } = await import('../src/module/agent/tools/info.js');
+const { EVENTS_LIST_LIMIT, formatListEventsEmptyText, formatUpcomingEvents } =
+  await import('../src/module/agent/tools/info.js');
 const { createConfiguredAdapters } = await import('../src/module/platforms/factories.js');
 const { notice } = await import('../src/module/strings/notices.js');
 const KNOWLEDGE_LOW_RATED_CAVEAT_TEXT = notice('knowledgeLowRatedCaveat');
@@ -4071,6 +4072,86 @@ test(
 
     assert.equal(replies.length, 1);
     assert.equal(replies[0].content, "Event listings aren't available on discord.");
+  },
+);
+
+// issue #1119: /events was the one member-facing command mirror in this file
+// that read no language preference at all — its two bot-authored strings
+// ("No upcoming events." / "Event listings aren't available on discord.")
+// are now sourced from formatListEventsEmptyText, shared with the list_events
+// tool handler (info.ts), so the two entry points can never drift.
+test(
+  "/events renders both empty-state strings in te reo Māori when the caller's stored language_preference " +
+    "is 'mi', byte-identical to formatListEventsEmptyText and to the list_events tool for the same caller " +
+    '(issue #1119 acceptance criteria 2, 3, 4)',
+  async (t) => {
+    mockPool(t, { memberRole: 'member', languagePref: 'mi' });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    t.mock.method(adapter, 'listUpcomingEvents', async () => []);
+    bindCommunitySlashCommands(adapter);
+
+    const { interaction, replies } = fakeInteraction({ commandName: 'events', userId: 'member-1' });
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].content, formatListEventsEmptyText('none', 'mi', 'discord'));
+    assert.notEqual(
+      replies[0].content,
+      'No upcoming events.',
+      "a caller with a stored 'mi' preference must not see the English string",
+    );
+    assert.equal(replies[0].content, stripEmDashes(await callListEventsTool(adapter, 'member-1')));
+  },
+);
+
+test(
+  "/events renders the te reo Māori 'not available' string when the caller's stored language_preference " +
+    "is 'mi' and the injected adapter has no listUpcomingEvents at all (issue #1119 acceptance criterion 3)",
+  async (t) => {
+    mockPool(t, { memberRole: 'member', languagePref: 'mi' });
+    const filterAdapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    bindCommunitySlashCommands(stubAdapterWithoutEvents());
+
+    const { interaction, replies } = fakeInteraction({ commandName: 'events', userId: 'member-1' });
+    await handleInteraction(interaction as never, adapterDeps(filterAdapter));
+
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].content, formatListEventsEmptyText('noAdapter', 'mi', 'discord'));
+    assert.notEqual(
+      replies[0].content,
+      "Event listings aren't available on discord.",
+      "a caller with a stored 'mi' preference must not see the English string",
+    );
+  },
+);
+
+test(
+  "SECURITY: /events' language branch is resolved solely from the invoking user's own stored " +
+    "language_preference (via getLanguagePreference('discord', interaction.user.id)), never from another " +
+    'identity or any interaction-supplied content (issue #1119 acceptance criteria 1, 6, SECURITY criterion 7)',
+  async (t) => {
+    const calls = mockPool(t, { memberRole: 'member' });
+    // languagePref intentionally unset — this caller has no stored 'mi' preference.
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    t.mock.method(adapter, 'listUpcomingEvents', async () => []);
+    bindCommunitySlashCommands(adapter);
+
+    const { interaction, replies } = fakeInteraction({ commandName: 'events', userId: 'member-scoped' });
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    const languageQuery = calls.find((c) => c.sql.includes('FROM language_prefs'));
+    assert.ok(languageQuery, '/events must read the language preference');
+    assert.deepEqual(
+      languageQuery?.params,
+      ['discord', 'member-scoped'],
+      "the language_prefs read must be keyed on the caller's own platform/userId, never a hardcoded or " +
+        "another identity's id",
+    );
+    assert.equal(
+      replies[0].content,
+      'No upcoming events.',
+      'no stored preference for this caller must render the English string',
+    );
   },
 );
 

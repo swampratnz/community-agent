@@ -119,6 +119,7 @@ const {
   ANNOUNCE_RATE_LIMIT_PER_HOUR,
   EVENTS_LIST_LIMIT,
   formatCommunityInfoText,
+  formatListEventsEmptyText,
   APPEAL_MODERATION_REASON_MAX_CHARS,
   HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER,
   PROJECT_NOTE_RETENTION_NOTICE,
@@ -19557,11 +19558,11 @@ test('set_helper_availability / find_helper return a friendly disabled message (
 // this handler only needs to be exercised against a stub exposing
 // listUpcomingEvents so the tool-layer formatting/empty-result/unsupported-
 // platform behaviour is pinned independently of the real Discord client.
-function listEventsHandler(adapter: PlatformAdapter) {
+function listEventsHandler(adapter: PlatformAdapter, userId = 'events-caller') {
   const server = buildToolServer(
     {
       platform: 'discord' as const,
-      userId: 'events-caller',
+      userId,
       userName: 'Events Caller',
       role: 'member' as const,
       conversationId: 'events-convo',
@@ -19713,6 +19714,71 @@ test("list_events calls the adapter's listUpcomingEvents with the fixed EVENTS_L
   await listEventsHandler(adapter).handler();
   assert.deepEqual(seenLimits, [EVENTS_LIST_LIMIT]);
 });
+
+// --- issue #1119: list_events/`/events` honour a standing 'mi' language preference ---
+
+test(
+  "formatListEventsEmptyText renders the te reo Māori variant for both 'kind' branches when language is " +
+    "'mi', and the exact pre-existing English string for 'auto'/'en' otherwise (issue #1119 acceptance " +
+    'criteria 2, 3, 6)',
+  () => {
+    for (const language of ['auto', 'en'] as const) {
+      assert.equal(formatListEventsEmptyText('none', language, 'discord'), 'No upcoming events.');
+      assert.equal(
+        formatListEventsEmptyText('noAdapter', language, 'discord'),
+        "Event listings aren't available on discord.",
+      );
+      assert.equal(
+        formatListEventsEmptyText('noAdapter', language, 'whatsapp'),
+        "Event listings aren't available on whatsapp.",
+        "the 'noAdapter' branch must keep interpolating the caller's own platform (issue #1119 acceptance " +
+          'criterion 3)',
+      );
+    }
+
+    assert.notEqual(
+      formatListEventsEmptyText('none', 'mi', 'discord'),
+      formatListEventsEmptyText('none', 'en', 'discord'),
+      "list_events' 'none' empty state must actually differ between 'mi' and 'en'",
+    );
+    assert.notEqual(
+      formatListEventsEmptyText('noAdapter', 'mi', 'discord'),
+      formatListEventsEmptyText('noAdapter', 'en', 'discord'),
+      "list_events' 'noAdapter' empty state must actually differ between 'mi' and 'en'",
+    );
+  },
+);
+
+test(
+  "SECURITY: list_events threads the caller's own stored 'mi' language preference through to both empty-" +
+    'state strings, byte-identical English for a distinct caller with no stored preference — never leaking ' +
+    'between the two identities (issue #1119 acceptance criteria 1, 6, SECURITY criterion 7)',
+  { skip },
+  async () => {
+    const miUser = `${RUN}-events-mi-empty`;
+    const enUser = `${RUN}-events-en-empty`;
+    await setLanguagePreferenceHandler({ platform: 'discord', userId: miUser }).handler({ language: 'mi' });
+    // enUser deliberately has NO stored preference at all — proves a caller
+    // with nothing set never inherits another caller's 'mi' preference.
+
+    const emptyAdapter = stubEventsAdapter([]);
+    const miResult = await listEventsHandler(emptyAdapter, miUser).handler();
+    assert.equal(miResult.content[0]?.text, formatListEventsEmptyText('none', 'mi', 'discord'));
+    const enResult = await listEventsHandler(emptyAdapter, enUser).handler();
+    assert.equal(enResult.content[0]?.text, formatListEventsEmptyText('none', 'auto', 'discord'));
+
+    const noAdapter = stubAdapter(async () => {});
+    const miNoAdapterResult = await listEventsHandler(noAdapter, miUser).handler();
+    assert.equal(miNoAdapterResult.content[0]?.text, formatListEventsEmptyText('noAdapter', 'mi', 'discord'));
+    const enNoAdapterResult = await listEventsHandler(noAdapter, enUser).handler();
+    assert.equal(
+      enNoAdapterResult.content[0]?.text,
+      formatListEventsEmptyText('noAdapter', 'auto', 'discord'),
+    );
+
+    await pool.query(`DELETE FROM language_prefs WHERE platform = 'discord' AND user_id = $1`, [miUser]);
+  },
+);
 
 // rate_answer tool handler (issue #118): exercises the handler's three
 // outcomes (recorded / no_recent_answer / rate_limited) against a real

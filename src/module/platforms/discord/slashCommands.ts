@@ -12,7 +12,11 @@ import {
   formatMySubmissionsText,
   formatMyWarningsText,
 } from '../../agent/tools/selfService.js';
-import { EVENTS_LIST_LIMIT, formatUpcomingEvents } from '../../agent/tools/info.js';
+import {
+  EVENTS_LIST_LIMIT,
+  formatListEventsEmptyText,
+  formatUpcomingEvents,
+} from '../../agent/tools/info.js';
 import {
   areKnowledgeEntriesLowRated,
   countAccessRequests,
@@ -682,7 +686,12 @@ async function handleMutedList(
  * beyond `toolsForRole` (unlike `/warnings`/`/whois`/`/projects`/`/digest`
  * above) — mirrored here exactly like `/kb`'s gate (issue #1004). Takes no
  * options: identity/data come only from `resolveRole` and the injected
- * adapter, never from the interaction payload.
+ * adapter, never from the interaction payload. Issue #1119 threaded the
+ * caller's own `getLanguagePreference` result through `formatListEventsEmptyText`
+ * (`info.ts`) for both bot-authored empty/unavailable strings, the same
+ * "one function, two entry points" shape `formatListProjectsEmptyText`/
+ * `formatWhoIsIntoEmptyText` established for `/projects`/`/whois` (#1105) —
+ * the rendered event rows themselves (`formatUpcomingEvents`) stay untouched.
  */
 async function handleEvents(interaction: ChatInputCommandInteraction, deps: SlashCommandDeps): Promise<void> {
   await deferEphemeral(interaction);
@@ -691,16 +700,20 @@ async function handleEvents(interaction: ChatInputCommandInteraction, deps: Slas
     await replyEphemeral(interaction, NOT_AUTHORIZED_TEXT, deps);
     return;
   }
+  const language = await getLanguagePreference('discord', interaction.user.id);
   // Degrades the same way the list_events tool itself does when the adapter
   // doesn't implement the optional capability — never reachable in practice
   // since /events is only ever registered on the Discord adapter, but kept
   // for parity with the tool's own guard rather than assuming.
   if (!discordAdapter?.listUpcomingEvents) {
-    await replyEphemeral(interaction, "Event listings aren't available on discord.", deps);
+    await replyEphemeral(interaction, formatListEventsEmptyText('noAdapter', language, 'discord'), deps);
     return;
   }
   const events = await discordAdapter.listUpcomingEvents(EVENTS_LIST_LIMIT);
-  const message = events.length === 0 ? 'No upcoming events.' : formatUpcomingEvents(events);
+  const message =
+    events.length === 0
+      ? formatListEventsEmptyText('none', language, 'discord')
+      : formatUpcomingEvents(events);
   recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
   await replyEphemeral(interaction, message, deps);
 }
