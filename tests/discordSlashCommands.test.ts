@@ -926,7 +926,7 @@ test('/projects mine:true calls listOwnProjects scoped to the caller identity, i
     'mine:true must never fall through to the embedding-similarity search path',
   );
   assert.deepEqual(mineCall.params, ['discord', 'member-1']);
-  assert.match(replies[0].content, /You haven't shared any projects yet\./);
+  assert.match(replies[0].content, /You haven't shared any projects yet/);
 });
 
 // --- issue #1105: /whois and /projects honour a standing 'mi' language preference ----
@@ -1039,7 +1039,9 @@ test("/projects mine:true with no shared projects renders the te reo Māori empt
 
     await handleInteraction(interaction as never, adapterDeps(adapter));
 
-    assert.equal(replies[0].content, formatListProjectsEmptyText('mine', language));
+    // The English 'mine' hint carries an em dash (issue #1118); Discord's
+    // outbound filter rewrites it into a comma before the reply is sent.
+    assert.equal(replies[0].content, stripEmDashes(formatListProjectsEmptyText('mine', language)));
   }
 });
 
@@ -1086,7 +1088,9 @@ test("/projects with no query and nothing shared renders the te reo Māori empty
 
     await handleInteraction(interaction as never, adapterDeps(adapter));
 
-    assert.equal(replies[0].content, formatListProjectsEmptyText('none', language));
+    // The English 'none' hint carries an em dash (issue #1118); Discord's
+    // outbound filter rewrites it into a comma before the reply is sent.
+    assert.equal(replies[0].content, stripEmDashes(formatListProjectsEmptyText('none', language)));
   }
 });
 

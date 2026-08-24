@@ -18061,13 +18061,19 @@ function listProjectsHandler(caller: {
 
 test("formatListProjectsEmptyText/formatWhoIsIntoEmptyText render the te reo Māori variant for every kind when language is 'mi', and the exact pre-existing English string for 'auto'/'en' otherwise (issue #1105)", () => {
   for (const language of ['auto', 'en'] as const) {
-    assert.equal(formatListProjectsEmptyText('mine', language), "You haven't shared any projects yet.");
+    assert.equal(
+      formatListProjectsEmptyText('mine', language),
+      "You haven't shared any projects yet — call share_project to add one.",
+    );
     assert.equal(
       formatListProjectsEmptyText('seeking', language),
       'No projects are currently looking for collaborators.',
     );
     assert.equal(formatListProjectsEmptyText('query', language), 'No shared projects match that.');
-    assert.equal(formatListProjectsEmptyText('none', language), 'No projects have been shared yet.');
+    assert.equal(
+      formatListProjectsEmptyText('none', language),
+      'No projects have been shared yet — call share_project to add one.',
+    );
     assert.equal(
       formatWhoIsIntoEmptyText('noProfile', language),
       "You haven't published interests yet — call set_my_interests first, then who_is_into with no " +
@@ -18096,6 +18102,51 @@ test("formatListProjectsEmptyText/formatWhoIsIntoEmptyText render the te reo Mā
       formatWhoIsIntoEmptyText(kind, 'en'),
       `who_is_into's '${kind}' empty state must actually differ between 'mi' and 'en'`,
     );
+  }
+});
+
+// --- issue #1118: list_projects' 'mine'/'none' empty states name share_project ---
+
+test("formatListProjectsEmptyText's 'mine' and 'none' branches always name share_project as the way to add one, in both English and mi; 'seeking'/'query' stay byte-identical (issue #1118 acceptance criteria 1-3)", () => {
+  for (const language of ['auto', 'en', 'mi'] as const) {
+    assert.match(
+      formatListProjectsEmptyText('mine', language),
+      /share_project/,
+      `'mine' must name share_project for language '${language}'`,
+    );
+    assert.match(
+      formatListProjectsEmptyText('none', language),
+      /share_project/,
+      `'none' must name share_project for language '${language}'`,
+    );
+  }
+
+  // AC #3/#4: 'seeking' and 'query' are untouched by this proposal.
+  for (const language of ['auto', 'en'] as const) {
+    assert.equal(
+      formatListProjectsEmptyText('seeking', language),
+      'No projects are currently looking for collaborators.',
+    );
+    assert.equal(formatListProjectsEmptyText('query', language), 'No shared projects match that.');
+  }
+  assert.equal(
+    formatListProjectsEmptyText('seeking', 'mi'),
+    'Kāore he kaupapa e rapu hoa mahi ana i tēnei wā.',
+  );
+  assert.equal(
+    formatListProjectsEmptyText('query', 'mi'),
+    'Kāore he kaupapa kua tohaina e ōrite ana ki tērā.',
+  );
+});
+
+test("formatListProjectsEmptyText's updated 'mine'/'none' strings are static literals with no caller-, member-, or argument-supplied value interpolated — same output every call for a given (kind, language) (issue #1118 acceptance criterion 6; non-privileged read-only string change, no SECURITY: test warranted)", () => {
+  for (const kind of ['mine', 'none'] as const) {
+    for (const language of ['auto', 'en', 'mi'] as const) {
+      const first = formatListProjectsEmptyText(kind, language);
+      const second = formatListProjectsEmptyText(kind, language);
+      assert.equal(first, second, `'${kind}'/'${language}' must be deterministic, not interpolated`);
+      assert.doesNotMatch(first, /undefined|null|\[object|\$\{/);
+    }
   }
 });
 
@@ -18440,7 +18491,7 @@ test(
 
     const noneShared = await listTool.handler({ mine: true });
     assert.equal(noneShared.isError, false);
-    assert.equal(noneShared.content[0]?.text, "You haven't shared any projects yet.");
+    assert.equal(noneShared.content[0]?.text, formatListProjectsEmptyText('mine', 'auto'));
 
     const shared = await ownerTool.handler({
       name: 'Mine Recall Project',
@@ -18490,7 +18541,7 @@ test(
     const aMine = await aListTool.handler({ mine: true });
     assert.equal(
       aMine.content[0]?.text,
-      "You haven't shared any projects yet.",
+      formatListProjectsEmptyText('mine', 'auto'),
       "caller A has zero of their own projects, regardless of caller B's",
     );
     assert.doesNotMatch(aMine.content[0]?.text ?? '', /Caller B Only Project/);

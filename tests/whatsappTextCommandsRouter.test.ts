@@ -907,7 +907,7 @@ test('acceptance criterion 3: "!projects mine" from a member with zero shared pr
 
   await trigger(makeMessage({ text: '!projects mine', userId: 'member-1' }));
 
-  assert.equal(sent[0].text, "You haven't shared any projects yet.");
+  assert.equal(sent[0].text, formatListProjectsEmptyText('mine', 'auto'));
 });
 
 test('"!projects mine" is checked before the general !projects [query] branch — "mine" as a literal project search term still requires the sub-command shape', async (t) => {
