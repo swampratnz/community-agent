@@ -38,6 +38,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   quoted clause — matching the same non-persisted, echoed-not-stored
   convention as its sibling tools. Omitting the reason produces the same
   neutral decline wording as before.
+- **The weekly admin digest now shows how fast moderation appeals actually
+  get closed, not just how many.** (#1130) The closed-appeals line
+  (`resolvedAppealsCount`/`dismissedAppealsCount`, #844) already showed the
+  outcome mix; it couldn't tell a backlog that's shrinking because appeals
+  get triaged quickly from one that's shrinking despite individual appeals
+  sitting for days. It now appends a median hours-to-close figure, mirroring
+  the reports queue's own median line shipped in #1081. Bare integer only —
+  no appellant name, reason, or resolver identity is ever added.
 
 ## 2026-08-24
 
