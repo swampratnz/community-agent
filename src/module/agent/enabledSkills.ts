@@ -36,6 +36,7 @@ export const ENABLED_SKILLS = [
   'rag-and-retrieval-design',
   'mcp-server-design',
   'eval-and-testing-design',
+  'tool-use-and-structured-output-design',
 ] as const;
 
 /**
