@@ -42,6 +42,17 @@ import {
  * SNI/Host header. The connection layer never performs its own independent
  * DNS resolution, so a low-TTL DNS record that would resolve differently a
  * moment later can no longer bypass the guard.
+ *
+ * Transient-failure retry (issue #1112): a single network error/timeout or a
+ * 5xx/429 response used to be classified `'unreachable'` on one attempt,
+ * unlike the "confirmed outage, not a blip" discipline this repo applies
+ * everywhere else it judges reachability (`/healthz`, issue #476). Each hop
+ * now retries up to `MAX_RETRIES` times with a short fixed backoff before
+ * giving up — a real, deterministic 4xx (other than 429) still classifies on
+ * the first attempt, no retry. Retries reuse the SAME guard-vetted
+ * `pinnedAddress` for that hop (no second DNS resolution); a redirect
+ * encountered mid-retry ends the retry loop for that hop immediately and the
+ * new hop is re-guarded from scratch by the outer loop, exactly as before.
  */
 
 export const LINK_CHECK_USER_AGENT = 'nz-claude-community-agent/link-check (+community bot)';
@@ -53,6 +64,12 @@ const CHECK_MIN_INTERVAL_MS = 6 * 24 * 3_600_000;
 const REDIRECT_HOP_CAP = 5;
 
 const REQUEST_TIMEOUT_MS = 5_000;
+
+/** Retries beyond the initial attempt, only for a network error/timeout or a 5xx/429 — never a deterministic 4xx. */
+const MAX_RETRIES = 2;
+
+/** Fixed short backoff between retry attempts, in the same fixed-constant style as the other tunables above. */
+const RETRY_BACKOFF_MS = 1_000;
 
 export function shouldRunKnowledgeLinkCheck(latest: Date | null, now: number): boolean {
   if (!latest) return true;
@@ -68,6 +85,17 @@ export type DnsLookupFn = (hostname: string) => Promise<Array<{ address: string;
 
 async function defaultLookup(hostname: string): Promise<Array<{ address: string; family: number }>> {
   return dns.lookup(hostname, { all: true });
+}
+
+export type SleepFn = (ms: number) => Promise<void>;
+
+async function defaultSleep(ms: number): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
+/** 5xx or 429 — a plausibly transient condition worth retrying; any other 4xx is a real, deterministic answer. */
+function isRetryableStatus(status: number): boolean {
+  return status === 429 || (status >= 500 && status < 600);
 }
 
 const DISALLOWED_V4_CIDRS: ReadonlyArray<readonly [string, number]> = [
@@ -253,13 +281,18 @@ export interface ClassifyDeps {
   timeoutMs?: number;
   /** Builds the per-hop pinned connection. Defaults to `buildPinnedDispatcher`; tests inject their own. */
   buildDispatcher?: DispatcherFactory;
+  /** The retry backoff delay. Defaults to a real timer; tests inject an instant no-op. */
+  sleep?: SleepFn;
 }
 
 /**
  * Classify one sourceUrl: 2xx/3xx-within-the-redirect-cap → 'reachable';
  * 4xx/5xx/timeout/DNS-failure → 'unreachable'. 'refused' means the SSRF
  * guard blocked the initial URL or a redirect hop — the caller MUST NOT
- * persist anything for that outcome (see `runKnowledgeLinkCheck`).
+ * persist anything for that outcome (see `runKnowledgeLinkCheck`). A network
+ * error/timeout or a 5xx/429 on a hop is retried up to `MAX_RETRIES` times
+ * before that hop's outcome is decided; any other 4xx classifies on the
+ * first attempt (see the module header's "Transient-failure retry" note).
  */
 export async function classifySourceUrl(
   sourceUrl: string,
@@ -269,6 +302,7 @@ export async function classifySourceUrl(
   const lookup = deps.lookup ?? defaultLookup;
   const timeoutMs = deps.timeoutMs ?? REQUEST_TIMEOUT_MS;
   const buildDispatcher = deps.buildDispatcher ?? buildPinnedDispatcher;
+  const sleep = deps.sleep ?? defaultSleep;
 
   let current: URL;
   try {
@@ -282,12 +316,17 @@ export async function classifySourceUrl(
     if (guard.kind === 'blocked') return 'refused';
     if (guard.kind === 'dns-failure') return 'unreachable';
 
-    let res: Response;
-    try {
-      res = await requestOnce(current, fetchImpl, timeoutMs, guard.pinnedAddress, buildDispatcher);
-    } catch {
-      return 'unreachable'; // network error / timeout
+    let res: Response | undefined;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        res = await requestOnce(current, fetchImpl, timeoutMs, guard.pinnedAddress, buildDispatcher);
+      } catch {
+        res = undefined; // network error / timeout — retryable, same as a 5xx/429
+      }
+      if (res && !isRetryableStatus(res.status)) break;
+      if (attempt < MAX_RETRIES) await sleep(RETRY_BACKOFF_MS);
     }
+    if (!res) return 'unreachable'; // network error/timeout on every attempt
 
     if (res.status >= 200 && res.status < 300) return 'reachable';
     if (res.status >= 300 && res.status < 400) {
