@@ -24,6 +24,21 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #963 #964 #965 #968 #971 #983 #988 #989 #991 #992 #994 #1017 #1071 #1086
 -->
 
+## 2026-08-25
+
+### Added
+- **A declined access request now tells the requester.** (#1126)
+  `decline_access_request` was the last member of the review-queue
+  "resolve a row, DM the submitter" family (`resolve_suggestion`,
+  `resolve_report`, `resolve_appeal`, `decline_knowledge_candidate`) that
+  stayed silent — someone who asked the bot for access and was declined had
+  no way to tell whether the bot had even seen their request. It now sends a
+  best-effort DM (English and te reo Māori) once the pending row is cleared,
+  and admins can optionally add a short reason, appended as a distinct
+  quoted clause — matching the same non-persisted, echoed-not-stored
+  convention as its sibling tools. Omitting the reason produces the same
+  neutral decline wording as before.
+
 ## 2026-08-24
 
 ### Added

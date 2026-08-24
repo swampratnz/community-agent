@@ -318,6 +318,59 @@ export async function notifyAdminApproved(
 }
 
 /**
+ * Best-effort decline DM for `decline_access_request` (issue #1126) — the
+ * last member of the review-queue decline family (`resolve_suggestion`,
+ * `resolve_report`, `resolve_appeal`, `decline_knowledge_candidate`) that
+ * stayed silent toward the person whose row it resolved. Reaches a
+ * not-yet-member guest directly by `(platform, userId)` via the adapter, the
+ * same mechanism `notifyMemberApproved` above already proves in production
+ * for the *approve* path on this identical pending row — fire-and-forget,
+ * `.catch(logger.warn)`, never blocks or changes `decline_access_request`'s
+ * own reported outcome. The base text is a static, translated catalogue
+ * entry (`strings/notices.ts`'s `accessRequestDeclinedMessage`, same
+ * static/templated shape as `memberApprovedMessage`/`adminApprovedMessage`
+ * above) rather than the inline-ternary shape `notifySuggestionResolved`
+ * below uses, because there is no per-row content to select wording by —
+ * only a fixed neutral decline. `reason` is an optional, admin-authored,
+ * one-line explanation appended via `truncateForEcho`, as a distinct
+ * trailing clause, never interpolated into the translated base string —
+ * same non-interpolation convention as every sibling's `adminReason`/
+ * `reason` field. Omitted, the DM stays byte-identical to the reasonless
+ * base text. Never persisted: the caller keeps it out of `audited()`'s
+ * params, same as every sibling. Honours the requester's standing `'mi'`
+ * language preference (issue #331), same degrade-to-`'auto'`-on-failure
+ * shape as `notifyMemberApproved` above. A `WindowClosedError` rejection is
+ * queued via `queueForWindowReopen` at `'low'` priority instead of
+ * logged-and-dropped (issue #644, the same #602 recovery extended to every
+ * sibling in this family); any other rejection is unaffected. Exported
+ * separately so it's unit-testable without the MCP tool-call transport, same
+ * convention as every sibling notify function in this file.
+ */
+export async function notifyAccessRequestDeclined(
+  adapter: PlatformAdapter,
+  userId: string,
+  platform: Platform,
+  getLangPref: typeof getLanguagePreference = getLanguagePreference,
+  reason?: string,
+): Promise<void> {
+  const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
+  const base = notice('accessRequestDeclinedMessage', { language: lang });
+  const echoedReason = reason ? truncateForEcho(reason) : null;
+  const message = echoedReason ? `${base} ${lang === 'mi' ? 'Take' : 'Reason'}: "${echoedReason}"` : base;
+  await adapter.sendDirectMessage(userId, message).catch((err) => {
+    if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+      adapter.queueForWindowReopen(userId, message, 'low');
+      logger.warn(
+        { userId: hashId(userId), platform },
+        "Access request decline DM: recipient's window is closed, queued for reopen",
+      );
+      return;
+    }
+    logger.warn({ err, userId: hashId(userId) }, 'Access request decline DM failed');
+  });
+}
+
+/**
  * Best-effort confirmation DM to a member when their suggest_improvement
  * submission is resolved — closes the "suggestion box into the void" gap
  * (issue #116), mirroring notifyMemberApproved's shape exactly: fire-and-
