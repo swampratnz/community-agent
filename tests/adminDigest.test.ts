@@ -4997,6 +4997,222 @@ test(
   },
 );
 
+// --- issue #1130: appealMedianResolutionHours + its digest line -----------
+
+test('appealMedianResolutionHours reuses medianReportResolutionHours directly rather than forking a second median-computation helper (issue #1130 acceptance criterion 1)', () => {
+  const source = readFileSync(new URL('../src/module/adminDigest.ts', import.meta.url), 'utf8');
+  const medianHelperDefCount = (source.match(/^(export )?function medianReportResolutionHours\(/gm) ?? [])
+    .length;
+  assert.equal(medianHelperDefCount, 1, 'exactly one median-computation function is ever defined');
+  const medianHelperCallCount = (source.match(/medianReportResolutionHours\(/g) ?? []).length;
+  assert.equal(
+    medianHelperCallCount,
+    3,
+    'medianReportResolutionHours is referenced exactly three times — its own definition, ' +
+      "reportResolutionBreakdown's call, and appealMedianResolutionHours's call — a second, forked median " +
+      'helper is never introduced',
+  );
+});
+
+// APPEAL_MEDIAN_ZERO_PREFIX: REPORT_BREAKDOWN_ZERO_PREFIX (43 elements, every
+// signal through projectConnectionsCount at position 43) plus the #1075
+// trailing params at their own defaults (resolvedReportsCount=0,
+// dismissedReportsCount=0, reportMedianResolutionHours=null) — 46 elements,
+// every signal through position 46 zero/null. withAppealCounts overrides
+// resolvedAppealsCount/dismissedAppealsCount (positions 41/42, array indices
+// 40/41) directly, since the appeal-breakdown line — not this prefix — is
+// what the fragment under test decorates; appealMedianResolutionHours
+// (position 47) is appended by each test below.
+const APPEAL_MEDIAN_ZERO_PREFIX = [...REPORT_BREAKDOWN_ZERO_PREFIX, 0, 0, null] as const;
+
+function withAppealCounts(resolved: number, dismissed: number) {
+  return [
+    ...APPEAL_MEDIAN_ZERO_PREFIX.slice(0, 40),
+    resolved,
+    dismissed,
+    ...APPEAL_MEDIAN_ZERO_PREFIX.slice(42),
+  ] as const;
+}
+
+test('buildAdminDigestMessage: appealMedianResolutionHours renders a "(median Nh to close)" fragment on the closed-appeals line only when non-null, and omitting it is byte-identical to the pre-#1130 form (issue #1130 acceptance criterion 2)', () => {
+  const prefix = withAppealCounts(3, 2);
+  const withoutParam = buildAdminDigestMessage(...prefix);
+  const withExplicitNull = buildAdminDigestMessage(...prefix, null);
+  assert.equal(
+    withoutParam,
+    withExplicitNull,
+    'omitting the new trailing param is byte-identical to passing null explicitly',
+  );
+  assert.equal(
+    withoutParam?.split('\n').find((l) => l.includes('📈')),
+    '📈 5 appeal(s) closed this period: 3 resolved, 2 dismissed.',
+    'the quiet-median case is byte-identical to the pre-#1130 line',
+  );
+
+  const withMedian = buildAdminDigestMessage(...prefix, 26.4);
+  assert.ok(withMedian);
+  const medianLine = withMedian.split('\n').find((l) => l.includes('📈'));
+  assert.equal(
+    medianLine,
+    '📈 5 appeal(s) closed this period: 3 resolved, 2 dismissed (median 26h to close).',
+    'a non-null median renders the rounded-hours fragment exactly once, before the trailing period',
+  );
+  assert.equal(
+    medianLine?.match(/median \d+h to close/g)?.length,
+    1,
+    'the median fragment appears exactly once',
+  );
+});
+
+test('SECURITY: buildAdminDigestMessage: the closed-appeals line with a median fragment is a deterministic function of (resolvedAppealsCount, dismissedAppealsCount, appealMedianResolutionHours) only, and never carries an appellant user_name/reason/user_id/resolved_by value (issue #1130 acceptance criterion 3)', () => {
+  const secretUserName = 'a very identifiable appellant display name that must never leak';
+  const secretUserId = 'appellant-user-id-192837465';
+  const secretReason = 'a very identifiable appeal reason that must never leak';
+  const secretResolverId = 'resolver-user-id-102938475';
+
+  const message = buildAdminDigestMessage(...withAppealCounts(3, 2), 26.4);
+  assert.ok(message);
+  const line = message.split('\n').find((l) => l.includes('📈'));
+  assert.ok(line);
+  for (const secret of [secretUserName, secretUserId, secretReason, secretResolverId]) {
+    assert.ok(
+      !line.includes(secret),
+      `SECURITY: the closed-appeals line must never carry "${secret}" — it takes no such input, only the two integer counts and the bare median-hours integer`,
+    );
+  }
+  assert.equal(
+    line,
+    '📈 5 appeal(s) closed this period: 3 resolved, 2 dismissed (median 26h to close).',
+    'the line is a pure function of the two integer counts and the median-hours integer — bare numbers and fixed template text only',
+  );
+});
+
+test(
+  'buildAdminDigestForAdmin: appealMedianResolutionHours is wired over the same FRESHNESS_DAYS window and rendered on the digest, and no appellant reason/user_name/resolved_by ever reaches the message (issue #1130 acceptance criteria 1, 2, 3)',
+  { skip },
+  async () => {
+    const adminId = `${RUN}-appealmedian-admin`;
+    const appellant = `${RUN}-appealmedian-appellant`;
+    const secretReason = 'a very identifiable appeal reason that must never leak';
+    const secretUserName = 'VerySecretAppealMedianAppellantName';
+    const secretResolver = `${RUN}-appealmedian-resolver-secret`;
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    const resolved = await createModerationAppeal({
+      platform: 'discord',
+      userId: appellant,
+      userName: secretUserName,
+      reason: secretReason,
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    const dismissed = await createModerationAppeal({
+      platform: 'discord',
+      userId: appellant,
+      userName: secretUserName,
+      reason: secretReason,
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    assert.ok(resolved && dismissed);
+    await resolveModerationAppeal(resolved.id, 'resolved', secretResolver);
+    await resolveModerationAppeal(dismissed.id, 'dismissed', secretResolver);
+
+    const adapter = fakeAdapter({ platform: 'discord', conversationIds: [], sent: [] });
+    const result = await buildAdminDigestForAdmin('discord', adminId, adapter);
+
+    assert.ok(result.message, 'a nonzero appeal-breakdown count alone still produces a DM');
+    const breakdownLine = result.message.split('\n').find((l) => l.includes('📈'));
+    assert.match(
+      breakdownLine ?? '',
+      /^📈 2 appeal\(s\) closed this period: 1 resolved, 1 dismissed \(median \d+h to close\)\.$/,
+      'the breakdown line renders the seeded resolved + dismissed appeals, plus the median-hours fragment (issue #1130)',
+    );
+    for (const secret of [secretReason, secretUserName, secretResolver, appellant]) {
+      assert.ok(
+        !result.message.includes(secret),
+        `SECURITY: "${secret}" must never reach the rendered digest — only the two integer counts plus the bare median-hours integer do (issue #1130 acceptance criterion 3)`,
+      );
+    }
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = ANY($1)`, [[resolved.id, dismissed.id]]);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+  },
+);
+
+test(
+  "SECURITY: buildAdminDigestForAdmin's appealMedianResolutionHours platform-filters the listAppeals scan — an appeal for a DIFFERENT platform never contributes to the computed median, even though listAppeals itself carries no platform parameter (issue #1130 acceptance criterion 4)",
+  { skip },
+  async () => {
+    const adminId = `${RUN}-appealmedian-platform-admin`;
+    const discordAppellant = `${RUN}-appealmedian-platform-discord-appellant`;
+    const whatsappAppellant = `${RUN}-appealmedian-platform-whatsapp-appellant`;
+    const resolver = `${RUN}-appealmedian-platform-resolver`;
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    const discordAppeal = await createModerationAppeal({
+      platform: 'discord',
+      userId: discordAppellant,
+      userName: 'discord appellant',
+      reason: 'in-platform appeal — must be counted',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    const whatsappAppeal = await createModerationAppeal({
+      platform: 'whatsapp',
+      userId: whatsappAppellant,
+      userName: 'whatsapp appellant',
+      reason: 'cross-platform appeal — must NOT skew the discord median',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    assert.ok(discordAppeal && whatsappAppeal);
+
+    // Back-date created_at so each appeal's resolution duration is
+    // deliberately controlled and far apart: ~2h for the in-platform appeal,
+    // ~500h for the cross-platform one — if the cross-platform row ever
+    // leaked into the discord median, the result would be nowhere near 2h.
+    await pool.query(`UPDATE moderation_appeals SET created_at = now() - interval '2 hours' WHERE id = $1`, [
+      discordAppeal.id,
+    ]);
+    await pool.query(
+      `UPDATE moderation_appeals SET created_at = now() - interval '500 hours' WHERE id = $1`,
+      [whatsappAppeal.id],
+    );
+    await resolveModerationAppeal(discordAppeal.id, 'resolved', resolver);
+    await resolveModerationAppeal(whatsappAppeal.id, 'resolved', resolver);
+
+    const adapter = fakeAdapter({ platform: 'discord', conversationIds: [], sent: [] });
+    const result = await buildAdminDigestForAdmin('discord', adminId, adapter);
+
+    assert.ok(result.message, 'the in-platform resolved appeal alone still produces a DM');
+    const breakdownLine = result.message.split('\n').find((l) => l.includes('📈'));
+    assert.match(
+      breakdownLine ?? '',
+      /^📈 1 appeal\(s\) closed this period: 1 resolved, 0 dismissed \(median \d+h to close\)\.$/,
+      "only the in-platform resolved appeal is counted, matching appealResolutionBreakdown's own platform scope",
+    );
+    const medianMatch = breakdownLine?.match(/median (\d+)h to close/);
+    assert.ok(medianMatch, 'the median fragment is present');
+    const medianHours = Number(medianMatch[1]);
+    assert.ok(
+      medianHours < 24,
+      `SECURITY: the computed median (${medianHours}h) must reflect only the ~2h in-platform appeal — the ` +
+        '~500h cross-platform whatsapp appeal must never contribute, even though listAppeals itself carries no ' +
+        'platform filter (issue #1130 acceptance criterion 4)',
+    );
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = ANY($1)`, [
+      [discordAppeal.id, whatsappAppeal.id],
+    ]);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+  },
+);
+
 // --- issue #385: runAdminDigestOnce now signals total failure to
 // startTrackedJob (previously listAdmins() failures were caught-and-returned,
 // and the per-admin loop swallowed every error and continued — so the
