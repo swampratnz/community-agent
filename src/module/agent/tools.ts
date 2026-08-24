@@ -47,6 +47,7 @@ export {
   formatDevTeamJobResult,
   PROJECT_NOTE_RETENTION_NOTICE,
   formatReviewQueueSummary,
+  formatMutedMembersList,
 } from './tools/helpers.js';
 export {
   notifyAdmins,

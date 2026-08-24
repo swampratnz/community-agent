@@ -17,7 +17,7 @@ import {
   MODERATION_ACTION_KINDS,
   recentModerationEntries,
 } from '@swampratnz/agent-base/storage/repository.js';
-import { text, unreachableConversationRefusal, untrusted } from './helpers.js';
+import { formatMutedMembersList, text, unreachableConversationRefusal, untrusted } from './helpers.js';
 import { applyManualWarnStrike, notifyWarningsCleared } from './notify.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
@@ -356,21 +356,7 @@ export const moderationTools = [
         config.moderation.strikeLimit,
         config.moderation.strikeWindowDays,
       );
-      if (rows.length === 0) return text('No members are currently muted.');
-      return text(
-        rows
-          .map((r) => {
-            const hedge =
-              r.status === 'stale'
-                ? ' (may still be muted — strikes aged out of the window, never explicitly cleared)'
-                : '';
-            return (
-              `${r.userId}: ${r.strikeCount} strike(s), ${r.status}${hedge}, ` +
-              `last warning ${r.lastWarningAt.toISOString()}`
-            );
-          })
-          .join('\n'),
-      );
+      return text(formatMutedMembersList(rows));
     },
   }),
 

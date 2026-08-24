@@ -19,6 +19,7 @@ import {
   type MemberInterestSearchHit,
   type MemberProject,
   type MemberProjectSearchHit,
+  type MutedMemberRow,
   resolveDisplayName,
   usageStats,
 } from '@swampratnz/agent-base/storage/repository.js';
@@ -912,6 +913,33 @@ export function formatReviewQueueSummary(counts: {
     `📋 Review queue\n${lines.join('\n')}\n\n` +
     'Reports: see list_reports or review_queue (scoped to your conversations)'
   );
+}
+
+/**
+ * Pure renderer shared by the `list_muted_members` tool handler and the
+ * `!mutedlist`/`/mutedlist` admin shortcut (issue #1114), hoisted verbatim
+ * out of the tool handler's own inline rendering so the two call sites can
+ * never drift — same reasoning as `formatReviewQueueSummary` above. Empty
+ * input renders the fixed "No members are currently muted." string; each row
+ * renders as `<userId>: <strikeCount> strike(s), <status>[, hedge], last
+ * warning <ISO timestamp>`, where a `stale` row additionally carries the
+ * over-approximation hedge (its strikes aged out of the configured window
+ * but the member was never explicitly unmuted via `clear_warnings`).
+ */
+export function formatMutedMembersList(rows: readonly MutedMemberRow[]): string {
+  if (rows.length === 0) return 'No members are currently muted.';
+  return rows
+    .map((r) => {
+      const hedge =
+        r.status === 'stale'
+          ? ' (may still be muted — strikes aged out of the window, never explicitly cleared)'
+          : '';
+      return (
+        `${r.userId}: ${r.strikeCount} strike(s), ${r.status}${hedge}, ` +
+        `last warning ${r.lastWarningAt.toISOString()}`
+      );
+    })
+    .join('\n');
 }
 
 /** One entry in the `feature_flags` allowlist (issue #559). */

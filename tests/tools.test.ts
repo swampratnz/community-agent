@@ -81,6 +81,7 @@ const {
   formatKnowledgeTopics,
   formatListProjectsEmptyText,
   formatMostHelpfulKnowledge,
+  formatMutedMembersList,
   formatWhoIsIntoEmptyText,
   rankKnowledgeByRetrieval,
   formatUsageStats,
@@ -183,6 +184,7 @@ const {
   blockUser,
   unblockUser,
   listBlockedUsers,
+  listMutedMembers,
   shareProject,
   removeMemberProject,
   setMemberInterests,
@@ -4309,7 +4311,10 @@ test(
     // (`!kb` is excluded by its Discord-only `platforms`, not this list) — a
     // future flag-gated beta shortcut would go here too, named and
     // explained, rather than silently vanishing from the discovery block.
-    const WHATSAPP_DISCOVERY_EXEMPT_COMMANDS: readonly string[] = ['reviewqueue'];
+    // `mutedlist` (issue #1114) is the second admin-tier exception, same
+    // reasoning as `reviewqueue` — its discovery line lives in the
+    // `whatsappAdminTextCommands` notice instead, asserted separately below.
+    const WHATSAPP_DISCOVERY_EXEMPT_COMMANDS: readonly string[] = ['reviewqueue', 'mutedlist'];
 
     const original = config.behaviour.whatsappTextCommandsEnabled;
     try {
@@ -4493,6 +4498,120 @@ test(
         superAdminReply,
         /!reviewqueue/,
         'with the flag off, !reviewqueue must not be mentioned even for a super_admin-tier WhatsApp caller',
+      );
+    } finally {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    }
+  },
+);
+
+// --- issue #1114: !mutedlist discovery for admin-tier WhatsApp callers,
+// the same whatsappAdminTextCommands notice !reviewqueue (#1097) discovers
+// through, appended in the same diff rather than needing a follow-up issue.
+
+test(
+  'community_info/formatCommunityInfoText mention !mutedlist for admin- and super_admin-tier WhatsApp callers ' +
+    'with whatsappTextCommandsEnabled on, in both the default/en and mi language variants (issue #1114 ' +
+    'acceptance criterion 6)',
+  { skip },
+  async () => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    try {
+      config.behaviour.whatsappTextCommandsEnabled = true;
+
+      const enAdmin = `${RUN}-info-admin-mutedlist-en`;
+      const enReply = (await communityInfoHandler('admin', 'whatsapp', enAdmin)).content[0]?.text ?? '';
+      assert.match(enReply, /!mutedlist/, 'an admin-tier WhatsApp caller must be told about !mutedlist');
+
+      const miAdmin = `${RUN}-info-admin-mutedlist-mi`;
+      await setLanguagePreferenceHandler({ platform: 'whatsapp', userId: miAdmin }).handler({
+        language: 'mi',
+      });
+      const miReply = (await communityInfoHandler('admin', 'whatsapp', miAdmin)).content[0]?.text ?? '';
+      assert.match(
+        miReply,
+        /!mutedlist/,
+        "an admin-tier WhatsApp caller with a 'mi' preference must also be told about !mutedlist",
+      );
+
+      const enSuperAdmin = `${RUN}-info-super-admin-mutedlist-en`;
+      const superAdminReply =
+        (await communityInfoHandler('super_admin', 'whatsapp', enSuperAdmin)).content[0]?.text ?? '';
+      assert.match(
+        superAdminReply,
+        /!mutedlist/,
+        'a super_admin-tier WhatsApp caller must be told about !mutedlist',
+      );
+
+      assert.equal(
+        await formatCommunityInfoText('admin', 'whatsapp', enAdmin),
+        enReply,
+        "formatCommunityInfoText's own output must match the tool handler's (single source of truth)",
+      );
+    } finally {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    }
+  },
+);
+
+test(
+  'SECURITY: !mutedlist is never mentioned in community_info/formatCommunityInfoText output for a member or ' +
+    'guest WhatsApp caller (whatsappTextCommandsEnabled on), nor for a Discord caller at any tier (issue #1114 ' +
+    'acceptance criterion 6)',
+  async () => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    try {
+      config.behaviour.whatsappTextCommandsEnabled = true;
+
+      const memberReply = (await communityInfoHandler('member', 'whatsapp')).content[0]?.text ?? '';
+      assert.doesNotMatch(
+        memberReply,
+        /!mutedlist/,
+        'a member-tier WhatsApp caller must never be told about the admin-only !mutedlist shortcut',
+      );
+
+      const guestReply = (await communityInfoHandler('guest', 'whatsapp')).content[0]?.text ?? '';
+      assert.doesNotMatch(
+        guestReply,
+        /!mutedlist/,
+        'a guest-tier WhatsApp caller must never be told about the admin-only !mutedlist shortcut',
+      );
+
+      const roles = ['guest', 'member', 'admin', 'super_admin'] as const;
+      for (const role of roles) {
+        const discordReply = (await communityInfoHandler(role, 'discord')).content[0]?.text ?? '';
+        assert.doesNotMatch(
+          discordReply,
+          /!mutedlist/,
+          `a Discord caller (${role}) must never see the WhatsApp-only !mutedlist shortcut block — ` +
+            'Discord already surfaces /mutedlist via its own slash-command autocomplete',
+        );
+      }
+    } finally {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    }
+  },
+);
+
+test(
+  'community_info/formatCommunityInfoText output for an admin caller is byte-identical to before issue ' +
+    '#1114 when whatsappTextCommandsEnabled is off (issue #1114 acceptance criterion 5)',
+  async () => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    try {
+      config.behaviour.whatsappTextCommandsEnabled = false;
+      const adminReply = (await communityInfoHandler('admin', 'whatsapp')).content[0]?.text ?? '';
+      assert.doesNotMatch(
+        adminReply,
+        /!mutedlist/,
+        'with the flag off, !mutedlist must not be mentioned even for an admin-tier WhatsApp caller',
+      );
+
+      const superAdminReply = (await communityInfoHandler('super_admin', 'whatsapp')).content[0]?.text ?? '';
+      assert.doesNotMatch(
+        superAdminReply,
+        /!mutedlist/,
+        'with the flag off, !mutedlist must not be mentioned even for a super_admin-tier WhatsApp caller',
       );
     } finally {
       config.behaviour.whatsappTextCommandsEnabled = original;
@@ -7659,6 +7778,88 @@ test(
       assert.equal(result.content[0]?.text, 'No members are currently muted.');
     } finally {
       config.moderation.strikeLimit = originalLimit;
+    }
+  },
+);
+
+test(
+  'anti-drift: list_muted_members and the !mutedlist shortcut render byte-identical text for the same DB ' +
+    'rows, both via the shared formatMutedMembersList (issue #1114 acceptance criterion 1)',
+  { skip },
+  async () => {
+    const platform = `${RUN}-mutedlist-drift`;
+    const active = `${RUN}-drift-active`;
+    const stale = `${RUN}-drift-stale`;
+    for (let i = 0; i < 3; i++) {
+      await addWarning({
+        platform,
+        userId: active,
+        reason: `strike-${i}`,
+        excerpt: null,
+        source: 'auto',
+        issuedBy: null,
+      });
+    }
+    for (let i = 0; i < 3; i++) {
+      await addWarning({
+        platform,
+        userId: stale,
+        reason: `strike-${i}`,
+        excerpt: null,
+        source: 'auto',
+        issuedBy: null,
+      });
+    }
+    await pool.query(
+      `UPDATE member_warnings SET created_at = now() - interval '31 days'
+        WHERE platform = $1 AND user_id = $2`,
+      [platform, stale],
+    );
+
+    const originalLimit = config.moderation.strikeLimit;
+    const originalWindow = config.moderation.strikeWindowDays;
+    config.moderation.strikeLimit = 3;
+    config.moderation.strikeWindowDays = 30;
+    try {
+      const rows = await listMutedMembers(
+        platform,
+        config.moderation.strikeLimit,
+        config.moderation.strikeWindowDays,
+      );
+      const expected = formatMutedMembersList(rows);
+      assert.match(expected, /active/);
+      assert.match(expected, /may still be muted/);
+
+      const toolResult = await listMutedMembersHandler('admin', platform).handler();
+      assert.equal(
+        toolResult.content[0]?.text,
+        expected,
+        'list_muted_members must match the shared formatMutedMembersList output',
+      );
+
+      const mutedlistCommand = COMMUNITY_COMMANDS.find((c) => c.name === 'mutedlist');
+      assert.ok(mutedlistCommand?.whatsapp, 'the mutedlist command must define a whatsapp handler');
+      const shortcutResult = await mutedlistCommand.whatsapp(
+        '!mutedlist',
+        {
+          platform,
+          conversationId: 'convo-mutedlist-drift',
+          userId: 'admin-mutedlist-drift',
+          userName: 'Admin',
+          text: '!mutedlist',
+        } as never,
+        'admin',
+        {} as never,
+      );
+      assert.equal(
+        shortcutResult,
+        expected,
+        '!mutedlist must render byte-identical text to list_muted_members for the same rows',
+      );
+    } finally {
+      config.moderation.strikeLimit = originalLimit;
+      config.moderation.strikeWindowDays = originalWindow;
+      await pool.query(`DELETE FROM member_warnings WHERE platform = $1`, [platform]);
     }
   },
 );

@@ -62,6 +62,7 @@ const {
   formatKnowledgeTopics,
   formatListProjectsEmptyText,
   formatMostHelpfulKnowledge,
+  formatMutedMembersList,
   formatReviewQueueSummary,
   formatWhoIsIntoEmptyText,
   KNOWLEDGE_CONFLICT_CAVEAT_TEXT,
@@ -173,6 +174,8 @@ function mockPool(
     appealCount?: number;
     /** `oldestOpenAppealAgeDays`'s age for `/reviewqueue` (issue #1095) — `null` means the queue is empty. */
     appealAgeDays?: number | null;
+    /** `listMutedMembers`' rows for `/mutedlist` (issue #1114), raw snake_case DB shape. */
+    mutedMemberRows?: PoolRow[];
   } = {},
 ): Array<{ sql: string; params: unknown[] }> {
   const calls: Array<{ sql: string; params: unknown[] }> = [];
@@ -315,6 +318,13 @@ function mockPool(
     }
     if (sql.includes('FROM language_prefs')) {
       return { rows: opts.languagePref ? [{ language: opts.languagePref }] : [], rowCount: 0 };
+    }
+    // listMutedMembers' grouped read (issue #1114's /mutedlist) is
+    // distinguished from countActiveWarnings' bare count below by its
+    // distinctive `windowed_count` column — checked BEFORE the generic
+    // branch for the same reason as every other multi-query table above.
+    if (sql.includes('FROM member_warnings') && sql.includes('windowed_count')) {
+      return { rows: opts.mutedMemberRows ?? [], rowCount: 0 };
     }
     if (sql.includes('FROM member_warnings')) {
       const windowDays = params[2];
@@ -540,6 +550,7 @@ test('with DISCORD_SLASH_COMMANDS_ENABLED=true, all commands are registered guil
     'kb',
     'kbhelpful',
     'kbtopics',
+    'mutedlist',
     'mydata',
     'mysubmissions',
     'projects',
@@ -565,7 +576,7 @@ test("a slash-command registration failure is caught and logged, never thrown, m
   assert.ok(warnLog.mock.calls.length >= 1, 'a registration failure must be logged, not swallowed silently');
 });
 
-test('buildSlashCommands defines exactly the fourteen approved read-only commands, each with its expected required-ness', () => {
+test('buildSlashCommands defines exactly the fifteen approved read-only commands, each with its expected required-ness', () => {
   const commands = buildSlashCommands();
   const byName = new Map(commands.map((c) => [c.name, c]));
   assert.deepEqual([...byName.keys()].sort(), [
@@ -576,6 +587,7 @@ test('buildSlashCommands defines exactly the fourteen approved read-only command
     'kb',
     'kbhelpful',
     'kbtopics',
+    'mutedlist',
     'mydata',
     'mysubmissions',
     'projects',
@@ -667,6 +679,12 @@ test('buildSlashCommands defines exactly the fourteen approved read-only command
     (byName.get('reviewqueue') as { options?: unknown[] }).options ?? [],
     [],
     '/reviewqueue takes no options — a fixed roll-up of four review-queue counts, admin-tier only (issue #1095)',
+  );
+  assert.deepEqual(
+    (byName.get('mutedlist') as { options?: unknown[] }).options ?? [],
+    [],
+    "/mutedlist takes no options — always list_muted_members's own fixed-argument read, admin-tier only " +
+      '(issue #1114)',
   );
 });
 
@@ -2219,6 +2237,136 @@ test('/reviewqueue replies ephemerally, deferring before its DB round trip', asy
   mockPool(t, { memberRole: 'admin' });
   const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction, replies, order } = fakeInteraction({ commandName: 'reviewqueue', userId: 'admin-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies[0].ephemeral, true);
+  assert.deepEqual(order, ['deferReply', 'editReply']);
+});
+
+// --- Issue #1114: /mutedlist (the second admin-tier slash command) ----------
+
+test(
+  "/mutedlist renders formatMutedMembersList's output for the same rows listMutedMembers returns, covering " +
+    'both an active and a stale row (issue #1114 acceptance criteria 1, 2)',
+  async (t) => {
+    const originalLimit = config.moderation.strikeLimit;
+    const originalWindow = config.moderation.strikeWindowDays;
+    config.moderation.strikeLimit = 3;
+    t.after(() => {
+      config.moderation.strikeLimit = originalLimit;
+      config.moderation.strikeWindowDays = originalWindow;
+    });
+    config.moderation.strikeWindowDays = 30;
+
+    const lastWarningActive = new Date('2026-08-01T00:00:00.000Z');
+    const lastWarningStale = new Date('2026-07-01T00:00:00.000Z');
+    mockPool(t, {
+      memberRole: 'admin',
+      mutedMemberRows: [
+        { user_id: 'active-1', last_warning_at: lastWarningActive, windowed_count: 3, unwindowed_count: 3 },
+        { user_id: 'stale-1', last_warning_at: lastWarningStale, windowed_count: 1, unwindowed_count: 4 },
+      ],
+    });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'mutedlist', userId: 'admin-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    const expected = formatMutedMembersList([
+      { userId: 'active-1', status: 'active', strikeCount: 3, lastWarningAt: lastWarningActive },
+      { userId: 'stale-1', status: 'stale', strikeCount: 4, lastWarningAt: lastWarningStale },
+    ]);
+    assert.equal(replies[0].content, stripEmDashes(expected));
+    assert.match(replies[0].content, /active-1: 3 strike\(s\), active,/);
+    assert.match(replies[0].content, /stale-1: 4 strike\(s\), stale \(may still be muted/);
+  },
+);
+
+test(
+  '/mutedlist renders "No members are currently muted." when nothing qualifies (issue #1114 acceptance ' +
+    'criterion 1)',
+  async (t) => {
+    mockPool(t, { memberRole: 'admin', mutedMemberRows: [] });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'mutedlist', userId: 'admin-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies[0].content, 'No members are currently muted.');
+  },
+);
+
+test(
+  'SECURITY: a guest caller is rejected on /mutedlist without any muted-members repository read ever being ' +
+    'invoked (issue #1114 acceptance criterion 4)',
+  async (t) => {
+    const calls = mockPool(t, { memberRole: null, mutedMemberRows: [{ user_id: 'leak-1' }] });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'mutedlist', userId: 'guest-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].ephemeral, true);
+    assert.match(replies[0].content, /don't have access/i);
+    assert.ok(
+      !calls.some((c) => c.sql.includes('FROM member_warnings') && c.sql.includes('windowed_count')),
+      'no muted-members repository read must run for a rejected caller',
+    );
+  },
+);
+
+test(
+  "SECURITY: a member-tier caller is rejected on /mutedlist — the same atLeast(role, 'admin') gate as " +
+    '/reviewqueue, not just the member-tier toolsForRole check every other command uses (issue #1114 ' +
+    'acceptance criterion 4)',
+  async (t) => {
+    const calls = mockPool(t, { memberRole: 'member', mutedMemberRows: [{ user_id: 'leak-1' }] });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'mutedlist', userId: 'member-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].ephemeral, true);
+    assert.match(
+      replies[0].content,
+      /don't have access/i,
+      'a member-tier caller must be denied, not just a guest',
+    );
+    assert.ok(
+      !calls.some((c) => c.sql.includes('FROM member_warnings') && c.sql.includes('windowed_count')),
+      'no muted-members repository read must run for a member-tier caller',
+    );
+  },
+);
+
+test("a successful /mutedlist invocation calls recordShortcutHit('slash_command') exactly once (issue #1114)", async (t) => {
+  const calls = mockPool(t, { memberRole: 'admin', mutedMemberRows: [] });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction } = fakeInteraction({ commandName: 'mutedlist', userId: 'admin-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(shortcutHitCalls(calls).length, 1, '/mutedlist must record exactly one slash_command hit');
+});
+
+test('SECURITY: recordShortcutHit is never called on the NOT_AUTHORIZED_TEXT branch for /mutedlist (issue #1114)', async (t) => {
+  const calls = mockPool(t, { memberRole: null });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({ commandName: 'mutedlist', userId: 'guest-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.match(replies[0].content, /don't have access/i, 'sanity check: /mutedlist was actually denied');
+  assert.equal(shortcutHitCalls(calls).length, 0, 'an auth-denied reply must never record a shortcut hit');
+});
+
+test('/mutedlist replies ephemerally, deferring before its DB round trip', async (t) => {
+  mockPool(t, { memberRole: 'admin', mutedMemberRows: [] });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies, order } = fakeInteraction({ commandName: 'mutedlist', userId: 'admin-1' });
 
   await handleInteraction(interaction as never, adapterDeps(adapter));
 
