@@ -67,6 +67,7 @@ await import('./support/registerToolRegistry.js');
 const {
   notifyMemberApproved,
   notifyAdminApproved,
+  notifyAccessRequestDeclined,
   notifySuggestionResolved,
   notifyReportResolved,
   notifyReportFiled,
@@ -872,6 +873,156 @@ test("SECURITY: notifyAdminApproved never consults the response-style lookup onc
   );
 
   assert.equal(respStyleCalls, 0);
+});
+
+// notifyAccessRequestDeclined holds all of decline_access_request's new
+// (issue #1126) notification behaviour — the last member of the review-queue
+// decline family to get a resolution DM — tested directly here the same way
+// notifySuggestionResolved is below.
+test('notifyAccessRequestDeclined sends a neutral decline DM', async () => {
+  const calls: Array<[string, string]> = [];
+  const adapter = stubAdapter(async (userId, text) => {
+    calls.push([userId, text]);
+  });
+
+  await notifyAccessRequestDeclined(adapter, 'user-1', 'discord');
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'user-1');
+  assert.match(calls[0][1], /was not approved/i);
+});
+
+test('notifyAccessRequestDeclined swallows a DM failure rather than throwing (the decline stays the source of truth)', async () => {
+  const adapter = stubAdapter(async () => {
+    throw new Error('DMs closed');
+  });
+
+  await assert.doesNotReject(notifyAccessRequestDeclined(adapter, 'user-1', 'discord'));
+});
+
+test('SECURITY: notifyAccessRequestDeclined queues via queueForWindowReopen at "low" priority on a WindowClosedError, rather than dropping the DM (issue #644 recovery extended to issue #1126)', async () => {
+  const queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }> = [];
+  const adapter: PlatformAdapter = {
+    ...stubAdapter(async () => {
+      throw new WindowClosedError('user-1');
+    }),
+    queueForWindowReopen(userId: string, message: string, priority: 'system' | 'low') {
+      queued.push({ userId, message, priority });
+    },
+  };
+
+  await notifyAccessRequestDeclined(adapter, 'user-1', 'discord');
+
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0]?.userId, 'user-1');
+  assert.equal(queued[0]?.priority, 'low');
+});
+
+test("notifyAccessRequestDeclined sends the te reo Māori variant for a caller with a stored 'mi' preference (issue #331)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAccessRequestDeclined(adapter, 'user-1', 'discord', async () => 'mi');
+
+  assert.match(calls[0], /kāore i whakaaetia/);
+});
+
+test("notifyAccessRequestDeclined sends the English default for the default 'auto' preference, byte-identical to today", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAccessRequestDeclined(adapter, 'user-1', 'discord', async () => 'auto');
+
+  assert.equal(
+    calls[0],
+    'Your request for access to NZ Claude Community was reviewed and was not approved this time.',
+  );
+});
+
+test("SECURITY: notifyAccessRequestDeclined degrades to the English default, rather than throwing or dropping the DM, when the language-preference lookup fails (issue #52's invariant extended to issue #331)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAccessRequestDeclined(adapter, 'user-1', 'discord', async () => {
+    throw new Error('DB unreachable');
+  });
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /was not approved/i);
+});
+
+// notifyAccessRequestDeclined's optional reason (issue #1126 acceptance
+// criteria #2/#3, mirroring decline_knowledge_candidate's #1050 field): a
+// distinct, quoted, trailing clause, byte-identical to the reasonless
+// message when omitted.
+test('notifyAccessRequestDeclined produces a decline DM byte-identical to the reasonless message when reason is omitted, undefined, or empty (issue #1126 acceptance criterion #2)', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAccessRequestDeclined(adapter, 'user-1', 'discord');
+  await notifyAccessRequestDeclined(adapter, 'user-1', 'discord', undefined, undefined);
+  await notifyAccessRequestDeclined(adapter, 'user-1', 'discord', undefined, '');
+
+  assert.equal(calls.length, 3);
+  assert.equal(calls[1], calls[0]);
+  assert.equal(calls[2], calls[0]);
+});
+
+test('notifyAccessRequestDeclined appends a quoted reason clause after the base wording when a reason is supplied (issue #1126 acceptance criterion #3)', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAccessRequestDeclined(
+    adapter,
+    'user-1',
+    'discord',
+    undefined,
+    'looked like a throwaway account',
+  );
+
+  assert.match(
+    calls[0],
+    /^Your request for access to NZ Claude Community was reviewed and was not approved this time\. Reason: "looked like a throwaway account"$/,
+  );
+});
+
+test('SECURITY: notifyAccessRequestDeclined truncates a long reason in the echoed clause, never the raw payload (issue #1126 acceptance criterion #3)', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+  const longReason = 'z'.repeat(500);
+
+  await notifyAccessRequestDeclined(adapter, 'user-1', 'discord', undefined, longReason);
+
+  assert.ok(!calls[0].includes(longReason), 'the full 500-char reason must not appear verbatim');
+  assert.match(calls[0], /z{100,140}\.\.\./, 'the echoed reason is truncated with an ellipsis');
+});
+
+test("notifyAccessRequestDeclined's reason clause renders in te reo Māori for a caller with a stored 'mi' preference, the reason text itself untranslated (issue #1126 acceptance criterion #3, issue #331)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAccessRequestDeclined(adapter, 'user-1', 'discord', async () => 'mi', 'he tauriterite tēnei');
+
+  assert.match(calls[0], /kāore i whakaaetia/);
+  assert.match(
+    calls[0],
+    /Take: "he tauriterite tēnei"/,
+    'the reason clause label is te reo, the text is not',
+  );
 });
 
 // notifySuggestionResolved holds all of resolve_suggestion's new (issue #116)
@@ -15713,7 +15864,12 @@ test(
 // add_member/remove_member, so it goes through resolveMemberTarget, which is
 // why the target id below is a digit-only Discord-snowflake-shaped string
 // rather than a `${RUN}-...` label (normalizeMemberId rejects the latter).
-function declineAccessRequestHandler(role: 'member' | 'admin' = 'admin', userId = 'admin-decline-access') {
+function declineAccessRequestHandler(
+  role: 'member' | 'admin' | 'super_admin' = 'admin',
+  userId = 'admin-decline-access',
+  adapter: PlatformAdapter = stubAdapter(async () => {}),
+  getAdapter?: AdapterLookup,
+) {
   const server = buildToolServer(
     {
       platform: 'discord' as const,
@@ -15722,17 +15878,19 @@ function declineAccessRequestHandler(role: 'member' | 'admin' = 'admin', userId 
       role,
       conversationId: 'convo-decline-access',
     },
-    stubAdapter(async () => {}),
+    adapter,
+    getAdapter,
   );
   return (
     server.instance as unknown as {
       _registeredTools: Record<
         string,
         {
-          handler: (args: { userId: string; platform?: 'discord' | 'whatsapp' }) => Promise<{
+          handler: (args: { userId: string; platform?: 'discord' | 'whatsapp'; reason?: string }) => Promise<{
             content: Array<{ type: string; text: string }>;
             isError?: boolean;
           }>;
+          inputSchema: { safeParse: (v: unknown) => { success: boolean } };
         }
       >;
     }
@@ -15835,6 +15993,241 @@ test(
       null,
       'a successful decline_access_request must confer no tier — it must never call upsertMember',
     );
+
+    await clearAccessRequest('discord', guest);
+    await pool.query(
+      `DELETE FROM admin_audit WHERE action_kind = 'decline_access_request' AND actor_user_id = $1`,
+      [admin],
+    );
+  },
+);
+
+// decline_access_request's DM to the requester (issue #1126): notifyAccessRequestDeclined
+// itself is unit-tested above without the MCP transport; these exercise the
+// handler's wiring — the adapterFor guard and the reason field in particular
+// — against a real cleared row, which requires the DB.
+test(
+  'decline_access_request sends the requester a decline DM on a successful clear (issue #1126 acceptance criterion #1)',
+  { skip },
+  async () => {
+    const admin = `${RUN}-decline-access-dm-admin`;
+    const guest = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    await clearAccessRequest('discord', guest);
+    await recordAccessRequest({ platform: 'discord', userId: guest, userName: 'tester' });
+
+    const calls: Array<[string, string]> = [];
+    const adapter = stubAdapter(async (userId, text) => {
+      calls.push([userId, text]);
+    });
+
+    const result = await declineAccessRequestHandler('admin', admin, adapter).handler({
+      userId: guest,
+      platform: 'discord',
+    });
+    assert.equal(result.isError, false);
+
+    const requesterCalls = calls.filter(([id]) => id === guest);
+    assert.equal(
+      requesterCalls.length,
+      1,
+      'the requester is notified when the admin is on the same platform',
+    );
+    assert.match(requesterCalls[0][1], /was not approved/i);
+
+    await clearAccessRequest('discord', guest);
+    await pool.query(
+      `DELETE FROM admin_audit WHERE action_kind = 'decline_access_request' AND actor_user_id = $1`,
+      [admin],
+    );
+  },
+);
+
+test(
+  "SECURITY: decline_access_request routes the decline DM through the request's own (platform, userId), never the resolving admin's current-turn adapter — an admin on discord declining a whatsapp guest's request must reach the whatsapp adapter (issue #1126 acceptance criterion #5)",
+  { skip },
+  async () => {
+    const admin = `${RUN}-decline-access-route-admin`;
+    // A valid-shaped (7-13 digit) WhatsApp id — resolveMemberTarget's
+    // normalizeMemberId rejects the longer RUN-timestamp ids this file's
+    // other guest ids use for Discord (issue #78's LID-length bound).
+    const guest = `642${String(Math.floor(Math.random() * 1e7)).padStart(7, '0')}`;
+    await clearAccessRequest('whatsapp', guest);
+    await recordAccessRequest({ platform: 'whatsapp', userId: guest, userName: 'tester' });
+
+    const adminTurnCalls: string[] = [];
+    const adminTurnAdapter = stubAdapter(async (userId) => {
+      adminTurnCalls.push(userId);
+    });
+    const originCalls: Array<[string, string]> = [];
+    const originAdapter = stubAdapter(async (userId, text) => {
+      originCalls.push([userId, text]);
+    });
+
+    const result = await declineAccessRequestHandler('super_admin', admin, adminTurnAdapter, (platform) =>
+      platform === 'whatsapp' ? originAdapter : undefined,
+    ).handler({ userId: guest, platform: 'whatsapp' });
+    assert.equal(result.isError, false);
+    assert.equal(adminTurnCalls.length, 0, "never misaddressed through the resolving admin's own adapter");
+
+    const requesterCalls = originCalls.filter(([id]) => id === guest);
+    assert.equal(requesterCalls.length, 1, "the requester is notified via the request's own platform");
+
+    await clearAccessRequest('whatsapp', guest);
+    await pool.query(
+      `DELETE FROM admin_audit WHERE action_kind = 'decline_access_request' AND actor_user_id = $1`,
+      [admin],
+    );
+  },
+);
+
+test(
+  "decline_access_request falls back to a silent skip when the requester's platform has no adapter registered (issue #1126 acceptance criterion #6)",
+  { skip },
+  async () => {
+    const admin = `${RUN}-decline-access-noadapter-admin`;
+    // Valid-shaped WhatsApp id — see the routing test above for why.
+    const guest = `642${String(Math.floor(Math.random() * 1e7)).padStart(7, '0')}`;
+    await clearAccessRequest('whatsapp', guest);
+    await recordAccessRequest({ platform: 'whatsapp', userId: guest, userName: 'tester' });
+
+    const adapter = stubAdapter(async () => {});
+
+    // whatsapp isn't registered in this deployment (getAdapter returns
+    // undefined) — must degrade to exactly today's silence: the row still
+    // clears, no error, no crash, and no fallback to the admin's own adapter.
+    const result = await declineAccessRequestHandler('super_admin', admin, adapter, () => undefined).handler({
+      userId: guest,
+      platform: 'whatsapp',
+    });
+    assert.equal(result.isError, false);
+    assert.match(result.content[0]?.text ?? '', /Declined/);
+
+    const stillPending = await listAccessRequests(200);
+    assert.ok(
+      !stillPending.some((r) => r.userId === guest),
+      'the row is still cleared with no adapter registered',
+    );
+
+    await clearAccessRequest('whatsapp', guest);
+    await pool.query(
+      `DELETE FROM admin_audit WHERE action_kind = 'decline_access_request' AND actor_user_id = $1`,
+      [admin],
+    );
+  },
+);
+
+test(
+  "decline_access_request's own reported outcome is unaffected by a DM delivery failure (issue #1126 acceptance criterion #7)",
+  { skip },
+  async () => {
+    const admin = `${RUN}-decline-access-dmfail-admin`;
+    const guest = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    await clearAccessRequest('discord', guest);
+    await recordAccessRequest({ platform: 'discord', userId: guest, userName: 'tester' });
+
+    const adapter = stubAdapter(async () => {
+      throw new Error('DMs closed');
+    });
+
+    const result = await declineAccessRequestHandler('admin', admin, adapter).handler({
+      userId: guest,
+      platform: 'discord',
+    });
+    assert.equal(result.isError, false);
+    assert.match(result.content[0]?.text ?? '', /Declined/, 'decline_access_request still reports success');
+
+    await clearAccessRequest('discord', guest);
+    await pool.query(
+      `DELETE FROM admin_audit WHERE action_kind = 'decline_access_request' AND actor_user_id = $1`,
+      [admin],
+    );
+  },
+);
+
+// decline_access_request's optional reason field (issue #1126 acceptance
+// criteria #2/#3/#4, mirroring resolve_suggestion's #1099 reason field).
+test(
+  'decline_access_request forwards an optional reason to the decline DM as a distinct clause (issue #1126 acceptance criterion #3)',
+  { skip },
+  async () => {
+    const admin = `${RUN}-decline-access-reason-admin`;
+    const guest = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    await clearAccessRequest('discord', guest);
+    await recordAccessRequest({ platform: 'discord', userId: guest, userName: 'tester' });
+
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (_userId, text) => {
+      calls.push(text);
+    });
+
+    const result = await declineAccessRequestHandler('admin', admin, adapter).handler({
+      userId: guest,
+      platform: 'discord',
+      reason: 'looked like a throwaway account',
+    });
+    assert.equal(result.isError, false);
+    assert.equal(calls.length, 1);
+    assert.match(calls[0], /Reason: "looked like a throwaway account"/);
+
+    await clearAccessRequest('discord', guest);
+    await pool.query(
+      `DELETE FROM admin_audit WHERE action_kind = 'decline_access_request' AND actor_user_id = $1`,
+      [admin],
+    );
+  },
+);
+
+test('SECURITY: decline_access_request rejects a reason over SUGGESTION_RESOLUTION_ECHO_CHARS at the zod schema boundary (issue #1126 acceptance criterion #3)', () => {
+  const registeredTool = declineAccessRequestHandler('admin');
+
+  assert.equal(
+    registeredTool.inputSchema.safeParse({
+      userId: 'x',
+      platform: 'discord',
+      reason: 'x'.repeat(SUGGESTION_RESOLUTION_ECHO_CHARS),
+    }).success,
+    true,
+    'exactly the echo bound is allowed',
+  );
+  assert.equal(
+    registeredTool.inputSchema.safeParse({
+      userId: 'x',
+      platform: 'discord',
+      reason: 'x'.repeat(SUGGESTION_RESOLUTION_ECHO_CHARS + 1),
+    }).success,
+    false,
+    'one character over the echo bound must be rejected',
+  );
+  assert.equal(
+    registeredTool.inputSchema.safeParse({ userId: 'x', platform: 'discord' }).success,
+    true,
+    'the reasonless call form remains valid',
+  );
+});
+
+test(
+  'SECURITY: decline_access_request never persists the reason to admin_audit params (issue #1126 acceptance criterion #4)',
+  { skip },
+  async () => {
+    const admin = `${RUN}-decline-access-audit-admin`;
+    const guest = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    await clearAccessRequest('discord', guest);
+    await recordAccessRequest({ platform: 'discord', userId: guest, userName: 'tester' });
+
+    const adapter = stubAdapter(async () => {});
+    const result = await declineAccessRequestHandler('admin', admin, adapter).handler({
+      userId: guest,
+      platform: 'discord',
+      reason: 'this must never reach the audit log',
+    });
+    assert.equal(result.isError, false);
+
+    const { rows } = await pool.query(
+      `SELECT params FROM admin_audit WHERE action_kind = 'decline_access_request' AND actor_user_id = $1 ORDER BY id DESC LIMIT 1`,
+      [admin],
+    );
+    assert.equal(rows.length, 1);
+    assert.ok(!('reason' in rows[0].params), 'the audited() params object must not contain a reason key');
 
     await clearAccessRequest('discord', guest);
     await pool.query(

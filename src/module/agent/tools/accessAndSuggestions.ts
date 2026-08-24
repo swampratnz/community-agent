@@ -9,7 +9,7 @@ import {
   resolveSuggestion,
 } from '@swampratnz/agent-base/storage/repository.js';
 import { platformArg, SUGGESTION_RESOLUTION_ECHO_CHARS, text, untrusted } from './helpers.js';
-import { notifySuggestionResolved } from './notify.js';
+import { notifyAccessRequestDeclined, notifySuggestionResolved } from './notify.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 export const accessAndSuggestionsTools = [
@@ -54,15 +54,24 @@ export const accessAndSuggestionsTools = [
       'Clear a pending access request without granting membership — the resolution path for a request an ' +
       'admin does not want to approve (spam, a throwaway, no longer relevant). Confers no tier and no data ' +
       'access; the requester loses nothing they had. Non-destructive (no CONFIRM needed) and instantly ' +
-      'reversible in the practical sense: a fresh request from the same identity simply re-queues. Audited. ' +
-      'Admin only.',
+      'reversible in the practical sense: a fresh request from the same identity simply re-queues. Fires a ' +
+      'best-effort DM to the requester letting them know they were declined. Audited. Admin only.',
     minTier: 'admin',
     readOnlyHint: false,
     schema: {
       userId: z.string().min(1).describe('Platform user id of the pending requester'),
       platform: platformArg,
+      reason: z
+        .string()
+        .max(SUGGESTION_RESOLUTION_ECHO_CHARS)
+        .optional()
+        .describe(
+          'Optional, one-line, member-facing explanation appended verbatim to the decline DM sent to the ' +
+            'requester, so they know why — omit for the existing neutral decline message with no reason. ' +
+            'Never persisted.',
+        ),
     },
-    handler: async (args, { caller, audited, resolveMemberTarget }) => {
+    handler: async (args, { caller, audited, resolveMemberTarget, adapterFor }) => {
       assertAtLeast(caller.role, 'admin', 'decline_access_request');
       const { platform, userId } = await resolveMemberTarget(args.userId, args.platform);
       const { success, result } = await audited({
@@ -75,6 +84,16 @@ export const accessAndSuggestionsTools = [
           return 'declined';
         },
       });
+      // args.reason is never persisted (not in the audited params above) — it
+      // only ever reaches this one DM, same non-persistence convention as
+      // resolve_suggestion's reason field (#1099) two tool definitions below.
+      // The DM target is exactly the (platform, userId) resolveMemberTarget
+      // resolved from this tool's own arguments above — never re-derived from
+      // any other row (issue #1126 acceptance criterion #5).
+      if (success) {
+        const target = adapterFor(platform);
+        if (target) await notifyAccessRequestDeclined(target, userId, platform, undefined, args.reason);
+      }
       return text(
         success ? `Declined the access request from ${userId} on ${platform}.` : `Failed: ${result}`,
         !success,
