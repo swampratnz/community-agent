@@ -2105,6 +2105,54 @@ test(
   },
 );
 
+test(
+  '!kbhelpful renders the same citation/staleness clause as most_helpful_knowledge for a row carrying a ' +
+    'source_url — proving the two paths stay in parity after issue #1127 (acceptance criterion 6)',
+  async (t) => {
+    const rows = [
+      {
+        id: 1,
+        scope: 'global',
+        title: 'Cited entry',
+        content: 'ENTRY_WITH_SOURCE',
+        created_by_role: 'admin',
+        updated_at: new Date('2024-01-01T00:00:00Z'),
+        retrieval_count: 4,
+        last_retrieved_at: null,
+        source_url: 'https://example.org/docs',
+        source_title: 'Example Docs',
+        verified_at: new Date('2024-06-01T00:00:00Z'),
+        source_unreachable: null,
+        source_checked_at: null,
+      },
+    ];
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users'))
+        return { rows: [{ role: 'member' }], rowCount: 0 };
+      if (sql.includes('retrieval_count') && sql.includes('FROM knowledge')) {
+        return { rows, rowCount: 0 };
+      }
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: throwingRunTurn });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!kbhelpful', userId: 'member-1' }));
+
+    assert.match(sent[0].text, /source: Example Docs \(https:\/\/example\.org\/docs\)/);
+    assert.match(sent[0].text, /last verified/);
+
+    const entries = await listKnowledge({
+      scope: 'global',
+      offset: 0,
+      limit: MOST_HELPFUL_KNOWLEDGE_FETCH_CAP,
+    });
+    const expected = formatMostHelpfulKnowledge(rankKnowledgeByRetrieval(entries, 10), 'auto');
+    assert.equal(sent[0].text, expected, 'shortcut output must stay byte-identical to the shared renderer');
+  },
+);
+
 test("!kbhelpful on an empty KB returns formatMostHelpfulKnowledge([])'s output (issue #1087 acceptance criterion 1)", async (t) => {
   mockPoolRole(t, 'member');
   const router = makeRouter({ runTurn: throwingRunTurn });
