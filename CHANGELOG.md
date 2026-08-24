@@ -22,6 +22,7 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #775 #784 #804 #807 #809 #810 #812 #814 #816 #817 #818 #819 #821 #824 #825
 #868 #896 #899 #904 #949 #950 #951 #952 #953 #954 #955 #956 #957 #958 #961
 #963 #964 #965 #968 #971 #983 #988 #989 #991 #992 #994 #1017 #1071 #1086
+#1122 #1123 #1132
 -->
 
 ## 2026-08-25
@@ -151,6 +152,15 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   discovery tool, `who_is_into`, already named `set_my_interests` in the same
   situation; both empty states now do the same for `share_project`, in
   English and te reo Māori.
+- **The weekly knowledge link checker no longer flags a source unreachable
+  after a single blip.** (#1113) It used to mark a knowledge entry's source
+  `unreachable` — visible to admins on `list_knowledge` and behind the
+  member-facing dead-link caveat (#465) — on one failed probe, treating a
+  network hiccup or a transient 5xx/429 identically to a genuine 404. It now
+  retries a hop up to twice with a short backoff before concluding
+  `unreachable`, matching the "confirmed outage, not a blip" standard the
+  bot already applies to `/healthz` and docs ingest. A real 4xx still fails
+  immediately, with no retry.
 
 ## 2026-08-23
 
