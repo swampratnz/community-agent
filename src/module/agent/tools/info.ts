@@ -191,12 +191,15 @@ export const infoTools = [
     readOnlyHint: true,
     schema: {},
     handler: async (_args, { caller, adapter }) => {
-      const language = await getLanguagePreference(caller.platform, caller.userId);
       if (!adapter.listUpcomingEvents) {
+        const language = await getLanguagePreference(caller.platform, caller.userId);
         return text(formatListEventsEmptyText('noAdapter', language, caller.platform), true);
       }
       const events = await adapter.listUpcomingEvents(EVENTS_LIST_LIMIT);
-      if (events.length === 0) return text(formatListEventsEmptyText('none', language, caller.platform));
+      if (events.length === 0) {
+        const language = await getLanguagePreference(caller.platform, caller.userId);
+        return text(formatListEventsEmptyText('none', language, caller.platform));
+      }
       return text(formatUpcomingEvents(events));
     },
   }),

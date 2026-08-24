@@ -700,20 +700,23 @@ async function handleEvents(interaction: ChatInputCommandInteraction, deps: Slas
     await replyEphemeral(interaction, NOT_AUTHORIZED_TEXT, deps);
     return;
   }
-  const language = await getLanguagePreference('discord', interaction.user.id);
   // Degrades the same way the list_events tool itself does when the adapter
   // doesn't implement the optional capability — never reachable in practice
   // since /events is only ever registered on the Discord adapter, but kept
   // for parity with the tool's own guard rather than assuming.
   if (!discordAdapter?.listUpcomingEvents) {
+    const language = await getLanguagePreference('discord', interaction.user.id);
     await replyEphemeral(interaction, formatListEventsEmptyText('noAdapter', language, 'discord'), deps);
     return;
   }
   const events = await discordAdapter.listUpcomingEvents(EVENTS_LIST_LIMIT);
-  const message =
-    events.length === 0
-      ? formatListEventsEmptyText('none', language, 'discord')
-      : formatUpcomingEvents(events);
+  let message: string;
+  if (events.length === 0) {
+    const language = await getLanguagePreference('discord', interaction.user.id);
+    message = formatListEventsEmptyText('none', language, 'discord');
+  } else {
+    message = formatUpcomingEvents(events);
+  }
   recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
   await replyEphemeral(interaction, message, deps);
 }
