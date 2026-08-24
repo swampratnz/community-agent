@@ -25,7 +25,7 @@
   "agentModule.test.ts": 1,
   "agentOptions.test.ts": 13,
   "agentRunActions.test.ts": 3,
-  "agentSkillsEnabled.test.ts": 21,
+  "agentSkillsEnabled.test.ts": 23,
   "agentWebSearchDedup.test.ts": 3,
   "agentWebSearchDedupEmbedFailClosed.test.ts": 1,
   "agentWebSearchDedupEmbedShortCircuit.test.ts": 1,
