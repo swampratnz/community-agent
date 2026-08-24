@@ -348,6 +348,21 @@ const NOTICE_ENTRIES = {
         'Ask me "what can you do?" for a rundown, including your new admin tools.',
     },
   },
+  // --- decline_access_request resolution DM (agent/tools/notify.ts, issue #1126) ---
+  /**
+   * The neutral decline DM for `decline_access_request` — static/templated,
+   * same shape as `memberApprovedMessage`/`adminApprovedMessage` above (issue
+   * #1126 acceptance criterion #8): the admin-authored `reason` field is never
+   * interpolated into this translated base string, only appended afterward as
+   * a distinct, quoted, `truncateForEcho`-capped clause (see
+   * `notifyAccessRequestDeclined` in notify.ts).
+   */
+  accessRequestDeclinedMessage: {
+    base: 'Your request for access to NZ Claude Community was reviewed and was not approved this time.',
+    language: {
+      mi: 'I arotakehia tō tono uru ki NZ Claude Community, ā, kāore i whakaaetia i tēnei wā.',
+    },
+  },
   // --- community_info member capabilities rundown (agent/tools/info.ts) ---
   /**
    * The member-tier segment of `community_info`/`/help`/`!help`'s capability
