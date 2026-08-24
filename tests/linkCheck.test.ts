@@ -141,9 +141,111 @@ test('classifySourceUrl: a 4xx/5xx response classifies as unreachable', async ()
     const outcome = await classifySourceUrl('https://example.com/page', {
       lookup,
       fetchImpl: fetchImpl as unknown as typeof fetch,
+      sleep: async () => {}, // a persistent 500/503 now retries — skip the real backoff delay
     });
     assert.equal(outcome, 'unreachable', `status ${status} must classify as unreachable`);
   }
+});
+
+// --- transient-failure retry (issue #1112) ----------------------------------
+
+test('classifySourceUrl: a network error/timeout on the first attempt, followed by a 2xx within the retry budget, classifies as reachable — a single blip no longer condemns a live source', async () => {
+  const lookup = async () => [{ address: '93.184.216.34', family: 4 }];
+  let calls = 0;
+  const fetchImpl = async () => {
+    calls++;
+    if (calls === 1) throw new Error('fetch failed');
+    return fakeResponse(200);
+  };
+  const outcome = await classifySourceUrl('https://example.com/page', {
+    lookup,
+    fetchImpl: fetchImpl as unknown as typeof fetch,
+    sleep: async () => {},
+  });
+  assert.equal(outcome, 'reachable');
+  assert.equal(calls, 2, 'one retry after the initial network error');
+});
+
+test('classifySourceUrl: a transient 5xx/429 that succeeds within the retry budget classifies as reachable, not unreachable', async () => {
+  const lookup = async () => [{ address: '93.184.216.34', family: 4 }];
+  for (const transientStatus of [500, 503, 429]) {
+    let calls = 0;
+    const fetchImpl = async () => {
+      calls++;
+      if (calls === 1) return fakeResponse(transientStatus);
+      return fakeResponse(200);
+    };
+    const outcome = await classifySourceUrl('https://example.com/page', {
+      lookup,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      sleep: async () => {},
+    });
+    assert.equal(
+      outcome,
+      'reachable',
+      `a transient ${transientStatus} followed by a 2xx must classify as reachable`,
+    );
+    assert.equal(calls, 2, `exactly one retry after the transient ${transientStatus}`);
+  }
+});
+
+test('classifySourceUrl: a network error/timeout on every attempt (initial + both retries) still classifies as unreachable — genuine outages are still caught, just not on a single blip', async () => {
+  const lookup = async () => [{ address: '93.184.216.34', family: 4 }];
+  let calls = 0;
+  const fetchImpl = async () => {
+    calls++;
+    throw new Error('fetch failed');
+  };
+  const outcome = await classifySourceUrl('https://example.com/page', {
+    lookup,
+    fetchImpl: fetchImpl as unknown as typeof fetch,
+    sleep: async () => {},
+  });
+  assert.equal(outcome, 'unreachable');
+  assert.equal(calls, 3, 'the initial attempt plus exactly 2 retries, then gives up');
+});
+
+test('classifySourceUrl: a 4xx other than 429 (404, 403, 410) classifies on the FIRST attempt with no retry — a real, deterministic answer, not a transient condition', async () => {
+  const lookup = async () => [{ address: '93.184.216.34', family: 4 }];
+  for (const status of [404, 403, 410]) {
+    let calls = 0;
+    const fetchImpl = async () => {
+      calls++;
+      return fakeResponse(status);
+    };
+    const outcome = await classifySourceUrl('https://example.com/page', {
+      lookup,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      sleep: async () => {
+        throw new Error('unreachable: sleep must never be called — a non-429 4xx must not retry');
+      },
+    });
+    assert.equal(outcome, 'unreachable');
+    assert.equal(calls, 1, `status ${status} must be classified on the first attempt, with no retry`);
+  }
+});
+
+test('classifySourceUrl: retries do not multiply the redirect budget — a chain that transiently fails once per hop before redirecting still resolves within a bounded number of total requests', async () => {
+  const lookup = async () => [{ address: '93.184.216.34', family: 4 }];
+  let calls = 0;
+  const fetchImpl = async (url: URL) => {
+    calls++;
+    const n = Number(url.searchParams.get('n') ?? '0');
+    // Each hop's FIRST attempt transiently fails; the retry redirects to the next hop.
+    if (calls % 2 === 1) return fakeResponse(503);
+    return fakeResponse(302, { location: `https://example.com/loop?n=${n + 1}` });
+  };
+  const outcome = await classifySourceUrl('https://example.com/loop?n=0', {
+    lookup,
+    fetchImpl: fetchImpl as unknown as typeof fetch,
+    sleep: async () => {},
+  });
+  assert.equal(outcome, 'unreachable', 'the chain never actually resolves — it exceeds the hop cap');
+  assert.equal(
+    calls,
+    12,
+    'bounded by hop count × (1 + retries) — 6 hops × 2 requests each (one failed attempt, one redirecting retry) — not unbounded',
+  );
 });
 
 test('classifySourceUrl: a DNS lookup failure (e.g. NXDOMAIN) classifies as unreachable, not refused — a real reachability signal, distinct from an SSRF-guard block', async () => {
@@ -301,6 +403,69 @@ test('SECURITY: classifySourceUrl re-applies the SSRF guard to a redirect hop �
   });
   assert.equal(outcome, 'refused');
   assert.equal(fetchCalls, 1, 'only the first (public) hop is ever requested');
+});
+
+test('SECURITY: a redirect surfaced by a RETRIED attempt is still re-guarded before being requested — the retry loop never bypasses the SSRF guard on the next hop', async () => {
+  let fetchCalls = 0;
+  let publicCalls = 0;
+  const lookup = async (hostname: string) =>
+    hostname === 'public.example.com'
+      ? [{ address: '93.184.216.34', family: 4 }]
+      : [{ address: '169.254.169.254', family: 4 }];
+  const fetchImpl = async (url: URL) => {
+    fetchCalls++;
+    if (url.hostname === 'public.example.com') {
+      publicCalls++;
+      if (publicCalls === 1) return fakeResponse(503); // transient failure — triggers a retry
+      return fakeResponse(302, { location: 'https://internal.example.com/secret' }); // the retry redirects
+    }
+    throw new Error('unreachable: the internal redirect target must never actually be requested');
+  };
+  const outcome = await classifySourceUrl('https://public.example.com/redirector', {
+    lookup,
+    fetchImpl: fetchImpl as unknown as typeof fetch,
+    sleep: async () => {},
+  });
+  assert.equal(outcome, 'refused');
+  assert.equal(
+    fetchCalls,
+    2,
+    'the public hop is requested twice (initial 503, then the retry that redirects); the internal target is never requested',
+  );
+});
+
+test('SECURITY: every retried request within a hop reuses the SAME guard-vetted pinnedAddress — the retry loop never triggers a second, independent DNS resolution', async () => {
+  let lookupCalls = 0;
+  const dispatcherCalls: string[] = [];
+  const lookup = async () => {
+    lookupCalls++;
+    return [{ address: '93.184.216.34', family: 4 }];
+  };
+  const buildDispatcher = (pinnedAddress: string) => {
+    dispatcherCalls.push(pinnedAddress);
+    return { pinnedAddress };
+  };
+  let calls = 0;
+  const fetchImpl = async (_url: URL, init: { dispatcher?: { pinnedAddress?: string } }) => {
+    calls++;
+    assert.equal(init.dispatcher?.pinnedAddress, '93.184.216.34');
+    if (calls <= 2) return fakeResponse(503);
+    return fakeResponse(200);
+  };
+  const outcome = await classifySourceUrl('https://example.com/page', {
+    lookup,
+    fetchImpl: fetchImpl as unknown as typeof fetch,
+    buildDispatcher: buildDispatcher as unknown as (pinnedAddress: string) => unknown,
+    sleep: async () => {},
+  });
+  assert.equal(outcome, 'reachable');
+  assert.equal(calls, 3, 'two retries before succeeding on the third attempt');
+  assert.equal(lookupCalls, 1, 'DNS is resolved exactly once for this hop, even across 3 request attempts');
+  assert.deepEqual(
+    dispatcherCalls,
+    ['93.184.216.34', '93.184.216.34', '93.184.216.34'],
+    'every retry reuses the SAME guard-vetted pinned address — no second, independent DNS resolution',
+  );
 });
 
 // --- DNS-rebinding/TOCTOU pin (issue #587, SECURITY) ------------------------
