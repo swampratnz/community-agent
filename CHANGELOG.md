@@ -46,6 +46,23 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   sitting for days. It now appends a median hours-to-close figure, mirroring
   the reports queue's own median line shipped in #1081. Bare integer only —
   no appellant name, reason, or resolver identity is ever added.
+- **New Agent Skill: `eval-and-testing-design`, for members designing
+  tests/evals for their own Claude-powered feature.** (#1133) "How do I know
+  if my prompt change actually made things better?", "how big does my eval
+  set need to be?", "LLM-as-judge or exact-match?", "how do I catch a
+  regression before I ship a system-prompt tweak?" were a distinct, common
+  builder question none of the twelve existing skills covered —
+  `agent-architecture-review` treats evaluation as one checklist bullet among
+  five, `rag-and-retrieval-design` hands "evaluation-beyond-retrieval" back
+  out, and `prompt-review` never asks the regression question. The new skill
+  branches first on single-prompt-output-quality vs. whole-agent evaluation
+  (handing the latter to `agent-architecture-review`), then walks golden-set
+  sizing/composition, grading method (exact-match vs. rubric vs.
+  LLM-as-judge, and the self-grading-bias tradeoff), gate-before-ship
+  discipline, and statistical caution as a branch-by-lever diagnostic. Same
+  bundled-markdown shape as every other skill: no new tool, tier, or data
+  access, and reachable only behind the existing off-by-default
+  `AGENT_SKILLS_ENABLED` gate.
 
 ## 2026-08-24
 
