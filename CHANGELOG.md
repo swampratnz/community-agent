@@ -27,6 +27,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-08-25
 
 ### Added
+- **Admins now get a proactive nudge about guests who joined but were never
+  added as members.** (#1136) `list_roster` (filter: not_members) — the
+  onboarding queue — was the last of the six admin review queues with no
+  real-time signal: admins only found out by running the tool themselves or
+  reading the weekly admin digest's `notMembersCount` line. Admins now get a
+  DM once a guest has been waiting more than 168h (7 days) to be added, the
+  same push-alert pattern already shipped for appeals, reports, knowledge
+  candidates, suggestions and access requests. The alert never fires on an
+  `'open'`-access-mode platform, where a not-yet-member already has full
+  member-tool access and the count would be a meaningless nag.
 - **A declined access request now tells the requester.** (#1126)
   `decline_access_request` was the last member of the review-queue
   "resolve a row, DM the submitter" family (`resolve_suggestion`,

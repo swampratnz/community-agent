@@ -131,6 +131,8 @@
   "reportStaleAlert.test.ts": 6,
   "reusableWorkflows.test.ts": 2,
   "reviewVerdict.test.ts": 5,
+  "rosterStaleAlert.test.ts": 2,
+  "rosterStaleAlertOpenMode.test.ts": 1,
   "router.test.ts": 9,
   "routerInterceptChain.test.ts": 4,
   "securityDocSections.test.ts": 1,
