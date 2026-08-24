@@ -67,6 +67,11 @@ export const WHO_IS_INTO_NO_PROFILE_HINT =
  * branch below only swaps the surrounding prose — the rendered project rows
  * themselves (`formatProjectResults`) are member-authored free text and stay
  * untranslated, out of scope for this proposal.
+ *
+ * `'mine'`/`'none'` name `share_project` as the fix (issue #1118), mirroring
+ * `WHO_IS_INTO_NO_PROFILE_HINT`'s "you have nothing yet" pattern below — both
+ * are true dead ends without it, unlike `'seeking'`/`'query'`, which are "no
+ * match for this filter" rather than "you have nothing", so they stay as-is.
  */
 export function formatListProjectsEmptyText(
   kind: 'mine' | 'seeking' | 'query' | 'none',
@@ -75,7 +80,9 @@ export function formatListProjectsEmptyText(
   const mi = language === 'mi';
   switch (kind) {
     case 'mine':
-      return mi ? 'Kāore anō koe kia tohatoha i tētahi kaupapa.' : "You haven't shared any projects yet.";
+      return mi
+        ? 'Kāore anō koe kia tohatoha i tētahi kaupapa — karangahia te share_project ki te tāpiri i tētahi.'
+        : "You haven't shared any projects yet — call share_project to add one.";
     case 'seeking':
       return mi
         ? 'Kāore he kaupapa e rapu hoa mahi ana i tēnei wā.'
@@ -83,7 +90,9 @@ export function formatListProjectsEmptyText(
     case 'query':
       return mi ? 'Kāore he kaupapa kua tohaina e ōrite ana ki tērā.' : 'No shared projects match that.';
     case 'none':
-      return mi ? 'Kāore anō he kaupapa kua tohaina.' : 'No projects have been shared yet.';
+      return mi
+        ? 'Kāore anō he kaupapa kua tohaina — karangahia te share_project ki te tāpiri i tētahi.'
+        : 'No projects have been shared yet — call share_project to add one.';
   }
 }
 

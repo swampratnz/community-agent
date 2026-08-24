@@ -89,6 +89,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   `list_top_knowledge` under-ranked entries actually being served this way.
   Both signals now follow the lexical rescue correctly, matching how the
   chat-path `knowledge_search` tool already handled the same case.
+- **`list_projects` (and its `/projects`/`!projects` mirrors) now tells a
+  member with nothing shared yet how to fix that.** (#1118) Calling
+  `list_projects({ mine: true })` before ever sharing a project — or asking
+  when the community has shared nothing at all — was a dead end: "You haven't
+  shared any projects yet." with no pointer to `share_project`. The sibling
+  discovery tool, `who_is_into`, already named `set_my_interests` in the same
+  situation; both empty states now do the same for `share_project`, in
+  English and te reo Māori.
 
 ## 2026-08-23
 
