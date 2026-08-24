@@ -4619,6 +4619,126 @@ test(
   },
 );
 
+// --- issue #1116: Agent Skills discoverability in community_info's member
+// segment. `config.agentSkills.enabled` is read (not process-env-gated), so
+// it can be toggled in-process the same way tests/systemPromptByteStability.test.ts
+// does — config's `as const` is type-level only, the object isn't frozen at
+// runtime.
+
+type MutableAgentSkillsFlag = { enabled: boolean };
+const agentSkillsFlag = config.agentSkills as MutableAgentSkillsFlag;
+
+const AGENT_SKILLS_DISCOVERABILITY_TEXT_EN = notice('communityInfoSkillsCapabilities');
+const AGENT_SKILLS_DISCOVERABILITY_TEXT_MI = notice('communityInfoSkillsCapabilities', { language: 'mi' });
+
+test('community_info/formatCommunityInfoText: member-tier caller sees the Agent Skills discoverability line when config.agentSkills.enabled is true, in English by default and te reo Māori for a standing mi preference (issue #1116 acceptance criterion 3)', async () => {
+  const original = agentSkillsFlag.enabled;
+  try {
+    agentSkillsFlag.enabled = true;
+
+    const enUser = `${RUN}-info-skills-member-en`;
+    const enReply = (await communityInfoHandler('member', 'discord', enUser)).content[0]?.text ?? '';
+    assert.match(
+      enReply,
+      new RegExp(AGENT_SKILLS_DISCOVERABILITY_TEXT_EN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+      'a member-tier caller must see the Agent Skills discoverability line when the flag is on',
+    );
+
+    const miUser = `${RUN}-info-skills-member-mi`;
+    await setLanguagePreferenceHandler({ platform: 'discord', userId: miUser }).handler({ language: 'mi' });
+    const miReply = (await communityInfoHandler('member', 'discord', miUser)).content[0]?.text ?? '';
+    assert.match(
+      miReply,
+      new RegExp(AGENT_SKILLS_DISCOVERABILITY_TEXT_MI.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+      "a member-tier caller with a standing 'mi' preference must see the te reo Māori variant",
+    );
+
+    assert.equal(
+      await formatCommunityInfoText('member', 'discord', enUser),
+      enReply,
+      "formatCommunityInfoText's own output must match the tool handler's (single source of truth)",
+    );
+  } finally {
+    agentSkillsFlag.enabled = original;
+  }
+});
+
+test('community_info/formatCommunityInfoText: admin and super_admin callers also receive the Agent Skills discoverability line exactly once, with the admin/super-admin segments still appended after it in the existing order (issue #1116 acceptance criterion 4)', async () => {
+  const original = agentSkillsFlag.enabled;
+  try {
+    agentSkillsFlag.enabled = true;
+
+    const adminReply = (await communityInfoHandler('admin', 'discord')).content[0]?.text ?? '';
+    const superAdminReply = (await communityInfoHandler('super_admin', 'discord')).content[0]?.text ?? '';
+
+    for (const [tierName, reply] of [
+      ['admin', adminReply],
+      ['super_admin', superAdminReply],
+    ] as const) {
+      const occurrences = reply.split(AGENT_SKILLS_DISCOVERABILITY_TEXT_EN).length - 1;
+      assert.equal(
+        occurrences,
+        1,
+        `${tierName} reply must contain the Agent Skills discoverability line exactly once`,
+      );
+
+      const skillsIndex = reply.indexOf(AGENT_SKILLS_DISCOVERABILITY_TEXT_EN);
+      const adminCapabilitiesIndex = reply.indexOf(notice('communityInfoAdminCapabilities'));
+      assert.ok(
+        skillsIndex >= 0 && adminCapabilitiesIndex > skillsIndex,
+        `${tierName} reply must render the Agent Skills line before the admin capabilities segment`,
+      );
+    }
+
+    const superAdminCapabilitiesIndex = superAdminReply.indexOf(
+      notice('communityInfoSuperAdminCapabilities'),
+    );
+    const superAdminSkillsIndex = superAdminReply.indexOf(AGENT_SKILLS_DISCOVERABILITY_TEXT_EN);
+    assert.ok(
+      superAdminSkillsIndex >= 0 && superAdminCapabilitiesIndex > superAdminSkillsIndex,
+      'super_admin reply must render the Agent Skills line before the super-admin capabilities segment',
+    );
+  } finally {
+    agentSkillsFlag.enabled = original;
+  }
+});
+
+test('SECURITY: community_info/formatCommunityInfoText output for member, admin, and super_admin callers is byte-identical to before issue #1116 when config.agentSkills.enabled is false (the default) — no trace of the new notice text appears (issue #1116 acceptance criterion 5)', async () => {
+  const original = agentSkillsFlag.enabled;
+  try {
+    agentSkillsFlag.enabled = false;
+
+    const memberReply = (await communityInfoHandler('member', 'discord')).content[0]?.text ?? '';
+    const adminReply = (await communityInfoHandler('admin', 'discord')).content[0]?.text ?? '';
+    const superAdminReply = (await communityInfoHandler('super_admin', 'discord')).content[0]?.text ?? '';
+
+    for (const [tierName, reply] of [
+      ['member', memberReply],
+      ['admin', adminReply],
+      ['super_admin', superAdminReply],
+    ] as const) {
+      assert.doesNotMatch(
+        reply,
+        /guided walkthrough|RAG pipeline|arahanga hōhonu/i,
+        `${tierName} reply must contain no trace of the Agent Skills discoverability line when the flag is off`,
+      );
+      assert.equal(
+        reply,
+        `${notice('communityInfoMemberCapabilities')}${
+          tierName === 'member'
+            ? ''
+            : tierName === 'admin'
+              ? `\n${notice('communityInfoAdminCapabilities')}`
+              : `\n${notice('communityInfoAdminCapabilities')}\n${notice('communityInfoSuperAdminCapabilities')}`
+        }`,
+        `${tierName} reply must be byte-identical to pre-#1116 output when the flag is off`,
+      );
+    }
+  } finally {
+    agentSkillsFlag.enabled = original;
+  }
+});
+
 // --- issue #993: community_info and /help, !help share ONE formatter --------
 
 test('community_info renders byte-identical text to formatCommunityInfoText for every (role, platform) combination — the single source of truth /help and !help also call (issue #993 authoritative criterion 1)', async () => {

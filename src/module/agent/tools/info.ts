@@ -37,9 +37,11 @@ export const EVENTS_LIST_LIMIT = 10;
  * member-tier caller's output stays unchanged. Depends
  * only on its
  * arguments plus `config.behaviour.whatsappTextCommandsEnabled` (the same
- * flag the tool handler already read) and the caller's own stored language
- * preference — never on message content, and never on a language belonging
- * to anyone but `(platform, userId)` itself.
+ * flag the tool handler already read), `config.agentSkills.enabled` (issue
+ * #1116 — appends the Agent Skills discoverability line to `memberSegment`
+ * when true, byte-identical to before when false, the default) and the
+ * caller's own stored language preference — never on message content, and
+ * never on a language belonging to anyone but `(platform, userId)` itself.
  */
 export async function formatCommunityInfoText(
   role: Tier,
@@ -48,10 +50,14 @@ export async function formatCommunityInfoText(
 ): Promise<string> {
   const language = await getLanguagePreference(platform, userId);
   const memberCapabilitiesText = notice('communityInfoMemberCapabilities', { language });
+  const skillsCapabilitiesSegment = config.agentSkills.enabled
+    ? `\n${notice('communityInfoSkillsCapabilities', { language })}`
+    : '';
+  const memberBaseText = `${memberCapabilitiesText}${skillsCapabilitiesSegment}`;
   const memberSegment =
     platform === 'whatsapp' && config.behaviour.whatsappTextCommandsEnabled && atLeast(role, 'member')
-      ? `${memberCapabilitiesText}\n${notice('whatsappTextCommands', { language })}`
-      : memberCapabilitiesText;
+      ? `${memberBaseText}\n${notice('whatsappTextCommands', { language })}`
+      : memberBaseText;
   const adminWhatsappShortcuts =
     platform === 'whatsapp' && config.behaviour.whatsappTextCommandsEnabled
       ? `\n${notice('whatsappAdminTextCommands', { language })}`
