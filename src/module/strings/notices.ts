@@ -439,6 +439,29 @@ const NOTICE_ENTRIES = {
     },
   },
   /**
+   * The Agent Skills discoverability line appended to `community_info`/
+   * `/help`/`!help`'s member segment (issue #1116) — `formatCommunityInfoText`
+   * (`info.ts`) appends this to `memberSegment` only when
+   * `config.agentSkills.enabled` is true, mirroring the existing
+   * `whatsappTextCommands` conditional-append shape exactly (same file, same
+   * function, same pattern, different flag). Deliberately generic/
+   * example-driven rather than an enumerated skill list, so it never needs
+   * editing as `ENABLED_SKILLS` (`agent/enabledSkills.ts`) changes — the same
+   * drift `feature_flags`' old hardcoded label hit (#941). No `style` variant,
+   * matching `communityInfoMemberCapabilities`'s own scope.
+   */
+  communityInfoSkillsCapabilities: {
+    base:
+      'Ask for a deeper, guided walkthrough on things like reviewing a prompt, designing a RAG pipeline, or ' +
+      "debugging an API error — just describe what you're stuck on",
+    language: {
+      mi:
+        'Pātai mai mō tētahi arahanga hōhonu, kua arahina, mō ētahi mea pēnei i te arotake i tētahi tono ' +
+        '(prompt), te hoahoa i tētahi paipa RAG, te whakatikatika rānei i tētahi hapa API — whakaahuatia noa ' +
+        'tō raru',
+    },
+  },
+  /**
    * The admin-tier segment of `community_info`/`/help`/`!help`'s capability
    * rundown (issue #1056) — `base` moved VERBATIM from the old
    * `ADMIN_CAPABILITIES_TEXT` constant in info.ts (byte-neutral relocation,
