@@ -660,11 +660,18 @@ async function handleMutedList(
 ): Promise<void> {
   await deferEphemeral(interaction);
   const role = await resolveRole('discord', interaction.user.id);
-  if (!toolsForRole(role, 'discord').includes('mcp__community__list_muted_members') || !atLeast(role, 'admin')) {
+  if (
+    !toolsForRole(role, 'discord').includes('mcp__community__list_muted_members') ||
+    !atLeast(role, 'admin')
+  ) {
     await replyEphemeral(interaction, NOT_AUTHORIZED_TEXT, deps);
     return;
   }
-  const rows = await listMutedMembers('discord', config.moderation.strikeLimit, config.moderation.strikeWindowDays);
+  const rows = await listMutedMembers(
+    'discord',
+    config.moderation.strikeLimit,
+    config.moderation.strikeWindowDays,
+  );
   const message = formatMutedMembersList(rows);
   recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
   await replyEphemeral(interaction, message, deps);

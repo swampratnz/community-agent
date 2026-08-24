@@ -72,6 +72,7 @@ const { countRepliesToUser, upsertMember, insertContextDigest, listKnowledge, se
 const {
   formatListProjectsEmptyText,
   formatMostHelpfulKnowledge,
+  formatMutedMembersList,
   formatReviewQueueSummary,
   formatWhoIsIntoEmptyText,
   MOST_HELPFUL_KNOWLEDGE_FETCH_CAP,
@@ -2555,6 +2556,211 @@ test("a successful !reviewqueue invocation calls recordShortcutHit('whatsapp_tex
   router.register(adapter);
 
   await trigger(makeMessage({ text: '!reviewqueue', userId: 'admin-1' }));
+
+  assert.equal(sent.length, 1);
+  assert.deepEqual(hits, ['whatsapp_text_command']);
+});
+
+// --- !mutedlist (issue #1114) -------------------------------------------------
+
+/**
+ * Stubs `pool.query`'s role branch plus `listMutedMembers`'s single grouped
+ * query against `member_warnings`, mirroring `mockPoolRoleAndReviewQueue`'s
+ * single-mock-per-test discipline above. `rows` are raw snake_case DB rows
+ * (`user_id`, `last_warning_at`, `windowed_count`, `unwindowed_count`) —
+ * `listMutedMembers` itself decides active/stale from `windowed_count` vs
+ * `config.moderation.strikeLimit`, so a test sets `strikeLimit` deliberately
+ * rather than this helper guessing at it.
+ */
+function mockPoolRoleAndMutedList(
+  t: { mock: { method: typeof import('node:test').mock.method } },
+  role: 'admin' | 'member' | null,
+  rows: Array<{
+    user_id: string;
+    last_warning_at: Date;
+    windowed_count: number;
+    unwindowed_count: number;
+  }> = [],
+): void {
+  t.mock.method(pool, 'query', (async (sql: string) => {
+    if (sql.includes('SELECT role FROM community_users')) {
+      return { rows: role ? [{ role }] : [], rowCount: 0 };
+    }
+    if (sql.includes('FROM member_warnings')) {
+      return { rows, rowCount: 0 };
+    }
+    return { rows: [], rowCount: 0 };
+  }) as typeof pool.query);
+}
+
+test(
+  "!mutedlist renders formatMutedMembersList's output for the same rows listMutedMembers returns, covering " +
+    'both an active and a stale row (issue #1114 acceptance criteria 1, 2)',
+  async (t) => {
+    const originalLimit = config.moderation.strikeLimit;
+    const originalWindow = config.moderation.strikeWindowDays;
+    config.moderation.strikeLimit = 3;
+    config.moderation.strikeWindowDays = 30;
+    t.after(() => {
+      config.moderation.strikeLimit = originalLimit;
+      config.moderation.strikeWindowDays = originalWindow;
+    });
+
+    const lastWarningActive = new Date('2026-08-01T00:00:00.000Z');
+    const lastWarningStale = new Date('2026-07-01T00:00:00.000Z');
+    mockPoolRoleAndMutedList(t, 'admin', [
+      { user_id: 'active-1', last_warning_at: lastWarningActive, windowed_count: 3, unwindowed_count: 3 },
+      { user_id: 'stale-1', last_warning_at: lastWarningStale, windowed_count: 1, unwindowed_count: 4 },
+    ]);
+    const router = makeRouter({ runTurn: throwingRunTurn });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!mutedlist', userId: 'admin-1' }));
+
+    const expected = formatMutedMembersList([
+      { userId: 'active-1', status: 'active', strikeCount: 3, lastWarningAt: lastWarningActive },
+      { userId: 'stale-1', status: 'stale', strikeCount: 4, lastWarningAt: lastWarningStale },
+    ]);
+    assert.equal(sent[0].text, expected);
+    assert.match(sent[0].text, /active-1: 3 strike\(s\), active,/);
+    assert.match(sent[0].text, /stale-1: 4 strike\(s\), stale \(may still be muted/);
+  },
+);
+
+test(
+  '!mutedlist reports "No members are currently muted." when nothing qualifies (issue #1114 acceptance ' +
+    'criterion 1)',
+  async (t) => {
+    mockPoolRoleAndMutedList(t, 'admin', []);
+    const router = makeRouter({ runTurn: throwingRunTurn });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!mutedlist', userId: 'admin-1' }));
+
+    assert.equal(sent[0].text, 'No members are currently muted.');
+  },
+);
+
+test(
+  'a bare "!mutedlistx" (no space, unrecognised) is not matched as the !mutedlist command — anchored matcher ' +
+    '(issue #1114 acceptance criterion 3)',
+  async (t) => {
+    mockPoolRole(t, 'admin');
+    const router = makeRouter({});
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!mutedlistx', userId: 'admin-1' }));
+
+    assert.equal(sent[0].text, REAL_TURN_REPLY);
+  },
+);
+
+test(
+  'SECURITY: "!mutedlist <anything>" is never matched — the anchored matcher rejects any argument, so no ' +
+    'message-supplied text can ever reach a muted-members repository read (issue #1114 acceptance criterion 3)',
+  async (t) => {
+    let queried = false;
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users')) return { rows: [{ role: 'admin' }], rowCount: 0 };
+      if (sql.includes('FROM member_warnings')) queried = true;
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!mutedlist; DROP TABLE member_warnings', userId: 'admin-1' }));
+
+    assert.equal(sent[0].text, REAL_TURN_REPLY, 'an argument must fall through to a normal turn');
+    assert.equal(queried, false, 'no muted-members repository read must run when an argument is present');
+  },
+);
+
+test(
+  'SECURITY: a member-tier caller\'s "!mutedlist" falls through to the normal turn — no muted-member list is ' +
+    'ever rendered and no muted-members repository read runs (issue #1114 acceptance criterion 4)',
+  async (t) => {
+    let queried = false;
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users'))
+        return { rows: [{ role: 'member' }], rowCount: 0 };
+      if (sql.includes('FROM member_warnings')) queried = true;
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!mutedlist', userId: 'member-1' }));
+
+    assert.equal(sent.length, 1);
+    assert.equal(
+      sent[0].text,
+      REAL_TURN_REPLY,
+      'a member gets no distinguishing denial reply, per the family norm',
+    );
+    assert.equal(queried, false, 'no muted-members repository read must run for a member-tier caller');
+  },
+);
+
+test(
+  'SECURITY: a guest caller\'s "!mutedlist" falls through to the normal turn — no muted-member list is ever ' +
+    'rendered and no muted-members repository read runs (issue #1114 acceptance criterion 4)',
+  async (t) => {
+    let queried = false;
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users')) return { rows: [], rowCount: 0 };
+      if (sql.includes('FROM member_warnings')) queried = true;
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!mutedlist', userId: 'guest-1' }));
+
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].text, REAL_TURN_REPLY);
+    assert.equal(queried, false, 'no muted-members repository read must run for a guest caller');
+  },
+);
+
+test(
+  'config.behaviour.whatsappTextCommandsEnabled === false disables !mutedlist exactly as it does every other ' +
+    'WhatsApp shortcut (issue #1114 acceptance criterion 5)',
+  async (t) => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    config.behaviour.whatsappTextCommandsEnabled = false;
+    t.after(() => {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    });
+    mockPoolRoleAndMutedList(t, 'admin', []);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!mutedlist', userId: 'admin-1' }));
+
+    assert.equal(sent[0].text, REAL_TURN_REPLY);
+  },
+);
+
+test("a successful !mutedlist invocation calls recordShortcutHit('whatsapp_text_command') exactly once (issue #1114)", async (t) => {
+  mockPoolRoleAndMutedList(t, 'admin', []);
+  const hits: string[] = [];
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    recordShortcutHitFn: async (kind) => {
+      hits.push(kind);
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!mutedlist', userId: 'admin-1' }));
 
   assert.equal(sent.length, 1);
   assert.deepEqual(hits, ['whatsapp_text_command']);
