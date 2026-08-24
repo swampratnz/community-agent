@@ -35,6 +35,7 @@ export const ENABLED_SKILLS = [
   'api-cost-and-latency',
   'rag-and-retrieval-design',
   'mcp-server-design',
+  'eval-and-testing-design',
 ] as const;
 
 /**
