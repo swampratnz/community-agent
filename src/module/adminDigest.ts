@@ -29,6 +29,7 @@ import {
   countUnreachableSourceKnowledge,
   getLastDigestCounts,
   listAdmins,
+  listAppeals,
   listReports,
   oldestAccessRequestAgeDays,
   oldestOpenAppealAgeDays,
@@ -187,6 +188,65 @@ async function reportResolutionBreakdown(
     dismissed: countRecentlyResolved(dismissedRows),
     medianResolutionHours: medianReportResolutionHours([...resolvedRows, ...dismissedRows], since),
   };
+}
+
+/**
+ * `listAppeals`' own hard clamp (`Math.min(Math.max(trunc(limit) || 50, 1),
+ * 200)`) — the widest single-status scan available from here, same constant
+ * `appealStaleAlert.ts`'s `APPEAL_STALE_ALERT_SCAN_LIMIT` uses for the
+ * identical reason (and the same value `REPORT_RESOLUTION_SCAN_LIMIT` uses
+ * for `listReports`).
+ */
+const APPEAL_RESOLUTION_SCAN_LIMIT = 200;
+
+/**
+ * Median hours-to-close for moderation appeals — the appeals-side sibling of
+ * `reportResolutionBreakdown`'s `medianResolutionHours`, deferred by issue
+ * #1081 pending verification of `ModerationAppeal`'s row shape (confirmed by
+ * issue #1130). Reuses `medianReportResolutionHours` directly rather than
+ * forking a second median helper: its signature (`{ createdAt, resolvedAt
+ * }[]`) is already generic over any row shape with those two fields, not
+ * report-specific.
+ *
+ * Built module-side for the identical reason `reportResolutionBreakdown` is:
+ * the base `appealResolutionBreakdown(platform, sinceDays)` aggregate
+ * (imported above, backing `resolvedAppealsCount`/`dismissedAppealsCount`) is
+ * a real unbounded `GROUP BY` but returns only `{ resolved, dismissed }` — no
+ * rows to compute a median from. This reaches for the already-exported,
+ * admin-tier-gated `listAppeals` scan instead and aggregates in JS.
+ *
+ * SAMPLE DIVERGENCE (adversarial review on #1130, one step beyond the reports
+ * case): the counts come from the unbounded base aggregate, while this median
+ * comes from a SEPARATE, `APPEAL_RESOLUTION_SCAN_LIMIT`-capped `listAppeals`
+ * scan — so on a high-volume window the rendered line could read "N closed
+ * (median Xh)" where the median sample is smaller than N. Accepted as
+ * documented, same as reports: appeal volume is inherently low (appeals
+ * require active warnings plus a cooldown-gated `reserveAppealSlot` call).
+ *
+ * KNOWN APPROXIMATION, the same tradeoff `appealStaleAlert.ts` documents for
+ * `listAppeals`: it orders by `created_at DESC`, not `resolved_at`, and each
+ * status scan is capped at `APPEAL_RESOLUTION_SCAN_LIMIT` rows. One further
+ * nuance beyond the reports case: unlike `listReports`, `listAppeals` takes no
+ * `platform` parameter, so the 200-row scan is shared across ALL platforms
+ * before this function's own client-side `row.platform === platform` filter —
+ * a deployment running both Discord and WhatsApp with skewed appeal volume
+ * between them could in principle see a smaller effective per-platform sample
+ * than the reports case. Bounded, not unbounded — accepted as documented, not
+ * a correctness gap in practice.
+ */
+async function appealMedianResolutionHours(platform: string, days: number): Promise<number | null> {
+  const since = Date.now() - days * 24 * 3_600_000;
+  // Sequential rather than a parallel combinator — same reasoning
+  // reportResolutionBreakdown gives just above: this repo's own
+  // buildAdminDigestForAdmin (this function's sole caller) pins its single
+  // signal-gathering fan-out call as a no-drift invariant
+  // (tests/adminDigest.test.ts, issue #499); a second one here would trip
+  // that pin for no real benefit, since these two bounded, differently-
+  // statused reads are cheap regardless of ordering.
+  const resolvedRows = await listAppeals('resolved', APPEAL_RESOLUTION_SCAN_LIMIT);
+  const dismissedRows = await listAppeals('dismissed', APPEAL_RESOLUTION_SCAN_LIMIT);
+  const platformRows = [...resolvedRows, ...dismissedRows].filter((row) => row.platform === platform);
+  return medianReportResolutionHours(platformRows, since);
 }
 
 /**
@@ -615,6 +675,21 @@ export function buildAdminDigestMessage(
   // the DM, same privacy convention as resolvedReportsCount/
   // dismissedReportsCount.
   reportMedianResolutionHours: number | null = null,
+  // Median hours-to-close over the same closed-appeal rows as
+  // resolvedAppealsCount/dismissedAppealsCount (`appealMedianResolutionHours`,
+  // issue #1130) — the appeals-side sibling of reportMedianResolutionHours
+  // just above, the still-missing throughput/speed complement to the
+  // outcome-mix counts: a shrinking appeal backlog can coexist with
+  // individual appeals sitting for days, which the mix alone can't
+  // distinguish. Append-only trailing param, `null` by default, so every
+  // existing call site is unaffected. Only ever appended to the
+  // already-nonzero closed-appeals line above and only when non-null (no
+  // closed appeals in the window has no meaningful median), so the quiet
+  // case and every caller that hasn't wired this through are byte-identical
+  // to the pre-#1130 form. Bare integer (rounded hours) only — no appellant
+  // user_name/reason/user_id/resolved_by ever reaches the DM, same privacy
+  // convention as resolvedAppealsCount/dismissedAppealsCount.
+  appealMedianResolutionHours: number | null = null,
 ): string | null {
   if (
     clusters.length === 0 &&
@@ -906,11 +981,20 @@ export function buildAdminDigestMessage(
   }
   if (resolvedAppealsCount + dismissedAppealsCount > 0) {
     // Bare integers only — no appellant user_name/reason/user_id/resolved_by
-    // ever reaches the DM (#844).
+    // ever reaches the DM (#844, extended by #1130's median-hours fragment
+    // below, itself a bare rounded integer).
     const closedTotal = resolvedAppealsCount + dismissedAppealsCount;
+    // Median-hours fragment only when the aggregate resolved to a real value
+    // — zero closed appeals in the window (or a caller that hasn't wired the
+    // new param through) renders the line exactly as before #1130 (issue
+    // #1130).
+    const medianFragment =
+      appealMedianResolutionHours !== null
+        ? ` (median ${Math.round(appealMedianResolutionHours)}h to close)`
+        : '';
     sections.push(
       `📈 ${closedTotal} appeal(s) closed this period: ${resolvedAppealsCount} resolved, ` +
-        `${dismissedAppealsCount} dismissed.` +
+        `${dismissedAppealsCount} dismissed${medianFragment}.` +
         trendSuffix('resolvedAppealsCount', resolvedAppealsCount, previousCounts) +
         trendSuffix('dismissedAppealsCount', dismissedAppealsCount, previousCounts),
     );
@@ -1020,6 +1104,7 @@ export async function buildAdminDigestForAdmin(
     appealBreakdown,
     projectConnectionsCount,
     reportBreakdown,
+    appealMedianHours,
   ] = await Promise.all([
     recentQuestionClusters(scope, FRESHNESS_DAYS, CLUSTER_LIMIT),
     countAccessRequests(),
@@ -1154,6 +1239,11 @@ export async function buildAdminDigestForAdmin(
     // vs-dismissed complement to countOpenReports/oldestOpenReportAgeDays
     // (issue #1075).
     reportResolutionBreakdown(scope, FRESHNESS_DAYS, viewerIds),
+    // Median hours-to-close over the same closed-appeal rows as
+    // appealBreakdown just above — the still-missing throughput/speed
+    // complement to appealBreakdown's resolved/dismissed outcome-mix, the
+    // appeals-side sibling of reportBreakdown's own median (issue #1130).
+    appealMedianResolutionHours(platform, FRESHNESS_DAYS),
   ]);
   // Onboarding-queue count only means anything in 'gated' mode — an
   // 'open'-mode not_members row already has full member-tool access
@@ -1214,6 +1304,8 @@ export async function buildAdminDigestForAdmin(
     // object for the identical reason, on top of not being an unconditional
     // integer (it's `number | null`) — no new agent-base allowlist entry, no
     // trend persistence, same "renders bare" first-ever-digest behaviour.
+    // `appealMedianHours` (issue #1130) is excluded for the identical reason
+    // — the appeals-side sibling of `reportMedianResolutionHours` above.
   };
   // Only added when there's at least one auto-answer rating this week (issue
   // #629) — mirrors the render block's own `autoAnswerHelpful +
@@ -1276,6 +1368,7 @@ export async function buildAdminDigestForAdmin(
     reportBreakdown.resolved,
     reportBreakdown.dismissed,
     reportBreakdown.medianResolutionHours,
+    appealMedianHours,
   );
   return { message, currentCounts };
 }
