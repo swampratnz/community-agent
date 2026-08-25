@@ -48,6 +48,7 @@ export {
   PROJECT_NOTE_RETENTION_NOTICE,
   formatReviewQueueSummary,
   formatMutedMembersList,
+  formatBlockedMembersList,
 } from './tools/helpers.js';
 export {
   notifyAdmins,

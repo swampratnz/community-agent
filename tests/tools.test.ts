@@ -83,6 +83,7 @@ const {
   formatListProjectsEmptyText,
   formatMostHelpfulKnowledge,
   formatMutedMembersList,
+  formatBlockedMembersList,
   formatWhoIsIntoEmptyText,
   rankKnowledgeByRetrieval,
   formatUsageStats,
@@ -4467,7 +4468,8 @@ test(
     // `mutedlist` (issue #1114) is the second admin-tier exception, same
     // reasoning as `reviewqueue` — its discovery line lives in the
     // `whatsappAdminTextCommands` notice instead, asserted separately below.
-    const WHATSAPP_DISCOVERY_EXEMPT_COMMANDS: readonly string[] = ['reviewqueue', 'mutedlist'];
+    // `blockedlist` (issue #1145) is the third, same reasoning.
+    const WHATSAPP_DISCOVERY_EXEMPT_COMMANDS: readonly string[] = ['reviewqueue', 'mutedlist', 'blockedlist'];
 
     const original = config.behaviour.whatsappTextCommandsEnabled;
     try {
@@ -4765,6 +4767,121 @@ test(
         superAdminReply,
         /!mutedlist/,
         'with the flag off, !mutedlist must not be mentioned even for a super_admin-tier WhatsApp caller',
+      );
+    } finally {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    }
+  },
+);
+
+// --- issue #1145: !blockedlist discovery for admin-tier WhatsApp callers,
+// the same whatsappAdminTextCommands notice !reviewqueue (#1097)/!mutedlist
+// (#1114) discover through, appended in the same diff rather than needing a
+// follow-up issue.
+
+test(
+  'community_info/formatCommunityInfoText mention !blockedlist for admin- and super_admin-tier WhatsApp ' +
+    'callers with whatsappTextCommandsEnabled on, in both the default/en and mi language variants (issue ' +
+    '#1145 acceptance criterion 6)',
+  { skip },
+  async () => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    try {
+      config.behaviour.whatsappTextCommandsEnabled = true;
+
+      const enAdmin = `${RUN}-info-admin-blockedlist-en`;
+      const enReply = (await communityInfoHandler('admin', 'whatsapp', enAdmin)).content[0]?.text ?? '';
+      assert.match(enReply, /!blockedlist/, 'an admin-tier WhatsApp caller must be told about !blockedlist');
+
+      const miAdmin = `${RUN}-info-admin-blockedlist-mi`;
+      await setLanguagePreferenceHandler({ platform: 'whatsapp', userId: miAdmin }).handler({
+        language: 'mi',
+      });
+      const miReply = (await communityInfoHandler('admin', 'whatsapp', miAdmin)).content[0]?.text ?? '';
+      assert.match(
+        miReply,
+        /!blockedlist/,
+        "an admin-tier WhatsApp caller with a 'mi' preference must also be told about !blockedlist",
+      );
+
+      const enSuperAdmin = `${RUN}-info-super-admin-blockedlist-en`;
+      const superAdminReply =
+        (await communityInfoHandler('super_admin', 'whatsapp', enSuperAdmin)).content[0]?.text ?? '';
+      assert.match(
+        superAdminReply,
+        /!blockedlist/,
+        'a super_admin-tier WhatsApp caller must be told about !blockedlist',
+      );
+
+      assert.equal(
+        await formatCommunityInfoText('admin', 'whatsapp', enAdmin),
+        enReply,
+        "formatCommunityInfoText's own output must match the tool handler's (single source of truth)",
+      );
+    } finally {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    }
+  },
+);
+
+test(
+  'SECURITY: !blockedlist is never mentioned in community_info/formatCommunityInfoText output for a member ' +
+    'or guest WhatsApp caller (whatsappTextCommandsEnabled on), nor for a Discord caller at any tier (issue ' +
+    '#1145 acceptance criterion 6)',
+  async () => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    try {
+      config.behaviour.whatsappTextCommandsEnabled = true;
+
+      const memberReply = (await communityInfoHandler('member', 'whatsapp')).content[0]?.text ?? '';
+      assert.doesNotMatch(
+        memberReply,
+        /!blockedlist/,
+        'a member-tier WhatsApp caller must never be told about the admin-only !blockedlist shortcut',
+      );
+
+      const guestReply = (await communityInfoHandler('guest', 'whatsapp')).content[0]?.text ?? '';
+      assert.doesNotMatch(
+        guestReply,
+        /!blockedlist/,
+        'a guest-tier WhatsApp caller must never be told about the admin-only !blockedlist shortcut',
+      );
+
+      const roles = ['guest', 'member', 'admin', 'super_admin'] as const;
+      for (const role of roles) {
+        const discordReply = (await communityInfoHandler(role, 'discord')).content[0]?.text ?? '';
+        assert.doesNotMatch(
+          discordReply,
+          /!blockedlist/,
+          `a Discord caller (${role}) must never see the WhatsApp-only !blockedlist shortcut block — ` +
+            'Discord already surfaces /blockedlist via its own slash-command autocomplete',
+        );
+      }
+    } finally {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    }
+  },
+);
+
+test(
+  'community_info/formatCommunityInfoText output for an admin caller is byte-identical to before issue ' +
+    '#1145 when whatsappTextCommandsEnabled is off (issue #1145 acceptance criterion 5)',
+  async () => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    try {
+      config.behaviour.whatsappTextCommandsEnabled = false;
+      const adminReply = (await communityInfoHandler('admin', 'whatsapp')).content[0]?.text ?? '';
+      assert.doesNotMatch(
+        adminReply,
+        /!blockedlist/,
+        'with the flag off, !blockedlist must not be mentioned even for an admin-tier WhatsApp caller',
+      );
+
+      const superAdminReply = (await communityInfoHandler('super_admin', 'whatsapp')).content[0]?.text ?? '';
+      assert.doesNotMatch(
+        superAdminReply,
+        /!blockedlist/,
+        'with the flag off, !blockedlist must not be mentioned even for a super_admin-tier WhatsApp caller',
       );
     } finally {
       config.behaviour.whatsappTextCommandsEnabled = original;
@@ -8251,6 +8368,54 @@ test(
     } finally {
       await unblockUser(platformA, userA);
       await unblockUser(platformB, userB);
+    }
+  },
+);
+
+test(
+  'anti-drift: list_blocked_members and the !blockedlist shortcut render byte-identical text for the same ' +
+    'DB rows, both via the shared formatBlockedMembersList (issue #1145 acceptance criterion 2)',
+  { skip },
+  async () => {
+    const platform = `${RUN}-blockedlist-drift`;
+    const withReason = `${RUN}-drift-blocked-with-reason`;
+    const withoutReason = `${RUN}-drift-blocked-without-reason`;
+    await blockUser(platform, withReason, 'admin-1', 'harassment');
+    await blockUser(platform, withoutReason, 'admin-2', null);
+    try {
+      const rows = await listBlockedUsers(platform);
+      const expected = formatBlockedMembersList(rows);
+      assert.match(expected, new RegExp(withReason));
+
+      const toolResult = await listBlockedMembersHandler('admin', platform).handler();
+      assert.equal(
+        toolResult.content[0]?.text,
+        expected,
+        'list_blocked_members must match the shared formatBlockedMembersList output',
+      );
+
+      const blockedlistCommand = COMMUNITY_COMMANDS.find((c) => c.name === 'blockedlist');
+      assert.ok(blockedlistCommand?.whatsapp, 'the blockedlist command must define a whatsapp handler');
+      const shortcutResult = await blockedlistCommand.whatsapp(
+        '!blockedlist',
+        {
+          platform,
+          conversationId: 'convo-blockedlist-drift',
+          userId: 'admin-blockedlist-drift',
+          userName: 'Admin',
+          text: '!blockedlist',
+        } as never,
+        'admin',
+        {} as never,
+      );
+      assert.equal(
+        shortcutResult,
+        expected,
+        '!blockedlist must render byte-identical text to list_blocked_members for the same rows',
+      );
+    } finally {
+      await unblockUser(platform, withReason);
+      await unblockUser(platform, withoutReason);
     }
   },
 );
