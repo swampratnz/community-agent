@@ -30,6 +30,7 @@ import {
   getLastDigestCounts,
   listAdmins,
   listAppeals,
+  listKnowledgeCandidates,
   listReports,
   oldestAccessRequestAgeDays,
   oldestOpenAppealAgeDays,
@@ -247,6 +248,68 @@ async function appealMedianResolutionHours(platform: string, days: number): Prom
   const dismissedRows = await listAppeals('dismissed', APPEAL_RESOLUTION_SCAN_LIMIT);
   const platformRows = [...resolvedRows, ...dismissedRows].filter((row) => row.platform === platform);
   return medianReportResolutionHours(platformRows, since);
+}
+
+/**
+ * `listKnowledgeCandidates`' own hard clamp — the widest single-status scan
+ * available from here, same constant/value `REPORT_RESOLUTION_SCAN_LIMIT`/
+ * `APPEAL_RESOLUTION_SCAN_LIMIT` use for the identical reason (issue #1149).
+ */
+const KNOWLEDGE_CANDIDATE_RESOLUTION_SCAN_LIMIT = 200;
+
+/**
+ * Median hours-to-review for knowledge candidates — the candidates-side
+ * sibling of `appealMedianResolutionHours`, completing the resolution-speed
+ * metric set across all three admin review queues (reports #1081, appeals
+ * #1130, candidates here, issue #1149). Reuses `medianReportResolutionHours`
+ * directly rather than forking a third median helper: its signature
+ * (`{ createdAt, resolvedAt }[]`) is already generic over any row shape with
+ * those two fields, so each `KnowledgeCandidate`'s `reviewedAt` is mapped
+ * onto the `resolvedAt` field the helper expects.
+ *
+ * Computed across BOTH terminal outcomes (accepted + declined), not
+ * accepted-only, matching reports/appeals: a candidate that took two weeks to
+ * decline is just as much a review-speed problem as one that took two weeks
+ * to accept.
+ *
+ * Built module-side for the identical reason `appealMedianResolutionHours`
+ * is: no base repository aggregate returns per-row `createdAt`/`reviewedAt`
+ * for candidates, so this reaches for the already-exported, admin-tier-gated
+ * `listKnowledgeCandidates` scan and aggregates in JS.
+ *
+ * KNOWN APPROXIMATION, the same tradeoff `appealMedianResolutionHours`/
+ * `reportResolutionBreakdown` document: `listKnowledgeCandidates` orders by
+ * `created_at DESC` (`oldestFirst: false` here), not `reviewed_at`, and each
+ * status scan is capped at `KNOWLEDGE_CANDIDATE_RESOLUTION_SCAN_LIMIT` rows.
+ * A candidate reviewed recently but filed long ago could in principle fall
+ * outside a 200-row, `created_at`-ordered scan on an unusually high-volume
+ * queue. Bounded, not unbounded — accepted as documented, not a correctness
+ * gap in practice, same posture as the two metrics this mirrors.
+ */
+async function candidateMedianResolutionHours(days: number): Promise<number | null> {
+  const since = Date.now() - days * 24 * 3_600_000;
+  // Sequential rather than a parallel combinator — same reasoning
+  // appealMedianResolutionHours/reportResolutionBreakdown give: this repo's
+  // own buildAdminDigestForAdmin (this function's sole caller) pins its
+  // single signal-gathering fan-out call as a no-drift invariant
+  // (tests/adminDigest.test.ts, issue #499); a second one here would trip
+  // that pin for no real benefit, since these two bounded, differently-
+  // statused reads are cheap regardless of ordering.
+  const acceptedRows = await listKnowledgeCandidates(
+    'accepted',
+    KNOWLEDGE_CANDIDATE_RESOLUTION_SCAN_LIMIT,
+    false,
+  );
+  const declinedRows = await listKnowledgeCandidates(
+    'declined',
+    KNOWLEDGE_CANDIDATE_RESOLUTION_SCAN_LIMIT,
+    false,
+  );
+  const rows = [...acceptedRows, ...declinedRows].map((row) => ({
+    createdAt: row.createdAt,
+    resolvedAt: row.reviewedAt,
+  }));
+  return medianReportResolutionHours(rows, since);
 }
 
 /**
@@ -690,6 +753,22 @@ export function buildAdminDigestMessage(
   // user_name/reason/user_id/resolved_by ever reaches the DM, same privacy
   // convention as resolvedAppealsCount/dismissedAppealsCount.
   appealMedianResolutionHours: number | null = null,
+  // Median hours-to-review over the same accepted+declined candidate rows as
+  // acceptedKnowledgeCandidatesCount above (`candidateMedianResolutionHours`,
+  // issue #1149) — the candidates-side sibling of reportMedianResolutionHours/
+  // appealMedianResolutionHours, the still-missing throughput/speed
+  // complement to the flywheel line's accepted-candidates count: a shrinking
+  // pending backlog can coexist with individual candidates sitting for days,
+  // which the backlog/age signals alone can't distinguish. Append-only
+  // trailing param, `null` by default, so every existing call site is
+  // unaffected. Only ever appended to the already-rendered accepted-
+  // candidates line above and only when non-null (no reviewed candidates in
+  // the window has no meaningful median), so the quiet case and every caller
+  // that hasn't wired this through are byte-identical to the pre-#1149 form.
+  // Bare integer (rounded hours) only — no candidate title/content/topic/
+  // sourcePlatform/sourceUserId ever reaches the DM, same privacy convention
+  // as acceptedKnowledgeCandidatesCount.
+  candidateMedianResolutionHours: number | null = null,
 ): string | null {
   if (
     clusters.length === 0 &&
@@ -1016,11 +1095,29 @@ export function buildAdminDigestMessage(
     // Bare integers only — no candidate title/content/topic, no project
     // name/description/link/owner, no helper/requester identifier or
     // find_helper topic content, no user/admin identifier ever reaches the
-    // DM (#797, extended by #820 and #870). Four independent trendSuffix
+    // DM (#797, extended by #820, #870 and #1149's median-hours fragment
+    // below, itself a bare rounded integer). Four independent trendSuffix
     // calls, one per sub-signal, same convention as the joined/left roster
     // line above.
+    //
+    // Median-hours fragment only when the aggregate resolved to a real value
+    // — zero reviewed candidates in the window (or a caller that hasn't
+    // wired the new param through) renders the line exactly as before #1149
+    // (issue #1149). Decorates the accepted-candidates count specifically
+    // (before its own trendSuffix), matching the reports/appeals convention
+    // of placing the median fragment next to the count it summarises.
+    // KNOWN GAP, accepted per #1149's own "implementation detail" note: this
+    // whole line — and so this fragment — only renders when at least one of
+    // the four flywheel sub-counts is nonzero; a window where every reviewed
+    // candidate was declined (acceptedKnowledgeCandidatesCount === 0) but a
+    // median still exists renders no line at all, same as every other
+    // signal gated by this block.
+    const candidateMedianFragment =
+      candidateMedianResolutionHours !== null
+        ? ` (median ${Math.round(candidateMedianResolutionHours)}h to review)`
+        : '';
     sections.push(
-      `🌱 ${acceptedKnowledgeCandidatesCount} knowledge candidate(s) accepted` +
+      `🌱 ${acceptedKnowledgeCandidatesCount} knowledge candidate(s) accepted${candidateMedianFragment}` +
         trendSuffix('acceptedKnowledgeCandidatesCount', acceptedKnowledgeCandidatesCount, previousCounts) +
         `, ${projectsSharedCount} project(s) shared` +
         trendSuffix('projectsSharedCount', projectsSharedCount, previousCounts) +
@@ -1105,6 +1202,7 @@ export async function buildAdminDigestForAdmin(
     projectConnectionsCount,
     reportBreakdown,
     appealMedianHours,
+    candidateMedianHours,
   ] = await Promise.all([
     recentQuestionClusters(scope, FRESHNESS_DAYS, CLUSTER_LIMIT),
     countAccessRequests(),
@@ -1244,6 +1342,13 @@ export async function buildAdminDigestForAdmin(
     // complement to appealBreakdown's resolved/dismissed outcome-mix, the
     // appeals-side sibling of reportBreakdown's own median (issue #1130).
     appealMedianResolutionHours(platform, FRESHNESS_DAYS),
+    // Median hours-to-review over the same accepted+declined candidate rows
+    // as acceptedKnowledgeCandidatesCount above — the candidates-side
+    // sibling of reportBreakdown's/appealMedianHours's own median, completing
+    // the resolution-speed metric set across all three admin review queues
+    // (issue #1149). Guild-wide, unscoped like acceptedKnowledgeCandidatesCount
+    // above — knowledge_candidates has no conversation/channel column.
+    candidateMedianResolutionHours(FRESHNESS_DAYS),
   ]);
   // Onboarding-queue count only means anything in 'gated' mode — an
   // 'open'-mode not_members row already has full member-tool access
@@ -1306,6 +1411,8 @@ export async function buildAdminDigestForAdmin(
     // trend persistence, same "renders bare" first-ever-digest behaviour.
     // `appealMedianHours` (issue #1130) is excluded for the identical reason
     // — the appeals-side sibling of `reportMedianResolutionHours` above.
+    // `candidateMedianHours` (issue #1149) is excluded for the identical
+    // reason — the candidates-side sibling of both.
   };
   // Only added when there's at least one auto-answer rating this week (issue
   // #629) — mirrors the render block's own `autoAnswerHelpful +
@@ -1369,6 +1476,7 @@ export async function buildAdminDigestForAdmin(
     reportBreakdown.dismissed,
     reportBreakdown.medianResolutionHours,
     appealMedianHours,
+    candidateMedianHours,
   );
   return { message, currentCounts };
 }

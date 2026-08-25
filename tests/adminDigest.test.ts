@@ -52,6 +52,9 @@ const {
   deleteKnowledge,
   insertContextDigest,
   insertKnowledgeCandidate,
+  createKnowledgeTip,
+  acceptKnowledgeCandidate,
+  declineKnowledgeCandidate,
   upsertRosterMember,
   markRosterLeave,
   rosterCounts,
@@ -5007,10 +5010,10 @@ test('appealMedianResolutionHours reuses medianReportResolutionHours directly ra
   const medianHelperCallCount = (source.match(/medianReportResolutionHours\(/g) ?? []).length;
   assert.equal(
     medianHelperCallCount,
-    3,
-    'medianReportResolutionHours is referenced exactly three times — its own definition, ' +
-      "reportResolutionBreakdown's call, and appealMedianResolutionHours's call — a second, forked median " +
-      'helper is never introduced',
+    4,
+    'medianReportResolutionHours is referenced exactly four times — its own definition, ' +
+      "reportResolutionBreakdown's call, appealMedianResolutionHours's call, and " +
+      "candidateMedianResolutionHours's call (issue #1149) — a second, forked median helper is never introduced",
   );
 });
 
@@ -5207,6 +5210,197 @@ test(
     await pool.query(`DELETE FROM moderation_appeals WHERE id = ANY($1)`, [
       [discordAppeal.id, whatsappAppeal.id],
     ]);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+  },
+);
+
+// --- issue #1149: candidateMedianResolutionHours + its digest line --------
+
+test('candidateMedianResolutionHours scans BOTH accepted and declined candidates and reuses medianReportResolutionHours directly rather than forking a fourth median-computation helper (issue #1149 acceptance criteria 1, 2)', () => {
+  const source = readFileSync(new URL('../src/module/adminDigest.ts', import.meta.url), 'utf8');
+  const fnMatch = source.match(/async function candidateMedianResolutionHours\([\s\S]*?\n}\n/);
+  assert.ok(fnMatch, 'candidateMedianResolutionHours is defined');
+  const fnBody = fnMatch[0];
+  assert.match(
+    fnBody,
+    /listKnowledgeCandidates\(\s*'accepted'/,
+    "candidateMedianResolutionHours scans the 'accepted' status (issue #1149 acceptance criterion 2)",
+  );
+  assert.match(
+    fnBody,
+    /listKnowledgeCandidates\(\s*'declined'/,
+    "candidateMedianResolutionHours also scans the 'declined' status — not accepted-only (issue #1149 acceptance criterion 2)",
+  );
+  assert.match(
+    fnBody,
+    /resolvedAt:\s*row\.reviewedAt/,
+    "each candidate's reviewedAt is mapped onto the resolvedAt field medianReportResolutionHours expects",
+  );
+  assert.match(
+    fnBody,
+    /medianReportResolutionHours\(/,
+    'candidateMedianResolutionHours delegates to the shared, already-tested median helper rather than forking its own',
+  );
+});
+
+// Full 47-element positional prefix for buildAdminDigestMessage at its
+// quiet-week default — every signal through appealMedianResolutionHours
+// (position 47) zero/null. The one new trailing param under test
+// (candidateMedianResolutionHours, position 48) is appended by each test
+// below, matching the APPEAL_MEDIAN_ZERO_PREFIX + trailing-arg convention
+// used for reportMedianResolutionHours/appealMedianResolutionHours above.
+const CANDIDATE_MEDIAN_ZERO_PREFIX = [...APPEAL_MEDIAN_ZERO_PREFIX, null] as const;
+
+function withAcceptedCandidates(accepted: number) {
+  return [
+    ...CANDIDATE_MEDIAN_ZERO_PREFIX.slice(0, 36),
+    accepted,
+    ...CANDIDATE_MEDIAN_ZERO_PREFIX.slice(37),
+  ] as const;
+}
+
+test('buildAdminDigestMessage: candidateMedianResolutionHours renders a "(median Nh to review)" fragment on the accepted-candidates line only when non-null, and omitting it is byte-identical to the pre-#1149 form (issue #1149 acceptance criteria 5, 6)', () => {
+  const prefix = withAcceptedCandidates(3);
+  const withoutParam = buildAdminDigestMessage(...prefix);
+  const withExplicitNull = buildAdminDigestMessage(...prefix, null);
+  assert.equal(
+    withoutParam,
+    withExplicitNull,
+    'omitting the new trailing param is byte-identical to passing null explicitly',
+  );
+  assert.equal(
+    withoutParam?.split('\n').find((l) => l.includes('🌱')),
+    '🌱 3 knowledge candidate(s) accepted, 0 project(s) shared, 0 member-to-member connection(s) made, 0 project connection(s) requested this week — the community is contributing back.',
+    'the quiet-median case is byte-identical to the pre-#1149 line',
+  );
+
+  const withMedian = buildAdminDigestMessage(...prefix, 14.6);
+  assert.ok(withMedian);
+  const medianLine = withMedian.split('\n').find((l) => l.includes('🌱'));
+  assert.equal(
+    medianLine,
+    '🌱 3 knowledge candidate(s) accepted (median 15h to review), 0 project(s) shared, 0 member-to-member connection(s) made, 0 project connection(s) requested this week — the community is contributing back.',
+    'a non-null median renders the rounded-hours fragment exactly once, immediately after the accepted-count clause',
+  );
+  assert.equal(
+    medianLine?.match(/median \d+h to review/g)?.length,
+    1,
+    'the median fragment appears exactly once',
+  );
+});
+
+test('SECURITY: buildAdminDigestMessage: the accepted-candidates line with a median fragment is a deterministic function of (acceptedKnowledgeCandidatesCount, projectsSharedCount, helperMatchesCount, projectConnectionsCount, candidateMedianResolutionHours) only, and never carries a candidate title/content/topic/sourcePlatform/sourceUserId (issue #1149 acceptance criterion 7)', () => {
+  const secretTitle = 'a very identifiable candidate title that must never leak';
+  const secretContent = 'a very identifiable candidate content that must never leak';
+  const secretTopic = 'a very identifiable candidate topic that must never leak';
+  const secretSourcePlatform = 'whatsapp';
+  const secretSourceUserId = 'candidate-source-user-id-564738291';
+
+  const message = buildAdminDigestMessage(...withAcceptedCandidates(3), 14.6);
+  assert.ok(message);
+  const line = message.split('\n').find((l) => l.includes('🌱'));
+  assert.ok(line);
+  for (const secret of [secretTitle, secretContent, secretTopic, secretSourcePlatform, secretSourceUserId]) {
+    assert.ok(
+      !line.includes(secret),
+      `SECURITY: the accepted-candidates line must never carry "${secret}" — it takes no such input, only bare integer counts and the bare median-hours integer`,
+    );
+  }
+  assert.equal(
+    line,
+    '🌱 3 knowledge candidate(s) accepted (median 15h to review), 0 project(s) shared, 0 member-to-member connection(s) made, 0 project connection(s) requested this week — the community is contributing back.',
+    'the line is a pure function of the four integer counts and the median-hours integer — bare numbers and fixed template text only',
+  );
+});
+
+test(
+  'buildAdminDigestForAdmin: candidateMedianResolutionHours is wired over the same FRESHNESS_DAYS window and rendered on the digest, and no candidate title/content/topic/sourcePlatform/sourceUserId ever reaches the message (issue #1149 acceptance criteria 1, 2, 7)',
+  { skip },
+  async () => {
+    const adminId = `${RUN}-candidatemedian-admin`;
+    const tipUserId = `${RUN}-candidatemedian-tipuser`;
+    const reviewer = `${RUN}-candidatemedian-reviewer`;
+    const secretTopicAccepted = `${RUN} a very identifiable accepted-candidate median topic that must never leak`;
+    const secretTitleAccepted = 'a very identifiable accepted-candidate median title that must never leak';
+    const secretContentAccepted =
+      'a very identifiable accepted-candidate median content that must never leak';
+    const secretTopicDeclined = `${RUN} a very identifiable declined-candidate median topic that must never leak`;
+    const secretTitleDeclined = 'a very identifiable declined-candidate median title that must never leak';
+    const secretContentDeclined =
+      'a very identifiable declined-candidate median content that must never leak';
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    const accepted = await createKnowledgeTip({
+      platform: 'discord',
+      userId: tipUserId,
+      topic: secretTopicAccepted,
+      title: secretTitleAccepted,
+      content: secretContentAccepted,
+    });
+    const declined = await createKnowledgeTip({
+      platform: 'discord',
+      userId: tipUserId,
+      topic: secretTopicDeclined,
+      title: secretTitleDeclined,
+      content: secretContentDeclined,
+    });
+    assert.ok(accepted && declined, 'both tips are recorded (within the per-user daily rate limit)');
+
+    const acceptResult = await acceptKnowledgeCandidate({ id: accepted.id, reviewedBy: reviewer });
+    const declineResult = await declineKnowledgeCandidate(declined.id, reviewer);
+    assert.ok(acceptResult && declineResult);
+
+    // Back-date both created_at and reviewed_at so each candidate's
+    // review-duration delta is small and well inside the FRESHNESS_DAYS
+    // window, without pinning an exact rendered hours value:
+    // knowledge_candidates is guild-wide/unscoped (matching
+    // list_knowledge_candidates' own scope, unlike listReports/listAppeals'
+    // conversation/platform scoping), so an exact rendered count or median
+    // can't be asserted here without risking cross-file test flakiness —
+    // the same accepted-risk shape acceptedKnowledgeCandidatesCount itself
+    // already carries (issue #797's own tests never pin an exact DB count
+    // either). Windowing and odd/even median correctness are covered
+    // generically by medianReportResolutionHours's own unit tests above
+    // (issue #1081 acceptance criterion 1), reused verbatim here.
+    await pool.query(
+      `UPDATE knowledge_candidates SET created_at = now() - interval '4 hours', reviewed_at = now() - interval '2 hours' WHERE id = $1`,
+      [accepted.id],
+    );
+    await pool.query(
+      `UPDATE knowledge_candidates SET created_at = now() - interval '8 hours', reviewed_at = now() - interval '1 hours' WHERE id = $1`,
+      [declined.id],
+    );
+
+    const adapter = fakeAdapter({ platform: 'discord', conversationIds: [], sent: [] });
+    const result = await buildAdminDigestForAdmin('discord', adminId, adapter);
+
+    assert.ok(result.message, 'the accepted candidate alone still produces a DM');
+    const flywheelLine = result.message.split('\n').find((l) => l.includes('🌱'));
+    assert.match(
+      flywheelLine ?? '',
+      /\(median \d+h to review\)/,
+      'the accepted-candidates line renders a median fragment once a recently-reviewed candidate exists (issue #1149 acceptance criterion 1)',
+    );
+
+    for (const secret of [
+      secretTopicAccepted,
+      secretTitleAccepted,
+      secretContentAccepted,
+      secretTopicDeclined,
+      secretTitleDeclined,
+      secretContentDeclined,
+      tipUserId,
+    ]) {
+      assert.ok(
+        !result.message.includes(secret),
+        `SECURITY: "${secret}" must never reach the rendered digest — only the bare median-hours integer does (issue #1149 acceptance criterion 7)`,
+      );
+    }
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [acceptResult.knowledgeId]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [[accepted.id, declined.id]]);
     await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
       adminId,
     ]);
