@@ -1181,6 +1181,26 @@ test('!guidelines replies with the not-set-yet text when no guidelines exist', a
   assert.match(sent[0].text, /No community guidelines have been set yet/);
 });
 
+test(
+  '!guidelines replies with the mi fallback text when no guidelines exist and the caller has a stored ' +
+    "'mi' language preference (issue #1161 acceptance criterion 4)",
+  async (t) => {
+    mockPoolRole(t, 'member');
+    const router = makeRouter({
+      runTurn: throwingRunTurn,
+      getLangPref: async () => 'mi',
+      getConductGuidelinesFn: async () => null,
+      getLocalisedConductGuidelinesFn: async () => null,
+    });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!guidelines', userId: 'member-1' }));
+
+    assert.equal(sent[0].text, 'Kāore anō kia whakaritea he aratohu hapori — pātaia he kaiwhakahaere.');
+  },
+);
+
 // --- !digest --------------------------------------------------------------------
 
 test('!digest from a member uses buildDigestContentFn', async (t) => {
@@ -1207,6 +1227,71 @@ test('!digest replies with the fixed "Nothing to report" text when buildDigestCo
 
   assert.equal(sent[0].text, 'Nothing to report right now.');
 });
+
+test(
+  '!digest replies with the mi fallback text when buildMemberDigestContent resolves null and the caller ' +
+    "has a stored 'mi' language preference (issue #1161 acceptance criterion 5) — the mi branch calls " +
+    'buildMemberDigestContent directly (undefined deps), so this stubs pool.query for every repository ' +
+    'read it issues rather than injecting deps.buildDigestContentFn, which the mi branch never calls',
+  async (t) => {
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users')) {
+        return { rows: [{ role: 'member' }], rowCount: 0 };
+      }
+      if (sql.includes('FROM language_prefs')) return { rows: [{ language: 'mi' }], rowCount: 0 };
+      if (sql.includes('FROM knowledge_candidates')) return { rows: [{ n: 0 }], rowCount: 0 };
+      if (sql.includes('FROM member_projects')) return { rows: [{ n: 0 }], rowCount: 0 };
+      if (sql.includes('FROM member_interests')) return { rows: [{ n: 0 }], rowCount: 0 };
+      if (sql.includes('FROM helper_notifications')) return { rows: [{ n: 0 }], rowCount: 0 };
+      if (sql.includes('FROM project_connection_requests')) return { rows: [{ n: 0 }], rowCount: 0 };
+      // FROM context_digests and the generic FROM knowledge (curated titles)
+      // branches both resolve to an empty row set — every input empty renders
+      // null (formatMemberDigestMessage's own silence-over-noise contract),
+      // same fixture shape as discordSlashCommands.test.ts's analogous test.
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: throwingRunTurn });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!digest', userId: 'member-1' }));
+
+    assert.equal(sent[0].text, 'Kāore he pūrongo i tēnei wā.');
+  },
+);
+
+test(
+  "SECURITY: !guidelines and !digest empty-state fallbacks render byte-identical to today's English text " +
+    "for a caller whose language preference is unset/'en'/'auto' (issue #1161 acceptance criterion 6)",
+  async (t) => {
+    mockPoolRole(t, 'member');
+    for (const langPref of ['auto', 'en', undefined] as const) {
+      const router = makeRouter({
+        runTurn: throwingRunTurn,
+        getLangPref: langPref === undefined ? undefined : async () => langPref,
+        getConductGuidelinesFn: async () => null,
+        getLocalisedConductGuidelinesFn: async () => null,
+        buildDigestContentFn: async () => null,
+      });
+      const { adapter, sent, trigger } = makeAdapter();
+      router.register(adapter);
+
+      await trigger(makeMessage({ text: '!guidelines', userId: 'member-1' }));
+      assert.equal(
+        sent[0].text,
+        'No community guidelines have been set yet — ask an admin.',
+        `!guidelines fallback must stay byte-identical for language preference '${langPref}'`,
+      );
+
+      await trigger(makeMessage({ text: '!digest', userId: 'member-1' }));
+      assert.equal(
+        sent[1].text,
+        'Nothing to report right now.',
+        `!digest fallback must stay byte-identical for language preference '${langPref}'`,
+      );
+    }
+  },
+);
 
 test('!digest for a member with a default/unset language preference still uses deps.buildDigestContentFn — the mi bypass path never triggers for the common case', async (t) => {
   let buildDigestCalled = false;

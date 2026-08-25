@@ -201,6 +201,28 @@ test(
 );
 
 test(
+  "SECURITY: communityGuidelinesUnsetNotice's and memberDigestEmptyNotice's base and mi values contain " +
+    'no template placeholders/interpolation tokens — fixed, human-authored text only, no injection surface ' +
+    '(issue #1161 acceptance criterion 7)',
+  () => {
+    const placeholderPattern = /\$\{|\{\{|%s|%d|\{[0-9a-zA-Z_]*\}/;
+    for (const id of ['communityGuidelinesUnsetNotice', 'memberDigestEmptyNotice'] as const) {
+      const entry = NOTICE_ENTRIES[id];
+      assert.doesNotMatch(
+        entry.base,
+        placeholderPattern,
+        `${id} base must be fixed text with no interpolation markers`,
+      );
+      assert.doesNotMatch(
+        entry.language.mi,
+        placeholderPattern,
+        `${id} mi variant must be fixed text with no interpolation markers`,
+      );
+    }
+  },
+);
+
+test(
   'SECURITY: the six memberDigest section-label catalogue entries contain no template placeholders/' +
     'interpolation tokens in their static wording — checked on the RENDERED output for the four ' +
     'count-taking templates, so a leftover placeholder in the surrounding fixed text would still be ' +

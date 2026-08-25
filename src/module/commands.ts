@@ -50,6 +50,7 @@ import {
 } from './agent/tools/selfService.js';
 import { TEXT_COMMAND_UNMATCHED, type RegisteredCommand } from '@swampratnz/agent-base/commands/registry.js';
 import { formatStatusMessage, getStatusCache } from './status/anthropicStatus.js';
+import { notice } from './strings/notices.js';
 
 /**
  * The community command registry (agent-base plan §3 `commands` row): ONE
@@ -204,7 +205,7 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
         languagePreference === 'mi'
           ? ((await deps.getLocalisedConductGuidelinesFn()) ?? (await deps.getConductGuidelinesFn()))
           : await deps.getConductGuidelinesFn();
-      return guidelines ?? 'No community guidelines have been set yet — ask an admin.';
+      return guidelines ?? notice('communityGuidelinesUnsetNotice', { language: languagePreference });
     },
   },
   {
@@ -226,7 +227,7 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
         language === 'mi'
           ? await buildMemberDigestContent(undefined, { platform: msg.platform, userId: msg.userId })
           : await deps.buildDigestContentFn();
-      return message ?? 'Nothing to report right now.';
+      return message ?? notice('memberDigestEmptyNotice', { language });
     },
   },
   {
