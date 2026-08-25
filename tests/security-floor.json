@@ -92,6 +92,7 @@
   "handoffNote.test.ts": 8,
   "health.test.ts": 3,
   "humanHelpRequestRouter.test.ts": 3,
+  "imageGenAudit.test.ts": 1,
   "imageInputSystemPromptBothEnabled.test.ts": 1,
   "imageInputSystemPromptEnabled.test.ts": 1,
   "injectionCorpus.test.ts": 7,
