@@ -217,6 +217,25 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   branch-by-lever diagnostic. Same bundled-markdown shape as every other
   skill: no new tool, tier, or data access, and reachable only behind the
   existing off-by-default `AGENT_SKILLS_ENABLED` gate.
+- **New Agent Skill: `tool-use-and-structured-output-design`, for members
+  designing direct-API tool calling (function calling) or structured JSON
+  output for their own Claude/API integration.** (#1140) "Should I force a
+  tool call with `tool_choice`, or just ask for JSON?", "why does Claude
+  sometimes skip my tool entirely?", "how do I handle it when the model calls
+  two tools I didn't expect?" were a distinct, common builder question none
+  of the thirteen existing skills covered — `prompt-review` only critiques an
+  already-pasted schema, `mcp-server-design` covers the MCP protocol layer
+  rather than direct-API `tools`, `agent-architecture-review` critiques a
+  whole pipeline, and `eval-and-testing-design` only evaluates after
+  shipping. The new skill starts with "does this even need tool calling?",
+  then walks tool-schema fundamentals, `tool_choice` modes
+  (`auto`/`any`/forced/`none`), and multi-step/parallel tool-call handling
+  (matching `tool_result` blocks, validating a returned tool input before
+  acting on it) as a branch-by-lever diagnostic, handing off to the four
+  named skills above rather than restating their guidance. Same
+  bundled-markdown shape as every other skill: no new tool, tier, or data
+  access, and reachable only behind the existing off-by-default
+  `AGENT_SKILLS_ENABLED` gate.
 
 ### Fixed
 - **`/kb`'s exact-string fallback no longer logs a false knowledge-base gap
