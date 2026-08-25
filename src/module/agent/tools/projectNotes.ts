@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
 import { logger } from '@swampratnz/agent-base/logger.js';
 import {
+  getLanguagePreference,
   listVisibleProjects,
   PROJECT_NOTE_CONTENT_MAX_CHARS,
   PROJECT_NOTE_RATE_LIMIT_PER_DAY,
@@ -12,6 +13,7 @@ import {
   searchProjectNotes,
 } from '@swampratnz/agent-base/storage/repository.js';
 import { text, untrusted } from './helpers.js';
+import { notice } from '../../strings/notices.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 // --- Project tools (issue #927) --------------------------------------------
@@ -52,7 +54,8 @@ export const projectNotesTools = [
         isDirect: caller.isDirect,
       });
       if (hits.length === 0) {
-        return text('Nothing in project memory matches that (or you have no project accessible here).');
+        const language = await getLanguagePreference(caller.platform, caller.userId);
+        return text(notice('projectRecallEmpty', { language }));
       }
       recordProjectNoteRetrieval(hits.map((h) => h.id)).catch((err) =>
         logger.warn({ err }, 'Project note retrieval count update failed'),
@@ -129,19 +132,20 @@ export const projectNotesTools = [
       // Deliberately the same reply for "no such project" and "exists but not
       // yours / not bound here" (issue #205's wording rule): distinguishing
       // them would confirm a project's existence to a non-member.
-      if (!saved) return text('No project by that name is accessible here.', true);
+      if (!saved) {
+        const language = await getLanguagePreference(caller.platform, caller.userId);
+        return text(notice('projectNoteInvalidProject', { language }), true);
+      }
       // A rolling-24h write cap, same refusal shape as suggest_knowledge's
       // (PR #929 review). Deliberately worded as a limit that resets, not as
       // a rejection of the content, so a team minuting a long meeting knows
       // the note simply needs to wait rather than being lost to a bug.
       if ('atCap' in saved) {
-        return text(
-          `You've already recorded ${PROJECT_NOTE_RATE_LIMIT_PER_DAY} project notes in the last 24 ` +
-            'hours. Try again later, or ask an admin if the team needs a higher limit.',
-          true,
-        );
+        const language = await getLanguagePreference(caller.platform, caller.userId);
+        return text(notice('projectNoteRateLimited', { language })(PROJECT_NOTE_RATE_LIMIT_PER_DAY), true);
       }
-      return text(`Recorded in ${args.project}.`);
+      const language = await getLanguagePreference(caller.platform, caller.userId);
+      return text(notice('projectNoteSaved', { language })(args.project));
     },
   }),
 
@@ -170,7 +174,10 @@ export const projectNotesTools = [
         conversationId: caller.conversationId,
         isDirect: caller.isDirect,
       });
-      if (projects.length === 0) return text('You have no project accessible in this conversation.');
+      if (projects.length === 0) {
+        const language = await getLanguagePreference(caller.platform, caller.userId);
+        return text(notice('projectListEmpty', { language }));
+      }
       return text(
         untrusted(
           'Projects',

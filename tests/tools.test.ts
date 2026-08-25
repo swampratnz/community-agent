@@ -18234,6 +18234,175 @@ test('SECURITY: project_recall/project_note/project_list refuse a guest-tier cal
   );
 });
 
+// --- issue #1141: project_recall/project_note/project_list honour a standing 'mi' language preference ---
+
+test("the five project-notes notices (projectRecallEmpty/projectNoteInvalidProject/projectNoteRateLimited/projectNoteSaved/projectListEmpty) render the te reo Māori variant for language 'mi', the exact pre-existing English literal for 'auto'/unset, and actually differ between the two (issue #1141)", () => {
+  assert.equal(
+    notice('projectRecallEmpty', { language: 'mi' }),
+    'Kāore he mea i ngā mahara tiritahi o te kaupapa e ōrite ana ki tērā (kāore rānei he kaupapa e watea ana ki a koe i konei).',
+  );
+  assert.equal(
+    notice('projectRecallEmpty'),
+    'Nothing in project memory matches that (or you have no project accessible here).',
+  );
+  assert.equal(
+    notice('projectNoteInvalidProject', { language: 'mi' }),
+    'Kāore he kaupapa e taua ingoa e watea ana i konei.',
+  );
+  assert.equal(notice('projectNoteInvalidProject'), 'No project by that name is accessible here.');
+  assert.equal(
+    notice('projectNoteRateLimited', { language: 'mi' })(50),
+    'Kua tuhia kētia e koe 50 ngā tuhinga kaupapa i roto i ngā haora 24 kua hipa. Whakamātau anō ā muri ' +
+      'ake, pātai rānei ki tētahi kaiwhakahaere mehemea e hiahiatia ana e te tīma tētahi tepe teitei ake.',
+  );
+  assert.equal(
+    notice('projectNoteRateLimited')(50),
+    "You've already recorded 50 project notes in the last 24 hours. Try again later, or ask an admin " +
+      'if the team needs a higher limit.',
+  );
+  assert.equal(notice('projectNoteSaved', { language: 'mi' })('impact-lab'), 'Kua tuhia ki impact-lab.');
+  assert.equal(notice('projectNoteSaved')('impact-lab'), 'Recorded in impact-lab.');
+  assert.equal(
+    notice('projectListEmpty', { language: 'mi' }),
+    'Kāore he kaupapa e watea ana ki a koe i roto i tēnei kōrero.',
+  );
+  assert.equal(notice('projectListEmpty'), 'You have no project accessible in this conversation.');
+
+  for (const [id, arg] of [
+    ['projectRecallEmpty', undefined],
+    ['projectNoteInvalidProject', undefined],
+    ['projectNoteRateLimited', 50],
+    ['projectNoteSaved', 'impact-lab'],
+    ['projectListEmpty', undefined],
+  ] as const) {
+    const miValue = notice(id, { language: 'mi' });
+    const enValue = notice(id);
+    const mi = typeof miValue === 'function' ? miValue(arg as never) : miValue;
+    const en = typeof enValue === 'function' ? enValue(arg as never) : enValue;
+    assert.notEqual(mi, en, `${id}'s 'mi' text must actually differ from its English text`);
+  }
+});
+
+test(
+  "SECURITY: project_recall/project_note/project_list render mi/English notice text via the caller's OWN stored getLanguagePreference (never a tool argument), and project_note's invalid-project/rate-limited/saved replies never echo caller-supplied content back (issue #1141 AC #4, #5)",
+  { skip },
+  async () => {
+    const {
+      createProject,
+      upsertMember,
+      addProjectMember,
+      bindProjectSurface,
+      PROJECT_NOTE_RATE_LIMIT_PER_DAY,
+    } = await import('@swampratnz/agent-base/storage/repository.js');
+    const slug = `${RUN}-lang-wiring`;
+    const project = await createProject({ slug, name: 'Lang Wiring Lab', createdBy: 'test' });
+    assert.ok(project, 'fixture setup: slug must be free');
+
+    const miOutsider = `${RUN}-lang-outsider-mi`;
+    const enOutsider = `${RUN}-lang-outsider-en`;
+    const miInsider = `${RUN}-lang-insider-mi`;
+    const enInsider = `${RUN}-lang-insider-en`;
+    const miCapMember = `${RUN}-lang-cap-mi`;
+
+    for (const userId of [miOutsider, enOutsider, miInsider, enInsider, miCapMember]) {
+      await upsertMember({ platform: 'discord', userId, role: 'member', addedBy: 'test' });
+    }
+    // The mi branch must be reachable ONLY through this stored preference —
+    // none of these callers ever pass a `language` tool argument below.
+    await setLanguagePreference('discord', miOutsider, 'mi');
+    await setLanguagePreference('discord', miInsider, 'mi');
+    await setLanguagePreference('discord', miCapMember, 'mi');
+
+    await addProjectMember(project.id, 'discord', miInsider, 'test');
+    await addProjectMember(project.id, 'discord', enInsider, 'test');
+    await addProjectMember(project.id, 'discord', miCapMember, 'test');
+    await bindProjectSurface(project.id, 'discord', 'convo-project-guest', 'test');
+
+    // project_list: the outsiders are in no project reachable here at all.
+    const miList = await projectToolHandler('project_list', { role: 'member', userId: miOutsider }).handler(
+      {},
+    );
+    const enList = await projectToolHandler('project_list', { role: 'member', userId: enOutsider }).handler(
+      {},
+    );
+    assert.equal(miList.content[0].text, notice('projectListEmpty', { language: 'mi' }));
+    assert.equal(enList.content[0].text, notice('projectListEmpty'));
+
+    // project_recall: same outsiders — visibleProjectIds is empty, so an
+    // immediate empty-result reply with no vector search involved.
+    const miRecall = await projectToolHandler('project_recall', {
+      role: 'member',
+      userId: miOutsider,
+    }).handler({
+      query: 'anything',
+    });
+    const enRecall = await projectToolHandler('project_recall', {
+      role: 'member',
+      userId: enOutsider,
+    }).handler({
+      query: 'anything',
+    });
+    assert.equal(miRecall.content[0].text, notice('projectRecallEmpty', { language: 'mi' }));
+    assert.equal(enRecall.content[0].text, notice('projectRecallEmpty'));
+
+    // project_note: an outsider naming this real project gets the same
+    // "not accessible" reply a nonexistent slug would (issue #205's wording
+    // rule) — and the note's own content must never appear in that refusal.
+    const invalidCanary = `${RUN}-canary-invalid-path-content-must-not-leak`;
+    const miInvalid = await projectToolHandler('project_note', {
+      role: 'member',
+      userId: miOutsider,
+    }).handler({
+      project: slug,
+      content: invalidCanary,
+    });
+    const enInvalid = await projectToolHandler('project_note', {
+      role: 'member',
+      userId: enOutsider,
+    }).handler({
+      project: slug,
+      content: invalidCanary,
+    });
+    assert.equal(miInvalid.content[0].text, notice('projectNoteInvalidProject', { language: 'mi' }));
+    assert.equal(enInvalid.content[0].text, notice('projectNoteInvalidProject'));
+    assert.doesNotMatch(miInvalid.content[0].text, new RegExp(invalidCanary));
+    assert.doesNotMatch(enInvalid.content[0].text, new RegExp(invalidCanary));
+
+    // project_note: success path for an actual member — only the
+    // already-validated slug is interpolated, never the note's own content.
+    const miNoteCanary = `${RUN}-canary-mi-saved-content-must-not-leak`;
+    const enNoteCanary = `${RUN}-canary-en-saved-content-must-not-leak`;
+    const miSaved = await projectToolHandler('project_note', { role: 'member', userId: miInsider }).handler({
+      project: slug,
+      content: miNoteCanary,
+    });
+    const enSaved = await projectToolHandler('project_note', { role: 'member', userId: enInsider }).handler({
+      project: slug,
+      content: enNoteCanary,
+    });
+    assert.equal(miSaved.content[0].text, notice('projectNoteSaved', { language: 'mi' })(slug));
+    assert.equal(enSaved.content[0].text, notice('projectNoteSaved')(slug));
+    assert.doesNotMatch(miSaved.content[0].text, new RegExp(miNoteCanary));
+    assert.doesNotMatch(enSaved.content[0].text, new RegExp(enNoteCanary));
+
+    // project_note: rate-limited path for a member with a stored mi
+    // preference — the refusal must carry the count, never the content that
+    // tripped it.
+    const capTool = projectToolHandler('project_note', { role: 'member', userId: miCapMember });
+    for (let i = 0; i < PROJECT_NOTE_RATE_LIMIT_PER_DAY; i++) {
+      const ok = await capTool.handler({ project: slug, content: `${RUN} cap note ${i}` });
+      assert.equal(ok.isError, false, `write ${i + 1} must land while under the cap`);
+    }
+    const overCapCanary = `${RUN}-canary-over-cap-content-must-not-leak`;
+    const overCap = await capTool.handler({ project: slug, content: overCapCanary });
+    assert.equal(
+      overCap.content[0].text,
+      notice('projectNoteRateLimited', { language: 'mi' })(PROJECT_NOTE_RATE_LIMIT_PER_DAY),
+    );
+    assert.doesNotMatch(overCap.content[0].text, new RegExp(overCapCanary));
+  },
+);
+
 test('SECURITY: set_my_interests and who_is_into refuse a guest-tier caller before any DB write/read (assertAtLeast re-check, issue #634)', async () => {
   const setTool = setMyInterestsHandler({ platform: 'discord', userId: 'guest-1', role: 'guest' });
   await assert.rejects(
