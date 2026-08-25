@@ -8,6 +8,7 @@ import { ENABLED_SKILLS } from '../enabledSkills.js';
 import { redactSecrets } from '@swampratnz/agent-base/agent/outbound.js';
 import { devTeamField, type JobListEntry, type JobResult, type JobStatus } from '../../devTeam/client.js';
 import {
+  type BlockedUserRow,
   engagementStats,
   getActiveProjectNamesForOwners,
   getPublishedInterestsForOwners,
@@ -977,6 +978,29 @@ export function formatMutedMembersList(rows: readonly MutedMemberRow[]): string 
       );
     })
     .join('\n');
+}
+
+/**
+ * Pure renderer shared by the `list_blocked_members` tool handler and the
+ * `!blockedlist`/`/blockedlist` admin shortcut (issue #1145), hoisted
+ * verbatim out of the tool handler's own inline rendering so the two call
+ * sites can never drift — same reasoning as `formatMutedMembersList` above.
+ * Empty input renders the fixed "No blocked users." string; each row renders
+ * through the same `untrusted()` quarantine the tool handler already used
+ * (a block reason is admin-supplied free text, so it stays wrapped even
+ * though `formatMutedMembersList` above needs no such wrap).
+ */
+export function formatBlockedMembersList(rows: readonly BlockedUserRow[]): string {
+  if (rows.length === 0) return 'No blocked users.';
+  return untrusted(
+    'Blocked users',
+    rows
+      .map((r) => {
+        const reasonText = r.reason ? `: ${r.reason}` : '';
+        return `${r.externalId} — blocked by ${r.blockedBy} at ${r.blockedAt.toISOString()}${reasonText}`;
+      })
+      .join('\n'),
+  );
 }
 
 /** One entry in the `feature_flags` allowlist (issue #559). */

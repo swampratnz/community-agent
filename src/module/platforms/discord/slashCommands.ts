@@ -31,6 +31,7 @@ import {
   hasConflictAmongIds,
   type KnowledgeSearchHit,
   type LanguagePreference,
+  listBlockedUsers,
   listKnowledge,
   listKnowledgeTopics,
   listMutedMembers,
@@ -56,6 +57,7 @@ import {
   searchProjects,
 } from '@swampratnz/agent-base/storage/repository.js';
 import {
+  formatBlockedMembersList,
   formatCommunityInfoText,
   formatInterestResults,
   formatKnowledgeSearchResults,
@@ -697,6 +699,34 @@ async function handleMutedList(
 }
 
 /**
+ * `list_blocked_members` is structurally in ADMIN_TOOLS — the third
+ * admin-tier shortcut in this file (issue #1145), mirrored here via
+ * `toolsForRole` + `atLeast(role, 'admin')`, same double-check shape as
+ * `handleReviewQueue`/`handleMutedList` above. No options: renders
+ * `formatBlockedMembersList`'s output for `listBlockedUsers('discord')` —
+ * the SAME repository call with the SAME argument `list_blocked_members`'s
+ * own handler uses.
+ */
+async function handleBlockedList(
+  interaction: ChatInputCommandInteraction,
+  deps: SlashCommandDeps,
+): Promise<void> {
+  await deferEphemeral(interaction);
+  const role = await resolveRole('discord', interaction.user.id);
+  if (
+    !toolsForRole(role, 'discord').includes('mcp__community__list_blocked_members') ||
+    !atLeast(role, 'admin')
+  ) {
+    await replyEphemeral(interaction, NOT_AUTHORIZED_TEXT, deps);
+    return;
+  }
+  const rows = await listBlockedUsers('discord');
+  const message = formatBlockedMembersList(rows);
+  recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
+  await replyEphemeral(interaction, message, deps);
+}
+
+/**
  * `list_events` is structurally in MEMBER_TOOLS with no extra runtime floor
  * beyond `toolsForRole` (unlike `/warnings`/`/whois`/`/projects`/`/digest`
  * above) — mirrored here exactly like `/kb`'s gate (issue #1004). Takes no
@@ -906,6 +936,14 @@ export function bindCommunitySlashCommands(adapter: PlatformAdapter): void {
         .setDescription('Admin: enumerate currently muted members by identity.')
         .toJSON(),
     handle: handleMutedList,
+  });
+  bindDiscordCommand('blockedlist', {
+    build: () =>
+      new SlashCommandBuilder()
+        .setName('blockedlist')
+        .setDescription("Admin: enumerate the bot's block list by identity.")
+        .toJSON(),
+    handle: handleBlockedList,
   });
   bindDiscordCommand('events', {
     build: () =>

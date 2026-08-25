@@ -12,6 +12,7 @@ import {
   getLanguagePreference,
   getMyDataSummary,
   getPublishedInterestsForOwners,
+  listBlockedUsers,
   listKnowledge,
   listKnowledgeTopics,
   listMutedMembers,
@@ -27,6 +28,7 @@ import {
   oldestPendingSuggestionAgeDays,
 } from '@swampratnz/agent-base/storage/repository.js';
 import {
+  formatBlockedMembersList,
   formatCommunityInfoText,
   formatInterestResults,
   formatKnowledgeTopics,
@@ -61,9 +63,10 @@ import { formatStatusMessage, getStatusCache } from './status/anthropicStatus.js
  * `status` (issue #995), `warnings` (issue #1000), `mysubmissions`/`mydata`
  * (issue #1018), `help` (issue #993), `kbtopics` (issue #1036),
  * `kbhelpful` (issue #1087), `reviewqueue` (issue #1095, the first
- * admin-tier entry), and `mutedlist` (issue #1114, the second) appended —
- * also safe for the WhatsApp side because every `!` matcher is anchored and
- * mutually exclusive.
+ * admin-tier entry), `mutedlist` (issue #1114, the second), and
+ * `blockedlist` (issue #1145, the third) appended — also safe for the
+ * WhatsApp side because every `!` matcher is anchored and mutually
+ * exclusive.
  *
  * The Discord halves are BOUND by `bindCommunitySlashCommands()`
  * (slashCommands.ts), which `createConfiguredAdapters()` calls — never at
@@ -449,6 +452,24 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
         config.moderation.strikeWindowDays,
       );
       return formatMutedMembersList(rows);
+    },
+  },
+  {
+    // Third admin-tier entry (issue #1145), same shape as `reviewqueue`/
+    // `mutedlist` directly above. Anchored, argument-rejecting matcher:
+    // `!blockedlist anything` falls through to TEXT_COMMAND_UNMATCHED rather
+    // than matching, so no message-supplied text ever reaches a repository
+    // read. Calls listBlockedUsers with the exact same (platform) argument
+    // list_blocked_members's own handler uses, and renders through the SAME
+    // shared formatBlockedMembersList (tools/helpers.ts) that handler now
+    // uses too, so the two can never drift.
+    name: 'blockedlist',
+    platforms: ['discord', 'whatsapp'],
+    whatsapp: async (text, msg, role) => {
+      if (!/^!blockedlist$/i.test(text)) return TEXT_COMMAND_UNMATCHED;
+      if (!atLeast(role, 'admin')) return null;
+      const rows = await listBlockedUsers(msg.platform);
+      return formatBlockedMembersList(rows);
     },
   },
 ];

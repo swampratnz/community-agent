@@ -17,7 +17,13 @@ import {
   MODERATION_ACTION_KINDS,
   recentModerationEntries,
 } from '@swampratnz/agent-base/storage/repository.js';
-import { formatMutedMembersList, text, unreachableConversationRefusal, untrusted } from './helpers.js';
+import {
+  formatBlockedMembersList,
+  formatMutedMembersList,
+  text,
+  unreachableConversationRefusal,
+  untrusted,
+} from './helpers.js';
 import { applyManualWarnStrike, notifyWarningsCleared } from './notify.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
@@ -378,18 +384,7 @@ export const moderationTools = [
     handler: async (_args, { caller }) => {
       assertAtLeast(caller.role, 'admin', 'list_blocked_members');
       const rows = await listBlockedUsers(caller.platform);
-      if (rows.length === 0) return text('No blocked users.');
-      return text(
-        untrusted(
-          'Blocked users',
-          rows
-            .map((r) => {
-              const reasonText = r.reason ? `: ${r.reason}` : '';
-              return `${r.externalId} — blocked by ${r.blockedBy} at ${r.blockedAt.toISOString()}${reasonText}`;
-            })
-            .join('\n'),
-        ),
-      );
+      return text(formatBlockedMembersList(rows));
     },
   }),
 

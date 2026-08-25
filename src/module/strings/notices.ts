@@ -646,16 +646,19 @@ const NOTICE_ENTRIES = {
    * `whatsappTextCommands`'s own scope. `!mutedlist` (issue #1114) is the
    * second admin-tier shortcut, appended here in the SAME diff that shipped
    * it — the discovery gap #1097 had to file separately after `!reviewqueue`
-   * itself shipped without a line here.
+   * itself shipped without a line here. `!blockedlist` (issue #1145) is the
+   * third, appended in the SAME diff that shipped it for the same reason.
    */
   whatsappAdminTextCommands: {
     base:
       '- `!reviewqueue` — access-request/suggestion/knowledge-candidate/appeal backlog at a glance\n' +
-      '- `!mutedlist` — currently muted members, by identity',
+      '- `!mutedlist` — currently muted members, by identity\n' +
+      '- `!blockedlist` — currently blocked users, by identity',
     language: {
       mi:
         '- `!reviewqueue` — te whakarāpopototanga o ngā ratonga arotake e rima i te tirohanga kotahi\n' +
-        '- `!mutedlist` — ngā mema kua whakarahua i tēnei wā, mā te tuakiri',
+        '- `!mutedlist` — ngā mema kua whakarahua i tēnei wā, mā te tuakiri\n' +
+        '- `!blockedlist` — ngā kaiwhakamahi kua ārairia i tēnei wā, mā te tuakiri',
     },
   },
   // --- member digest section labels (memberDigest.ts) ----------------------
