@@ -194,6 +194,7 @@ const {
   recordProjectConnectionIfUnderCap,
 } = await import('@swampratnz/agent-base/storage/repository.js');
 const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
+const { logger } = await import('@swampratnz/agent-base/logger.js');
 const { embed } = await import('@swampratnz/agent-base/storage/embeddings.js');
 const pgvector = (await import('pgvector/pg')).default;
 const { cancelPendingAction, hasPendingAction, takePendingAction } =
@@ -14287,6 +14288,103 @@ test(
 );
 
 test(
+  'formatMostHelpfulKnowledge with the default (empty) lowRatedIds is byte-identical to omitting the ' +
+    'argument entirely (issue #1143)',
+  () => {
+    const entry = {
+      id: 1,
+      scope: 'global',
+      createdByRole: 'admin',
+      title: 'Plain entry',
+      content: 'Plain body',
+      retrievalCount: 5,
+      updatedAt: new Date('2024-01-01T00:00:00Z'),
+      lastRetrievedAt: new Date('2024-01-01T00:00:00Z'),
+      sourceUrl: null,
+      sourceTitle: null,
+      verifiedAt: null,
+      sourceUnreachable: null,
+      sourceCheckedAt: null,
+    };
+    assert.equal(
+      formatMostHelpfulKnowledge([entry], 'en', new Set()),
+      formatMostHelpfulKnowledge([entry], 'en'),
+      'an explicit empty Set must render identically to the omitted (default) argument',
+    );
+  },
+);
+
+test(
+  'SECURITY: formatMostHelpfulKnowledge appends KNOWLEDGE_LOW_RATED_CAVEAT_TEXT to only the entry whose id ' +
+    "is in lowRatedIds — never a sibling entry's line, and never as a result-wide trailing line (issue #1143)",
+  () => {
+    const lowRated = {
+      id: 101,
+      scope: 'global',
+      createdByRole: 'admin',
+      title: 'Low-rated entry',
+      content: 'LOW_RATED_ENTRY_TEXT',
+      retrievalCount: 9,
+      updatedAt: new Date('2024-01-01T00:00:00Z'),
+      lastRetrievedAt: new Date('2024-01-01T00:00:00Z'),
+      sourceUrl: null,
+      sourceTitle: null,
+      verifiedAt: null,
+      sourceUnreachable: null,
+      sourceCheckedAt: null,
+    };
+    const fine = {
+      ...lowRated,
+      id: 202,
+      title: 'Fine entry',
+      content: 'FINE_ENTRY_TEXT',
+    };
+    const output = formatMostHelpfulKnowledge([lowRated, fine], 'en', new Set([101]));
+    const rows = output.split('\n').filter((l) => l.startsWith('- '));
+    const lowRatedLine = rows.find((l) => l.includes('LOW_RATED_ENTRY_TEXT'));
+    const fineLine = rows.find((l) => l.includes('FINE_ENTRY_TEXT'));
+    const caveat = notice('knowledgeLowRatedCaveat');
+    assert.ok(lowRatedLine?.includes(caveat), "the low-rated entry's own line must carry the caveat");
+    assert.ok(
+      !fineLine?.includes(caveat),
+      'a sibling entry outside the low-rated set must never carry the caveat',
+    );
+    assert.equal(
+      output.split(caveat).length - 1,
+      1,
+      'the caveat must appear exactly once — never as a result-wide trailing line',
+    );
+  },
+);
+
+test(
+  'formatMostHelpfulKnowledge renders byte-identical output when lowRatedIds is non-empty but no entry ' +
+    'qualifies (issue #1143 acceptance criterion 2)',
+  () => {
+    const entry = {
+      id: 1,
+      scope: 'global',
+      createdByRole: 'admin',
+      title: 'Plain entry',
+      content: 'Plain body',
+      retrievalCount: 5,
+      updatedAt: new Date('2024-01-01T00:00:00Z'),
+      lastRetrievedAt: new Date('2024-01-01T00:00:00Z'),
+      sourceUrl: null,
+      sourceTitle: null,
+      verifiedAt: null,
+      sourceUnreachable: null,
+      sourceCheckedAt: null,
+    };
+    assert.equal(
+      formatMostHelpfulKnowledge([entry], 'en', new Set([999])),
+      formatMostHelpfulKnowledge([entry], 'en'),
+      'a non-empty lowRatedIds that names no entry in the list must not change the output',
+    );
+  },
+);
+
+test(
   'rankKnowledgeByRetrieval ranks by retrievalCount descending, tie-broken by lastRetrievedAt descending, ' +
     'then id ascending — the shared logic behind both list_top_knowledge and most_helpful_knowledge (issue ' +
     '#1070 acceptance criterion 2)',
@@ -14503,6 +14601,156 @@ test(
         new RegExp(`most-helpful-scope-leak-${RUN}`),
         "SECURITY: a conversation-scoped entry must never appear — scope is hardcoded to 'global' server-side",
       );
+    } finally {
+      await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
+    }
+  },
+);
+
+test(
+  'most_helpful_knowledge tool handler renders KNOWLEDGE_LOW_RATED_CAVEAT_TEXT on exactly the ranked entry ' +
+    "whose id areKnowledgeEntriesLowRated flags, never a sibling entry's line (issue #1143 acceptance " +
+    'criterion 1)',
+  { skip },
+  async (t) => {
+    const was = config.behaviour.knowledgeLowRatedCaveatMinUnhelpful;
+    config.behaviour.knowledgeLowRatedCaveatMinUnhelpful = 2;
+    t.after(() => {
+      config.behaviour.knowledgeLowRatedCaveatMinUnhelpful = was;
+    });
+    const scope = 'global';
+    const lowRated = await saveKnowledge({
+      title: `most-helpful-low-rated-${RUN}`,
+      content: 'LOW_RATED_MOST_HELPFUL_TEXT',
+      scope,
+    });
+    const fine = await saveKnowledge({
+      title: `most-helpful-fine-${RUN}`,
+      content: 'FINE_MOST_HELPFUL_TEXT',
+      scope,
+    });
+    try {
+      // Both fixtures need a real, comfortably-above-ambient retrieval count
+      // so they both surface in the ranked top-25 regardless of other tests'
+      // ambient 'global'-scope rows.
+      await pool.query(`UPDATE knowledge SET retrieval_count = $1 WHERE id = $2`, [10_000_000, lowRated.id]);
+      await pool.query(`UPDATE knowledge SET retrieval_count = $1 WHERE id = $2`, [9_999_999, fine.id]);
+
+      const realQuery = pool.query.bind(pool);
+      t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+        if (typeof sql === 'string' && sql.includes('FROM answer_feedback')) {
+          return Promise.resolve({ rows: [{ id: lowRated.id }], rowCount: 1 });
+        }
+        return (realQuery as (...args: unknown[]) => unknown)(sql, ...rest);
+      }) as typeof pool.query);
+
+      const caller = {
+        platform: 'discord' as const,
+        userId: `${RUN}-most-helpful-low-rated-member`,
+        userName: 'Member',
+        role: 'member' as const,
+        conversationId: `${MOST_HELPFUL_KNOWLEDGE_GLOBAL_SCOPE_PREFIX}-low-rated-${RUN}`,
+      };
+      const result = await getMostHelpfulKnowledgeHandler(caller).handler({ limit: 25 });
+      const text = result.content[0]?.text ?? '';
+      const rows = text.split('\n').filter((l) => l.startsWith('- '));
+      const lowRatedLine = rows.find((l) => l.includes('LOW_RATED_MOST_HELPFUL_TEXT'));
+      const fineLine = rows.find((l) => l.includes('FINE_MOST_HELPFUL_TEXT'));
+      assert.ok(
+        lowRatedLine?.includes(KNOWLEDGE_LOW_RATED_CAVEAT_TEXT),
+        "the flagged entry's own line must carry the caveat",
+      );
+      assert.ok(
+        !fineLine?.includes(KNOWLEDGE_LOW_RATED_CAVEAT_TEXT),
+        'a sibling entry outside the low-rated set must never carry the caveat',
+      );
+    } finally {
+      await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[lowRated.id, fine.id]]);
+    }
+  },
+);
+
+test(
+  'most_helpful_knowledge tool handler issues NO low-rated-lookup query when ' +
+    'KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL is unset/0 (the default) — this file never sets it non-zero ' +
+    '(issue #1143 acceptance criterion 5)',
+  { skip },
+  async (t) => {
+    assert.equal(
+      config.behaviour.knowledgeLowRatedCaveatMinUnhelpful,
+      0,
+      'this test only proves anything with the feature at its off default',
+    );
+    let lowRatedQueryRan = false;
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && sql.includes('FROM answer_feedback')) {
+        lowRatedQueryRan = true;
+      }
+      return (realQuery as (...args: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-most-helpful-low-rated-disabled-member`,
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: `${MOST_HELPFUL_KNOWLEDGE_GLOBAL_SCOPE_PREFIX}-low-rated-disabled-${RUN}`,
+    };
+    await getMostHelpfulKnowledgeHandler(caller).handler({});
+
+    assert.equal(
+      lowRatedQueryRan,
+      false,
+      'the low-rated lookup query must never run when the feature is disabled',
+    );
+  },
+);
+
+test(
+  'SECURITY: most_helpful_knowledge tool handler still replies successfully with the entries and no caveat ' +
+    'when areKnowledgeEntriesLowRated rejects (fail-safe, issue #1143 acceptance criterion 4)',
+  { skip },
+  async (t) => {
+    const was = config.behaviour.knowledgeLowRatedCaveatMinUnhelpful;
+    config.behaviour.knowledgeLowRatedCaveatMinUnhelpful = 2;
+    t.after(() => {
+      config.behaviour.knowledgeLowRatedCaveatMinUnhelpful = was;
+    });
+    const { id } = await saveKnowledge({
+      title: `most-helpful-failsafe-${RUN}`,
+      content: 'STILL_SERVED_MOST_HELPFUL_TEXT',
+      scope: 'global',
+    });
+    try {
+      await pool.query(`UPDATE knowledge SET retrieval_count = $1 WHERE id = $2`, [10_000_000, id]);
+
+      const warnLog = t.mock.method(logger, 'warn', () => {});
+      const realQuery = pool.query.bind(pool);
+      t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+        if (typeof sql === 'string' && sql.includes('FROM answer_feedback')) {
+          return Promise.reject(new Error('low-rated lookup unavailable'));
+        }
+        return (realQuery as (...args: unknown[]) => unknown)(sql, ...rest);
+      }) as typeof pool.query);
+
+      const caller = {
+        platform: 'discord' as const,
+        userId: `${RUN}-most-helpful-failsafe-member`,
+        userName: 'Member',
+        role: 'member' as const,
+        conversationId: `${MOST_HELPFUL_KNOWLEDGE_GLOBAL_SCOPE_PREFIX}-failsafe-${RUN}`,
+      };
+      const result = await getMostHelpfulKnowledgeHandler(caller).handler({ limit: 25 });
+      const text = result.content[0]?.text ?? '';
+
+      assert.equal(result.isError, false, 'a lookup rejection must never fail the whole reply');
+      assert.ok(text.includes('STILL_SERVED_MOST_HELPFUL_TEXT'), 'the entry must still be served');
+      assert.ok(
+        !text.includes(KNOWLEDGE_LOW_RATED_CAVEAT_TEXT),
+        'a lookup failure must degrade to no caveat, never an error',
+      );
+      assert.ok(warnLog.mock.calls.length >= 1, 'the lookup failure must be logged, not silently swallowed');
     } finally {
       await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
     }

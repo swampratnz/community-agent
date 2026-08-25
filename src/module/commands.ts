@@ -1,6 +1,8 @@
 import { atLeast } from '@swampratnz/agent-base/auth/rbac.js';
 import { config } from '@swampratnz/agent-base/config.js';
+import { logger } from '@swampratnz/agent-base/logger.js';
 import {
+  areKnowledgeEntriesLowRated,
   countAccessRequests,
   countActiveWarnings,
   countOpenAppeals,
@@ -362,8 +364,23 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
         limit: MOST_HELPFUL_KNOWLEDGE_FETCH_CAP,
       });
       const ranked = rankKnowledgeByRetrieval(entries, 10);
+      // Low-rated-answer caveat (issue #1143), same gating/fail-safe shape as
+      // the tool handler's identical lookup (knowledgeMember.ts) — kept in
+      // parity so this zero-model-call shortcut never diverges from the tool
+      // it mirrors (issue #1087's invariant).
+      const rankedIds = ranked.map((e) => e.id);
+      const lowRatedIds =
+        config.behaviour.knowledgeLowRatedCaveatMinUnhelpful > 0 && rankedIds.length > 0
+          ? await areKnowledgeEntriesLowRated(
+              rankedIds,
+              config.behaviour.knowledgeLowRatedCaveatMinUnhelpful,
+            ).catch((err) => {
+              logger.warn({ err }, 'Knowledge low-rated caveat lookup failed; omitting the caveat');
+              return new Set<number>();
+            })
+          : new Set<number>();
       const language = await deps.getLangPref(msg.platform, msg.userId);
-      return formatMostHelpfulKnowledge(ranked, language);
+      return formatMostHelpfulKnowledge(ranked, language, lowRatedIds);
     },
   },
   {
