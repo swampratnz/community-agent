@@ -130,6 +130,180 @@ export function formatWhoIsIntoEmptyText(
   }
 }
 
+/**
+ * `set_helper_availability`'s four caller-facing reply strings (issue #1163),
+ * same "language threaded as an explicit parameter" shape as
+ * `formatAppealModerationText`/`formatRateAnswerText` (issue #1147) —
+ * `weeklyLimit` is an unchanged interpolation in both languages, passed
+ * through even for the branches that don't use it, matching
+ * `formatRateAnswerText`'s precedent.
+ */
+export function formatSetHelperAvailabilityText(
+  outcome: 'disabled' | 'noProfile' | 'optedIn' | 'optedOut',
+  weeklyLimit: number,
+  language: LanguagePreference,
+): string {
+  const mi = language === 'mi';
+  switch (outcome) {
+    case 'disabled':
+      return mi
+        ? 'Kāore i whakahohea te whakawhiti āwhina-ā-mema i tēnei tūmau.'
+        : 'Peer-help handoff is not enabled on this server.';
+    case 'noProfile':
+      return mi
+        ? 'Kāore anō koe kia whakaputa i ō hiahia — karangahia te set_my_interests i te tuatahi, kātahi ka ' +
+            'taea e set_helper_availability te whakahohe i ngā whakamōhiotanga mō ngā kaupapa e ōrite ana ki ērā.'
+        : "You don't have published interests yet — call set_my_interests first, then " +
+            'set_helper_availability can turn on notifications for topics matching them.';
+    case 'optedIn':
+      return mi
+        ? `Ka whakamōhiotia koe ināianei (kia ${weeklyLimit} noa ngā wā ia wiki) ina ōrite tētahi kaupapa ` +
+            'find_helper a tētahi atu mema ki ō hiahia kua whakaputaina.'
+        : `You'll now be notified (at most ${weeklyLimit} times a week) when ` +
+            "another member's find_helper topic matches your published interests.";
+    case 'optedOut':
+      return mi
+        ? 'Kāore koe e whakamōhiotia anō mō ngā tono find_helper.'
+        : "You won't be notified for find_helper requests anymore.";
+  }
+}
+
+/**
+ * `find_helper`'s four caller-facing reply strings (issue #1163). The two
+ * DMs it sends to the MATCHED helper (not the caller) stay untranslated by
+ * design — out of scope, per the issue's explicit carve-out for
+ * member-to-member DM bodies. `dailyLimit` is an unchanged interpolation.
+ */
+export function formatFindHelperText(
+  outcome: 'disabled' | 'dailyCap' | 'matched' | 'noMatch',
+  dailyLimit: number,
+  language: LanguagePreference,
+): string {
+  const mi = language === 'mi';
+  switch (outcome) {
+    case 'disabled':
+      return mi
+        ? 'Kāore i whakahohea te whakawhiti āwhina-ā-mema i tēnei tūmau.'
+        : 'Peer-help handoff is not enabled on this server.';
+    case 'dailyCap':
+      return mi
+        ? `Kua eke koe ki te tepe tono-āwhina o tēnei rā (${dailyLimit}). Whakamātauria anō āpōpō.`
+        : `You've hit today's ask-for-help limit (${dailyLimit}). Try again tomorrow.`;
+    case 'matched':
+      return mi
+        ? 'Kua whakapā atu ki tētahi tangata ka taea pea te āwhina — kia manawanui.'
+        : 'Reached out to someone who may be able to help — hang tight.';
+    case 'noMatch':
+      return mi
+        ? 'Kāore he tangata e wātea ana hei āwhina i tērā i tēnei wā.'
+        : 'No one available to help with that right now.';
+  }
+}
+
+/**
+ * `share_project`'s seven caller-facing reply outcomes (issue #1163). `name`/
+ * `limit` are unchanged interpolations, threaded through as discriminated
+ * union fields — same shape `formatReportContentText`/
+ * `formatSuggestImprovementText` use for an outcome that carries data.
+ */
+export function formatShareProjectText(
+  outcome:
+    | { kind: 'missingDescription' }
+    | { kind: 'cap'; limit: number }
+    | { kind: 'rateLimit'; limit: number }
+    | { kind: 'removed'; name: string }
+    | { kind: 'notFound'; name: string }
+    | { kind: 'created'; name: string }
+    | { kind: 'updated'; name: string },
+  language: LanguagePreference,
+): string {
+  const mi = language === 'mi';
+  switch (outcome.kind) {
+    case 'missingDescription':
+      return mi
+        ? 'Me whai whakaahuatanga hei tohatoha, hei whakatika rānei i tētahi kaupapa.'
+        : 'A description is required to share or edit a project.';
+    case 'cap':
+      return mi
+        ? `Kua ${outcome.limit} ō kaupapa kua tohaina kētia — tangohia tētahi i te tuatahi (share_project me ` +
+            `te remove: true) i mua i te tāpiri i tētahi atu.`
+        : `You already have ${outcome.limit} shared projects — remove one first (share_project ` +
+            'with remove: true) before adding another.';
+    case 'rateLimit':
+      return mi
+        ? `Kua tohaina kētia e koe ${outcome.limit} ngā kaupapa hou i roto i ngā haora 24 kua hipa. Tēnā koa, ` +
+            'tatari i mua i te tohatoha i tētahi atu.'
+        : `You've already shared ${outcome.limit} new projects in the last 24 hours. ` +
+            'Please wait before sharing another.';
+    case 'removed':
+      return mi
+        ? `Kua tangohia a "${outcome.name}" mai i te whakaaturanga kaupapa.`
+        : `Removed "${outcome.name}" from the project showcase.`;
+    case 'notFound':
+      return mi
+        ? `Kāore āu kaupapa kua tohaina e kīia ana ko "${outcome.name}".`
+        : `You don't have a shared project named "${outcome.name}".`;
+    case 'created':
+      return mi
+        ? `Kua tohaina a "${outcome.name}" — ka kitea e ētahi atu mema mā te list_projects.`
+        : `Shared "${outcome.name}" — other members can find it with list_projects.`;
+    case 'updated':
+      return mi ? `Kua whakahoutia a "${outcome.name}".` : `Updated "${outcome.name}".`;
+  }
+}
+
+/**
+ * `request_project_connection`'s seven caller-facing reply outcomes (issue
+ * #1163). The DM to the PROJECT OWNER stays untranslated by design — out of
+ * scope, same carve-out as `find_helper`'s match notification. `limit` is an
+ * unchanged interpolation on the one outcome that carries it, mirroring
+ * `formatRateAnswerText`'s mixed bare-literal/object union shape.
+ */
+export function formatRequestProjectConnectionText(
+  outcome:
+    | 'notFound'
+    | 'notSeeking'
+    | 'selfMatch'
+    | 'ownerUnreachable'
+    | 'ownerCapped'
+    | 'sent'
+    | { kind: 'dailyCap'; limit: number },
+  language: LanguagePreference,
+): string {
+  const mi = language === 'mi';
+  if (typeof outcome !== 'string') {
+    return mi
+      ? `Kua eke koe ki te tepe tono-hononga o tēnei rā (${outcome.limit}). Whakamātauria anō āpōpō.`
+      : `You've hit today's connection-request limit (${outcome.limit}). ` + 'Try again tomorrow.';
+  }
+  switch (outcome) {
+    case 'notFound':
+      return mi
+        ? 'Kāore he kaupapa e mahi ana e whai ana i taua tuhinga (id).'
+        : 'No active project with that id.';
+    case 'notSeeking':
+      return mi
+        ? 'Kāore taua kaupapa e rapu hoa mahi ana i tēnei wā.'
+        : 'That project is not currently looking for collaborators.';
+    case 'selfMatch':
+      return mi
+        ? 'Kāore e taea e koe te tono hononga ki tō ake kaupapa.'
+        : "You can't request to connect with your own project.";
+    case 'ownerUnreachable':
+      return mi
+        ? 'Kāore e taea te whakapā atu ki te rangatira o taua kaupapa i tēnei whakatakotoranga i tēnei wā.'
+        : "That project's owner can't be reached on this deployment right now.";
+    case 'ownerCapped':
+      return mi
+        ? 'Kāore e taea e te rangatira o taua kaupapa te whiwhi tono hononga hou i tēnei wā.'
+        : "That project's owner can't receive new connection requests right now.";
+    case 'sent':
+      return mi
+        ? 'Kua whakapā atu ki te rangatira o te kaupapa — kia manawanui.'
+        : 'Reached out to the project owner — hang tight.';
+  }
+}
+
 export const socialTools = [
   // Self-scoped write (one row per identity, upsert/clear semantics),
   // instantly reversible ('clear') like set_response_style — no CONFIRM gate.
@@ -282,21 +456,27 @@ export const socialTools = [
       // reaches other members, same as set_my_interests/share_project above.
       assertAtLeast(caller.role, 'member', 'set_helper_availability');
       if (!config.findHelper.enabled) {
-        return text('Peer-help handoff is not enabled on this server.', true);
-      }
-      const result = await setHelperAvailability(caller.platform, caller.userId, args.available);
-      if (!result.ok) {
+        const language = await getLanguagePreference(caller.platform, caller.userId);
         return text(
-          "You don't have published interests yet — call set_my_interests first, then " +
-            'set_helper_availability can turn on notifications for topics matching them.',
+          formatSetHelperAvailabilityText('disabled', FIND_HELPER_WEEKLY_LIMIT_PER_HELPER, language),
           true,
         );
       }
+      const result = await setHelperAvailability(caller.platform, caller.userId, args.available);
+      if (!result.ok) {
+        const language = await getLanguagePreference(caller.platform, caller.userId);
+        return text(
+          formatSetHelperAvailabilityText('noProfile', FIND_HELPER_WEEKLY_LIMIT_PER_HELPER, language),
+          true,
+        );
+      }
+      const language = await getLanguagePreference(caller.platform, caller.userId);
       return text(
-        args.available
-          ? `You'll now be notified (at most ${FIND_HELPER_WEEKLY_LIMIT_PER_HELPER} times a week) when ` +
-              "another member's find_helper topic matches your published interests."
-          : "You won't be notified for find_helper requests anymore.",
+        formatSetHelperAvailabilityText(
+          args.available ? 'optedIn' : 'optedOut',
+          FIND_HELPER_WEEKLY_LIMIT_PER_HELPER,
+          language,
+        ),
       );
     },
   }),
@@ -330,13 +510,12 @@ export const socialTools = [
     handler: async (args, { caller, adapterFor }) => {
       assertAtLeast(caller.role, 'member', 'find_helper');
       if (!config.findHelper.enabled) {
-        return text('Peer-help handoff is not enabled on this server.', true);
+        const language = await getLanguagePreference(caller.platform, caller.userId);
+        return text(formatFindHelperText('disabled', FIND_HELPER_REQUESTER_DAILY_LIMIT, language), true);
       }
       if (await isFindHelperRequesterAtDailyCap(caller.platform, caller.userId)) {
-        return text(
-          `You've hit today's ask-for-help limit (${FIND_HELPER_REQUESTER_DAILY_LIMIT}). Try again tomorrow.`,
-          true,
-        );
+        const language = await getLanguagePreference(caller.platform, caller.userId);
+        return text(formatFindHelperText('dailyCap', FIND_HELPER_REQUESTER_DAILY_LIMIT, language), true);
       }
       // Walks best-match-first; the FIRST candidate under its own weekly cap
       // wins and the loop stops — at most one DM is ever sent per call
@@ -377,9 +556,11 @@ export const socialTools = [
           }
           logger.warn({ err, userId: hashId(candidate.userId) }, 'find_helper DM failed');
         });
-        return text('Reached out to someone who may be able to help — hang tight.');
+        const language = await getLanguagePreference(caller.platform, caller.userId);
+        return text(formatFindHelperText('matched', FIND_HELPER_REQUESTER_DAILY_LIMIT, language));
       }
-      return text('No one available to help with that right now.');
+      const language = await getLanguagePreference(caller.platform, caller.userId);
+      return text(formatFindHelperText('noMatch', FIND_HELPER_REQUESTER_DAILY_LIMIT, language));
     },
   }),
 
@@ -451,12 +632,14 @@ export const socialTools = [
       assertAtLeast(caller.role, 'member', 'share_project');
       if (args.remove) {
         const removed = await removeMemberProject(caller.platform, caller.userId, args.name);
+        const language = await getLanguagePreference(caller.platform, caller.userId);
         return removed
-          ? text(`Removed "${args.name}" from the project showcase.`)
-          : text(`You don't have a shared project named "${args.name}".`, true);
+          ? text(formatShareProjectText({ kind: 'removed', name: args.name }, language))
+          : text(formatShareProjectText({ kind: 'notFound', name: args.name }, language), true);
       }
       if (!args.description) {
-        return text('A description is required to share or edit a project.', true);
+        const language = await getLanguagePreference(caller.platform, caller.userId);
+        return text(formatShareProjectText({ kind: 'missingDescription' }, language), true);
       }
       const result = await shareProject({
         platform: caller.platform,
@@ -467,19 +650,23 @@ export const socialTools = [
         seekingCollaborators: args.seekingCollaborators,
       });
       if (!result.ok) {
+        const language = await getLanguagePreference(caller.platform, caller.userId);
         return text(
-          result.reason === 'cap'
-            ? `You already have ${MEMBER_PROJECT_CAP} shared projects — remove one first (share_project ` +
-                'with remove: true) before adding another.'
-            : `You've already shared ${PROJECT_RATE_LIMIT_PER_DAY} new projects in the last 24 hours. ` +
-                'Please wait before sharing another.',
+          formatShareProjectText(
+            result.reason === 'cap'
+              ? { kind: 'cap', limit: MEMBER_PROJECT_CAP }
+              : { kind: 'rateLimit', limit: PROJECT_RATE_LIMIT_PER_DAY },
+            language,
+          ),
           true,
         );
       }
+      const language = await getLanguagePreference(caller.platform, caller.userId);
       return text(
-        result.created
-          ? `Shared "${args.name}" — other members can find it with list_projects.`
-          : `Updated "${args.name}".`,
+        formatShareProjectText(
+          result.created ? { kind: 'created', name: args.name } : { kind: 'updated', name: args.name },
+          language,
+        ),
       );
     },
   }),
@@ -585,27 +772,34 @@ export const socialTools = [
       // order-of-operations as find_helper's isFindHelperRequesterAtDailyCap
       // check (issue #729 AC #6 precedent).
       if (await isProjectConnectionRequesterAtDailyCap(caller.platform, caller.userId)) {
+        const language = await getLanguagePreference(caller.platform, caller.userId);
         return text(
-          `You've hit today's connection-request limit (${PROJECT_CONNECTION_REQUESTER_DAILY_LIMIT}). ` +
-            'Try again tomorrow.',
+          formatRequestProjectConnectionText(
+            { kind: 'dailyCap', limit: PROJECT_CONNECTION_REQUESTER_DAILY_LIMIT },
+            language,
+          ),
           true,
         );
       }
       const project = await getActiveProjectById(args.projectId);
       if (!project) {
-        return text('No active project with that id.', true);
+        const language = await getLanguagePreference(caller.platform, caller.userId);
+        return text(formatRequestProjectConnectionText('notFound', language), true);
       }
       if (!project.seekingCollaborators) {
-        return text('That project is not currently looking for collaborators.', true);
+        const language = await getLanguagePreference(caller.platform, caller.userId);
+        return text(formatRequestProjectConnectionText('notSeeking', language), true);
       }
       // Self-match structurally impossible: this check runs BEFORE any DB
       // write (issue #729's find_helper precedent for self-exclusion).
       if (project.platform === caller.platform && project.userId === caller.userId) {
-        return text("You can't request to connect with your own project.", true);
+        const language = await getLanguagePreference(caller.platform, caller.userId);
+        return text(formatRequestProjectConnectionText('selfMatch', language), true);
       }
       const target = adapterFor(project.platform);
       if (!target) {
-        return text("That project's owner can't be reached on this deployment right now.", true);
+        const language = await getLanguagePreference(caller.platform, caller.userId);
+        return text(formatRequestProjectConnectionText('ownerUnreachable', language), true);
       }
       const claimed = await recordProjectConnectionIfUnderCap(
         project.platform,
@@ -617,7 +811,8 @@ export const socialTools = [
       if (!claimed) {
         // Generic refusal — never discloses the owner's cap state, same
         // discipline as find_helper's "no one available" message.
-        return text("That project's owner can't receive new connection requests right now.", true);
+        const language = await getLanguagePreference(caller.platform, caller.userId);
+        return text(formatRequestProjectConnectionText('ownerCapped', language), true);
       }
       const requesterLabel = await resolveSanitizedLabel(caller.platform, caller.userId);
       // untrusted() quarantines the member-supplied project name before it
@@ -641,7 +836,8 @@ export const socialTools = [
         }
         logger.warn({ err, userId: hashId(project.userId) }, 'request_project_connection DM failed');
       });
-      return text('Reached out to the project owner — hang tight.');
+      const language = await getLanguagePreference(caller.platform, caller.userId);
+      return text(formatRequestProjectConnectionText('sent', language));
     },
   }),
 ];
