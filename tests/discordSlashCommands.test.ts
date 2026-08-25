@@ -1334,6 +1334,24 @@ test('SECURITY: /guidelines also routes through the outbound filter (every slash
   assert.ok(replies[0].content.includes('[redacted]'));
 });
 
+test(
+  '/guidelines replies with the mi fallback text when no guidelines exist and the caller has a stored ' +
+    "'mi' language preference (issue #1161 acceptance criterion 4)",
+  async (t) => {
+    resetPolicyCacheForTests();
+    mockPool(t, { memberRole: 'member', languagePref: 'mi' });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'guidelines', userId: 'member-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(
+      replies[0].content,
+      stripEmDashes('Kāore anō kia whakaritea he aratohu hapori — pātaia he kaiwhakahaere.'),
+    );
+  },
+);
+
 // --- Issue #995: /status --------------------------------------------------
 
 test('/status returns the same content check_status returns for the same cache state (issue #995 acceptance criterion 1)', async (t) => {
@@ -3984,6 +4002,78 @@ test('/digest replies with the fixed "Nothing to report right now." text when bu
 
   assert.equal(replies[0].content, 'Nothing to report right now.');
 });
+
+test(
+  '/digest replies with the mi fallback text when buildMemberDigestContent resolves null and the caller ' +
+    "has a stored 'mi' language preference (issue #1161 acceptance criterion 5)",
+  async (t) => {
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users'))
+        return { rows: [{ role: 'member' }], rowCount: 0 };
+      if (sql.includes('FROM language_prefs')) return { rows: [{ language: 'mi' }], rowCount: 0 };
+      if (sql.includes('FROM knowledge_candidates')) return { rows: [{ n: 0 }], rowCount: 0 };
+      if (sql.includes('FROM member_projects')) return { rows: [{ n: 0 }], rowCount: 0 };
+      if (sql.includes('FROM member_interests')) return { rows: [{ n: 0 }], rowCount: 0 };
+      if (sql.includes('FROM helper_notifications')) return { rows: [{ n: 0 }], rowCount: 0 };
+      if (sql.includes('FROM project_connection_requests')) return { rows: [{ n: 0 }], rowCount: 0 };
+      // FROM context_digests and the generic FROM knowledge (curated titles)
+      // branches both resolve to an empty row set — every input empty renders
+      // null (formatMemberDigestMessage's own silence-over-noise contract),
+      // mirroring the English-fallback test above.
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'digest', userId: 'member-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies[0].content, 'Kāore he pūrongo i tēnei wā.');
+  },
+);
+
+test(
+  "SECURITY: /guidelines and /digest empty-state fallbacks render byte-identical to today's English text " +
+    "for a caller whose language preference is unset/'en'/'auto' (issue #1161 acceptance criterion 6)",
+  async (t) => {
+    const ref: { languagePref: 'en' | 'auto' | undefined } = { languagePref: undefined };
+    resetPolicyCacheForTests();
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users'))
+        return { rows: [{ role: 'member' }], rowCount: 0 };
+      if (sql.includes('FROM language_prefs')) {
+        return { rows: ref.languagePref ? [{ language: ref.languagePref }] : [], rowCount: 0 };
+      }
+      if (sql.includes('FROM policies')) return { rows: [], rowCount: 0 };
+      if (sql.includes('FROM knowledge_candidates')) return { rows: [{ n: 0 }], rowCount: 0 };
+      if (sql.includes('FROM member_projects')) return { rows: [{ n: 0 }], rowCount: 0 };
+      if (sql.includes('FROM member_interests')) return { rows: [{ n: 0 }], rowCount: 0 };
+      if (sql.includes('FROM helper_notifications')) return { rows: [{ n: 0 }], rowCount: 0 };
+      if (sql.includes('FROM project_connection_requests')) return { rows: [{ n: 0 }], rowCount: 0 };
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+
+    for (const languagePref of [undefined, 'en', 'auto'] as const) {
+      ref.languagePref = languagePref;
+      const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+
+      const guidelinesCall = fakeInteraction({ commandName: 'guidelines', userId: 'member-1' });
+      await handleInteraction(guidelinesCall.interaction as never, adapterDeps(adapter));
+      assert.equal(
+        guidelinesCall.replies[0].content,
+        stripEmDashes('No community guidelines have been set yet — ask an admin.'),
+        `/guidelines fallback must stay byte-identical for language preference '${languagePref}'`,
+      );
+
+      const digestCall = fakeInteraction({ commandName: 'digest', userId: 'member-1' });
+      await handleInteraction(digestCall.interaction as never, adapterDeps(adapter));
+      assert.equal(
+        digestCall.replies[0].content,
+        'Nothing to report right now.',
+        `/digest fallback must stay byte-identical for language preference '${languagePref}'`,
+      );
+    }
+  },
+);
 
 test('SECURITY: /digest never wraps its reply in untrusted() — unlike community_digest, this reply never re-enters model context', async (t) => {
   t.mock.method(pool, 'query', (async (sql: string) => {

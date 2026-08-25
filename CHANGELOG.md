@@ -72,6 +72,18 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   preference and render the `mi` variant. No new tool, tier, table, or column;
   the English default is byte-identical to before.
 
+### Fixed
+- **The "no guidelines set" and "nothing to report" replies now honour a
+  standing te reo Māori preference too.** (#1161) `!guidelines`/`/guidelines`
+  and `!digest`/`/digest` already rendered their *content* bilingually for a
+  member with a stored `mi` preference (#266, #1042), but the fallback text
+  for the empty state on both — no guidelines configured yet, or nothing to
+  report this week — was still a hardcoded English literal on all four call
+  sites, even though every one of them had already resolved the caller's
+  language preference for the adjacent branch. Both fallbacks now render
+  through the same notice pack as the content they sit beside. No new tool,
+  tier, or data read; the English default is byte-identical to before.
+
 ## 2026-08-25
 
 ### Added

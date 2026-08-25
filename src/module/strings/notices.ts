@@ -158,6 +158,19 @@ const NOTICE_ENTRIES = {
       },
     },
   },
+  // --- guidelines/digest empty states (issue #1161) -------------------------
+  communityGuidelinesUnsetNotice: {
+    base: 'No community guidelines have been set yet — ask an admin.',
+    language: {
+      mi: 'Kāore anō kia whakaritea he aratohu hapori — pātaia he kaiwhakahaere.',
+    },
+  },
+  memberDigestEmptyNotice: {
+    base: 'Nothing to report right now.',
+    language: {
+      mi: 'Kāore he pūrongo i tēnei wā.',
+    },
+  },
   // --- CONFIRM/CANCEL intercept shells (router-authored) -------------------
   cancelConfirm: {
     base: 'Cancelled.',

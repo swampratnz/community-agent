@@ -5,6 +5,7 @@ import { resolveRole } from '@swampratnz/agent-base/auth/roles.js';
 import { atLeast, toolsForRole } from '@swampratnz/agent-base/auth/rbac.js';
 import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 import { getCommunityGuidelines, getCommunityGuidelinesMi } from '../../storage/policies.js';
+import { notice } from '../../strings/notices.js';
 import { buildMemberDigestContent } from '../../memberDigest.js';
 import { formatStatusMessage, getStatusCache } from '../../status/anthropicStatus.js';
 import {
@@ -383,7 +384,7 @@ async function handleGuidelines(
   recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
   await replyEphemeral(
     interaction,
-    guidelines ?? 'No community guidelines have been set yet — ask an admin.',
+    guidelines ?? notice('communityGuidelinesUnsetNotice', { language: languagePreference }),
     deps,
   );
 }
@@ -407,12 +408,13 @@ async function handleDigest(interaction: ChatInputCommandInteraction, deps: Slas
   // reply never re-enters model context, so there is nothing to quarantine.
   // Threads the caller's identity (issue #1042) so a standing 'mi' preference
   // renders the digest's section labels in te reo Māori.
+  const language = await getLanguagePreference('discord', interaction.user.id);
   const message = await buildMemberDigestContent(undefined, {
     platform: 'discord',
     userId: interaction.user.id,
   });
   recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
-  await replyEphemeral(interaction, message ?? 'Nothing to report right now.', deps);
+  await replyEphemeral(interaction, message ?? notice('memberDigestEmptyNotice', { language }), deps);
 }
 
 /**
