@@ -127,6 +127,12 @@ const {
   PROJECT_NOTE_RETENTION_NOTICE,
   TEAM_SETUP_MEMBER_CAP,
   SUGGESTION_RESOLUTION_ECHO_CHARS,
+  formatAppealModerationText,
+  formatReportContentText,
+  formatWithdrawReportText,
+  formatRateAnswerText,
+  formatRequestHumanHelpText,
+  formatSuggestImprovementText,
 } = await import('../src/module/agent/tools.js');
 const { reserveVoiceTranscriptionSlot } = await import('@swampratnz/agent-base/agent/rateReservers.js');
 const { filterOutbound } = await import('@swampratnz/agent-base/agent/outbound.js');
@@ -146,6 +152,7 @@ const {
   setResponseStyle,
   REPORT_RATE_LIMIT_PER_DAY,
   RATE_ANSWER_DAILY_LIMIT,
+  SUGGESTION_RATE_LIMIT_PER_DAY,
   recordInteraction,
   insertContextDigest,
   insertKnowledgeCandidate,
@@ -21058,6 +21065,688 @@ test(
     );
 
     await pool.query(`DELETE FROM language_prefs WHERE platform = 'discord' AND user_id = $1`, [miUser]);
+  },
+);
+
+// --- issue #1147: feedback.ts/reportsMember.ts honour a standing 'mi'
+// language preference — the last two member-tool files in the mi sweep
+// (#1038, #1042, #1056, #1077, #1105, #1107, #1119, #1141). Reuses
+// selfService.ts's pure-formatter + getLanguagePreference pattern.
+
+function suggestImprovementHandler(userId: string) {
+  const adapter = stubAdapter(async () => {});
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId,
+      userName: 'Suggesting Member',
+      role: 'member' as const,
+      conversationId: `${RUN}-suggest-improvement-convo`,
+    },
+    adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: {
+            content: string;
+          }) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+        }
+      >;
+    }
+  )._registeredTools['suggest_improvement'];
+}
+
+function withdrawReportHandler(userId: string) {
+  const adapter = stubAdapter(async () => {});
+  const server = buildToolServer(
+    {
+      platform: 'whatsapp' as const,
+      userId,
+      userName: 'Withdrawing Member',
+      role: 'member' as const,
+      conversationId: 'convo-1',
+    },
+    adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        { handler: () => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }> }
+      >;
+    }
+  )._registeredTools['withdraw_report'];
+}
+
+test(
+  "formatSuggestImprovementText renders te reo Māori for both outcomes when language is 'mi', and the exact " +
+    "pre-existing English string for 'auto'/'en' otherwise — id/limit interpolations are unchanged in both " +
+    'languages (issue #1147 acceptance criteria 1, 3, 4)',
+  () => {
+    for (const language of ['auto', 'en'] as const) {
+      assert.equal(
+        formatSuggestImprovementText({ recorded: false }, 5, language),
+        "You've already filed 5 suggestions in the last 24 hours. Please wait before filing another.",
+      );
+      assert.equal(
+        formatSuggestImprovementText({ recorded: true, id: 42 }, 5, language),
+        'Suggestion #42 recorded. A human maintainer reviews these — thanks for the idea, but no promises ' +
+          'on if/when it gets built.',
+      );
+    }
+    const miRateLimited = formatSuggestImprovementText({ recorded: false }, 5, 'mi');
+    assert.notEqual(miRateLimited, formatSuggestImprovementText({ recorded: false }, 5, 'en'));
+    assert.match(miRateLimited, /\b5\b/);
+    const miRecorded = formatSuggestImprovementText({ recorded: true, id: 42 }, 5, 'mi');
+    assert.notEqual(miRecorded, formatSuggestImprovementText({ recorded: true, id: 42 }, 5, 'en'));
+    assert.match(miRecorded, /#42/);
+  },
+);
+
+test(
+  "formatRateAnswerText renders te reo Māori for all four outcomes when language is 'mi', and the exact " +
+    "pre-existing English string for 'auto'/'en' otherwise — the daily-limit interpolation is unchanged " +
+    'in both languages (issue #1147 acceptance criteria 1, 3, 4)',
+  () => {
+    for (const language of ['auto', 'en'] as const) {
+      assert.equal(
+        formatRateAnswerText('no_recent_answer', 20, language),
+        "I don't have a recent answer of mine to rate in this conversation yet.",
+      );
+      assert.equal(
+        formatRateAnswerText('rate_limited', 20, language),
+        "You've already rated 20 answers in the last 24 hours. Please wait before rating another.",
+      );
+      assert.equal(formatRateAnswerText({ helpful: true }, 20, language), 'Thanks, glad that helped!');
+      assert.equal(formatRateAnswerText({ helpful: false }, 20, language), 'Thanks for the feedback, noted.');
+    }
+    assert.notEqual(
+      formatRateAnswerText('no_recent_answer', 20, 'mi'),
+      formatRateAnswerText('no_recent_answer', 20, 'en'),
+    );
+    const miRateLimited = formatRateAnswerText('rate_limited', 20, 'mi');
+    assert.notEqual(miRateLimited, formatRateAnswerText('rate_limited', 20, 'en'));
+    assert.match(miRateLimited, /\b20\b/);
+    assert.notEqual(
+      formatRateAnswerText({ helpful: true }, 20, 'mi'),
+      formatRateAnswerText({ helpful: true }, 20, 'en'),
+    );
+    assert.notEqual(
+      formatRateAnswerText({ helpful: false }, 20, 'mi'),
+      formatRateAnswerText({ helpful: false }, 20, 'en'),
+    );
+  },
+);
+
+test(
+  "formatRequestHumanHelpText renders te reo Māori for both outcomes when language is 'mi', and the exact " +
+    "pre-existing English string for 'auto'/'en' otherwise — the daily-limit interpolation is unchanged in " +
+    'both languages (issue #1147 acceptance criteria 1, 3, 4)',
+  () => {
+    for (const language of ['auto', 'en'] as const) {
+      assert.equal(
+        formatRequestHumanHelpText('recorded', 3, language),
+        "Got it — I've flagged this for a community admin to follow up.",
+      );
+      assert.equal(
+        formatRequestHumanHelpText('rate_limited', 3, language),
+        "You've already asked to talk to a human 3 times in the last 24 hours. Please wait before asking " +
+          'again.',
+      );
+    }
+    assert.notEqual(
+      formatRequestHumanHelpText('recorded', 3, 'mi'),
+      formatRequestHumanHelpText('recorded', 3, 'en'),
+    );
+    const miRateLimited = formatRequestHumanHelpText('rate_limited', 3, 'mi');
+    assert.notEqual(miRateLimited, formatRequestHumanHelpText('rate_limited', 3, 'en'));
+    assert.match(miRateLimited, /\b3\b/);
+  },
+);
+
+test(
+  "formatReportContentText renders te reo Māori for both outcomes when language is 'mi', and the exact " +
+    "pre-existing English string for 'auto'/'en' otherwise — id/limit interpolations are unchanged in both " +
+    'languages (issue #1147 acceptance criteria 1, 3, 4)',
+  () => {
+    for (const language of ['auto', 'en'] as const) {
+      assert.equal(
+        formatReportContentText({ recorded: false }, 5, language),
+        "You've already submitted 5 reports in the last 24 hours. Please wait before submitting another, " +
+          'or contact an admin directly if this is urgent.',
+      );
+      assert.equal(
+        formatReportContentText({ recorded: true, id: 7 }, 5, language),
+        "Report #7 recorded for this conversation's admins. Thanks for flagging it.",
+      );
+    }
+    const miRateLimited = formatReportContentText({ recorded: false }, 5, 'mi');
+    assert.notEqual(miRateLimited, formatReportContentText({ recorded: false }, 5, 'en'));
+    assert.match(miRateLimited, /\b5\b/);
+    const miRecorded = formatReportContentText({ recorded: true, id: 7 }, 5, 'mi');
+    assert.notEqual(miRecorded, formatReportContentText({ recorded: true, id: 7 }, 5, 'en'));
+    assert.match(miRecorded, /#7/);
+  },
+);
+
+test(
+  'formatWithdrawReportText renders te reo Māori for the none/singular/plural outcomes when language is ' +
+    "'mi', and the exact pre-existing English string for 'auto'/'en' otherwise — the withdrawn-id list is " +
+    'unchanged in both languages (issue #1147 acceptance criteria 1, 3, 4)',
+  () => {
+    for (const language of ['auto', 'en'] as const) {
+      assert.equal(formatWithdrawReportText([], language), 'You have no open reports to withdraw.');
+      assert.equal(
+        formatWithdrawReportText([7], language),
+        "Withdrew your report #7. They won't be actioned; the admins have been notified of the withdrawal.",
+      );
+      assert.equal(
+        formatWithdrawReportText([7, 9], language),
+        "Withdrew your reports #7, #9. They won't be actioned; the admins have been notified of the " +
+          'withdrawal.',
+      );
+    }
+    assert.notEqual(formatWithdrawReportText([], 'mi'), formatWithdrawReportText([], 'en'));
+    const miSingular = formatWithdrawReportText([7], 'mi');
+    assert.notEqual(miSingular, formatWithdrawReportText([7], 'en'));
+    assert.match(miSingular, /#7/);
+    const miPlural = formatWithdrawReportText([7, 9], 'mi');
+    assert.notEqual(miPlural, formatWithdrawReportText([7, 9], 'en'));
+    assert.match(miPlural, /#7, #9/);
+  },
+);
+
+test(
+  "formatAppealModerationText renders te reo Māori for all three outcomes when language is 'mi', and the " +
+    "exact pre-existing English string for 'auto'/'en' otherwise — the cooldown-hours interpolation is " +
+    'unchanged in both languages (issue #1147 acceptance criteria 1, 3, 4)',
+  () => {
+    for (const language of ['auto', 'en'] as const) {
+      assert.equal(
+        formatAppealModerationText('no_active_warnings', 24, language),
+        "You don't currently have any active warnings to appeal.",
+      );
+      assert.equal(
+        formatAppealModerationText('rate_limited', 24, language),
+        "You've already asked for a review recently — please wait before appealing again (once per 24h).",
+      );
+      assert.equal(
+        formatAppealModerationText('sent', 24, language),
+        "Your appeal has been sent to the admins for review. They'll follow up if needed.",
+      );
+    }
+    assert.notEqual(
+      formatAppealModerationText('no_active_warnings', 24, 'mi'),
+      formatAppealModerationText('no_active_warnings', 24, 'en'),
+    );
+    const miRateLimited = formatAppealModerationText('rate_limited', 24, 'mi');
+    assert.notEqual(miRateLimited, formatAppealModerationText('rate_limited', 24, 'en'));
+    assert.match(miRateLimited, /24h/);
+    assert.notEqual(
+      formatAppealModerationText('sent', 24, 'mi'),
+      formatAppealModerationText('sent', 24, 'en'),
+    );
+  },
+);
+
+test(
+  "SECURITY: suggest_improvement's handler renders te reo Māori across both outcomes (recorded, rate-" +
+    "limited) for a caller with a standing 'mi' preference, and byte-identical English for a distinct " +
+    'caller with no stored preference — never leaking between the two identities (issue #1147 acceptance ' +
+    'criteria 1, 2, 3, 6)',
+  { skip },
+  async () => {
+    const miUser = `${RUN}-suggest-improvement-mi`;
+    const enUser = `${RUN}-suggest-improvement-en`;
+    await setLanguagePreference('discord', miUser, 'mi');
+
+    const enResult = await suggestImprovementHandler(enUser).handler({ content: 'en suggestion' });
+    assert.equal(enResult.isError, false);
+    const enId = Number(/#(\d+)/.exec(enResult.content[0]?.text ?? '')?.[1]);
+    assert.equal(
+      enResult.content[0]?.text,
+      formatSuggestImprovementText({ recorded: true, id: enId }, SUGGESTION_RATE_LIMIT_PER_DAY, 'en'),
+    );
+
+    for (let i = 0; i < SUGGESTION_RATE_LIMIT_PER_DAY; i++) {
+      const ok = await suggestImprovementHandler(miUser).handler({ content: `mi suggestion ${i}` });
+      assert.equal(ok.isError, false, `suggestion ${i} within the cap should succeed`);
+      const id = Number(/#(\d+)/.exec(ok.content[0]?.text ?? '')?.[1]);
+      assert.equal(
+        ok.content[0]?.text,
+        formatSuggestImprovementText({ recorded: true, id }, SUGGESTION_RATE_LIMIT_PER_DAY, 'mi'),
+      );
+    }
+    const overCap = await suggestImprovementHandler(miUser).handler({
+      content: 'one mi suggestion too many',
+    });
+    assert.equal(overCap.isError, true);
+    assert.equal(
+      overCap.content[0]?.text,
+      formatSuggestImprovementText({ recorded: false }, SUGGESTION_RATE_LIMIT_PER_DAY, 'mi'),
+    );
+    assert.notEqual(overCap.content[0]?.text, enResult.content[0]?.text);
+  },
+);
+
+test(
+  "SECURITY: rate_answer's handler renders te reo Māori across all four outcomes (helpful, not helpful, " +
+    "no_recent_answer, rate_limited) for a caller with a standing 'mi' preference, and byte-identical " +
+    'English for a distinct caller with no stored preference — never leaking between the two identities ' +
+    '(issue #1147 acceptance criteria 1, 2, 3, 6)',
+  { skip },
+  async () => {
+    const miUser = `${RUN}-rate-answer-mi`;
+    const enUser = `${RUN}-rate-answer-en`;
+    await setLanguagePreference('discord', miUser, 'mi');
+
+    const miEmpty = await rateAnswerHandler(miUser, `${RUN}-rate-answer-mi-convo-empty`).handler({
+      helpful: true,
+    });
+    assert.equal(miEmpty.isError, true);
+    assert.equal(
+      miEmpty.content[0]?.text,
+      formatRateAnswerText('no_recent_answer', RATE_ANSWER_DAILY_LIMIT, 'mi'),
+    );
+
+    const miConvoHelpful = `${RUN}-rate-answer-mi-convo-helpful`;
+    await recordInteraction({
+      platform: 'discord',
+      conversationId: miConvoHelpful,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'the mi answer',
+      meta: { replyToUserId: miUser },
+    });
+    const miHelpful = await rateAnswerHandler(miUser, miConvoHelpful).handler({ helpful: true });
+    assert.equal(miHelpful.isError, false);
+    assert.equal(
+      miHelpful.content[0]?.text,
+      formatRateAnswerText({ helpful: true }, RATE_ANSWER_DAILY_LIMIT, 'mi'),
+    );
+
+    const miConvoUnhelpful = `${RUN}-rate-answer-mi-convo-unhelpful`;
+    await recordInteraction({
+      platform: 'discord',
+      conversationId: miConvoUnhelpful,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'the mi answer 2',
+      meta: { replyToUserId: miUser },
+    });
+    const miUnhelpful = await rateAnswerHandler(miUser, miConvoUnhelpful).handler({ helpful: false });
+    assert.equal(miUnhelpful.isError, false);
+    assert.equal(
+      miUnhelpful.content[0]?.text,
+      formatRateAnswerText({ helpful: false }, RATE_ANSWER_DAILY_LIMIT, 'mi'),
+    );
+
+    const enConvo = `${RUN}-rate-answer-en-convo`;
+    await recordInteraction({
+      platform: 'discord',
+      conversationId: enConvo,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'the en answer',
+      meta: { replyToUserId: enUser },
+    });
+    const enResult = await rateAnswerHandler(enUser, enConvo).handler({ helpful: true });
+    assert.equal(enResult.isError, false);
+    assert.equal(enResult.content[0]?.text, 'Thanks, glad that helped!');
+    assert.notEqual(enResult.content[0]?.text, miHelpful.content[0]?.text);
+  },
+);
+
+test(
+  'SECURITY: rate_answer degrades a caller with a standing mi preference to the te reo rate-limited reply ' +
+    'once over the daily cap (issue #1147 acceptance criteria 2, 4)',
+  { skip },
+  async () => {
+    const miUser = `${RUN}-rate-answer-mi-cap`;
+    const convo = `${RUN}-rate-answer-mi-cap-convo`;
+    await setLanguagePreference('discord', miUser, 'mi');
+    for (let i = 0; i < RATE_ANSWER_DAILY_LIMIT; i++) {
+      await recordInteraction({
+        platform: 'discord',
+        conversationId: convo,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: `the mi cap answer ${i}`,
+        meta: { replyToUserId: miUser },
+      });
+      const ok = await rateAnswerHandler(miUser, convo).handler({ helpful: i % 2 === 0 });
+      assert.notEqual(ok.isError, true, `rating ${i} within the cap should succeed`);
+    }
+    await recordInteraction({
+      platform: 'discord',
+      conversationId: convo,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'one mi answer too many',
+      meta: { replyToUserId: miUser },
+    });
+    const overCap = await rateAnswerHandler(miUser, convo).handler({ helpful: true });
+    assert.equal(overCap.isError, true);
+    assert.equal(
+      overCap.content[0]?.text,
+      formatRateAnswerText('rate_limited', RATE_ANSWER_DAILY_LIMIT, 'mi'),
+    );
+  },
+);
+
+test(
+  "SECURITY: request_human_help's handler renders te reo Māori across both outcomes (flagged, daily-cap) " +
+    "for a caller with a standing 'mi' preference, and byte-identical English for a distinct caller with no " +
+    'stored preference — never leaking between the two identities (issue #1147 acceptance criteria 1, 2, 3, 6)',
+  { skip },
+  async () => {
+    const miUser = `${RUN}-human-help-mi`;
+    const enUser = `${RUN}-human-help-en`;
+    await setLanguagePreference('discord', miUser, 'mi');
+
+    const { registeredTool: miTool, turnState: miState } = requestHumanHelpHandler(miUser);
+    const miResult = await miTool.handler();
+    assert.equal(miResult.isError, false);
+    assert.equal(
+      miResult.content[0]?.text,
+      formatRequestHumanHelpText('recorded', HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER, 'mi'),
+    );
+    assert.equal(miState.humanHelpRequested, true);
+
+    const { registeredTool: enTool } = requestHumanHelpHandler(enUser);
+    const enResult = await enTool.handler();
+    assert.equal(enResult.isError, false);
+    assert.equal(enResult.content[0]?.text, "Got it — I've flagged this for a community admin to follow up.");
+    assert.notEqual(enResult.content[0]?.text, miResult.content[0]?.text);
+
+    for (let i = 1; i < HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER; i++) {
+      const { registeredTool } = requestHumanHelpHandler(miUser);
+      const ok = await registeredTool.handler();
+      assert.notEqual(ok.isError, true, `request ${i} within the cap should succeed`);
+    }
+    const { registeredTool: overCapTool } = requestHumanHelpHandler(miUser);
+    const overCap = await overCapTool.handler();
+    assert.equal(overCap.isError, true);
+    assert.equal(
+      overCap.content[0]?.text,
+      formatRequestHumanHelpText('rate_limited', HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER, 'mi'),
+    );
+  },
+);
+
+test(
+  "SECURITY: report_content's handler renders te reo Māori across both outcomes (recorded, rate-limited) " +
+    "for a caller with a standing 'mi' preference, and byte-identical English for a distinct caller with no " +
+    'stored preference — never leaking between the two identities (issue #1147 acceptance criteria 1, 2, 3, 6)',
+  { skip },
+  async () => {
+    const miUser = `${RUN}-report-content-mi`;
+    const enUser = `${RUN}-report-content-en`;
+    await setLanguagePreference('whatsapp', miUser, 'mi');
+    const adapter = stubAdapter(async () => {});
+
+    const enResult = await reportContentHandler(adapter, enUser).handler({ reason: 'en report' });
+    assert.equal(enResult.isError, false);
+    const enId = Number(/#(\d+)/.exec(enResult.content[0]?.text ?? '')?.[1]);
+    assert.equal(
+      enResult.content[0]?.text,
+      formatReportContentText({ recorded: true, id: enId }, REPORT_RATE_LIMIT_PER_DAY, 'en'),
+    );
+
+    for (let i = 0; i < REPORT_RATE_LIMIT_PER_DAY; i++) {
+      const ok = await reportContentHandler(adapter, miUser).handler({ reason: `mi report ${i}` });
+      assert.equal(ok.isError, false, `report ${i} within the cap should succeed`);
+      const id = Number(/#(\d+)/.exec(ok.content[0]?.text ?? '')?.[1]);
+      assert.equal(
+        ok.content[0]?.text,
+        formatReportContentText({ recorded: true, id }, REPORT_RATE_LIMIT_PER_DAY, 'mi'),
+      );
+    }
+    const overCap = await reportContentHandler(adapter, miUser).handler({ reason: 'one mi report too many' });
+    assert.equal(overCap.isError, true);
+    assert.equal(
+      overCap.content[0]?.text,
+      formatReportContentText({ recorded: false }, REPORT_RATE_LIMIT_PER_DAY, 'mi'),
+    );
+    assert.notEqual(overCap.content[0]?.text, enResult.content[0]?.text);
+  },
+);
+
+test(
+  "SECURITY: report_content's rendered language is derived from the caller's OWN getLanguagePreference " +
+    "only — passing another known user's id as targetUserId never redirects the read onto that user's own " +
+    'language preference (issue #1147 acceptance criterion 6)',
+  { skip },
+  async () => {
+    const miReporter = `${RUN}-report-content-lang-scope-reporter`;
+    const enTarget = `${RUN}-report-content-lang-scope-target`;
+    await setLanguagePreference('whatsapp', miReporter, 'mi');
+    await setLanguagePreference('whatsapp', enTarget, 'en');
+    // targetUserId must be a KNOWN user (isKnownUser) to even be accepted —
+    // record a prior interaction so it resolves as known.
+    await recordInteraction({
+      platform: 'whatsapp',
+      conversationId: 'convo-1',
+      userId: enTarget,
+      role: 'member',
+      direction: 'inbound',
+      content: 'hi',
+    });
+    const adapter = stubAdapter(async () => {});
+    const result = await reportContentHandler(adapter, miReporter).handler({
+      reason: 'targeting a known user with a different language pref',
+      targetUserId: enTarget,
+    });
+    assert.equal(result.isError, false);
+    const id = Number(/#(\d+)/.exec(result.content[0]?.text ?? '')?.[1]);
+    assert.equal(
+      result.content[0]?.text,
+      formatReportContentText({ recorded: true, id }, REPORT_RATE_LIMIT_PER_DAY, 'mi'),
+      "the reply must reflect the REPORTER's own 'mi' preference, never the target's 'en' one",
+    );
+  },
+);
+
+test(
+  "SECURITY: withdraw_report's handler renders te reo Māori across the none/singular/plural outcomes for a " +
+    "caller with a standing 'mi' preference, and byte-identical English for a distinct caller with no " +
+    'stored preference — never leaking between the two identities (issue #1147 acceptance criteria 1, 2, 3, 6)',
+  { skip },
+  async () => {
+    const miUser = `${RUN}-withdraw-report-mi`;
+    const enUser = `${RUN}-withdraw-report-en`;
+    await setLanguagePreference('whatsapp', miUser, 'mi');
+
+    const miEmpty = await withdrawReportHandler(miUser).handler();
+    assert.equal(miEmpty.isError, true);
+    assert.equal(miEmpty.content[0]?.text, formatWithdrawReportText([], 'mi'));
+
+    const enReport = await createContentReport({
+      platform: 'whatsapp',
+      reporterUserId: enUser,
+      reporterName: 'Withdrawing Member',
+      conversationId: 'convo-1',
+      reason: 'en report to withdraw',
+      isDirect: false,
+    });
+    assert.ok(enReport, 'fixture setup: report must be created');
+    const enWithdrew = await withdrawReportHandler(enUser).handler();
+    assert.equal(enWithdrew.isError, false);
+    assert.equal(enWithdrew.content[0]?.text, formatWithdrawReportText([enReport.id], 'en'));
+
+    const miReport1 = await createContentReport({
+      platform: 'whatsapp',
+      reporterUserId: miUser,
+      reporterName: 'Withdrawing Member',
+      conversationId: 'convo-1',
+      reason: 'mi report 1 to withdraw',
+      isDirect: false,
+    });
+    const miReport2 = await createContentReport({
+      platform: 'whatsapp',
+      reporterUserId: miUser,
+      reporterName: 'Withdrawing Member',
+      conversationId: 'convo-1',
+      reason: 'mi report 2 to withdraw',
+      isDirect: false,
+    });
+    assert.ok(miReport1 && miReport2, 'fixture setup: both reports must be created');
+    const miWithdrew = await withdrawReportHandler(miUser).handler();
+    assert.equal(miWithdrew.isError, false);
+    // withdrawOwnReports has no ORDER BY, so read back whichever order the DB
+    // actually returned rather than assuming one — this only pins that the
+    // formatter was applied correctly to the REAL returned id set.
+    const actualIds = [...(miWithdrew.content[0]?.text ?? '').matchAll(/#(\d+)/g)].map((m) => Number(m[1]));
+    assert.deepEqual(new Set(actualIds), new Set([miReport1.id, miReport2.id]));
+    assert.equal(miWithdrew.content[0]?.text, formatWithdrawReportText(actualIds, 'mi'));
+    assert.notEqual(miWithdrew.content[0]?.text, enWithdrew.content[0]?.text);
+  },
+);
+
+test(
+  "SECURITY: appeal_moderation's handler renders te reo Māori across all three outcomes (no_active_" +
+    "warnings, rate_limited, sent) for a caller with a standing 'mi' preference, and byte-identical English " +
+    'for a distinct caller with no stored preference — never leaking between the two identities (issue ' +
+    '#1147 acceptance criteria 1, 2, 3, 6)',
+  { skip },
+  async () => {
+    const miUser = `${RUN}-appeal-moderation-mi`;
+    const enUser = `${RUN}-appeal-moderation-en`;
+    await setLanguagePreference('whatsapp', miUser, 'mi');
+    const adapter = stubAdapter(async () => {});
+
+    const miClean = await appealModerationHandler(adapter, miUser).handler({});
+    assert.equal(miClean.isError, true);
+    assert.equal(miClean.content[0]?.text, formatAppealModerationText('no_active_warnings', 0, 'mi'));
+
+    await addWarning({
+      platform: 'whatsapp',
+      userId: miUser,
+      reason: 'test',
+      excerpt: null,
+      source: 'auto',
+      issuedBy: null,
+    });
+    await addWarning({
+      platform: 'whatsapp',
+      userId: enUser,
+      reason: 'test',
+      excerpt: null,
+      source: 'auto',
+      issuedBy: null,
+    });
+    const miSent = await appealModerationHandler(adapter, miUser).handler({});
+    assert.equal(miSent.isError, false);
+    assert.equal(
+      miSent.content[0]?.text,
+      formatAppealModerationText('sent', config.moderation.appealCooldownHours, 'mi'),
+    );
+    const enSent = await appealModerationHandler(adapter, enUser).handler({});
+    assert.equal(enSent.isError, false);
+    assert.equal(
+      enSent.content[0]?.text,
+      "Your appeal has been sent to the admins for review. They'll follow up if needed.",
+    );
+    assert.notEqual(miSent.content[0]?.text, enSent.content[0]?.text);
+
+    const miCooldown = await appealModerationHandler(adapter, miUser).handler({});
+    assert.equal(miCooldown.isError, true);
+    assert.equal(
+      miCooldown.content[0]?.text,
+      formatAppealModerationText('rate_limited', config.moderation.appealCooldownHours, 'mi'),
+    );
+  },
+);
+
+test(
+  'SECURITY: a getLanguagePreference lookup failure degrades each of the six feedback.ts/reportsMember.ts ' +
+    'handlers to their English default reply, and each handler still completes its primary effect, rather ' +
+    'than throwing or blocking the tool call (issue #1147 acceptance criterion 5)',
+  { skip },
+  async (t) => {
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && sql.includes('language_prefs')) {
+        return Promise.reject(new Error('language preference lookup unavailable'));
+      }
+      return (realQuery as (...args: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+
+    const suggestResult = await suggestImprovementHandler(`${RUN}-failopen-suggest`).handler({
+      content: 'fail-open suggestion',
+    });
+    assert.equal(suggestResult.isError, false);
+    assert.match(suggestResult.content[0]?.text ?? '', /recorded/i);
+
+    const rateUser = `${RUN}-failopen-rate`;
+    const rateConvo = `${RUN}-failopen-rate-convo`;
+    await recordInteraction({
+      platform: 'discord',
+      conversationId: rateConvo,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'fail-open answer',
+      meta: { replyToUserId: rateUser },
+    });
+    const rateResult = await rateAnswerHandler(rateUser, rateConvo).handler({ helpful: true });
+    assert.notEqual(rateResult.isError, true);
+    assert.match(rateResult.content[0]?.text ?? '', /glad that helped/i);
+
+    const { registeredTool: helpTool, turnState: helpState } = requestHumanHelpHandler(
+      `${RUN}-failopen-help`,
+    );
+    const helpResult = await helpTool.handler();
+    assert.notEqual(helpResult.isError, true);
+    assert.match(helpResult.content[0]?.text ?? '', /flagged this for a community admin/i);
+    assert.equal(helpState.humanHelpRequested, true, 'primary effect (turnState flag) must still be set');
+
+    const reportAdapter = stubAdapter(async () => {});
+    const reportResult = await reportContentHandler(reportAdapter, `${RUN}-failopen-report`).handler({
+      reason: 'fail-open report',
+    });
+    assert.equal(reportResult.isError, false);
+    assert.match(reportResult.content[0]?.text ?? '', /recorded/i);
+    assert.ok(
+      /#(\d+)/.exec(reportResult.content[0]?.text ?? ''),
+      'primary effect (report row) must still be created',
+    );
+
+    const withdrawUser = `${RUN}-failopen-withdraw`;
+    const withdrawFixture = await createContentReport({
+      platform: 'whatsapp',
+      reporterUserId: withdrawUser,
+      reporterName: 'Withdrawing Member',
+      conversationId: 'convo-1',
+      reason: 'to be withdrawn',
+      isDirect: false,
+    });
+    assert.ok(withdrawFixture, 'fixture setup: report must be created');
+    const withdrawResult = await withdrawReportHandler(withdrawUser).handler();
+    assert.equal(withdrawResult.isError, false);
+    assert.match(withdrawResult.content[0]?.text ?? '', /Withdrew your report/i);
+
+    const appealUser = `${RUN}-failopen-appeal`;
+    await addWarning({
+      platform: 'whatsapp',
+      userId: appealUser,
+      reason: 'test',
+      excerpt: null,
+      source: 'auto',
+      issuedBy: null,
+    });
+    const appealAdapter = stubAdapter(async () => {});
+    const appealResult = await appealModerationHandler(appealAdapter, appealUser).handler({});
+    assert.equal(appealResult.isError, false);
+    assert.match(appealResult.content[0]?.text ?? '', /sent to the admins/i);
   },
 );
 

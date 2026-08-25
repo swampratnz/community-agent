@@ -91,6 +91,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   fields the tool already shows, scoped to the caller's own platform exactly
   as before — no new tool, tier, or data access, just a second, deterministic
   path to data already exposed.
+- **Feedback and moderation tools now speak te reo Māori for members who've
+  set that preference.** (#1147) `suggest_improvement`, `rate_answer`,
+  `request_human_help`, `report_content`, `withdraw_report` and
+  `appeal_moderation` were the last two member-tool files the ongoing
+  `mi`-preference sweep hadn't reached — every reply they send stayed
+  English-only regardless of a member's standing preference. Every branch
+  each of these six tools can return (recorded, rate-limited, no recent
+  answer to rate, no active warnings, withdrawn, and more) now renders in te
+  reo Māori for a caller with that standing preference, and is byte-identical
+  to before for everyone else.
 
 ## 2026-08-24
 

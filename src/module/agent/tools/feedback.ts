@@ -10,14 +10,94 @@ import {
   createKnowledgeTip,
   createSuggestion,
   findKnowledgeCoveringTopic,
+  getLanguagePreference,
   KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY,
   RATE_ANSWER_DAILY_LIMIT,
   SUGGESTION_MAX_CHARS,
   SUGGESTION_RATE_LIMIT_PER_DAY,
+  type LanguagePreference,
 } from '@swampratnz/agent-base/storage/repository.js';
 import { makeSlidingWindowReserver } from '@swampratnz/agent-base/util/rateReservation.js';
 import { text } from './helpers.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
+
+/**
+ * Pure render for `suggest_improvement`'s two outcomes — same "language
+ * threaded as an explicit parameter" shape as `formatMyWarningsText`
+ * (issue #1147), reusing `selfService.ts`'s pattern rather than inventing a
+ * new one. The interpolated id/limit are identical in both languages; only
+ * surrounding prose swaps.
+ */
+export function formatSuggestImprovementText(
+  outcome: { recorded: true; id: number } | { recorded: false },
+  limit: number,
+  language: LanguagePreference,
+): string {
+  const mi = language === 'mi';
+  if (!outcome.recorded) {
+    return mi
+      ? `Kua tukuna kētia e koe ${limit} ngā taunakitanga i roto i ngā haora 24 kua hipa. Tēnā koa, tatari i mua i te tuku i tētahi atu.`
+      : `You've already filed ${limit} suggestions in the last 24 hours. Please wait before filing another.`;
+  }
+  return mi
+    ? `Kua tuhia te Taunakitanga #${outcome.id}. Ka arotakehia ēnei e tētahi kaiwhakahaere tangata — mauruuru ` +
+        'mō te whakaaro, engari kāore he oati mō te mea ka hangaia, āhea rānei.'
+    : `Suggestion #${outcome.id} recorded. A human maintainer reviews these — thanks for the idea, but no ` +
+        'promises on if/when it gets built.';
+}
+
+/**
+ * Pure render for `rate_answer`'s four outcomes (issue #1147), mirroring
+ * `formatMyWarningsText`'s shape. `RATE_ANSWER_DAILY_LIMIT` and the boolean
+ * outcome are unchanged interpolations in both languages.
+ */
+export function formatRateAnswerText(
+  outcome: 'no_recent_answer' | 'rate_limited' | { helpful: boolean },
+  limit: number,
+  language: LanguagePreference,
+): string {
+  const mi = language === 'mi';
+  if (outcome === 'no_recent_answer') {
+    return mi
+      ? 'Kāore aku whakautu tata nei hei arotake i roto i tēnei kōrero.'
+      : "I don't have a recent answer of mine to rate in this conversation yet.";
+  }
+  if (outcome === 'rate_limited') {
+    return mi
+      ? `Kua arotakehia kētia e koe ${limit} ngā whakautu i roto i ngā haora 24 kua hipa. Tēnā koa, tatari i ` +
+          'mua i te arotake i tētahi atu.'
+      : `You've already rated ${limit} answers in the last 24 hours. Please wait before rating another.`;
+  }
+  return outcome.helpful
+    ? mi
+      ? 'Mauruuru, he pai te āwhina!'
+      : 'Thanks, glad that helped!'
+    : mi
+      ? 'Mauruuru mō te whakahoki kōrero, kua tuhia.'
+      : 'Thanks for the feedback, noted.';
+}
+
+/**
+ * Pure render for `request_human_help`'s two outcomes (issue #1147).
+ * `HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER` is an unchanged interpolation.
+ */
+export function formatRequestHumanHelpText(
+  outcome: 'recorded' | 'rate_limited',
+  limit: number,
+  language: LanguagePreference,
+): string {
+  const mi = language === 'mi';
+  if (outcome === 'rate_limited') {
+    return mi
+      ? `Kua tono kētia koe ${limit} ngā wā mō te kōrero ki tētahi tangata i roto i ngā haora 24 kua hipa. ` +
+          'Tēnā koa, tatari i mua i te tono anō.'
+      : `You've already asked to talk to a human ${limit} times in the last 24 hours. Please wait before ` +
+          'asking again.';
+  }
+  return mi
+    ? 'Kua mau — kua tohu ahau i tēnei mō tētahi kaiwhakahaere hapori hei whai kōrero mai.'
+    : "Got it — I've flagged this for a community admin to follow up.";
+}
 
 /**
  * request_human_help timestamps per caller (`platform:userId`), for its own
@@ -67,16 +147,19 @@ export const feedbackTools = [
         displayName: caller.userName,
         content: args.content,
       });
+      const language = await getLanguagePreference(caller.platform, caller.userId);
       if (!created) {
         return text(
-          `You've already filed ${SUGGESTION_RATE_LIMIT_PER_DAY} suggestions in the last 24 hours. ` +
-            'Please wait before filing another.',
+          formatSuggestImprovementText({ recorded: false }, SUGGESTION_RATE_LIMIT_PER_DAY, language),
           true,
         );
       }
       return text(
-        `Suggestion #${created.id} recorded. A human maintainer reviews these — thanks for the idea, ` +
-          'but no promises on if/when it gets built.',
+        formatSuggestImprovementText(
+          { recorded: true, id: created.id },
+          SUGGESTION_RATE_LIMIT_PER_DAY,
+          language,
+        ),
       );
     },
   }),
@@ -114,14 +197,12 @@ export const feedbackTools = [
         comment: args.comment,
       });
       if (created === 'no_recent_answer') {
-        return text("I don't have a recent answer of mine to rate in this conversation yet.", true);
+        const language = await getLanguagePreference(caller.platform, caller.userId);
+        return text(formatRateAnswerText('no_recent_answer', RATE_ANSWER_DAILY_LIMIT, language), true);
       }
       if (created === 'rate_limited') {
-        return text(
-          `You've already rated ${RATE_ANSWER_DAILY_LIMIT} answers in the last 24 hours. ` +
-            'Please wait before rating another.',
-          true,
-        );
+        const language = await getLanguagePreference(caller.platform, caller.userId);
+        return text(formatRateAnswerText('rate_limited', RATE_ANSWER_DAILY_LIMIT, language), true);
       }
       // Real-time admin escalation (issue #598): only a genuinely-recorded
       // thumbs-down sets the turn-scoped flag — never a positive rating, and
@@ -223,7 +304,8 @@ export const feedbackTools = [
           logger.warn({ err }, 'rate_answer knowledge-candidate drafting failed; rating already recorded');
         }
       }
-      return text(args.helpful ? 'Thanks, glad that helped!' : 'Thanks for the feedback, noted.');
+      const language = await getLanguagePreference(caller.platform, caller.userId);
+      return text(formatRateAnswerText({ helpful: args.helpful }, RATE_ANSWER_DAILY_LIMIT, language));
     },
   }),
 
@@ -255,9 +337,9 @@ export const feedbackTools = [
       // never sets the flag router.ts acts on.
       const key = `${caller.platform}:${caller.userId}`;
       if (!reserveHumanHelpRequestSlot(key, HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER)) {
+        const language = await getLanguagePreference(caller.platform, caller.userId);
         return text(
-          `You've already asked to talk to a human ${HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER} times in ` +
-            'the last 24 hours. Please wait before asking again.',
+          formatRequestHumanHelpText('rate_limited', HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER, language),
           true,
         );
       }
@@ -274,7 +356,8 @@ export const feedbackTools = [
       if (turnState) {
         turnState.humanHelpRequested = true;
       }
-      return text("Got it — I've flagged this for a community admin to follow up.");
+      const language = await getLanguagePreference(caller.platform, caller.userId);
+      return text(formatRequestHumanHelpText('recorded', HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER, language));
     },
   }),
 ];
