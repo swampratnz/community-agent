@@ -25,6 +25,22 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #1122 #1123 #1132
 -->
 
+## 2026-08-26
+
+### Added
+- **The weekly admin digest now shows how fast member suggestions actually
+  get closed, not just how many are pending.** (#1152) The pending-suggestion
+  backlog line (`pendingSuggestions`/`oldestPendingSuggestionAgeDays`, #193/
+  #450) was the last of the five soft-status review queues with no
+  outcome-mix or resolution-speed signal — reports (#1075/#1081), appeals
+  (#844/#1130) and knowledge candidates (#797/#1149) already got one. It now
+  appends a closed-suggestions line showing the outcome mix (reviewed/done
+  vs. declined) and, once there's at least one closed suggestion in the
+  window, a median hours-to-close figure. `access_requests` stays excluded —
+  unlike suggestions, its row is deleted on resolution, so there's no history
+  to aggregate. Bare integers only — no suggestion id, submitter identity, or
+  resolving admin identity is ever added.
+
 ## 2026-08-25
 
 ### Added

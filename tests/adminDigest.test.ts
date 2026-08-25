@@ -45,6 +45,7 @@ const {
   createContentReport,
   resolveContentReport,
   createSuggestion,
+  resolveSuggestion,
   createAnswerFeedback,
   recordInteraction,
   saveKnowledge,
@@ -5010,10 +5011,11 @@ test('appealMedianResolutionHours reuses medianReportResolutionHours directly ra
   const medianHelperCallCount = (source.match(/medianReportResolutionHours\(/g) ?? []).length;
   assert.equal(
     medianHelperCallCount,
-    4,
-    'medianReportResolutionHours is referenced exactly four times — its own definition, ' +
-      "reportResolutionBreakdown's call, appealMedianResolutionHours's call, and " +
-      "candidateMedianResolutionHours's call (issue #1149) — a second, forked median helper is never introduced",
+    5,
+    'medianReportResolutionHours is referenced exactly five times — its own definition, ' +
+      "reportResolutionBreakdown's call, appealMedianResolutionHours's call, " +
+      "candidateMedianResolutionHours's call (issue #1149), and suggestionResolutionBreakdown's call " +
+      '(issue #1152) — a second, forked median helper is never introduced',
   );
 });
 
@@ -5401,6 +5403,358 @@ test(
 
     await pool.query(`DELETE FROM knowledge WHERE id = $1`, [acceptResult.knowledgeId]);
     await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [[accepted.id, declined.id]]);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+  },
+);
+
+// --- issue #1152: suggestionResolutionBreakdown + its digest line ---------
+
+test('suggestionResolutionBreakdown scans all three terminal statuses (reviewed, declined, done) and reuses medianReportResolutionHours directly rather than forking a fifth median-computation helper (issue #1152 acceptance criteria 1, 3, 6)', () => {
+  const source = readFileSync(new URL('../src/module/adminDigest.ts', import.meta.url), 'utf8');
+  const fnMatch = source.match(/async function suggestionResolutionBreakdown\([\s\S]*?\n}\n/);
+  assert.ok(fnMatch, 'suggestionResolutionBreakdown is defined');
+  const fnBody = fnMatch[0];
+  assert.match(
+    fnBody,
+    /listSuggestions\(\s*'reviewed'/,
+    "suggestionResolutionBreakdown scans the 'reviewed' status (issue #1152 acceptance criterion 1)",
+  );
+  assert.match(
+    fnBody,
+    /listSuggestions\(\s*'done'/,
+    "suggestionResolutionBreakdown also scans the 'done' status (issue #1152 acceptance criterion 1)",
+  );
+  assert.match(
+    fnBody,
+    /listSuggestions\(\s*'declined'/,
+    "suggestionResolutionBreakdown also scans the 'declined' status (issue #1152 acceptance criterion 1)",
+  );
+  assert.match(
+    fnBody,
+    /resolvedAt:\s*row\.reviewedAt/,
+    "each suggestion's reviewedAt is mapped onto the resolvedAt field medianReportResolutionHours expects",
+  );
+  assert.match(
+    fnBody,
+    /medianReportResolutionHours\(/,
+    'suggestionResolutionBreakdown delegates to the shared, already-tested median helper rather than forking its own (issue #1152 acceptance criterion 3)',
+  );
+});
+
+// CANDIDATE_MEDIAN_ZERO_PREFIX (47 elements, every signal through
+// appealMedianResolutionHours at position 47) plus candidateMedianResolutionHours
+// at its own default (null) — 48 elements, every signal through position 48
+// zero/null. The two new trailing params under test
+// (resolvedSuggestionsCount/declinedSuggestionsCount, positions 49-50) are
+// appended by each test below, matching the REPORT_BREAKDOWN_ZERO_PREFIX
+// convention above.
+const SUGGESTION_BREAKDOWN_ZERO_PREFIX = [...CANDIDATE_MEDIAN_ZERO_PREFIX, null] as const;
+
+test('buildAdminDigestMessage: the suggestion-breakdown line renders only when resolvedSuggestionsCount + declinedSuggestionsCount > 0, with independent wording for resolved-only, declined-only, and both, and coexists with the existing pendingSuggestions backlog line (issue #1152 acceptance criteria 1, 2, 4)', () => {
+  assert.equal(
+    buildAdminDigestMessage(...SUGGESTION_BREAKDOWN_ZERO_PREFIX, 0, 0),
+    null,
+    'both counts zero, with every other signal already zero, is a quiet week',
+  );
+
+  const resolvedOnly = buildAdminDigestMessage(...SUGGESTION_BREAKDOWN_ZERO_PREFIX, 3, 0);
+  assert.ok(resolvedOnly, 'resolved suggestions alone still produce a DM');
+  const resolvedLine = resolvedOnly.split('\n').find((l) => l.includes('💡📈'));
+  assert.equal(
+    resolvedLine,
+    '💡📈 3 suggestion(s) closed this period: 3 reviewed/done, 0 declined.',
+    'resolved-only still renders both sub-counts in the fixed template',
+  );
+
+  const declinedOnly = buildAdminDigestMessage(...SUGGESTION_BREAKDOWN_ZERO_PREFIX, 0, 2);
+  assert.ok(declinedOnly, 'declined suggestions alone still produce a DM');
+  const declinedLine = declinedOnly.split('\n').find((l) => l.includes('💡📈'));
+  assert.equal(
+    declinedLine,
+    '💡📈 2 suggestion(s) closed this period: 0 reviewed/done, 2 declined.',
+    'declined-only still renders both sub-counts in the fixed template',
+  );
+
+  const both = buildAdminDigestMessage(...SUGGESTION_BREAKDOWN_ZERO_PREFIX, 8, 4);
+  assert.ok(both);
+  const bothLine = both.split('\n').find((l) => l.includes('💡📈'));
+  assert.equal(
+    bothLine,
+    '💡📈 12 suggestion(s) closed this period: 8 reviewed/done, 4 declined.',
+    'the total is the sum of both sub-counts',
+  );
+
+  // Rendered as its own line, near the existing pendingSuggestions backlog
+  // line — asserted alongside a nonzero pendingSuggestions so both lines
+  // coexist without the backlog line's rendering changing. Full 48-element
+  // positional prefix, same shape as SUGGESTION_BREAKDOWN_ZERO_PREFIX with
+  // only pendingSuggestions (position 4) nonzero.
+  const busyPendingSuggestionsPrefix = [
+    [], // 1  clusters
+    0, // 2  pendingAccessRequests
+    0, // 3  openReports
+    7, // 4  pendingSuggestions
+    0, // 5  staleKnowledgeCount
+    0, // 6  knowledgeStaleDays
+    0, // 7  knowledgeGapsCount
+    0, // 8  pendingKnowledgeCandidates
+    0, // 9  lowRatedKnowledgeCount
+    0, // 10 joinedThisWeek
+    0, // 11 leftThisWeek
+    0, // 12 mutedMembersCount
+    0, // 13 maxTurnsFailuresCount
+    0, // 14 duplicateKnowledgeCount
+    0, // 15 conflictCandidateCount
+    0, // 16 knowledgeStaleMaxAgeDays
+    0, // 17 pendingKnowledgeCandidatesStaleCount
+    0, // 18 knowledgeCandidateStaleDays
+    0, // 19 staleMutedMembersCount
+    0, // 20 notMembersCount
+    0, // 21 escalatedKnowledgeGapsCount
+    undefined, // 22 previousCounts
+    null, // 23 oldestAccessRequestAgeDays
+    null, // 24 oldestOpenReportAgeDays
+    null, // 25 oldestPendingSuggestionAgeDays
+    0, // 26 generalUnhelpfulCount
+    0, // 27 autoAnswerHelpful
+    0, // 28 autoAnswerUnhelpful
+    0, // 29 addressedHelpful
+    0, // 30 addressedUnhelpful
+    0, // 31 openAppealsCount
+    0, // 32 unreachableSourceKnowledgeCount
+    0, // 33 overallAnswerHelpful
+    0, // 34 overallAnswerTotal
+    0, // 35 unhelpfulThemeCount
+    null, // 36 oldestOpenAppealAgeDays
+    0, // 37 acceptedKnowledgeCandidatesCount
+    0, // 38 projectsSharedCount
+    null, // 39 oldestPendingCandidateAgeDays
+    0, // 40 helperMatchesCount
+    0, // 41 resolvedAppealsCount
+    0, // 42 dismissedAppealsCount
+    0, // 43 projectConnectionsCount
+    0, // 44 resolvedReportsCount
+    0, // 45 dismissedReportsCount
+    null, // 46 reportMedianResolutionHours
+    null, // 47 appealMedianResolutionHours
+    null, // 48 candidateMedianResolutionHours
+  ] as const;
+  const withPending = buildAdminDigestMessage(...busyPendingSuggestionsPrefix, 3, 0);
+  assert.ok(withPending);
+  const lines = withPending.split('\n');
+  assert.ok(
+    lines.some((l) => l.startsWith('💡 7 pending suggestion(s)')),
+    'the existing pendingSuggestions line is unchanged alongside the new closed-suggestions line',
+  );
+  assert.ok(
+    lines.some((l) => l.startsWith('💡📈 3 suggestion(s) closed this period: 3 reviewed/done, 0 declined.')),
+    'the new suggestion-breakdown line renders as its own line beside pendingSuggestions',
+  );
+});
+
+test('SECURITY: buildAdminDigestMessage: omitting resolvedSuggestionsCount/declinedSuggestionsCount is byte-identical to passing explicit zeros — the pre-#1152 quiet case is unaffected (issue #1152 acceptance criterion 4)', () => {
+  const withoutNewParams = buildAdminDigestMessage(...SUGGESTION_BREAKDOWN_ZERO_PREFIX);
+  const withExplicitZeros = buildAdminDigestMessage(...SUGGESTION_BREAKDOWN_ZERO_PREFIX, 0, 0);
+  assert.equal(
+    withoutNewParams,
+    withExplicitZeros,
+    'a caller that has not wired the new trailing params through renders byte-identical output',
+  );
+  assert.equal(withExplicitZeros, null, 'still a quiet week');
+});
+
+test('buildAdminDigestMessage: the suggestion-breakdown line trends resolvedSuggestionsCount and declinedSuggestionsCount independently via trendSuffix (issue #1152)', () => {
+  const prefixWithTrend = [
+    ...SUGGESTION_BREAKDOWN_ZERO_PREFIX.slice(0, 21),
+    { resolvedSuggestionsCount: 1, declinedSuggestionsCount: 5 },
+    ...SUGGESTION_BREAKDOWN_ZERO_PREFIX.slice(22),
+  ] as const;
+  const message = buildAdminDigestMessage(...prefixWithTrend, 3, 2);
+  assert.ok(message);
+  const line = message.split('\n').find((l) => l.includes('💡📈'));
+  assert.equal(
+    line,
+    '💡📈 5 suggestion(s) closed this period: 3 reviewed/done, 2 declined. (▲+2 since last week) (▼-3 since last week)',
+    'each sub-count carries its own independent trendSuffix, same one-call-per-signal convention as the ' +
+      'report/appeal-breakdown lines — even though these two keys are never actually persisted (see ' +
+      "currentCounts's own comment), buildAdminDigestMessage itself is agnostic to where previousCounts came from",
+  );
+
+  const noTrend = buildAdminDigestMessage(...SUGGESTION_BREAKDOWN_ZERO_PREFIX, 3, 2);
+  assert.ok(noTrend);
+  const noTrendLine = noTrend.split('\n').find((l) => l.includes('💡📈'));
+  assert.equal(
+    noTrendLine,
+    '💡📈 5 suggestion(s) closed this period: 3 reviewed/done, 2 declined.',
+    'no previousCounts -> no suffix on either sub-count',
+  );
+});
+
+test('SECURITY: buildAdminDigestMessage: the suggestion-breakdown line is a deterministic function of (resolvedSuggestionsCount, declinedSuggestionsCount) only, and never carries a suggestion id, submitter identifier, resolving-admin identifier, or suggestion content (issue #1152 acceptance criterion 4)', () => {
+  const secretContent = 'a very identifiable suggestion content string that must never leak';
+  const secretDisplayName = 'a very identifiable submitter display name that must never leak';
+  const secretSubmitterId = 'submitter-user-id-192837465';
+  const secretReviewerId = 'reviewer-user-id-564738291';
+
+  const message = buildAdminDigestMessage(...SUGGESTION_BREAKDOWN_ZERO_PREFIX, 3, 2);
+  assert.ok(message);
+  const line = message.split('\n').find((l) => l.includes('💡📈'));
+  assert.ok(line);
+  for (const secret of [secretContent, secretDisplayName, secretSubmitterId, secretReviewerId]) {
+    assert.ok(
+      !line.includes(secret),
+      `SECURITY: the suggestion-breakdown line must never carry "${secret}" — it takes no such input, only the two integer counts`,
+    );
+  }
+  assert.equal(
+    line,
+    '💡📈 5 suggestion(s) closed this period: 3 reviewed/done, 2 declined.',
+    'the line is a pure function of the two integer counts — bare numbers and fixed template text only',
+  );
+});
+
+test('buildAdminDigestMessage: suggestionMedianResolutionHours renders a "(median Nh to close)" fragment on the closed-suggestions line only when non-null, and omitting it is byte-identical to the pre-#1152 form (issue #1152 acceptance criteria 5, 6)', () => {
+  const withoutParam = buildAdminDigestMessage(...SUGGESTION_BREAKDOWN_ZERO_PREFIX, 3, 2);
+  const withExplicitNull = buildAdminDigestMessage(...SUGGESTION_BREAKDOWN_ZERO_PREFIX, 3, 2, null);
+  assert.equal(
+    withoutParam,
+    withExplicitNull,
+    'omitting the new trailing param is byte-identical to passing null explicitly',
+  );
+  assert.equal(
+    withoutParam?.split('\n').find((l) => l.includes('💡📈')),
+    '💡📈 5 suggestion(s) closed this period: 3 reviewed/done, 2 declined.',
+    'the quiet-median case is byte-identical to the pre-#1152 line',
+  );
+
+  const withMedian = buildAdminDigestMessage(...SUGGESTION_BREAKDOWN_ZERO_PREFIX, 3, 2, 26.4);
+  assert.ok(withMedian);
+  const medianLine = withMedian.split('\n').find((l) => l.includes('💡📈'));
+  assert.equal(
+    medianLine,
+    '💡📈 5 suggestion(s) closed this period: 3 reviewed/done, 2 declined (median 26h to close).',
+    'a non-null median renders the rounded-hours fragment exactly once, before the trailing period',
+  );
+  assert.equal(
+    medianLine?.match(/median \d+h to close/g)?.length,
+    1,
+    'the median fragment appears exactly once',
+  );
+});
+
+test('SECURITY: buildAdminDigestMessage: the closed-suggestions line with a median fragment is a deterministic function of (resolvedSuggestionsCount, declinedSuggestionsCount, suggestionMedianResolutionHours) only, and never carries a suggestion id, submitter identifier, resolving-admin identifier, or suggestion content (issue #1152 acceptance criterion 5)', () => {
+  const secretContent = 'a very identifiable suggestion content string that must never leak';
+  const secretDisplayName = 'a very identifiable submitter display name that must never leak';
+  const secretSubmitterId = 'submitter-user-id-192837465';
+  const secretReviewerId = 'reviewer-user-id-564738291';
+
+  const message = buildAdminDigestMessage(...SUGGESTION_BREAKDOWN_ZERO_PREFIX, 3, 2, 26.4);
+  assert.ok(message);
+  const line = message.split('\n').find((l) => l.includes('💡📈'));
+  assert.ok(line);
+  for (const secret of [secretContent, secretDisplayName, secretSubmitterId, secretReviewerId]) {
+    assert.ok(
+      !line.includes(secret),
+      `SECURITY: the closed-suggestions line must never carry "${secret}" — it takes no such input, only the two integer counts and the bare median-hours integer`,
+    );
+  }
+  assert.equal(
+    line,
+    '💡📈 5 suggestion(s) closed this period: 3 reviewed/done, 2 declined (median 26h to close).',
+    'the line is a pure function of the two integer counts and the median-hours integer — bare numbers and fixed template text only',
+  );
+});
+
+test(
+  'buildAdminDigestForAdmin: suggestionResolutionBreakdown is wired over the same FRESHNESS_DAYS window and rendered on the digest — resolved folds together reviewed+done, declined stays its own bucket, and no suggestion id, submitter identifier, resolving-admin identifier, or suggestion content ever reaches the message (issue #1152 acceptance criteria 1, 2, 4, 5)',
+  { skip },
+  async () => {
+    const adminId = `${RUN}-suggestionbreakdown-admin`;
+    const submitterId = `${RUN}-suggestionbreakdown-submitter`;
+    const reviewer = `${RUN}-suggestionbreakdown-reviewer-secret`;
+    const secretContentReviewed = `${RUN} a very identifiable reviewed-suggestion content that must never leak`;
+    const secretContentDone = `${RUN} a very identifiable done-suggestion content that must never leak`;
+    const secretContentDeclined = `${RUN} a very identifiable declined-suggestion content that must never leak`;
+    const secretDisplayName = 'a very identifiable submitter display name that must never leak';
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    const toReview = await createSuggestion({
+      platform: 'discord',
+      userId: submitterId,
+      displayName: secretDisplayName,
+      content: secretContentReviewed,
+    });
+    const toDone = await createSuggestion({
+      platform: 'discord',
+      userId: submitterId,
+      displayName: secretDisplayName,
+      content: secretContentDone,
+    });
+    const toDecline = await createSuggestion({
+      platform: 'discord',
+      userId: submitterId,
+      displayName: secretDisplayName,
+      content: secretContentDeclined,
+    });
+    assert.ok(
+      toReview && toDone && toDecline,
+      'all three suggestions recorded (within the per-user daily cap)',
+    );
+
+    const reviewResult = await resolveSuggestion(toReview.id, 'reviewed', reviewer);
+    const doneResult = await resolveSuggestion(toDone.id, 'done', reviewer);
+    const declineResult = await resolveSuggestion(toDecline.id, 'declined', reviewer);
+    assert.ok(reviewResult && doneResult && declineResult);
+
+    // Back-date created_at/reviewed_at so each row's review-duration delta is
+    // small and well inside the FRESHNESS_DAYS window, without pinning an
+    // exact rendered hours value — suggestions is guild-wide/unscoped
+    // (matching list_suggestions' own scope), same accepted-risk shape
+    // candidateMedianResolutionHours's own tests already carry (issue
+    // #1149). Windowing and odd/even median correctness are covered
+    // generically by medianReportResolutionHours's own unit tests (issue
+    // #1081 acceptance criterion 1), reused verbatim here.
+    await pool.query(
+      `UPDATE suggestions SET created_at = now() - interval '4 hours', reviewed_at = now() - interval '2 hours' WHERE id = $1`,
+      [toReview.id],
+    );
+    await pool.query(
+      `UPDATE suggestions SET created_at = now() - interval '6 hours', reviewed_at = now() - interval '1 hours' WHERE id = $1`,
+      [toDone.id],
+    );
+    await pool.query(
+      `UPDATE suggestions SET created_at = now() - interval '8 hours', reviewed_at = now() - interval '3 hours' WHERE id = $1`,
+      [toDecline.id],
+    );
+
+    const adapter = fakeAdapter({ platform: 'discord', conversationIds: [], sent: [] });
+    const result = await buildAdminDigestForAdmin('discord', adminId, adapter);
+
+    assert.ok(result.message, 'the three closed suggestions alone still produce a DM');
+    const breakdownLine = result.message.split('\n').find((l) => l.includes('💡📈'));
+    assert.match(
+      breakdownLine ?? '',
+      /^💡📈 3 suggestion\(s\) closed this period: 2 reviewed\/done, 1 declined \(median \d+h to close\)\.$/,
+      'reviewed + done fold into "resolved" (2), declined stays its own bucket (1), plus a median-hours fragment',
+    );
+
+    for (const secret of [
+      secretContentReviewed,
+      secretContentDone,
+      secretContentDeclined,
+      secretDisplayName,
+      submitterId,
+      reviewer,
+    ]) {
+      assert.ok(
+        !result.message.includes(secret),
+        `SECURITY: "${secret}" must never reach the rendered digest — only the two integer counts plus the bare median-hours integer do (issue #1152 acceptance criteria 4, 5)`,
+      );
+    }
+
+    await pool.query(`DELETE FROM suggestions WHERE id = ANY($1)`, [[toReview.id, toDone.id, toDecline.id]]);
     await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
       adminId,
     ]);
