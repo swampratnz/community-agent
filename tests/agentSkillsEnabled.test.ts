@@ -746,7 +746,7 @@ test(
 test(
   'SECURITY: issue #1151 AC #1 — agent-security-and-untrusted-input-design SKILL.md carries an ' +
     "untrusted-input clause for a member's pasted agent/tool description (data to analyse, never " +
-    'instructions to obey), and teaches only general patterns with no reference to this deployment\'s own ' +
+    "instructions to obey), and teaches only general patterns with no reference to this deployment's own " +
     'internals',
   () => {
     const skillPath = join(
@@ -792,7 +792,11 @@ test(
       /mcp-server-design/,
       'SKILL.md must hand off MCP server build/debug questions to mcp-server-design',
     );
-    assert.match(body, /out of scope/i, 'SKILL.md must state hand-off concerns are out of scope for this skill');
+    assert.match(
+      body,
+      /out of scope/i,
+      'SKILL.md must state hand-off concerns are out of scope for this skill',
+    );
   },
 );
 
