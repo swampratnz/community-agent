@@ -73,6 +73,7 @@ const { makeRouterDeps } = await import('../src/module/routerWiring.js');
 const { countRepliesToUser, upsertMember, insertContextDigest, listKnowledge, setLanguagePreference } =
   await import('@swampratnz/agent-base/storage/repository.js');
 const {
+  formatBlockedMembersList,
   formatListProjectsEmptyText,
   formatMostHelpfulKnowledge,
   formatMutedMembersList,
@@ -2969,6 +2970,208 @@ test("a successful !mutedlist invocation calls recordShortcutHit('whatsapp_text_
   router.register(adapter);
 
   await trigger(makeMessage({ text: '!mutedlist', userId: 'admin-1' }));
+
+  assert.equal(sent.length, 1);
+  assert.deepEqual(hits, ['whatsapp_text_command']);
+});
+
+// --- !blockedlist (issue #1145) ----------------------------------------------
+
+/**
+ * Stubs `pool.query`'s role branch plus `listBlockedUsers`'s single query
+ * against `blocked_users`, mirroring `mockPoolRoleAndMutedList`'s
+ * single-mock-per-test discipline above. `rows` are raw snake_case DB rows
+ * (`external_id`, `blocked_by`, `reason`, `blocked_at`). `listBlockedUsers`'s
+ * query is matched on its distinguishing `ORDER BY blocked_at` clause,
+ * distinct from `isUserBlocked`'s own `SELECT 1 FROM blocked_users` sender
+ * gate — the router's `blockListStep` runs that check on EVERY inbound
+ * message before command dispatch even sees it, so a bare `FROM
+ * blocked_users` match would make the mock answer that gate too and get the
+ * admin caller itself treated as blocked (no reply sent at all).
+ */
+function mockPoolRoleAndBlockedList(
+  t: { mock: { method: typeof import('node:test').mock.method } },
+  role: 'admin' | 'member' | null,
+  rows: Array<{
+    external_id: string;
+    blocked_by: string;
+    reason: string | null;
+    blocked_at: Date;
+  }> = [],
+): void {
+  t.mock.method(pool, 'query', (async (sql: string) => {
+    if (sql.includes('SELECT role FROM community_users')) {
+      return { rows: role ? [{ role }] : [], rowCount: 0 };
+    }
+    if (sql.includes('FROM blocked_users') && sql.includes('ORDER BY blocked_at')) {
+      return { rows, rowCount: 0 };
+    }
+    if (sql.includes('FROM blocked_users')) {
+      return { rows: [], rowCount: 0 };
+    }
+    return { rows: [], rowCount: 0 };
+  }) as typeof pool.query);
+}
+
+test(
+  "!blockedlist renders formatBlockedMembersList's output for the same rows listBlockedUsers returns, " +
+    'covering both a reasoned and a reasonless row (issue #1145 acceptance criterion 1)',
+  async (t) => {
+    const blockedAtA = new Date('2026-08-01T00:00:00.000Z');
+    const blockedAtB = new Date('2026-07-01T00:00:00.000Z');
+    mockPoolRoleAndBlockedList(t, 'admin', [
+      { external_id: 'blocked-1', blocked_by: 'admin-1', reason: 'spam', blocked_at: blockedAtA },
+      { external_id: 'blocked-2', blocked_by: 'admin-2', reason: null, blocked_at: blockedAtB },
+    ]);
+    const router = makeRouter({ runTurn: throwingRunTurn });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!blockedlist', userId: 'admin-1' }));
+
+    const expected = formatBlockedMembersList([
+      { externalId: 'blocked-1', blockedBy: 'admin-1', reason: 'spam', blockedAt: blockedAtA },
+      { externalId: 'blocked-2', blockedBy: 'admin-2', reason: null, blockedAt: blockedAtB },
+    ]);
+    assert.equal(sent[0].text, expected);
+    assert.match(sent[0].text, /blocked-1 . blocked by admin-1/);
+    assert.doesNotMatch(
+      sent[0].text,
+      /blocked-2[^—]*: null/,
+      'a null reason is omitted, not rendered literally',
+    );
+  },
+);
+
+test('!blockedlist reports "No blocked users." when nothing qualifies (issue #1145 acceptance criterion 1)', async (t) => {
+  mockPoolRoleAndBlockedList(t, 'admin', []);
+  const router = makeRouter({ runTurn: throwingRunTurn });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!blockedlist', userId: 'admin-1' }));
+
+  assert.equal(sent[0].text, 'No blocked users.');
+});
+
+test(
+  'a bare "!blockedlistx" (no space, unrecognised) is not matched as the !blockedlist command — anchored ' +
+    'matcher (issue #1145 acceptance criterion 3)',
+  async (t) => {
+    mockPoolRole(t, 'admin');
+    const router = makeRouter({});
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!blockedlistx', userId: 'admin-1' }));
+
+    assert.equal(sent[0].text, REAL_TURN_REPLY);
+  },
+);
+
+test(
+  'SECURITY: "!blockedlist <anything>" is never matched — the anchored matcher rejects any argument, so no ' +
+    'message-supplied text can ever reach a blocked-users repository read (issue #1145 acceptance criterion 3)',
+  async (t) => {
+    let queried = false;
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users')) return { rows: [{ role: 'admin' }], rowCount: 0 };
+      if (sql.includes('FROM blocked_users') && sql.includes('ORDER BY blocked_at')) queried = true;
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!blockedlist; DROP TABLE blocked_users', userId: 'admin-1' }));
+
+    assert.equal(sent[0].text, REAL_TURN_REPLY, 'an argument must fall through to a normal turn');
+    assert.equal(queried, false, 'no blocked-users repository read must run when an argument is present');
+  },
+);
+
+test(
+  'SECURITY: a member-tier caller\'s "!blockedlist" falls through to the normal turn — no blocked-user list ' +
+    'is ever rendered and no blocked-users repository read runs (issue #1145 acceptance criterion 4)',
+  async (t) => {
+    let queried = false;
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users'))
+        return { rows: [{ role: 'member' }], rowCount: 0 };
+      if (sql.includes('FROM blocked_users') && sql.includes('ORDER BY blocked_at')) queried = true;
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!blockedlist', userId: 'member-1' }));
+
+    assert.equal(sent.length, 1);
+    assert.equal(
+      sent[0].text,
+      REAL_TURN_REPLY,
+      'a member gets no distinguishing denial reply, per the family norm',
+    );
+    assert.equal(queried, false, 'no blocked-users repository read must run for a member-tier caller');
+  },
+);
+
+test(
+  'SECURITY: a guest caller\'s "!blockedlist" falls through to the normal turn — no blocked-user list is ' +
+    'ever rendered and no blocked-users repository read runs (issue #1145 acceptance criterion 4)',
+  async (t) => {
+    let queried = false;
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users')) return { rows: [], rowCount: 0 };
+      if (sql.includes('FROM blocked_users') && sql.includes('ORDER BY blocked_at')) queried = true;
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!blockedlist', userId: 'guest-1' }));
+
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].text, REAL_TURN_REPLY);
+    assert.equal(queried, false, 'no blocked-users repository read must run for a guest caller');
+  },
+);
+
+test(
+  'config.behaviour.whatsappTextCommandsEnabled === false disables !blockedlist exactly as it does every ' +
+    'other WhatsApp shortcut (issue #1145 acceptance criterion 5)',
+  async (t) => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    config.behaviour.whatsappTextCommandsEnabled = false;
+    t.after(() => {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    });
+    mockPoolRoleAndBlockedList(t, 'admin', []);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!blockedlist', userId: 'admin-1' }));
+
+    assert.equal(sent[0].text, REAL_TURN_REPLY);
+  },
+);
+
+test("a successful !blockedlist invocation calls recordShortcutHit('whatsapp_text_command') exactly once (issue #1145)", async (t) => {
+  mockPoolRoleAndBlockedList(t, 'admin', []);
+  const hits: string[] = [];
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    recordShortcutHitFn: async (kind) => {
+      hits.push(kind);
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!blockedlist', userId: 'admin-1' }));
 
   assert.equal(sent.length, 1);
   assert.deepEqual(hits, ['whatsapp_text_command']);

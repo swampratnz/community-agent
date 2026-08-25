@@ -59,6 +59,7 @@ await import('./support/registerPolicyKeys.js');
 // `createAgent`, after imports). Same catalogue entries, same selection — the
 // assertions below pin exactly what they did before.
 const {
+  formatBlockedMembersList,
   formatKnowledgeTopics,
   formatListProjectsEmptyText,
   formatMostHelpfulKnowledge,
@@ -177,6 +178,8 @@ function mockPool(
     appealAgeDays?: number | null;
     /** `listMutedMembers`' rows for `/mutedlist` (issue #1114), raw snake_case DB shape. */
     mutedMemberRows?: PoolRow[];
+    /** `listBlockedUsers`' rows for `/blockedlist` (issue #1145), raw snake_case DB shape. */
+    blockedUserRows?: PoolRow[];
   } = {},
 ): Array<{ sql: string; params: unknown[] }> {
   const calls: Array<{ sql: string; params: unknown[] }> = [];
@@ -326,6 +329,12 @@ function mockPool(
     // branch for the same reason as every other multi-query table above.
     if (sql.includes('FROM member_warnings') && sql.includes('windowed_count')) {
       return { rows: opts.mutedMemberRows ?? [], rowCount: 0 };
+    }
+    // listBlockedUsers' read (issue #1145's /blockedlist) — the only query
+    // against this table in this file, so no specific-first disambiguation is
+    // needed, matching countAccessRequests' single-table simplicity above.
+    if (sql.includes('FROM blocked_users')) {
+      return { rows: opts.blockedUserRows ?? [], rowCount: 0 };
     }
     if (sql.includes('FROM member_warnings')) {
       const windowDays = params[2];
@@ -544,6 +553,7 @@ test('with DISCORD_SLASH_COMMANDS_ENABLED=true, all commands are registered guil
   );
   const names = (commands as Array<{ name: string }>).map((c) => c.name).sort();
   assert.deepEqual(names, [
+    'blockedlist',
     'digest',
     'events',
     'guidelines',
@@ -577,10 +587,11 @@ test("a slash-command registration failure is caught and logged, never thrown, m
   assert.ok(warnLog.mock.calls.length >= 1, 'a registration failure must be logged, not swallowed silently');
 });
 
-test('buildSlashCommands defines exactly the fifteen approved read-only commands, each with its expected required-ness', () => {
+test('buildSlashCommands defines exactly the sixteen approved read-only commands, each with its expected required-ness', () => {
   const commands = buildSlashCommands();
   const byName = new Map(commands.map((c) => [c.name, c]));
   assert.deepEqual([...byName.keys()].sort(), [
+    'blockedlist',
     'digest',
     'events',
     'guidelines',
@@ -686,6 +697,12 @@ test('buildSlashCommands defines exactly the fifteen approved read-only commands
     [],
     "/mutedlist takes no options — always list_muted_members's own fixed-argument read, admin-tier only " +
       '(issue #1114)',
+  );
+  assert.deepEqual(
+    (byName.get('blockedlist') as { options?: unknown[] }).options ?? [],
+    [],
+    "/blockedlist takes no options — always list_blocked_members's own fixed-argument read, admin-tier only " +
+      '(issue #1145)',
   );
 });
 
@@ -2505,6 +2522,122 @@ test('/mutedlist replies ephemerally, deferring before its DB round trip', async
   mockPool(t, { memberRole: 'admin', mutedMemberRows: [] });
   const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction, replies, order } = fakeInteraction({ commandName: 'mutedlist', userId: 'admin-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies[0].ephemeral, true);
+  assert.deepEqual(order, ['deferReply', 'editReply']);
+});
+
+// --- Issue #1145: /blockedlist (the third admin-tier slash command) ---------
+
+test(
+  "/blockedlist renders formatBlockedMembersList's output for the same rows listBlockedUsers returns, " +
+    'covering both a reasoned and a reasonless row (issue #1145 acceptance criteria 1, 2)',
+  async (t) => {
+    const blockedAtA = new Date('2026-08-01T00:00:00.000Z');
+    const blockedAtB = new Date('2026-07-01T00:00:00.000Z');
+    mockPool(t, {
+      memberRole: 'admin',
+      blockedUserRows: [
+        { external_id: 'blocked-1', blocked_by: 'admin-1', reason: 'spam', blocked_at: blockedAtA },
+        { external_id: 'blocked-2', blocked_by: 'admin-2', reason: null, blocked_at: blockedAtB },
+      ],
+    });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'blockedlist', userId: 'admin-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    const expected = formatBlockedMembersList([
+      { externalId: 'blocked-1', blockedBy: 'admin-1', reason: 'spam', blockedAt: blockedAtA },
+      { externalId: 'blocked-2', blockedBy: 'admin-2', reason: null, blockedAt: blockedAtB },
+    ]);
+    assert.equal(replies[0].content, stripEmDashes(expected));
+    assert.match(replies[0].content, /blocked-1, blocked by admin-1/);
+  },
+);
+
+test('/blockedlist renders "No blocked users." when nothing qualifies (issue #1145 acceptance criterion 1)', async (t) => {
+  mockPool(t, { memberRole: 'admin', blockedUserRows: [] });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({ commandName: 'blockedlist', userId: 'admin-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies[0].content, 'No blocked users.');
+});
+
+test(
+  'SECURITY: a guest caller is rejected on /blockedlist without any blocked-users repository read ever ' +
+    'being invoked (issue #1145 acceptance criterion 4)',
+  async (t) => {
+    const calls = mockPool(t, { memberRole: null, blockedUserRows: [{ external_id: 'leak-1' }] });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'blockedlist', userId: 'guest-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].ephemeral, true);
+    assert.match(replies[0].content, /don't have access/i);
+    assert.ok(
+      !calls.some((c) => c.sql.includes('FROM blocked_users')),
+      'no blocked-users repository read must run for a rejected caller',
+    );
+  },
+);
+
+test(
+  "SECURITY: a member-tier caller is rejected on /blockedlist — the same atLeast(role, 'admin') gate as " +
+    '/reviewqueue/mutedlist, not just the member-tier toolsForRole check every other command uses (issue ' +
+    '#1145 acceptance criterion 4)',
+  async (t) => {
+    const calls = mockPool(t, { memberRole: 'member', blockedUserRows: [{ external_id: 'leak-1' }] });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'blockedlist', userId: 'member-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].ephemeral, true);
+    assert.match(
+      replies[0].content,
+      /don't have access/i,
+      'a member-tier caller must be denied, not just a guest',
+    );
+    assert.ok(
+      !calls.some((c) => c.sql.includes('FROM blocked_users')),
+      'no blocked-users repository read must run for a member-tier caller',
+    );
+  },
+);
+
+test("a successful /blockedlist invocation calls recordShortcutHit('slash_command') exactly once (issue #1145)", async (t) => {
+  const calls = mockPool(t, { memberRole: 'admin', blockedUserRows: [] });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction } = fakeInteraction({ commandName: 'blockedlist', userId: 'admin-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(shortcutHitCalls(calls).length, 1, '/blockedlist must record exactly one slash_command hit');
+});
+
+test('SECURITY: recordShortcutHit is never called on the NOT_AUTHORIZED_TEXT branch for /blockedlist (issue #1145)', async (t) => {
+  const calls = mockPool(t, { memberRole: null });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({ commandName: 'blockedlist', userId: 'guest-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.match(replies[0].content, /don't have access/i, 'sanity check: /blockedlist was actually denied');
+  assert.equal(shortcutHitCalls(calls).length, 0, 'an auth-denied reply must never record a shortcut hit');
+});
+
+test('/blockedlist replies ephemerally, deferring before its DB round trip', async (t) => {
+  mockPool(t, { memberRole: 'admin', blockedUserRows: [] });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies, order } = fakeInteraction({ commandName: 'blockedlist', userId: 'admin-1' });
 
   await handleInteraction(interaction as never, adapterDeps(adapter));
 

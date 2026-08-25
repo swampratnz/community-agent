@@ -82,6 +82,15 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   no accessible project, invalid project, rate-limited, note saved, and no
   projects here) now render in te reo Māori for a caller with that standing
   preference, and are byte-identical to before for everyone else.
+- **Admins can now pull the bot's WhatsApp block list instantly —
+  `!blockedlist`/`/blockedlist`.** (#1145) `list_blocked_members` was the one
+  remaining admin-tier zero-argument lookup still requiring a full agent turn
+  to reach, unlike its explicitly-named sibling `list_muted_members`, which
+  got its own `!mutedlist`/`/mutedlist` shortcut. The new command answers
+  instantly with the same external id, blocking admin, reason and blocked-at
+  fields the tool already shows, scoped to the caller's own platform exactly
+  as before — no new tool, tier, or data access, just a second, deterministic
+  path to data already exposed.
 
 ## 2026-08-24
 
