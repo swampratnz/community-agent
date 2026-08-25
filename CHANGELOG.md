@@ -40,6 +40,25 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   unlike suggestions, its row is deleted on resolution, so there's no history
   to aggregate. Bare integers only — no suggestion id, submitter identity, or
   resolving admin identity is ever added.
+- **New Agent Skill: `agent-security-and-untrusted-input-design`, for members
+  hardening their own Claude/API-powered agent against prompt injection and
+  untrusted input.** (#1151) "How do I stop someone hiding 'ignore previous
+  instructions' in a doc my agent retrieves?", "should my agent be able to
+  call `delete_x` on its own?", "what's the actual risk if I let Claude read
+  untrusted web pages?" were a distinct, common builder question none of the
+  fourteen existing skills covered — `agent-architecture-review` treats tool
+  surface/permissions as one checklist bullet among five, `prompt-review`
+  reviews a prompt the member already pasted, and `mcp-server-design` covers
+  auth only at the MCP-transport level. The new skill classifies the
+  member's untrusted surface first (user messages, RAG content, scraped
+  pages, tool outputs, multi-agent handoffs), then walks data/instruction
+  separation, least-privilege tool scoping, destructive-action gating,
+  output-side filtering, and adversarial self-testing as a branch-by-lever
+  decision tree. It teaches general, publicly-documented patterns only, with
+  no reference to this deployment's own prompt/tool-registry/RBAC internals
+  as worked examples. Same bundled-markdown shape as every other skill: no
+  new tool, tier, or data access, reachable only behind the existing
+  off-by-default `AGENT_SKILLS_ENABLED` gate.
 
 ## 2026-08-25
 

@@ -81,12 +81,13 @@ test('SECURITY: AC2 — AGENT_SKILLS_ENABLED=true adds Skill to tools and loads 
         'mcp-server-design',
         'eval-and-testing-design',
         'tool-use-and-structured-output-design',
+        'agent-security-and-untrusted-input-design',
       ],
       `${role}: skills must be exactly ['prompt-review', 'model-and-plan-selection', ` +
         `'agent-architecture-review', 'project-showcase', 'claude-code-setup', 'getting-started', ` +
         `'knowledge-contribution', 'debug-claude-api-error', 'member-connection', 'api-cost-and-latency', ` +
         `'rag-and-retrieval-design', 'mcp-server-design', 'eval-and-testing-design', ` +
-        `'tool-use-and-structured-output-design']`,
+        `'tool-use-and-structured-output-design', 'agent-security-and-untrusted-input-design']`,
     );
   }
 });
@@ -109,6 +110,7 @@ test("SECURITY: AC6/AC7 (#755) — skills is always the literal ENABLED_SKILLS a
       'mcp-server-design',
       'eval-and-testing-design',
       'tool-use-and-structured-output-design',
+      'agent-security-and-untrusted-input-design',
     ]);
     assert.notEqual(opts.skills, 'all');
   }
@@ -702,6 +704,102 @@ test(
   },
 );
 
+test(
+  'SECURITY: issue #1151 — agent-security-and-untrusted-input-design resolves to the bundled SKILL.md, ' +
+    "grants no new tool access, and changes no role's disallowedTools",
+  async () => {
+    const { toolsForRole } = await import('@swampratnz/agent-base/auth/rbac.js');
+    const skillPath = join(
+      dirname(fileURLToPath(import.meta.url)),
+      '../src/module/agent/skills/agent-security-and-untrusted-input-design/SKILL.md',
+    );
+    const body = readFileSync(skillPath, 'utf8');
+    assert.match(
+      body,
+      /^---\nname: agent-security-and-untrusted-input-design\n/,
+      'SKILL.md must carry valid agent-security-and-untrusted-input-design front-matter',
+    );
+    for (const role of ['guest', 'member', 'admin', 'super_admin'] as const) {
+      const opts = buildQueryOptions(role, 'prompt', {}, null, 'conv-1', 'discord');
+      assert.ok(
+        opts.skills?.includes('agent-security-and-untrusted-input-design'),
+        `${role}: skills must include agent-security-and-untrusted-input-design when the flag is on`,
+      );
+      const webSearch = role === 'admin' || role === 'super_admin';
+      assert.deepEqual(
+        opts.disallowedTools,
+        ['Task', 'WebFetch', ...(webSearch ? [] : ['WebSearch'])],
+        `${role}: disallowedTools must be unaffected by adding agent-security-and-untrusted-input-design to ENABLED_SKILLS`,
+      );
+      const expected = [...toolsForRole(role, 'discord'), ...(webSearch ? ['WebSearch'] : [])].filter(
+        (t) => !(FEATURE_FLAGGED_TOOLS as readonly string[]).includes(t),
+      );
+      assert.deepEqual(
+        [...opts.allowedTools].sort(),
+        [...expected].sort(),
+        `${role}: allowedTools must be unaffected by agent-security-and-untrusted-input-design — no new MCP tool surface`,
+      );
+    }
+  },
+);
+
+test(
+  'SECURITY: issue #1151 AC #1 — agent-security-and-untrusted-input-design SKILL.md carries an ' +
+    "untrusted-input clause for a member's pasted agent/tool description (data to analyse, never " +
+    "instructions to obey), and teaches only general patterns with no reference to this deployment's own " +
+    'internals',
+  () => {
+    const skillPath = join(
+      dirname(fileURLToPath(import.meta.url)),
+      '../src/module/agent/skills/agent-security-and-untrusted-input-design/SKILL.md',
+    );
+    const body = readFileSync(skillPath, 'utf8');
+    assert.match(body, /UNTRUSTED DATA/, 'SKILL.md must label member-pasted content as untrusted data');
+    assert.match(
+      body,
+      /never to execute/,
+      'SKILL.md must state the untrusted content is analysed, never executed/obeyed',
+    );
+    assert.doesNotMatch(
+      body,
+      /systemPrompt\.ts|tool registry|RBAC internals|src\/module/i,
+      "SKILL.md must not reference this deployment's own systemPrompt.ts, tool registry, or RBAC internals as worked examples",
+    );
+  },
+);
+
+test(
+  'issue #1151 — agent-security-and-untrusted-input-design SKILL.md hands off to prompt-review, ' +
+    'agent-architecture-review, and mcp-server-design rather than restating their guidance',
+  () => {
+    const skillPath = join(
+      dirname(fileURLToPath(import.meta.url)),
+      '../src/module/agent/skills/agent-security-and-untrusted-input-design/SKILL.md',
+    );
+    const body = readFileSync(skillPath, 'utf8');
+    assert.match(
+      body,
+      /prompt-review/,
+      'SKILL.md must hand off already-pasted schema/prompt review to prompt-review',
+    );
+    assert.match(
+      body,
+      /agent-architecture-review/,
+      'SKILL.md must hand off whole-pipeline concerns to agent-architecture-review',
+    );
+    assert.match(
+      body,
+      /mcp-server-design/,
+      'SKILL.md must hand off MCP server build/debug questions to mcp-server-design',
+    );
+    assert.match(
+      body,
+      /out of scope/i,
+      'SKILL.md must state hand-off concerns are out of scope for this skill',
+    );
+  },
+);
+
 test('SECURITY: AC7 — enabling AGENT_SKILLS_ENABLED grants no tier Read, Bash, Glob, or Grep', () => {
   const FORBIDDEN = ['Read', 'Bash', 'Glob', 'Grep'];
   for (const role of ['guest', 'member', 'admin', 'super_admin'] as const) {
@@ -908,5 +1006,9 @@ test('SECURITY: AC5 — the bundled skill plugin directory contains no hooks/, a
   assert.ok(
     files.some((f) => f.endsWith(join('tool-use-and-structured-output-design', 'SKILL.md'))),
     'expected tool-use-and-structured-output-design/SKILL.md to be present',
+  );
+  assert.ok(
+    files.some((f) => f.endsWith(join('agent-security-and-untrusted-input-design', 'SKILL.md'))),
+    'expected agent-security-and-untrusted-input-design/SKILL.md to be present',
   );
 });
