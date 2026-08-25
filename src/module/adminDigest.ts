@@ -32,6 +32,7 @@ import {
   listAppeals,
   listKnowledgeCandidates,
   listReports,
+  listSuggestions,
   oldestAccessRequestAgeDays,
   oldestOpenAppealAgeDays,
   oldestOpenReportAgeDays,
@@ -310,6 +311,77 @@ async function candidateMedianResolutionHours(days: number): Promise<number | nu
     resolvedAt: row.reviewedAt,
   }));
   return medianReportResolutionHours(rows, since);
+}
+
+/**
+ * `listSuggestions`' own hard clamp — the widest single-status scan
+ * available from here, same constant/value `REPORT_RESOLUTION_SCAN_LIMIT`/
+ * `APPEAL_RESOLUTION_SCAN_LIMIT`/`KNOWLEDGE_CANDIDATE_RESOLUTION_SCAN_LIMIT`
+ * use for the identical reason (issue #1152).
+ */
+const SUGGESTION_RESOLUTION_SCAN_LIMIT = 200;
+
+/**
+ * Outcome mix + median hours-to-close for member suggestions — the
+ * still-missing resolved-vs-declined complement to `pendingSuggestions`/
+ * `oldestPendingSuggestionAgeDays`'s backlog-size/-age signals above, the
+ * fifth and last of `review_queue`'s five queues to get this treatment
+ * (reports #1075/#1081, appeals #844/#1130, candidates #797/#1149, issue
+ * #1152). Unlike those three, suggestions have THREE terminal statuses
+ * (`reviewed`, `declined`, `done`) rather than two — `resolved` here folds
+ * together `reviewed` + `done` (both "the admin acted on it, positively")
+ * while `declined` stays its own bucket, matching the rendered line's own
+ * "reviewed/done vs. declined" wording.
+ *
+ * Reuses `medianReportResolutionHours` unmodified, mapping each
+ * suggestion's `reviewedAt` onto the `resolvedAt` field the helper expects
+ * — the same technique `candidateMedianResolutionHours` uses for
+ * `KnowledgeCandidate`.
+ *
+ * Built module-side for the identical reason `reportResolutionBreakdown`/
+ * `appealMedianResolutionHours`/`candidateMedianResolutionHours` are: no
+ * base repository aggregate returns per-row `createdAt`/`reviewedAt` for
+ * suggestions, so this reaches for the already-exported, admin-tier-gated
+ * `listSuggestions` scan and aggregates in JS.
+ *
+ * KNOWN APPROXIMATION, the same tradeoff every sibling function above
+ * documents: `listSuggestions` orders by `created_at DESC`, not
+ * `reviewed_at`, and each status scan is capped at
+ * `SUGGESTION_RESOLUTION_SCAN_LIMIT` rows (here across THREE scans, not two,
+ * one per terminal status). A suggestion reviewed recently but filed long
+ * ago could in principle fall outside a 200-row, `created_at`-ordered scan
+ * on an unusually high-volume queue. Bounded, not unbounded — accepted as
+ * documented, not a correctness gap in practice, same posture as every
+ * sibling metric.
+ */
+async function suggestionResolutionBreakdown(
+  days: number,
+): Promise<{ resolved: number; declined: number; medianResolutionHours: number | null }> {
+  const since = Date.now() - days * 24 * 3_600_000;
+  const countRecentlyResolved = (rows: readonly { reviewedAt: Date | null }[]) =>
+    rows.filter((row) => row.reviewedAt !== null && row.reviewedAt.getTime() >= since).length;
+  // Sequential rather than a parallel combinator — same reasoning every
+  // sibling function above gives: this repo's own buildAdminDigestForAdmin
+  // (this function's sole caller) pins its single signal-gathering fan-out
+  // call as a no-drift invariant (tests/adminDigest.test.ts, issue #499); a
+  // second one here would trip that pin for no real benefit, since these
+  // three bounded, differently-statused reads are cheap regardless of
+  // ordering.
+  const reviewedRows = await listSuggestions('reviewed', SUGGESTION_RESOLUTION_SCAN_LIMIT);
+  const doneRows = await listSuggestions('done', SUGGESTION_RESOLUTION_SCAN_LIMIT);
+  const declinedRows = await listSuggestions('declined', SUGGESTION_RESOLUTION_SCAN_LIMIT);
+  const toMedianRow = (row: { createdAt: Date; reviewedAt: Date | null }) => ({
+    createdAt: row.createdAt,
+    resolvedAt: row.reviewedAt,
+  });
+  return {
+    resolved: countRecentlyResolved(reviewedRows) + countRecentlyResolved(doneRows),
+    declined: countRecentlyResolved(declinedRows),
+    medianResolutionHours: medianReportResolutionHours(
+      [...reviewedRows, ...doneRows, ...declinedRows].map(toMedianRow),
+      since,
+    ),
+  };
 }
 
 /**
@@ -769,6 +841,44 @@ export function buildAdminDigestMessage(
   // sourcePlatform/sourceUserId ever reaches the DM, same privacy convention
   // as acceptedKnowledgeCandidatesCount.
   candidateMedianResolutionHours: number | null = null,
+  // Outcome mix of suggestions closed in the last FRESHNESS_DAYS days
+  // (`suggestionResolutionBreakdown`, issue #1152) — the still-missing
+  // resolved-vs-declined complement to `pendingSuggestions`/
+  // `oldestPendingSuggestionAgeDays`'s backlog-size/-age signals above, the
+  // suggestions sibling of `resolvedReportsCount`/`dismissedReportsCount`
+  // (#1075) and `resolvedAppealsCount`/`dismissedAppealsCount` (#844).
+  // "Resolved" folds together the `reviewed` and `done` terminal statuses;
+  // "declined" is its own bucket — see suggestionResolutionBreakdown's own
+  // doc comment. Counts CLOSED rows, disjoint from `pendingSuggestions`'
+  // pending-only scope, so it gets its own entry in the all-signals-zero
+  // gate below rather than riding as a sub-count of an already-gated
+  // signal. Rendered as ONE line only when `resolvedSuggestionsCount +
+  // declinedSuggestionsCount > 0`. Bare integers only — no suggestion id,
+  // submitter identifier, resolving-admin identifier, or suggestion content
+  // ever reaches the DM, same privacy convention as resolvedReportsCount/
+  // dismissedReportsCount. Two append-only trailing params, default 0, so
+  // every existing call site is unaffected and the quiet case is
+  // byte-identical to the pre-#1152 form.
+  resolvedSuggestionsCount: number = 0,
+  declinedSuggestionsCount: number = 0,
+  // Median hours-to-close over the same closed-suggestion rows as
+  // resolvedSuggestionsCount/declinedSuggestionsCount
+  // (`suggestionResolutionBreakdown`'s `medianResolutionHours`, issue
+  // #1152) — the suggestions-side sibling of reportMedianResolutionHours/
+  // appealMedianResolutionHours/candidateMedianResolutionHours above, the
+  // still-missing throughput/speed complement to the outcome-mix counts: a
+  // shrinking suggestion backlog can coexist with individual suggestions
+  // sitting for days, which the mix alone can't distinguish. Append-only
+  // trailing param, `null` by default, so every existing call site is
+  // unaffected. Only ever appended to the already-nonzero closed-suggestions
+  // line above and only when non-null (no closed suggestions in the window
+  // has no meaningful median), so the quiet case and every caller that
+  // hasn't wired this through are byte-identical to the pre-#1152 form.
+  // Bare integer (rounded hours) only — no suggestion id, submitter
+  // identifier, resolving-admin identifier, or suggestion content ever
+  // reaches the DM, same privacy convention as resolvedSuggestionsCount/
+  // declinedSuggestionsCount.
+  suggestionMedianResolutionHours: number | null = null,
 ): string | null {
   if (
     clusters.length === 0 &&
@@ -801,7 +911,9 @@ export function buildAdminDigestMessage(
     dismissedAppealsCount === 0 &&
     projectConnectionsCount === 0 &&
     resolvedReportsCount === 0 &&
-    dismissedReportsCount === 0
+    dismissedReportsCount === 0 &&
+    resolvedSuggestionsCount === 0 &&
+    declinedSuggestionsCount === 0
   )
     return null;
 
@@ -864,6 +976,27 @@ export function buildAdminDigestMessage(
     sections.push(
       `💡 ${pendingSuggestions} pending suggestion(s)${ageFragment} — run \`list_suggestions\`.` +
         trendSuffix('pendingSuggestions', pendingSuggestions, previousCounts),
+    );
+  }
+  if (resolvedSuggestionsCount + declinedSuggestionsCount > 0) {
+    // Bare integers only — no suggestion id, submitter identifier,
+    // resolving-admin identifier, or suggestion content ever reaches the DM
+    // (#1152, extended by its own median-hours fragment below, itself a
+    // bare rounded integer).
+    const closedSuggestionsTotal = resolvedSuggestionsCount + declinedSuggestionsCount;
+    // Median-hours fragment only when the aggregate resolved to a real value
+    // — zero closed suggestions in the window (or a caller that hasn't
+    // wired the new param through) renders the line exactly as before
+    // #1152.
+    const suggestionMedianFragment =
+      suggestionMedianResolutionHours !== null
+        ? ` (median ${Math.round(suggestionMedianResolutionHours)}h to close)`
+        : '';
+    sections.push(
+      `💡📈 ${closedSuggestionsTotal} suggestion(s) closed this period: ${resolvedSuggestionsCount} reviewed/done, ` +
+        `${declinedSuggestionsCount} declined${suggestionMedianFragment}.` +
+        trendSuffix('resolvedSuggestionsCount', resolvedSuggestionsCount, previousCounts) +
+        trendSuffix('declinedSuggestionsCount', declinedSuggestionsCount, previousCounts),
     );
   }
   if (staleKnowledgeCount > 0) {
@@ -1203,6 +1336,7 @@ export async function buildAdminDigestForAdmin(
     reportBreakdown,
     appealMedianHours,
     candidateMedianHours,
+    suggestionBreakdown,
   ] = await Promise.all([
     recentQuestionClusters(scope, FRESHNESS_DAYS, CLUSTER_LIMIT),
     countAccessRequests(),
@@ -1349,6 +1483,14 @@ export async function buildAdminDigestForAdmin(
     // (issue #1149). Guild-wide, unscoped like acceptedKnowledgeCandidatesCount
     // above — knowledge_candidates has no conversation/channel column.
     candidateMedianResolutionHours(FRESHNESS_DAYS),
+    // Outcome mix + median hours-to-close for suggestions closed over the
+    // same FRESHNESS_DAYS window as every other rolling-window trend line
+    // here — the still-missing resolved-vs-declined complement to
+    // pendingSuggestions/oldestPendingSuggestionAgeDays above, the fifth and
+    // last review queue to get this treatment (issue #1152). Guild-wide,
+    // unscoped like pendingSuggestions above — suggestions has no
+    // conversation/channel column.
+    suggestionResolutionBreakdown(FRESHNESS_DAYS),
   ]);
   // Onboarding-queue count only means anything in 'gated' mode — an
   // 'open'-mode not_members row already has full member-tool access
@@ -1413,6 +1555,14 @@ export async function buildAdminDigestForAdmin(
     // — the appeals-side sibling of `reportMedianResolutionHours` above.
     // `candidateMedianHours` (issue #1149) is excluded for the identical
     // reason — the candidates-side sibling of both.
+    // `resolvedSuggestionsCount`/`declinedSuggestionsCount`/
+    // `suggestionMedianHours` (issue #1152) are excluded for the identical
+    // reason `resolvedReportsCount`/`dismissedReportsCount`/
+    // `reportMedianResolutionHours` are: no upstream `ADMIN_DIGEST_SIGNAL_KEYS`
+    // allowlist entry, so adding one would be an agent-base change, out of
+    // scope here. The trend suffixes on the rendered line below therefore
+    // never fire in practice — the same "renders bare" first-ever-digest
+    // behaviour every excluded signal above has.
   };
   // Only added when there's at least one auto-answer rating this week (issue
   // #629) — mirrors the render block's own `autoAnswerHelpful +
@@ -1477,6 +1627,9 @@ export async function buildAdminDigestForAdmin(
     reportBreakdown.medianResolutionHours,
     appealMedianHours,
     candidateMedianHours,
+    suggestionBreakdown.resolved,
+    suggestionBreakdown.declined,
+    suggestionBreakdown.medianResolutionHours,
   );
   return { message, currentCounts };
 }

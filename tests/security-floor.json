@@ -4,7 +4,7 @@
   "accessRequestAlert.test.ts": 4,
   "accessRequestStaleAlert.test.ts": 3,
   "ackShortcutRouter.test.ts": 3,
-  "adminDigest.test.ts": 66,
+  "adminDigest.test.ts": 69,
   "adminLeverageAlert.test.ts": 3,
   "agentCoreFailureFallbacksMi.test.ts": 2,
   "agentCoreFailureFallbacksPlain.test.ts": 3,
