@@ -2041,6 +2041,139 @@ test('/kbhelpful replies ephemerally, deferring before its DB round trip', async
   assert.deepEqual(order, ['deferReply', 'editReply']);
 });
 
+// --- Issue #1143: /kbhelpful low-rated caveat parity ------------------------
+
+test('SECURITY: /kbhelpful reply includes KNOWLEDGE_LOW_RATED_CAVEAT_TEXT on exactly the entry line whose id is in the low-rated set, never on a sibling entry outside it', async (t) => {
+  const was = config.behaviour.knowledgeLowRatedCaveatMinUnhelpful;
+  config.behaviour.knowledgeLowRatedCaveatMinUnhelpful = 2;
+  t.after(() => {
+    config.behaviour.knowledgeLowRatedCaveatMinUnhelpful = was;
+  });
+
+  const mostHelpfulKnowledgeRows: PoolRow[] = [
+    {
+      id: 1,
+      scope: 'global',
+      title: 'Low-rated entry',
+      content: 'LOW_RATED_KBHELPFUL_TEXT',
+      created_by_role: 'admin',
+      updated_at: new Date(),
+      retrieval_count: 9,
+      last_retrieved_at: new Date(),
+    },
+    {
+      id: 2,
+      scope: 'global',
+      title: 'Fine entry',
+      content: 'FINE_KBHELPFUL_TEXT',
+      created_by_role: 'admin',
+      updated_at: new Date(),
+      retrieval_count: 4,
+      last_retrieved_at: new Date(),
+    },
+  ];
+  mockPool(t, { memberRole: 'member', mostHelpfulKnowledgeRows, lowRatedIds: [1] });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({ commandName: 'kbhelpful', userId: 'member-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  const [lowRatedLine, fineLine] = replies[0].content
+    .split('\n')
+    .filter((line) => line.includes('LOW_RATED_KBHELPFUL_TEXT') || line.includes('FINE_KBHELPFUL_TEXT'));
+  assert.ok(
+    lowRatedLine?.includes(stripEmDashes(KNOWLEDGE_LOW_RATED_CAVEAT_TEXT)),
+    "the low-rated entry's own line must carry the caveat",
+  );
+  assert.ok(
+    !fineLine?.includes(stripEmDashes(KNOWLEDGE_LOW_RATED_CAVEAT_TEXT)),
+    'a sibling entry outside the low-rated set must never carry the caveat',
+  );
+
+  // Issue #1087's byte-identical invariant, extended (issue #1143 acceptance
+  // criterion 3) to cover a low-rated row, not just the stale/citation row
+  // the pre-existing tests above cover.
+  const entries = await listKnowledge({
+    scope: 'global',
+    offset: 0,
+    limit: MOST_HELPFUL_KNOWLEDGE_FETCH_CAP,
+  });
+  const expected = formatMostHelpfulKnowledge(rankKnowledgeByRetrieval(entries, 10), 'auto', new Set([1]));
+  assert.equal(replies[0].content, stripEmDashes(expected));
+});
+
+test('SECURITY: /kbhelpful still replies successfully with the entries and no caveat when areKnowledgeEntriesLowRated rejects (fail-safe, issue #1143 acceptance criterion 4)', async (t) => {
+  const was = config.behaviour.knowledgeLowRatedCaveatMinUnhelpful;
+  config.behaviour.knowledgeLowRatedCaveatMinUnhelpful = 2;
+  t.after(() => {
+    config.behaviour.knowledgeLowRatedCaveatMinUnhelpful = was;
+  });
+  const warnLog = t.mock.method(logger, 'warn', () => {});
+
+  t.mock.method(pool, 'query', (async (sql: string) => {
+    if (sql.includes('SELECT role FROM community_users')) {
+      return { rows: [{ role: 'member' }], rowCount: 0 };
+    }
+    if (sql.includes('FROM answer_feedback')) {
+      throw new Error('low-rated lookup unavailable');
+    }
+    if (sql.includes('retrieval_count') && sql.includes('FROM knowledge')) {
+      return {
+        rows: [
+          {
+            id: 1,
+            scope: 'global',
+            title: 'Entry',
+            content: 'STILL_SERVED_KBHELPFUL_TEXT',
+            created_by_role: 'admin',
+            updated_at: new Date(),
+            retrieval_count: 3,
+            last_retrieved_at: new Date(),
+          },
+        ],
+        rowCount: 0,
+      };
+    }
+    return { rows: [], rowCount: 0 };
+  }) as typeof pool.query);
+
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({ commandName: 'kbhelpful', userId: 'member-1' });
+
+  await assert.doesNotReject(() => handleInteraction(interaction as never, adapterDeps(adapter)));
+
+  assert.equal(replies.length, 1);
+  assert.ok(replies[0].content.includes('STILL_SERVED_KBHELPFUL_TEXT'), 'the entry must still be served');
+  assert.ok(
+    !replies[0].content.includes(KNOWLEDGE_LOW_RATED_CAVEAT_TEXT),
+    'a lookup failure must degrade to no low-rated caveat, never an error',
+  );
+  assert.ok(warnLog.mock.calls.length >= 1, 'the lookup failure must be logged, not silently swallowed');
+});
+
+test('/kbhelpful issues NO low-rated-lookup query when KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL is unset/0 (the default) (issue #1143 acceptance criterion 5)', async (t) => {
+  assert.equal(
+    config.behaviour.knowledgeLowRatedCaveatMinUnhelpful,
+    0,
+    'this test only proves anything with the feature at its off default',
+  );
+  const calls = mockPool(t, {
+    memberRole: 'member',
+    mostHelpfulKnowledgeRows: [
+      { id: 1, scope: 'global', title: 'Entry', content: 'X', created_by_role: 'admin', retrieval_count: 1 },
+    ],
+  });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction } = fakeInteraction({ commandName: 'kbhelpful', userId: 'member-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.ok(
+    !calls.some((c) => c.sql.includes('FROM answer_feedback')),
+    'the low-rated lookup query must never run when the feature is disabled',
+  );
+});
+
 // --- Issue #1095: /reviewqueue (the first admin-tier slash command) ---------
 
 test(

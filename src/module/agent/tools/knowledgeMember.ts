@@ -272,8 +272,23 @@ export const knowledgeMemberTools = [
         limit: MOST_HELPFUL_KNOWLEDGE_FETCH_CAP,
       });
       const ranked = rankKnowledgeByRetrieval(entries, limit);
+      // Member-facing low-rated-answer caveat (issue #1143) — the deferred
+      // remainder of #1127's own scope note: gating and fail-safe behaviour
+      // mirror knowledge_search's identical lookup a few lines above in this
+      // file exactly.
+      const rankedIds = ranked.map((e) => e.id);
+      const lowRatedIds =
+        config.behaviour.knowledgeLowRatedCaveatMinUnhelpful > 0 && rankedIds.length > 0
+          ? await areKnowledgeEntriesLowRated(
+              rankedIds,
+              config.behaviour.knowledgeLowRatedCaveatMinUnhelpful,
+            ).catch((err) => {
+              logger.warn({ err }, 'Knowledge low-rated caveat lookup failed; omitting the caveat');
+              return new Set<number>();
+            })
+          : new Set<number>();
       const language = await getLanguagePreference(caller.platform, caller.userId);
-      return text(formatMostHelpfulKnowledge(ranked, language));
+      return text(formatMostHelpfulKnowledge(ranked, language, lowRatedIds));
     },
   }),
 
