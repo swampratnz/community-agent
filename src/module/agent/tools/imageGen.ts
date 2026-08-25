@@ -31,7 +31,7 @@ export const imageGenTools = [
     featureFlag: (cfg) => cfg.imageGen.enabled,
     readOnlyHint: false,
     schema: { prompt: z.string().min(1).max(1000).describe('Description of the image to generate') },
-    handler: async (args, { caller, adapter }) => {
+    handler: async (args, { caller, adapter, audited }) => {
       assertAtLeast(caller.role, 'admin', 'generate_image');
       if (!config.imageGen.enabled) {
         return text('Image generation is not enabled on this server.', true);
@@ -51,24 +51,29 @@ export const imageGenTools = [
       }
       imageGenInFlight.add(key);
       try {
-        const image = await generateImage(args.prompt, onDiskSecretPaths());
-        await adapter.sendImage(
-          caller.conversationId,
-          {
-            data: image.data,
-            filename: `image.${image.ext}`,
-            mimeType: image.mimeType,
+        const { success, result } = await audited({
+          actionKind: 'generate_image',
+          conversationId: caller.conversationId,
+          params: { prompt: args.prompt },
+          run: async () => {
+            const image = await generateImage(args.prompt, onDiskSecretPaths());
+            await adapter.sendImage!(
+              caller.conversationId,
+              {
+                data: image.data,
+                filename: `image.${image.ext}`,
+                mimeType: image.mimeType,
+              },
+              args.prompt,
+            );
+            logger.info(
+              { actor: hashId(caller.userId), platform: caller.platform, bytes: image.data.length },
+              'generate_image posted',
+            );
+            return `posted (${image.data.length} bytes)`;
           },
-          args.prompt,
-        );
-        logger.info(
-          { actor: hashId(caller.userId), platform: caller.platform, bytes: image.data.length },
-          'generate_image posted',
-        );
-        return text('Image posted.');
-      } catch (err) {
-        logger.warn({ err, actor: hashId(caller.userId) }, 'generate_image failed');
-        return text(`Image generation failed: ${err instanceof Error ? err.message : String(err)}`, true);
+        });
+        return success ? text('Image posted.') : text(`Image generation failed: ${result}`, true);
       } finally {
         imageGenInFlight.delete(key);
       }
