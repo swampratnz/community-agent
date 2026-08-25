@@ -606,6 +606,103 @@ export function formatMostHelpfulKnowledge(
 }
 
 /**
+ * Pure renderer for `suggest_knowledge`'s dedup-bounce reply (issue #1155) —
+ * the "already queued for review or already reviewed" no-op refusal from
+ * `candidateTopicAlreadyReviewed`. Same `mi ? … : …` inline shape as
+ * `formatKnowledgeTopics`/`formatMyWarningsText`; `language` defaults to
+ * `'auto'` byte-identical English so every pre-#1155 caller is unaffected.
+ * `isError` stays `false` here, unchanged from today — a dedup bounce is a
+ * friendly no-op, not a tool error.
+ */
+export function formatSuggestKnowledgeDedupText(language: LanguagePreference): string {
+  return language === 'mi'
+    ? 'Ngā mihi, engari kua tārewahia kētia tētahi taunakitanga e rite ana mō te arotake, kua arotakehia ' +
+        'rānei — kāore he take kia tuku anō.'
+    : 'Thanks, but a similar tip is already queued for review or has already been reviewed — no need to ' +
+        'resubmit.';
+}
+
+/**
+ * Pure renderer for `suggest_knowledge`'s daily rate-limit refusal (issue
+ * #1155), same shape as `formatSuggestKnowledgeDedupText` above. `limit` is
+ * `KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY`, interpolated identically in both
+ * languages — only the surrounding prose changes.
+ */
+export function formatSuggestKnowledgeRateLimitText(limit: number, language: LanguagePreference): string {
+  return language === 'mi'
+    ? `Kua tukuna kētia e koe ngā taunakitanga e ${limit} i ngā haora 24 kua hipa. Tēnā koa, tatari i mua i ` +
+        'te tuku anō i tētahi.'
+    : `You've already suggested ${limit} tips in the last 24 hours. Please wait before suggesting another.`;
+}
+
+/**
+ * Pure renderer for `suggest_knowledge`'s two success confirmations (issue
+ * #1155) — the plain "queued for admin review" reply and the correction-match
+ * variant that additionally names the covering entry
+ * (`findKnowledgeCoveringTopic`). `correctionLabel` is `null` for the plain
+ * branch and the entry's `"title"`/`entry #id` label (already computed by the
+ * handler, unchanged) for the correction branch — one formatter for both,
+ * same convention the proposal calls out, rather than two near-duplicate
+ * functions differing by a single clause.
+ */
+export function formatSuggestKnowledgeQueuedText(
+  id: number,
+  correctionLabel: string | null,
+  language: LanguagePreference,
+): string {
+  const mi = language === 'mi';
+  if (correctionLabel) {
+    return mi
+      ? `Ngā mihi! E āhua hono ana tēnei ki te urunga mōhiotanga o nāianei, ${correctionLabel} — kua ` +
+          `tārewahia Taunakitanga #${id} mō te arotake a te kaiwhakahaere hei whakahoutanga pea mōna.`
+      : `Thanks! This looks related to existing knowledge entry ${correctionLabel} — Tip #${id} has been ` +
+          'queued for admin review as a possible update to it.';
+  }
+  return mi
+    ? `Ngā mihi! Kua tārewahia Taunakitanga #${id} mō te arotake a te kaiwhakahaere — kāore e puta ki te ` +
+        'pātengi mōhiotanga, mēnā kāore e whakaaetia e tētahi kaiwhakahaere.'
+    : `Thanks! Tip #${id} queued for admin review — it won't appear in the knowledge base unless an admin ` +
+        'accepts it.';
+}
+
+/**
+ * Pure renderer for `withdraw_knowledge_tip`'s "nothing pending" refusal
+ * (issue #1155), same shape as the `suggest_knowledge` formatters above.
+ * `isError` stays `true` here, unchanged from today.
+ */
+export function formatWithdrawKnowledgeTipEmptyText(language: LanguagePreference): string {
+  return language === 'mi'
+    ? 'Kāore āu taunakitanga mōhiotanga e tatari ana kia whakahokia.'
+    : 'You have no pending knowledge tips to withdraw.';
+}
+
+/**
+ * Pure renderer for `withdraw_knowledge_tip`'s withdrawal confirmation (issue
+ * #1155). `ids` is `withdrawOwnKnowledgeTips`'s return, already scoped in SQL
+ * to the caller's own `source_platform`/`source_user_id` — this function does
+ * no scoping itself, only formatting. The English singular/plural ("tip" vs
+ * "tips") and the mi possessive ("tō" vs "ō") both key off `ids.length > 1`,
+ * same interpolated `#id` list in both languages.
+ */
+export function formatWithdrawKnowledgeTipConfirmText(
+  ids: readonly number[],
+  language: LanguagePreference,
+): string {
+  const list = ids.map((id) => `#${id}`).join(', ');
+  if (language === 'mi') {
+    const possessive = ids.length > 1 ? 'ō' : 'tō';
+    return (
+      `Kua whakahokia ${possessive} taunakitanga mōhiotanga ${list}. Kāore e arotakehia — me tuku anō koe ` +
+      'i tētahi putanga pai ake mā te suggest_knowledge.'
+    );
+  }
+  return (
+    `Withdrew your knowledge tip${ids.length > 1 ? 's' : ''} ${list}. ` +
+    "They won't be reviewed — feel free to resubmit a better version with suggest_knowledge."
+  );
+}
+
+/**
  * Render matched interests as a quarantined untrusted-data block, same
  * discipline as formatProjectResults/renderMemoryContext: angle brackets
  * stripped and ALL whitespace incl. U+0085 collapsed via the shared

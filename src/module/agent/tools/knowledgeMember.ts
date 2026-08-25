@@ -28,6 +28,11 @@ import {
   formatKnowledgeSearchResults,
   formatKnowledgeTopics,
   formatMostHelpfulKnowledge,
+  formatSuggestKnowledgeDedupText,
+  formatSuggestKnowledgeQueuedText,
+  formatSuggestKnowledgeRateLimitText,
+  formatWithdrawKnowledgeTipConfirmText,
+  formatWithdrawKnowledgeTipEmptyText,
   rankKnowledgeByRetrieval,
   text,
 } from './helpers.js';
@@ -329,6 +334,12 @@ export const knowledgeMemberTools = [
       // privileged/self-service tool in this file follows.
       assertAtLeast(caller.role, 'member', 'suggest_knowledge');
 
+      // Mirrors list_knowledge_topics/most_helpful_knowledge's own read of
+      // the caller's standing preference (issue #1155) — no new field, no
+      // new table, the exact same getLanguagePreference call the sibling
+      // read-path tools in this file already pay for.
+      const language = await getLanguagePreference(caller.platform, caller.userId);
+
       // Topic = title, and this reuses the context builder's OWN pre-insert
       // dedup guard verbatim (issue #503) so a member's tip is held to the
       // same "don't refill an already-queued/reviewed or already-answered
@@ -337,10 +348,7 @@ export const knowledgeMemberTools = [
       const { blocked: alreadyQueued, embedding: topicEmbedding } =
         await candidateTopicAlreadyReviewed(topic);
       if (alreadyQueued) {
-        return text(
-          'Thanks, but a similar tip is already queued for review or has already been reviewed — no ' +
-            'need to resubmit.',
-        );
+        return text(formatSuggestKnowledgeDedupText(language));
       }
       const created = await createKnowledgeTip({
         platform: caller.platform,
@@ -351,11 +359,7 @@ export const knowledgeMemberTools = [
         topicEmbedding,
       });
       if (!created) {
-        return text(
-          `You've already suggested ${KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY} tips in the last 24 hours. ` +
-            'Please wait before suggesting another.',
-          true,
-        );
+        return text(formatSuggestKnowledgeRateLimitText(KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY, language), true);
       }
       // A high-similarity match here is also what a genuine CORRECTION to
       // that entry looks like (issue #1066) — the topic is by construction
@@ -371,15 +375,9 @@ export const knowledgeMemberTools = [
       const covering = await findKnowledgeCoveringTopic(topicEmbedding);
       if (covering) {
         const label = covering.title ? `"${covering.title}"` : `entry #${covering.id}`;
-        return text(
-          `Thanks! This looks related to existing knowledge entry ${label} — Tip #${created.id} has ` +
-            'been queued for admin review as a possible update to it.',
-        );
+        return text(formatSuggestKnowledgeQueuedText(created.id, label, language));
       }
-      return text(
-        `Thanks! Tip #${created.id} queued for admin review — it won't appear in the knowledge base ` +
-          'unless an admin accepts it.',
-      );
+      return text(formatSuggestKnowledgeQueuedText(created.id, null, language));
     },
   }),
 
@@ -400,14 +398,13 @@ export const knowledgeMemberTools = [
     schema: {},
     handler: async (_args, { caller }) => {
       const ids = await withdrawOwnKnowledgeTips(caller.platform, caller.userId);
+      // Mirrors suggest_knowledge's own read of the caller's standing
+      // preference above (issue #1155) — no new field, no new table.
+      const language = await getLanguagePreference(caller.platform, caller.userId);
       if (ids.length === 0) {
-        return text('You have no pending knowledge tips to withdraw.', true);
+        return text(formatWithdrawKnowledgeTipEmptyText(language), true);
       }
-      const list = ids.map((id) => `#${id}`).join(', ');
-      return text(
-        `Withdrew your knowledge tip${ids.length > 1 ? 's' : ''} ${list}. ` +
-          "They won't be reviewed — feel free to resubmit a better version with suggest_knowledge.",
-      );
+      return text(formatWithdrawKnowledgeTipConfirmText(ids, language));
     },
   }),
 ];

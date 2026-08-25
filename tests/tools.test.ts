@@ -25219,6 +25219,239 @@ test(
   },
 );
 
+test(
+  "suggest_knowledge renders te reo Māori for a caller with a standing 'mi' preference across all four " +
+    'outcomes — dedup bounce, correction-match, plain queued, and the daily rate-limit refusal (issue ' +
+    '#1155 acceptance criterion 1)',
+  { skip },
+  async () => {
+    const { id: knowledgeId } = await saveKnowledge({
+      title: 'Vorplenatch config migration',
+      content: 'Vorplenatch config migration: run the migrate command then restart the service.',
+      scope: 'global',
+    });
+
+    const miUser = `${RUN}-suggest-knowledge-mi-lang`;
+    await setLanguagePreference('discord', miUser, 'mi');
+    const memberTools = knowledgeToolsFor('member', miUser);
+    const candidateIds: number[] = [];
+    try {
+      // 1. Plain queued (count 1/3).
+      const plainTitle = `${RUN} a lavender wombat rehearsing tuba scales`;
+      const plain = await memberTools['suggest_knowledge'].handler({
+        title: plainTitle,
+        content: `${RUN} plain mi-lang fixture content`,
+      });
+      assert.equal(plain.isError, false);
+      const plainText = plain.content[0]?.text ?? '';
+      assert.match(plainText, /Kua tārewahia Taunakitanga #\d+/, 'plain-queued reply renders in mi');
+      assert.doesNotMatch(
+        plainText,
+        /queued for admin review/i,
+        'the English confirmation must not also appear',
+      );
+      const plainMatch = /Taunakitanga #(\d+)/.exec(plainText);
+      assert.ok(plainMatch);
+      candidateIds.push(Number(plainMatch[1]));
+
+      // 2. Dedup bounce — same title verbatim, now itself a pending candidate.
+      const dedup = await memberTools['suggest_knowledge'].handler({
+        title: plainTitle,
+        content: `${RUN} dedup mi-lang fixture content`,
+      });
+      assert.equal(dedup.isError, false, 'a dedup refusal is not an error result');
+      assert.match(
+        dedup.content[0]?.text ?? '',
+        /kāore he take kia tuku anō/,
+        'dedup bounce reply renders in mi',
+      );
+
+      // 3. A distinct filler tip, to advance the rate counter without
+      // colliding with either dedup guard (count 2/3).
+      const filler = await memberTools['suggest_knowledge'].handler({
+        title: `${RUN} nine turquoise moths rehearsing a waltz`,
+        content: `${RUN} filler mi-lang fixture content`,
+      });
+      assert.equal(filler.isError, false);
+      const fillerMatch = /Taunakitanga #(\d+)/.exec(filler.content[0]?.text ?? '');
+      assert.ok(fillerMatch);
+      candidateIds.push(Number(fillerMatch[1]));
+
+      // 4. Correction-match — the topic embeds against the saved knowledge
+      // entry above, so findKnowledgeCoveringTopic fires (count 3/3, the cap).
+      const correction = await memberTools['suggest_knowledge'].handler({
+        title: 'vorplenatch config migration steps',
+        content: `${RUN} correction mi-lang fixture content`,
+      });
+      assert.equal(correction.isError, false);
+      const correctionText = correction.content[0]?.text ?? '';
+      assert.match(
+        correctionText,
+        /Vorplenatch config migration/,
+        'the covering entry is named in the reply',
+      );
+      assert.match(
+        correctionText,
+        /E āhua hono ana tēnei ki te urunga mōhiotanga o nāianei/,
+        'correction-match reply renders in mi',
+      );
+      const correctionMatch = /Taunakitanga #(\d+)/.exec(correctionText);
+      assert.ok(correctionMatch);
+      candidateIds.push(Number(correctionMatch[1]));
+
+      // 5. Over the cap — the daily rate-limit refusal, isError preserved.
+      const overCap = await memberTools['suggest_knowledge'].handler({
+        title: `${RUN} a bewildered heron filing paperwork`,
+        content: `${RUN} over-cap mi-lang fixture content`,
+      });
+      assert.equal(overCap.isError, true, 'isError stays true for the rate-limit refusal in every language');
+      assert.match(
+        overCap.content[0]?.text ?? '',
+        /Kua tukuna kētia e koe ngā taunakitanga e 3/,
+        'rate-limit refusal renders in mi and names the limit',
+      );
+    } finally {
+      if (candidateIds.length > 0) {
+        await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [candidateIds]);
+      }
+      await pool.query(`DELETE FROM knowledge WHERE id = $1`, [knowledgeId]);
+      await pool.query(`DELETE FROM language_prefs WHERE platform = 'discord' AND user_id = $1`, [miUser]);
+    }
+  },
+);
+
+test(
+  "withdraw_knowledge_tip renders te reo Māori for a caller with a standing 'mi' preference across both " +
+    'outcomes — nothing pending, and a withdrawal confirmation — and the fixed English default for a ' +
+    'caller with none (issue #1155 acceptance criterion 2)',
+  { skip },
+  async () => {
+    const miUser = `${RUN}-withdraw-knowledge-tip-mi-lang`;
+    const enUser = `${RUN}-withdraw-knowledge-tip-no-pref`;
+    await setLanguagePreference('discord', miUser, 'mi');
+
+    const miTools = knowledgeToolsFor('member', miUser);
+    const enTools = knowledgeToolsFor('member', enUser);
+
+    // Nothing pending, in both languages.
+    const miEmpty = await miTools['withdraw_knowledge_tip'].handler({});
+    assert.equal(miEmpty.isError, true, 'isError stays true for the empty refusal in every language');
+    assert.equal(
+      miEmpty.content[0]?.text ?? '',
+      'Kāore āu taunakitanga mōhiotanga e tatari ana kia whakahokia.',
+      'the empty refusal is byte-identical to the mi string',
+    );
+    const enEmpty = await enTools['withdraw_knowledge_tip'].handler({});
+    assert.equal(enEmpty.isError, true);
+    assert.equal(
+      enEmpty.content[0]?.text ?? '',
+      'You have no pending knowledge tips to withdraw.',
+      'a caller with no stored preference gets output byte-identical to the current English string',
+    );
+
+    // Withdrawal confirmation, in both languages.
+    let miTipId: number | undefined;
+    let enTipId: number | undefined;
+    try {
+      const miSuggest = await miTools['suggest_knowledge'].handler({
+        title: `${RUN} a jubilant narwhal drafting spreadsheets`,
+        content: `${RUN} withdraw mi-lang fixture content`,
+      });
+      miTipId = Number(/Taunakitanga #(\d+)/.exec(miSuggest.content[0]?.text ?? '')?.[1]);
+      assert.ok(miTipId, `expected a mi "Taunakitanga #" reply, got: ${JSON.stringify(miSuggest)}`);
+
+      const miWithdraw = await miTools['withdraw_knowledge_tip'].handler({});
+      assert.equal(miWithdraw.isError, false);
+      assert.equal(
+        miWithdraw.content[0]?.text ?? '',
+        `Kua whakahokia tō taunakitanga mōhiotanga #${miTipId}. Kāore e arotakehia — me tuku anō koe i ` +
+          'tētahi putanga pai ake mā te suggest_knowledge.',
+        'the withdrawal confirmation is byte-identical to the mi string, singular possessive for one tip',
+      );
+
+      const enSuggest = await enTools['suggest_knowledge'].handler({
+        title: `${RUN} a diligent otter alphabetising kelp`,
+        content: `${RUN} withdraw en-lang fixture content`,
+      });
+      enTipId = Number(/Tip #(\d+)/.exec(enSuggest.content[0]?.text ?? '')?.[1]);
+      assert.ok(enTipId, `expected an English "Tip #" reply, got: ${JSON.stringify(enSuggest)}`);
+
+      const enWithdraw = await enTools['withdraw_knowledge_tip'].handler({});
+      assert.equal(enWithdraw.isError, false);
+      assert.equal(
+        enWithdraw.content[0]?.text ?? '',
+        `Withdrew your knowledge tip #${enTipId}. They won't be reviewed — feel free to resubmit a ` +
+          'better version with suggest_knowledge.',
+        'a caller with no stored preference gets output byte-identical to the current English string',
+      );
+    } finally {
+      const cleanupIds = [miTipId, enTipId].filter((id): id is number => id !== undefined);
+      if (cleanupIds.length > 0) {
+        await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [cleanupIds]);
+      }
+      await pool.query(`DELETE FROM language_prefs WHERE platform = 'discord' AND user_id = $1`, [miUser]);
+    }
+  },
+);
+
+test(
+  "SECURITY: suggest_knowledge/withdraw_knowledge_tip read the language branch only via the caller's OWN " +
+    "getLanguagePreference(platform, userId) — another member's stored 'mi' preference cannot leak into " +
+    "this caller's reply, and withdraw_knowledge_tip stays scoped to the caller's own pending tips even " +
+    'when a mi preference is set; the reply carries no field beyond the pre-#1155 tip id/title (issue ' +
+    '#1155 acceptance criterion 4)',
+  { skip },
+  async () => {
+    const otherMiUser = `${RUN}-suggest-knowledge-other-mi`;
+    const callerUser = `${RUN}-suggest-knowledge-self-scoped`;
+    await setLanguagePreference('discord', otherMiUser, 'mi');
+
+    const callerTools = knowledgeToolsFor('member', callerUser);
+    let callerTipId: number | undefined;
+    try {
+      const suggestResult = await callerTools['suggest_knowledge'].handler({
+        title: `${RUN} a curious pangolin cataloguing pebbles`,
+        content: `${RUN} self-scoped mi-lang fixture content`,
+      });
+      assert.equal(suggestResult.isError, false);
+      const suggestText = suggestResult.content[0]?.text ?? '';
+      assert.doesNotMatch(
+        suggestText,
+        /Kua tārewahia|pātengi mōhiotanga/,
+        "SECURITY: another member's 'mi' preference must never be reachable for this caller's own reply",
+      );
+      callerTipId = Number(/Tip #(\d+)/.exec(suggestText)?.[1]);
+      assert.ok(callerTipId);
+
+      // A second member, WITH a mi preference, withdraws — must see only
+      // their own empty state, never the first caller's pending tip.
+      const otherTools = knowledgeToolsFor('member', otherMiUser);
+      const otherWithdraw = await otherTools['withdraw_knowledge_tip'].handler({});
+      assert.equal(otherWithdraw.isError, true);
+      assert.equal(
+        otherWithdraw.content[0]?.text ?? '',
+        'Kāore āu taunakitanga mōhiotanga e tatari ana kia whakahokia.',
+        "SECURITY: withdraw_knowledge_tip must stay scoped to the caller's own pending tips regardless of language",
+      );
+
+      // The original caller can still withdraw their own tip, unaffected.
+      // withdraw_knowledge_tip marks the row withdrawn rather than deleting
+      // it, so cleanup below still needs to run regardless of this call.
+      const callerWithdraw = await callerTools['withdraw_knowledge_tip'].handler({});
+      assert.equal(callerWithdraw.isError, false);
+      assert.match(callerWithdraw.content[0]?.text ?? '', new RegExp(`#${callerTipId}\\b`));
+    } finally {
+      // withdraw_knowledge_tip marks the row withdrawn rather than deleting
+      // it, so cleanup still needs to run whether or not the withdraw call
+      // above succeeded.
+      if (callerTipId) await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [callerTipId]);
+      await pool.query(`DELETE FROM language_prefs WHERE platform = 'discord' AND user_id = $1`, [
+        otherMiUser,
+      ]);
+    }
+  },
+);
+
 // my_submissions (issue #160): a member-tier, read-only pull of the caller's
 // OWN suggestions/reports, filling the gap left by best-effort resolution
 // DMs. Exercises the handler's wiring on top of the repository.test.ts
