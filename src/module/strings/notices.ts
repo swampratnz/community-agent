@@ -712,6 +712,48 @@ const NOTICE_ENTRIES = {
       mi: (count: number) => `🤝 ${count} mema kua hono ki tētahi āwhina, hoa mahi rānei i tēnei wiki.`,
     },
   },
+  // --- project notes/recall (agent/tools/projectNotes.ts, issue #1141) ----
+  //
+  // The last member-tier tool family the `mi`-preference sweep had not yet
+  // reached (#1030, #1077, #1105, #1107, #1119 covered every sibling). Mirrors
+  // `formatListProjectsEmptyText`'s pattern in helpers.ts: fixed shell text
+  // only, with at most a count or the already-validated project slug
+  // interpolated — never caller-supplied free text (query/content/title/
+  // referenceUrl). See the SECURITY test in tests/tools.test.ts.
+  projectRecallEmpty: {
+    base: 'Nothing in project memory matches that (or you have no project accessible here).',
+    language: {
+      mi: 'Kāore he mea i ngā mahara tiritahi o te kaupapa e ōrite ana ki tērā (kāore rānei he kaupapa e watea ana ki a koe i konei).',
+    },
+  },
+  projectNoteInvalidProject: {
+    base: 'No project by that name is accessible here.',
+    language: {
+      mi: 'Kāore he kaupapa e taua ingoa e watea ana i konei.',
+    },
+  },
+  projectNoteRateLimited: {
+    base: (limit: number) =>
+      `You've already recorded ${limit} project notes in the last 24 hours. Try again later, or ask an ` +
+      'admin if the team needs a higher limit.',
+    language: {
+      mi: (limit: number) =>
+        `Kua tuhia kētia e koe ${limit} ngā tuhinga kaupapa i roto i ngā haora 24 kua hipa. Whakamātau anō ` +
+        'ā muri ake, pātai rānei ki tētahi kaiwhakahaere mehemea e hiahiatia ana e te tīma tētahi tepe teitei ake.',
+    },
+  },
+  projectNoteSaved: {
+    base: (project: string) => `Recorded in ${project}.`,
+    language: {
+      mi: (project: string) => `Kua tuhia ki ${project}.`,
+    },
+  },
+  projectListEmpty: {
+    base: 'You have no project accessible in this conversation.',
+    language: {
+      mi: 'Kāore he kaupapa e watea ana ki a koe i roto i tēnei kōrero.',
+    },
+  },
   // --- knowledge citation-note fragments (agent/tools/helpers.ts) ----------
   knowledgeLowRatedCaveat: {
     base: 'other members found this unhelpful — you can flag it too with rate_answer',

@@ -72,6 +72,15 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   diagnostic. Same bundled-markdown shape as every other skill: no new tool,
   tier, or data access, and reachable only behind the existing off-by-default
   `AGENT_SKILLS_ENABLED` gate.
+- **Team project memory now speaks te reo Māori for members who've set that
+  preference.** (#1141) `project_recall`, `project_note` and `project_list`
+  were the last member-facing tool family the ongoing `mi`-preference sweep
+  hadn't reached — every other self-service and lookup tool already honours a
+  standing te reo Māori preference, but a team's shared project notes stayed
+  English-only regardless. The five replies these tools can send (no match /
+  no accessible project, invalid project, rate-limited, note saved, and no
+  projects here) now render in te reo Māori for a caller with that standing
+  preference, and are byte-identical to before for everyone else.
 
 ## 2026-08-24
 
