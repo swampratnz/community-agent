@@ -37,6 +37,7 @@ export const ENABLED_SKILLS = [
   'mcp-server-design',
   'eval-and-testing-design',
   'tool-use-and-structured-output-design',
+  'agent-security-and-untrusted-input-design',
 ] as const;
 
 /**
