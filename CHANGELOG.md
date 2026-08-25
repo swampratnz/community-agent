@@ -59,6 +59,18 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   as worked examples. Same bundled-markdown shape as every other skill: no
   new tool, tier, or data access, reachable only behind the existing
   off-by-default `AGENT_SKILLS_ENABLED` gate.
+- **Contributing or withdrawing a knowledge tip now honours a standing te reo
+  Māori preference.** (#1155) `list_knowledge_topics` and `most_helpful_knowledge`
+  already rendered bilingually for a member with a stored `mi` preference
+  (`set_language_preference`), but `suggest_knowledge` and
+  `withdraw_knowledge_tip` — this file's two *write*-path tools — always
+  replied in English, switching a `mi`-preference member back to English mid-
+  conversation right on the community's highest-value contribution tools. All
+  six reply branches (the dedup bounce, the daily rate-limit refusal, the
+  correction-match and plain-queued confirmations, and both
+  `withdraw_knowledge_tip` outcomes) now read the caller's own stored
+  preference and render the `mi` variant. No new tool, tier, table, or column;
+  the English default is byte-identical to before.
 
 ## 2026-08-25
 
