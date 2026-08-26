@@ -85,6 +85,7 @@ const {
   formatMostHelpfulKnowledge,
   formatMutedMembersList,
   formatBlockedMembersList,
+  formatTopKnowledgeList,
   formatRequestProjectConnectionText,
   formatSetHelperAvailabilityText,
   formatShareProjectText,
@@ -137,11 +138,13 @@ const {
   formatRateAnswerText,
   formatRequestHumanHelpText,
   formatSuggestImprovementText,
+  TOP_KNOWLEDGE_FETCH_CAP,
 } = await import('../src/module/agent/tools.js');
 const { reserveVoiceTranscriptionSlot } = await import('@swampratnz/agent-base/agent/rateReservers.js');
 const { filterOutbound } = await import('@swampratnz/agent-base/agent/outbound.js');
 const {
   MODERATION_ACTION_KINDS,
+  listKnowledge,
   saveKnowledge,
   createKnowledgeTip,
   createSuggestion,
@@ -4479,8 +4482,14 @@ test(
     // `mutedlist` (issue #1114) is the second admin-tier exception, same
     // reasoning as `reviewqueue` — its discovery line lives in the
     // `whatsappAdminTextCommands` notice instead, asserted separately below.
-    // `blockedlist` (issue #1145) is the third, same reasoning.
-    const WHATSAPP_DISCOVERY_EXEMPT_COMMANDS: readonly string[] = ['reviewqueue', 'mutedlist', 'blockedlist'];
+    // `blockedlist` (issue #1145) is the third, same reasoning. `topknowledge`
+    // (issue #1165) is the fourth, same reasoning.
+    const WHATSAPP_DISCOVERY_EXEMPT_COMMANDS: readonly string[] = [
+      'reviewqueue',
+      'mutedlist',
+      'blockedlist',
+      'topknowledge',
+    ];
 
     const original = config.behaviour.whatsappTextCommandsEnabled;
     try {
@@ -4893,6 +4902,125 @@ test(
         superAdminReply,
         /!blockedlist/,
         'with the flag off, !blockedlist must not be mentioned even for a super_admin-tier WhatsApp caller',
+      );
+    } finally {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    }
+  },
+);
+
+// --- issue #1165: !topknowledge discovery for admin-tier WhatsApp callers,
+// the same whatsappAdminTextCommands notice !reviewqueue (#1097)/!mutedlist
+// (#1114)/!blockedlist (#1145) discover through, appended in the same diff
+// rather than needing a follow-up issue.
+
+test(
+  'community_info/formatCommunityInfoText mention !topknowledge for admin- and super_admin-tier WhatsApp ' +
+    'callers with whatsappTextCommandsEnabled on, in both the default/en and mi language variants (issue ' +
+    '#1165 acceptance criterion 6)',
+  { skip },
+  async () => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    try {
+      config.behaviour.whatsappTextCommandsEnabled = true;
+
+      const enAdmin = `${RUN}-info-admin-topknowledge-en`;
+      const enReply = (await communityInfoHandler('admin', 'whatsapp', enAdmin)).content[0]?.text ?? '';
+      assert.match(
+        enReply,
+        /!topknowledge/,
+        'an admin-tier WhatsApp caller must be told about !topknowledge',
+      );
+
+      const miAdmin = `${RUN}-info-admin-topknowledge-mi`;
+      await setLanguagePreferenceHandler({ platform: 'whatsapp', userId: miAdmin }).handler({
+        language: 'mi',
+      });
+      const miReply = (await communityInfoHandler('admin', 'whatsapp', miAdmin)).content[0]?.text ?? '';
+      assert.match(
+        miReply,
+        /!topknowledge/,
+        "an admin-tier WhatsApp caller with a 'mi' preference must also be told about !topknowledge",
+      );
+
+      const enSuperAdmin = `${RUN}-info-super-admin-topknowledge-en`;
+      const superAdminReply =
+        (await communityInfoHandler('super_admin', 'whatsapp', enSuperAdmin)).content[0]?.text ?? '';
+      assert.match(
+        superAdminReply,
+        /!topknowledge/,
+        'a super_admin-tier WhatsApp caller must be told about !topknowledge',
+      );
+
+      assert.equal(
+        await formatCommunityInfoText('admin', 'whatsapp', enAdmin),
+        enReply,
+        "formatCommunityInfoText's own output must match the tool handler's (single source of truth)",
+      );
+    } finally {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    }
+  },
+);
+
+test(
+  'SECURITY: !topknowledge is never mentioned in community_info/formatCommunityInfoText output for a member ' +
+    'or guest WhatsApp caller (whatsappTextCommandsEnabled on), nor for a Discord caller at any tier (issue ' +
+    '#1165 acceptance criterion 6)',
+  async () => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    try {
+      config.behaviour.whatsappTextCommandsEnabled = true;
+
+      const memberReply = (await communityInfoHandler('member', 'whatsapp')).content[0]?.text ?? '';
+      assert.doesNotMatch(
+        memberReply,
+        /!topknowledge/,
+        'a member-tier WhatsApp caller must never be told about the admin-only !topknowledge shortcut',
+      );
+
+      const guestReply = (await communityInfoHandler('guest', 'whatsapp')).content[0]?.text ?? '';
+      assert.doesNotMatch(
+        guestReply,
+        /!topknowledge/,
+        'a guest-tier WhatsApp caller must never be told about the admin-only !topknowledge shortcut',
+      );
+
+      const roles = ['guest', 'member', 'admin', 'super_admin'] as const;
+      for (const role of roles) {
+        const discordReply = (await communityInfoHandler(role, 'discord')).content[0]?.text ?? '';
+        assert.doesNotMatch(
+          discordReply,
+          /!topknowledge/,
+          `a Discord caller (${role}) must never see the WhatsApp-only !topknowledge shortcut block — ` +
+            'Discord already surfaces /topknowledge via its own slash-command autocomplete',
+        );
+      }
+    } finally {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    }
+  },
+);
+
+test(
+  'community_info/formatCommunityInfoText output for an admin caller is byte-identical to before issue ' +
+    '#1165 when whatsappTextCommandsEnabled is off (issue #1165 acceptance criterion 5)',
+  async () => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    try {
+      config.behaviour.whatsappTextCommandsEnabled = false;
+      const adminReply = (await communityInfoHandler('admin', 'whatsapp')).content[0]?.text ?? '';
+      assert.doesNotMatch(
+        adminReply,
+        /!topknowledge/,
+        'with the flag off, !topknowledge must not be mentioned even for an admin-tier WhatsApp caller',
+      );
+
+      const superAdminReply = (await communityInfoHandler('super_admin', 'whatsapp')).content[0]?.text ?? '';
+      assert.doesNotMatch(
+        superAdminReply,
+        /!topknowledge/,
+        'with the flag off, !topknowledge must not be mentioned even for a super_admin-tier WhatsApp caller',
       );
     } finally {
       config.behaviour.whatsappTextCommandsEnabled = original;
@@ -8427,6 +8555,88 @@ test(
     } finally {
       await unblockUser(platform, withReason);
       await unblockUser(platform, withoutReason);
+    }
+  },
+);
+
+test(
+  'anti-drift: list_top_knowledge and the !topknowledge shortcut render byte-identical text for the same DB ' +
+    'rows, both via the shared formatTopKnowledgeList (issue #1165 acceptance criterion 9)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-topknowledge-drift`;
+    const { id: highId } = await saveKnowledge({
+      title: 'topknowledge-drift-high',
+      content: 'The most-retrieved entry in this drift-test scope.',
+      scope,
+    });
+    await recordKnowledgeRetrieval([highId]);
+    const { id: lowId } = await saveKnowledge({
+      title: 'topknowledge-drift-low',
+      content: 'A never-retrieved entry in the same drift-test scope.',
+      scope,
+    });
+
+    try {
+      const adapter = stubAdapter(async () => {});
+      const caller = {
+        platform: 'discord' as const,
+        userId: 'admin-1',
+        userName: 'Admin',
+        role: 'admin' as const,
+        conversationId: 'convo-topknowledge-drift',
+      };
+      const server = buildToolServer(caller, adapter);
+      const registeredTool = (
+        server.instance as unknown as {
+          _registeredTools: Record<
+            string,
+            { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+          >;
+        }
+      )._registeredTools['list_top_knowledge'];
+
+      const entries = await listKnowledge({ scope, offset: 0, limit: TOP_KNOWLEDGE_FETCH_CAP });
+      const ranked = rankKnowledgeByRetrieval(entries, 10);
+      const expected = formatTopKnowledgeList(ranked);
+      assert.match(expected, new RegExp(`#${highId}\\b`));
+
+      const toolResult = await registeredTool.handler({ scope });
+      assert.equal(
+        toolResult.content[0]?.text,
+        expected,
+        'list_top_knowledge must match the shared formatTopKnowledgeList output',
+      );
+
+      const topknowledgeCommand = COMMUNITY_COMMANDS.find((c) => c.name === 'topknowledge');
+      assert.ok(topknowledgeCommand?.whatsapp, 'the topknowledge command must define a whatsapp handler');
+      // The shortcut always uses an unset scope (every scope), so — unlike
+      // the isolated scoped comparison above — this reads the FULL shared
+      // `knowledge` table, which other concurrently-running test files also
+      // write to. Comparing against a back-to-back tool-handler call (same
+      // unset scope) rather than a separately reconstructed snapshot keeps
+      // this a true parity check between the two consumer paths without
+      // widening the race window with a third independent read.
+      const shortcutResult = await topknowledgeCommand.whatsapp(
+        '!topknowledge',
+        {
+          platform: 'discord',
+          conversationId: 'convo-topknowledge-drift-shortcut',
+          userId: 'admin-topknowledge-drift',
+          userName: 'Admin',
+          text: '!topknowledge',
+        } as never,
+        'admin',
+        {} as never,
+      );
+      const unscopedToolResult = await registeredTool.handler({});
+      assert.equal(
+        shortcutResult,
+        unscopedToolResult.content[0]?.text,
+        '!topknowledge must render byte-identical text to list_top_knowledge (unset scope) for the same rows',
+      );
+    } finally {
+      await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[highId, lowId]]);
     }
   },
 );

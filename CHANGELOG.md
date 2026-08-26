@@ -71,6 +71,18 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   `withdraw_knowledge_tip` outcomes) now read the caller's own stored
   preference and render the `mi` variant. No new tool, tier, table, or column;
   the English default is byte-identical to before.
+- **New admin shortcut: `!topknowledge`/`/topknowledge`, a zero-model-call way
+  to see which knowledge entries are actually earning their keep.** (#1165)
+  `list_top_knowledge` (#1024) — the positive-signal admin lens ranking
+  knowledge entries by retrieval count, most relied-on first — was the last
+  zero-argument-shaped admin lookup still costing a full paid agent turn,
+  after `!reviewqueue` (#1095), `!mutedlist` (#1114), and `!blockedlist`
+  (#1145). Unlike the member-tier `!kbhelpful` (#1087), which is fixed to
+  `scope: 'global'`, `!topknowledge` mirrors the tool's own unset-scope
+  default and can surface channel/platform-scoped entries too. Admin-tier
+  only on both platforms; no new tool, table, or data access — it reuses
+  `list_top_knowledge`'s own repository call and renderer verbatim, so the
+  shortcut can never diverge from the tool it mirrors.
 
 ### Fixed
 - **The "no guidelines set" and "nothing to report" replies now honour a

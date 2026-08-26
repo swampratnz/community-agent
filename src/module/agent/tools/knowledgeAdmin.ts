@@ -25,6 +25,7 @@ import {
 import {
   formatFoundKnowledge,
   formatKnowledgeEntryLine,
+  formatTopKnowledgeList,
   rankKnowledgeByRetrieval,
   resolveSanitizedLabel,
   SUGGESTION_RESOLUTION_ECHO_CHARS,
@@ -38,8 +39,11 @@ import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 // this community's expected KB size (low hundreds of entries per the
 // proposal), so a single bounded fetch covers the whole scope to rank over —
 // never `args.limit`, which would only rank an arbitrary first page. See the
-// comment at the tool's own definition below.
-const TOP_KNOWLEDGE_FETCH_CAP = 500;
+// comment at the tool's own definition below. Exported (issue #1165) and
+// re-exported via agent/tools.ts, mirroring MOST_HELPFUL_KNOWLEDGE_FETCH_CAP,
+// so the `!topknowledge`/`/topknowledge` admin shortcut references this same
+// constant rather than a duplicated literal.
+export const TOP_KNOWLEDGE_FETCH_CAP = 500;
 
 export const knowledgeAdminTools = [
   defineTool({
@@ -179,13 +183,7 @@ export const knowledgeAdminTools = [
         limit: TOP_KNOWLEDGE_FETCH_CAP,
       });
       const ranked = rankKnowledgeByRetrieval(entries, limit);
-      if (ranked.length === 0) return text('No knowledge entries found.');
-      return text(
-        untrusted(
-          'Top knowledge entries by retrieval count',
-          ranked.map(formatKnowledgeEntryLine).join('\n'),
-        ),
-      );
+      return text(formatTopKnowledgeList(ranked));
     },
   }),
 

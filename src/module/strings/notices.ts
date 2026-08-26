@@ -666,12 +666,15 @@ const NOTICE_ENTRIES = {
     base:
       '- `!reviewqueue` — access-request/suggestion/knowledge-candidate/appeal backlog at a glance\n' +
       '- `!mutedlist` — currently muted members, by identity\n' +
-      '- `!blockedlist` — currently blocked users, by identity',
+      '- `!blockedlist` — currently blocked users, by identity\n' +
+      '- `!topknowledge` — knowledge entries ranked by retrieval count, most relied-on first',
     language: {
       mi:
         '- `!reviewqueue` — te whakarāpopototanga o ngā ratonga arotake e rima i te tirohanga kotahi\n' +
         '- `!mutedlist` — ngā mema kua whakarahua i tēnei wā, mā te tuakiri\n' +
-        '- `!blockedlist` — ngā kaiwhakamahi kua ārairia i tēnei wā, mā te tuakiri',
+        '- `!blockedlist` — ngā kaiwhakamahi kua ārairia i tēnei wā, mā te tuakiri\n' +
+        '- `!topknowledge` — ngā whiwhinga mōhiotanga kua raupapatia mā te tatauranga tikiake, ko te mea ' +
+        'whakawhirinaki nuitia i mua',
     },
   },
   // --- member digest section labels (memberDigest.ts) ----------------------

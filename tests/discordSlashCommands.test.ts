@@ -65,10 +65,12 @@ const {
   formatMostHelpfulKnowledge,
   formatMutedMembersList,
   formatReviewQueueSummary,
+  formatTopKnowledgeList,
   formatWhoIsIntoEmptyText,
   KNOWLEDGE_CONFLICT_CAVEAT_TEXT,
   MOST_HELPFUL_KNOWLEDGE_FETCH_CAP,
   rankKnowledgeByRetrieval,
+  TOP_KNOWLEDGE_FETCH_CAP,
   buildToolServer,
 } = await import('../src/module/agent/tools.js');
 const { listKnowledge } = await import('@swampratnz/agent-base/storage/repository.js');
@@ -567,6 +569,7 @@ test('with DISCORD_SLASH_COMMANDS_ENABLED=true, all commands are registered guil
     'projects',
     'reviewqueue',
     'status',
+    'topknowledge',
     'warnings',
     'whois',
   ]);
@@ -587,7 +590,7 @@ test("a slash-command registration failure is caught and logged, never thrown, m
   assert.ok(warnLog.mock.calls.length >= 1, 'a registration failure must be logged, not swallowed silently');
 });
 
-test('buildSlashCommands defines exactly the sixteen approved read-only commands, each with its expected required-ness', () => {
+test('buildSlashCommands defines exactly the seventeen approved read-only commands, each with its expected required-ness', () => {
   const commands = buildSlashCommands();
   const byName = new Map(commands.map((c) => [c.name, c]));
   assert.deepEqual([...byName.keys()].sort(), [
@@ -605,6 +608,7 @@ test('buildSlashCommands defines exactly the sixteen approved read-only commands
     'projects',
     'reviewqueue',
     'status',
+    'topknowledge',
     'warnings',
     'whois',
   ]);
@@ -703,6 +707,12 @@ test('buildSlashCommands defines exactly the sixteen approved read-only commands
     [],
     "/blockedlist takes no options — always list_blocked_members's own fixed-argument read, admin-tier only " +
       '(issue #1145)',
+  );
+  assert.deepEqual(
+    (byName.get('topknowledge') as { options?: unknown[] }).options ?? [],
+    [],
+    "/topknowledge takes no options — always list_top_knowledge's own default arguments (unset scope, " +
+      'limit 10), admin-tier only (issue #1165)',
   );
 });
 
@@ -2656,6 +2666,161 @@ test('/blockedlist replies ephemerally, deferring before its DB round trip', asy
   mockPool(t, { memberRole: 'admin', blockedUserRows: [] });
   const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction, replies, order } = fakeInteraction({ commandName: 'blockedlist', userId: 'admin-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies[0].ephemeral, true);
+  assert.deepEqual(order, ['deferReply', 'editReply']);
+});
+
+// --- Issue #1165: /topknowledge (the fourth admin-tier slash command) -------
+
+test(
+  "/topknowledge renders formatTopKnowledgeList's output for the same rows listKnowledge returns, ranked by " +
+    'rankKnowledgeByRetrieval(entries, 10) — the exact list_top_knowledge default arguments (issue #1165 ' +
+    'acceptance criteria 2, 3)',
+  async (t) => {
+    mockPool(t, {
+      memberRole: 'admin',
+      // Shared with /kbhelpful's mock branch (both queries hit the same
+      // `retrieval_count` + `FROM knowledge` shape) — see mockPool's own
+      // comment on this option.
+      mostHelpfulKnowledgeRows: [
+        {
+          id: 1,
+          scope: 'global',
+          title: 'Low count',
+          content: 'ENTRY_LOW',
+          created_by_role: 'admin',
+          updated_at: new Date(),
+          retrieval_count: 2,
+          last_retrieved_at: new Date(),
+        },
+        {
+          id: 2,
+          scope: 'discord',
+          title: 'High count',
+          content: 'ENTRY_HIGH',
+          created_by_role: 'admin',
+          updated_at: new Date(),
+          retrieval_count: 9,
+          last_retrieved_at: new Date(),
+        },
+      ],
+    });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'topknowledge', userId: 'admin-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    const entries = await listKnowledge({ scope: undefined, offset: 0, limit: TOP_KNOWLEDGE_FETCH_CAP });
+    const expected = formatTopKnowledgeList(rankKnowledgeByRetrieval(entries, 10));
+    assert.equal(replies[0].content, stripEmDashes(expected));
+    assert.ok(
+      replies[0].content.indexOf('ENTRY_HIGH') < replies[0].content.indexOf('ENTRY_LOW'),
+      'the highest-retrieval entry must rank first',
+    );
+    assert.match(
+      replies[0].content,
+      /ENTRY_HIGH/,
+      'a non-global-scoped entry must appear — /topknowledge, unlike /kbhelpful, never narrows to scope: global',
+    );
+  },
+);
+
+test(
+  '/topknowledge renders "No knowledge entries found." when nothing qualifies (issue #1165 acceptance ' +
+    'criterion 4)',
+  async (t) => {
+    mockPool(t, { memberRole: 'admin', mostHelpfulKnowledgeRows: [] });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'topknowledge', userId: 'admin-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies[0].content, 'No knowledge entries found.');
+  },
+);
+
+test(
+  'SECURITY: a guest caller is rejected on /topknowledge without any knowledge repository read ever being ' +
+    'invoked (issue #1165 acceptance criterion 7)',
+  async (t) => {
+    const calls = mockPool(t, {
+      memberRole: null,
+      mostHelpfulKnowledgeRows: [{ id: 1, title: 'leak', content: 'leak' }],
+    });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'topknowledge', userId: 'guest-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].ephemeral, true);
+    assert.match(replies[0].content, /don't have access/i);
+    assert.ok(
+      !calls.some((c) => c.sql.includes('retrieval_count') && c.sql.includes('FROM knowledge')),
+      'no knowledge repository read must run for a rejected caller',
+    );
+  },
+);
+
+test(
+  "SECURITY: a member-tier caller is rejected on /topknowledge — the same atLeast(role, 'admin') gate as " +
+    '/reviewqueue/mutedlist/blockedlist, not just the member-tier toolsForRole check every other command uses ' +
+    '(issue #1165 acceptance criterion 7)',
+  async (t) => {
+    const calls = mockPool(t, {
+      memberRole: 'member',
+      mostHelpfulKnowledgeRows: [{ id: 1, title: 'leak', content: 'leak' }],
+    });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'topknowledge', userId: 'member-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].ephemeral, true);
+    assert.match(
+      replies[0].content,
+      /don't have access/i,
+      'a member-tier caller must be denied, not just a guest',
+    );
+    assert.ok(
+      !calls.some((c) => c.sql.includes('retrieval_count') && c.sql.includes('FROM knowledge')),
+      'no knowledge repository read must run for a member-tier caller',
+    );
+  },
+);
+
+test("a successful /topknowledge invocation calls recordShortcutHit('slash_command') exactly once (issue #1165)", async (t) => {
+  const calls = mockPool(t, { memberRole: 'admin', mostHelpfulKnowledgeRows: [] });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction } = fakeInteraction({ commandName: 'topknowledge', userId: 'admin-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(shortcutHitCalls(calls).length, 1, '/topknowledge must record exactly one slash_command hit');
+});
+
+test('SECURITY: recordShortcutHit is never called on the NOT_AUTHORIZED_TEXT branch for /topknowledge (issue #1165)', async (t) => {
+  const calls = mockPool(t, { memberRole: null });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({ commandName: 'topknowledge', userId: 'guest-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.match(replies[0].content, /don't have access/i, 'sanity check: /topknowledge was actually denied');
+  assert.equal(shortcutHitCalls(calls).length, 0, 'an auth-denied reply must never record a shortcut hit');
+});
+
+test('/topknowledge replies ephemerally, deferring before its DB round trip', async (t) => {
+  mockPool(t, { memberRole: 'admin', mostHelpfulKnowledgeRows: [] });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies, order } = fakeInteraction({
+    commandName: 'topknowledge',
+    userId: 'admin-1',
+  });
 
   await handleInteraction(interaction as never, adapterDeps(adapter));
 

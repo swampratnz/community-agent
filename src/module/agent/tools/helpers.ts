@@ -1100,6 +1100,25 @@ export function formatBlockedMembersList(rows: readonly BlockedUserRow[]): strin
   );
 }
 
+/**
+ * Pure renderer shared by the `list_top_knowledge` tool handler and the
+ * `!topknowledge`/`/topknowledge` admin shortcut (issue #1165), hoisted
+ * verbatim out of the tool handler's own inline rendering so the two call
+ * sites can never drift — same reasoning as `formatMutedMembersList`/
+ * `formatBlockedMembersList` above. Empty input renders the tool's own fixed
+ * "No knowledge entries found." string; a non-empty ranked list renders each
+ * row through `formatKnowledgeEntryLine` (the same per-row renderer
+ * `list_knowledge` uses) inside the same `untrusted()` quarantine the tool
+ * handler already applied.
+ */
+export function formatTopKnowledgeList(ranked: readonly KnowledgeEntry[]): string {
+  if (ranked.length === 0) return 'No knowledge entries found.';
+  return untrusted(
+    'Top knowledge entries by retrieval count',
+    ranked.map(formatKnowledgeEntryLine).join('\n'),
+  );
+}
+
 /** One entry in the `feature_flags` allowlist (issue #559). */
 export interface FeatureFlagEntry {
   /** Exact `X_ENABLED` env var identifier, as it appears in config.ts — lets the anti-drift test tie this allowlist back to the real env schema without ever touching runtime `config` shape reflection. */
