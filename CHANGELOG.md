@@ -25,6 +25,34 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #1122 #1123 #1132
 -->
 
+## 2026-08-27
+
+### Added
+- **New Agent Skill: `multi-agent-and-subagent-orchestration-design`, for
+  members deciding whether to split a Claude/API system into multiple
+  agents.** (#1173) "Should this be one agent with more tools, or an
+  orchestrator plus subagents?", "how much of the conversation should my
+  orchestrator hand a worker agent?", "my subagents keep clobbering each
+  other's state", "is it worth running N agents in parallel for this?" were a
+  distinct, recurring builder question none of the fifteen existing skills
+  covered — `agent-architecture-review` critiques an already-built,
+  already-pasted pipeline, too broad and too late-stage for the from-scratch
+  "should I even split this" decision. The new skill first hands off
+  anything out of its own scope (an already-pasted design to
+  `agent-architecture-review`, a single tool-call/schema decision to
+  `tool-use-and-structured-output-design`, an MCP server question to
+  `mcp-server-design`, post-ship output evaluation to
+  `eval-and-testing-design`, deep cost/latency tuning to
+  `api-cost-and-latency`), then walks whether a split is even justified (the
+  four pressures: context-window pressure, genuine specialisation, real
+  parallelism, or isolating a risky/untrusted sub-task), the decomposition
+  boundary, handoff design, coordination, verification of a subagent's
+  output, and fan-out cost as a branch-by-lever decision tree. It teaches
+  general, publicly-documented patterns only, with no reference to this
+  deployment's own internals as worked examples. Same bundled-markdown shape
+  as every other skill: no new tool, tier, or data access, reachable only
+  behind the existing off-by-default `AGENT_SKILLS_ENABLED` gate.
+
 ## 2026-08-26
 
 ### Added
