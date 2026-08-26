@@ -38,6 +38,7 @@ export const ENABLED_SKILLS = [
   'eval-and-testing-design',
   'tool-use-and-structured-output-design',
   'agent-security-and-untrusted-input-design',
+  'multi-agent-and-subagent-orchestration-design',
 ] as const;
 
 /**
