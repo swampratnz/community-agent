@@ -3169,7 +3169,7 @@ test('/kb still replies with the knowledgeSearchEmpty notice when both semantic 
 // (formatKnowledgeSearchResults), so it must pick up the same nudge and the
 // same mi variant a caller's stored language_preference already unlocks for
 // this function's other lines (issue #1038).
-test('/kb\'s zero-hit reply nudges the asker toward suggest_knowledge, in te reo Māori when the caller has a stored \'mi\' language preference (issue #1180 acceptance criteria 1, 2, 3)', async (t) => {
+test("/kb's zero-hit reply nudges the asker toward suggest_knowledge, in te reo Māori when the caller has a stored 'mi' language preference (issue #1180 acceptance criteria 1, 2, 3)", async (t) => {
   const knowledgeRows: PoolRow[] = [];
   const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
 

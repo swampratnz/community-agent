@@ -12060,8 +12060,11 @@ test('formatKnowledgeSearchResults returns "no matching" for an empty hit list (
   assert.equal(formatKnowledgeSearchResults([]), KNOWLEDGE_SEARCH_EMPTY_TEXT);
 });
 
-test('formatKnowledgeSearchResults renders the knowledgeSearchEmpty nudge in te reo Māori when lang is \'mi\' (issue #1180 acceptance criterion 1)', () => {
-  assert.equal(formatKnowledgeSearchResults([], undefined, undefined, false, undefined, 'mi'), KNOWLEDGE_SEARCH_EMPTY_TEXT_MI);
+test("formatKnowledgeSearchResults renders the knowledgeSearchEmpty nudge in te reo Māori when lang is 'mi' (issue #1180 acceptance criterion 1)", () => {
+  assert.equal(
+    formatKnowledgeSearchResults([], undefined, undefined, false, undefined, 'mi'),
+    KNOWLEDGE_SEARCH_EMPTY_TEXT_MI,
+  );
   assert.notEqual(KNOWLEDGE_SEARCH_EMPTY_TEXT_MI, KNOWLEDGE_SEARCH_EMPTY_TEXT);
 });
 
@@ -12928,7 +12931,9 @@ test(
       server.instance as unknown as {
         _registeredTools: Record<
           string,
-          { handler: (args: { query: string }) => Promise<{ content: Array<{ type: string; text: string }> }> }
+          {
+            handler: (args: { query: string }) => Promise<{ content: Array<{ type: string; text: string }> }>;
+          }
         >;
       }
     )._registeredTools['knowledge_search'];
@@ -13557,10 +13562,7 @@ test(
 );
 
 test('formatKnowledgeSearchResults never appends the conflict caveat when there are no relevant hits, even if hasConflict is (incorrectly) passed true (issue #389)', () => {
-  assert.equal(
-    formatKnowledgeSearchResults([], undefined, undefined, true),
-    KNOWLEDGE_SEARCH_EMPTY_TEXT,
-  );
+  assert.equal(formatKnowledgeSearchResults([], undefined, undefined, true), KNOWLEDGE_SEARCH_EMPTY_TEXT);
 });
 
 test('formatKnowledgeSearchResults omits the conflict caveat when hasConflict is false, even with multiple relevant hits (issue #389)', () => {
