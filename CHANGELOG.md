@@ -95,6 +95,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   language preference for the adjacent branch. Both fallbacks now render
   through the same notice pack as the content they sit beside. No new tool,
   tier, or data read; the English default is byte-identical to before.
+- **`most_helpful_knowledge` (and its `/kbhelpful`/`!kbhelpful` shortcuts) now
+  warns when two of the entries it ranks may disagree.** (#1167) Every other
+  knowledge-serving surface — `knowledge_search` (#389) and the `/kb`
+  shortcut (#918) — already appended a caveat when it was about to show two
+  entries that might conflict; this ranked "most trusted" surface never did,
+  which read as the bot endorsing both. All three call sites now compute the
+  same conflict check the search path already pays for and show the same
+  caveat, fail-safe on a lookup error (never blocks or errors the reply).
 
 ## 2026-08-25
 

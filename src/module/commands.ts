@@ -12,6 +12,7 @@ import {
   getLanguagePreference,
   getMyDataSummary,
   getPublishedInterestsForOwners,
+  hasConflictAmongIds,
   listBlockedUsers,
   listKnowledge,
   listKnowledgeTopics,
@@ -385,8 +386,19 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
               return new Set<number>();
             })
           : new Set<number>();
+      // Conflict caveat (issue #1167), same gating/fail-safe shape as the
+      // tool handler's identical lookup (knowledgeMember.ts) — kept in
+      // parity so this zero-model-call shortcut never diverges from the tool
+      // it mirrors (issue #1087's invariant).
+      const hasConflict =
+        rankedIds.length >= 2
+          ? await hasConflictAmongIds(rankedIds).catch((err) => {
+              logger.warn({ err }, 'Knowledge conflict check failed; omitting the conflict note');
+              return false;
+            })
+          : false;
       const language = await deps.getLangPref(msg.platform, msg.userId);
-      return formatMostHelpfulKnowledge(ranked, language, lowRatedIds);
+      return formatMostHelpfulKnowledge(ranked, language, lowRatedIds, hasConflict);
     },
   },
   {

@@ -613,8 +613,19 @@ async function handleKbHelpful(
           return new Set<number>();
         })
       : new Set<number>();
+  // Conflict caveat (issue #1167), same gating/fail-safe shape as /kb's
+  // identical lookup and the tool handler's (knowledgeMember.ts) — kept in
+  // parity so this zero-model-call shortcut never diverges from the tool it
+  // mirrors (issue #1087's invariant).
+  const hasConflict =
+    rankedIds.length >= 2
+      ? await hasConflictAmongIds(rankedIds).catch((err) => {
+          logger.warn({ err }, 'Knowledge conflict check failed; omitting the conflict note');
+          return false;
+        })
+      : false;
   const language = await getLanguagePreference('discord', interaction.user.id);
-  const message = formatMostHelpfulKnowledge(ranked, language, lowRatedIds);
+  const message = formatMostHelpfulKnowledge(ranked, language, lowRatedIds, hasConflict);
   recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
   await replyEphemeral(interaction, message, deps);
 }

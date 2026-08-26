@@ -2219,6 +2219,114 @@ test('/kbhelpful issues NO low-rated-lookup query when KNOWLEDGE_LOW_RATED_CAVEA
   );
 });
 
+// --- Issue #1167: /kbhelpful conflict caveat parity --------------------------
+
+test('SECURITY: /kbhelpful reply appends the conflict caveat exactly once when hasConflictAmongIds resolves true, byte-identical to formatMostHelpfulKnowledge(..., hasConflict)', async (t) => {
+  const mostHelpfulKnowledgeRows: PoolRow[] = [
+    {
+      id: 1,
+      scope: 'global',
+      title: 'Entry one',
+      content: 'CONFLICT_KBHELPFUL_ONE',
+      created_by_role: 'admin',
+      updated_at: new Date(),
+      retrieval_count: 9,
+      last_retrieved_at: new Date(),
+    },
+    {
+      id: 2,
+      scope: 'global',
+      title: 'Entry two',
+      content: 'CONFLICT_KBHELPFUL_TWO',
+      created_by_role: 'admin',
+      updated_at: new Date(),
+      retrieval_count: 4,
+      last_retrieved_at: new Date(),
+    },
+  ];
+  mockPool(t, { memberRole: 'member', mostHelpfulKnowledgeRows, conflictExists: true });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({ commandName: 'kbhelpful', userId: 'member-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  const escapedCaveat = stripEmDashes(KNOWLEDGE_CONFLICT_CAVEAT_TEXT).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  assert.equal(
+    (replies[0].content.match(new RegExp(escapedCaveat, 'g')) ?? []).length,
+    1,
+    'the caveat appears exactly once, never per-entry',
+  );
+
+  const entries = await listKnowledge({
+    scope: 'global',
+    offset: 0,
+    limit: MOST_HELPFUL_KNOWLEDGE_FETCH_CAP,
+  });
+  const expected = formatMostHelpfulKnowledge(rankKnowledgeByRetrieval(entries, 10), 'auto', new Set(), true);
+  assert.equal(replies[0].content, stripEmDashes(expected));
+});
+
+test('SECURITY: /kbhelpful still replies successfully with the entries and no conflict caveat when hasConflictAmongIds rejects (fail-safe, issue #1167 acceptance criterion 5)', async (t) => {
+  const warnLog = t.mock.method(logger, 'warn', () => {});
+
+  t.mock.method(pool, 'query', (async (sql: string) => {
+    if (sql.includes('SELECT role FROM community_users')) {
+      return { rows: [{ role: 'member' }], rowCount: 0 };
+    }
+    if (sql.includes('JOIN knowledge b')) {
+      throw new Error('conflict lookup unavailable');
+    }
+    if (sql.includes('retrieval_count') && sql.includes('FROM knowledge')) {
+      return {
+        rows: [
+          {
+            id: 1,
+            scope: 'global',
+            title: 'Entry one',
+            content: 'STILL_SERVED_KBHELPFUL_CONFLICT_1',
+            created_by_role: 'admin',
+            updated_at: new Date(),
+            retrieval_count: 5,
+            last_retrieved_at: new Date(),
+          },
+          {
+            id: 2,
+            scope: 'global',
+            title: 'Entry two',
+            content: 'STILL_SERVED_KBHELPFUL_CONFLICT_2',
+            created_by_role: 'admin',
+            updated_at: new Date(),
+            retrieval_count: 3,
+            last_retrieved_at: new Date(),
+          },
+        ],
+        rowCount: 0,
+      };
+    }
+    return { rows: [], rowCount: 0 };
+  }) as typeof pool.query);
+
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({ commandName: 'kbhelpful', userId: 'member-1' });
+
+  await assert.doesNotReject(() => handleInteraction(interaction as never, adapterDeps(adapter)));
+
+  assert.equal(replies.length, 1);
+  assert.ok(
+    replies[0].content.includes('STILL_SERVED_KBHELPFUL_CONFLICT_1'),
+    'the entries must still be served',
+  );
+  assert.ok(
+    replies[0].content.includes('STILL_SERVED_KBHELPFUL_CONFLICT_2'),
+    'the entries must still be served',
+  );
+  assert.ok(
+    !replies[0].content.includes(stripEmDashes(KNOWLEDGE_CONFLICT_CAVEAT_TEXT)),
+    'a lookup failure must degrade to no conflict caveat, never an error',
+  );
+  assert.ok(warnLog.mock.calls.length >= 1, 'the lookup failure must be logged, not silently swallowed');
+});
+
 // --- Issue #1095: /reviewqueue (the first admin-tier slash command) ---------
 
 test(
