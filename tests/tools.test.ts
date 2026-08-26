@@ -141,6 +141,7 @@ const {
   formatSuggestImprovementText,
   TOP_KNOWLEDGE_FETCH_CAP,
   KNOWLEDGE_FIX_NOTIFY_CAP,
+  KNOWLEDGE_FIX_NOTIFY_FETCH_CAP,
 } = await import('../src/module/agent/tools.js');
 const { reserveVoiceTranscriptionSlot } = await import('@swampratnz/agent-base/agent/rateReservers.js');
 const { filterOutbound } = await import('@swampratnz/agent-base/agent/outbound.js');
@@ -25231,6 +25232,74 @@ test(
     await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [raters]);
     await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
     await pool.query(`DELETE FROM knowledge WHERE id = $1`, [entryId]);
+  },
+);
+
+// KNOWN LIMITATION regression (flagged in PR #1170 review): collectUnhelpfulRaters
+// filters an entry's raters out of a single KNOWLEDGE_FIX_NOTIFY_FETCH_CAP-sized
+// fetch of the admin's MOST-RECENT unhelpful ratings across their WHOLE scope, not
+// a per-entry query (listAnswerFeedback has no per-entry filter, and its own
+// internal limit is already hard-clamped at 200 — see KNOWLEDGE_FIX_NOTIFY_FETCH_CAP's
+// comment in knowledgeAdmin.ts). If enough more-recent unhelpful ratings land on
+// OTHER entries in the same scope, an older entry's true rater is pushed outside
+// the fetch window and gets silently dropped — zero DMs, no log line. This test
+// proves the gap exists rather than leaving it as an unverified claim; it is
+// expected to keep passing (i.e. the crowd-out keeps happening) until an
+// agent-base change adds a per-entry filter to listAnswerFeedback.
+test(
+  "known limitation: an entry's unhelpful rater is silently dropped when >= KNOWLEDGE_FIX_NOTIFY_FETCH_CAP more-recent unhelpful ratings exist elsewhere in the admin scope (issue #1169, PR #1170 review)",
+  { skip },
+  async () => {
+    const admin = `${RUN}-kf-crowd-admin`;
+    const conversationId = `${RUN}-kf-crowd-convo`;
+    const { id: targetEntryId } = await saveKnowledge({
+      content: `${RUN} kf-crowd target entry content`,
+      title: `${RUN} kf-crowd target entry`,
+    });
+    const { id: noiseEntryId } = await saveKnowledge({
+      content: `${RUN} kf-crowd noise entry content`,
+      title: `${RUN} kf-crowd noise entry`,
+    });
+
+    // The target entry's own rater rates FIRST, so its row is the OLDEST
+    // unhelpful rating in scope.
+    const targetRater = `${RUN}-kf-crowd-target-rater`;
+    await rateKnowledgeAnswer(targetRater, conversationId, targetEntryId, false);
+
+    // Flood the same admin scope with KNOWLEDGE_FIX_NOTIFY_FETCH_CAP unhelpful
+    // ratings against a DIFFERENT entry, all strictly more recent than the
+    // target rating above — enough to fill the fetch window entirely so the
+    // target rater's older row falls outside it.
+    const noiseRaters = Array.from(
+      { length: KNOWLEDGE_FIX_NOTIFY_FETCH_CAP },
+      (_, i) => `${RUN}-kf-crowd-noise-rater-${i}`,
+    );
+    const batchSize = 20;
+    for (let i = 0; i < noiseRaters.length; i += batchSize) {
+      const batch = noiseRaters.slice(i, i + batchSize);
+      await Promise.all(
+        batch.map((rater) => rateKnowledgeAnswer(rater, conversationId, noiseEntryId, false)),
+      );
+    }
+
+    const dmCalls: string[] = [];
+    const adapter = stubAdapter(async (userId) => {
+      dmCalls.push(userId);
+    });
+    const { tools, caller } = knowledgeFixAdminHandlers(admin, conversationId, adapter);
+
+    await tools['update_knowledge'].handler({ id: targetEntryId, content: 'corrected, but crowded out' });
+    await takePendingAction('discord', caller.conversationId, caller.userId)?.execute();
+
+    assert.equal(
+      dmCalls.length,
+      0,
+      'the target rater is silently crowded out by more-recent noise elsewhere in scope — the documented gap',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [[targetRater, ...noiseRaters]]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[targetEntryId, noiseEntryId]]);
   },
 );
 

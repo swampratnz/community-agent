@@ -48,10 +48,25 @@ export const TOP_KNOWLEDGE_FETCH_CAP = 500;
 // update_knowledge/merge_knowledge's pre-edit unhelpful-rater lookup (issue
 // #1169) — the fetch cap for `listAnswerFeedback(allowed, true, ...)`, fetched
 // as a bounded superset and THEN deduped/sorted/sliced in
-// collectUnhelpfulRaters below, same "fetch wide, rank after" shape
-// list_top_knowledge uses TOP_KNOWLEDGE_FETCH_CAP for — sorting only an
-// unsorted first page would silently pick an arbitrary prefix instead of the
-// true most-recent raters.
+// collectUnhelpfulRaters below.
+//
+// KNOWN LIMITATION (flagged in PR #1170 review, not yet fixed): unlike
+// TOP_KNOWLEDGE_FETCH_CAP above — which bounds a naturally-capped catalog (the
+// KB itself) — this bounds an unbounded, ever-growing event log
+// (`answer_feedback` rows) with NO per-entry filter: `listAnswerFeedback`
+// returns the N most-recent unhelpful ratings across every entry in the
+// admin's whole scope, then this function filters down to the entry/entries
+// being fixed. 200 is already `listAnswerFeedback`'s own hard-clamped max
+// (agent-base/storage/repository/answerFeedback.ts), so it cannot be raised
+// from here. If the admin's in-scope conversations have accumulated 200+
+// more-recent unhelpful ratings on OTHER entries since this entry was last
+// flagged, its true raters fall outside the fetch window and get zero DMs —
+// silently, with no log line. Reproduced by
+// "known limitation" test below. Fixing this properly needs an agent-base
+// change (a per-entry filter on `listAnswerFeedback`, or a new
+// `listAnswerFeedbackForEntries` repository function); until that lands,
+// treat the crowd-out case as an accepted, documented v1 gap, not something
+// to silently assume away.
 export const KNOWLEDGE_FIX_NOTIFY_FETCH_CAP = 200;
 
 // Fan-out cap (issue #1169 acceptance criterion 5): the most-recent unique
@@ -70,6 +85,11 @@ export const KNOWLEDGE_FIX_NOTIFY_CAP = 10;
  * (platform, userId) so a rater who rated more than one matching row is
  * notified once, excludes the acting admin even if they rated it themselves,
  * sorted most-recent-first, and capped at KNOWLEDGE_FIX_NOTIFY_CAP.
+ *
+ * See KNOWLEDGE_FIX_NOTIFY_FETCH_CAP's own comment above for a known,
+ * documented limitation: `listAnswerFeedback` has no per-entry filter, so a
+ * rater of THIS entry can fall outside the fetch window (and get zero DMs)
+ * if 200+ more-recent unhelpful ratings exist elsewhere in the admin's scope.
  */
 async function collectUnhelpfulRaters(
   entryIds: readonly number[],
