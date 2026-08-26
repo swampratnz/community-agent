@@ -30,10 +30,13 @@ const skip = hasDb
   : 'DATABASE_URL not set — skipping DB-integration tests (CLAUDE.md: exercise against a local Postgres 16 + pgvector)';
 
 await import('./support/registerToolRegistry.js');
+await import('./support/registerNotices.js');
 const { buildToolServer, KNOWLEDGE_CONFLICT_CAVEAT_TEXT } = await import('../src/module/agent/tools.js');
 const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
 const { embed } = await import('@swampratnz/agent-base/storage/embeddings.js');
+const { notice } = await import('../src/module/strings/notices.js');
 const pgvector = (await import('pgvector/pg')).default;
+const KNOWLEDGE_SEARCH_EMPTY_TEXT = notice('knowledgeSearchEmpty');
 
 await embed('warmup').catch(() => {});
 
@@ -202,7 +205,7 @@ test(
 
     assert.equal(
       text,
-      'No matching knowledge entries.',
+      KNOWLEDGE_SEARCH_EMPTY_TEXT,
       'a failed lexical fallback must degrade to the normal no-match reply (a different reply here means a stray global entry cleared the floor and the fixture needs re-tuning)',
     );
     assert.doesNotMatch(
