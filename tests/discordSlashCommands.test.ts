@@ -79,6 +79,8 @@ const { EVENTS_LIST_LIMIT, formatListEventsEmptyText, formatUpcomingEvents } =
 const { createConfiguredAdapters } = await import('../src/module/platforms/factories.js');
 const { notice } = await import('../src/module/strings/notices.js');
 const KNOWLEDGE_LOW_RATED_CAVEAT_TEXT = notice('knowledgeLowRatedCaveat');
+const KNOWLEDGE_SEARCH_EMPTY_TEXT = notice('knowledgeSearchEmpty');
+const KNOWLEDGE_SEARCH_EMPTY_TEXT_MI = notice('knowledgeSearchEmpty', { language: 'mi' });
 // Both caveat constants contain an em dash, and every /kb reply passes through
 // deps.filtered() (the same outbound pipeline as every other send path, per
 // this file's own criterion 6/13 test) — which rewrites em dashes into a
@@ -2999,7 +3001,7 @@ test('/kb replies with the no-match text when every hit is auto-provenance (all 
 
   await handleInteraction(interaction as never, adapterDeps(adapter));
 
-  assert.equal(replies[0].content, 'No matching knowledge entries.');
+  assert.equal(replies[0].content, KNOWLEDGE_SEARCH_EMPTY_TEXT);
   // All-auto-provenance is also a genuine below-floor miss (issue #1052) —
   // drain that fire-and-forget recordKnowledgeGap write here (see waitFor's
   // doc comment below) so it can never land in the NEXT test's mockPool.
@@ -3044,7 +3046,7 @@ test('SECURITY: /kb serves a lexical-fallback hit when semantic search misses th
   assert.equal(replies.length, 1);
   assert.ok(
     replies[0].content.includes('LEXICAL_RESCUED_TEXT'),
-    'the lexically-matched entry must render via the viaLexical branch instead of "No matching knowledge entries."',
+    'the lexically-matched entry must render via the viaLexical branch instead of the knowledgeSearchEmpty notice',
   );
 });
 
@@ -3135,7 +3137,7 @@ test('SECURITY: /kb never calls searchKnowledgeLexical when semantic search alre
   );
 });
 
-test('/kb still replies with "No matching knowledge entries." when both semantic and lexical search miss (acceptance criterion 3)', async (t) => {
+test('/kb still replies with the knowledgeSearchEmpty notice when both semantic and lexical search miss (acceptance criterion 3)', async (t) => {
   mockPool(t, {
     memberRole: 'member',
     knowledgeRows: [
@@ -3159,8 +3161,63 @@ test('/kb still replies with "No matching knowledge entries." when both semantic
 
   await handleInteraction(interaction as never, adapterDeps(adapter));
 
-  assert.equal(replies[0].content, 'No matching knowledge entries.');
+  assert.equal(replies[0].content, KNOWLEDGE_SEARCH_EMPTY_TEXT);
 });
+
+// Issue #1180: knowledge_search's zero-hit reply now nudges the asker toward
+// suggest_knowledge instead of being a dead end. /kb shares the same renderer
+// (formatKnowledgeSearchResults), so it must pick up the same nudge and the
+// same mi variant a caller's stored language_preference already unlocks for
+// this function's other lines (issue #1038).
+test('/kb\'s zero-hit reply nudges the asker toward suggest_knowledge, in te reo Māori when the caller has a stored \'mi\' language preference (issue #1180 acceptance criteria 1, 2, 3)', async (t) => {
+  const knowledgeRows: PoolRow[] = [];
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+
+  mockPool(t, { memberRole: 'member', knowledgeRows, languagePref: 'mi' });
+  const miResult = fakeInteraction({
+    commandName: 'kb',
+    userId: 'member-mi',
+    options: { query: 'nothing here' },
+  });
+  await handleInteraction(miResult.interaction as never, adapterDeps(adapter));
+  assert.equal(miResult.replies[0].content, KNOWLEDGE_SEARCH_EMPTY_TEXT_MI);
+
+  mockPool(t, { memberRole: 'member', knowledgeRows });
+  const unsetResult = fakeInteraction({
+    commandName: 'kb',
+    userId: 'member-unset',
+    options: { query: 'nothing here' },
+  });
+  await handleInteraction(unsetResult.interaction as never, adapterDeps(adapter));
+  assert.equal(unsetResult.replies[0].content, KNOWLEDGE_SEARCH_EMPTY_TEXT);
+  assert.ok(
+    unsetResult.replies[0].content.includes('suggest_knowledge'),
+    'the zero-hit reply must nudge the asker toward suggest_knowledge',
+  );
+});
+
+test(
+  "SECURITY: /kb's zero-hit reply is exactly the static knowledgeSearchEmpty notice — the caller's raw query " +
+    'is never reflected back into the empty-state output (issue #1180 acceptance criterion 4)',
+  async (t) => {
+    mockPool(t, { memberRole: 'member', knowledgeRows: [] });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const marker = 'QUERY_MARKER_TOKEN_<script>alert(1)</script>';
+    const { interaction, replies } = fakeInteraction({
+      commandName: 'kb',
+      userId: 'member-1',
+      options: { query: marker },
+    });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies[0].content, KNOWLEDGE_SEARCH_EMPTY_TEXT);
+    assert.ok(
+      !replies[0].content.includes(marker) && !replies[0].content.includes('QUERY_MARKER_TOKEN'),
+      "the caller's raw query must never be reflected into the empty-state reply",
+    );
+  },
+);
 
 test('SECURITY: /kb still replies successfully with the existing no-match output when searchKnowledgeLexical rejects, and logs the failure rather than swallowing it (acceptance criterion 4)', async (t) => {
   const warnLog = t.mock.method(logger, 'warn', () => {});
@@ -3203,7 +3260,7 @@ test('SECURITY: /kb still replies successfully with the existing no-match output
   assert.equal(replies.length, 1);
   assert.equal(
     replies[0].content,
-    'No matching knowledge entries.',
+    KNOWLEDGE_SEARCH_EMPTY_TEXT,
     'a rejected lexical fallback must degrade to the existing no-match output, never a thrown error reaching the member',
   );
   assert.doesNotMatch(
@@ -3831,7 +3888,7 @@ test('/kb still replies successfully, byte-identical to the write-failure-free c
   assert.equal(replies.length, 1);
   assert.equal(
     replies[0].content,
-    'No matching knowledge entries.',
+    KNOWLEDGE_SEARCH_EMPTY_TEXT,
     'the below-floor-miss reply must be unaffected by the gap write failing',
   );
   await waitFor(() => warnLog.mock.calls.length >= 1);

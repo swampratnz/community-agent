@@ -337,7 +337,7 @@ export function formatKnowledgeSearchResults(
   lang: LanguagePreference = 'auto',
 ): string {
   const relevant = hits.filter((h) => h.viaLexical || h.similarity >= KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD);
-  if (relevant.length === 0) return 'No matching knowledge entries.';
+  if (relevant.length === 0) return notice('knowledgeSearchEmpty', { language: lang });
   const ordered = relevant
     .map((h, index) => ({ h, index }))
     .sort((a, b) => {

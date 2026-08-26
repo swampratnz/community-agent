@@ -790,6 +790,12 @@ const NOTICE_ENTRIES = {
       mi: 'tērā pea kāore ētahi o ēnei mōhiotanga e whakaae ana ki a rātou anō — kāore anō i whakatikahia e tētahi kaiwhakahaere',
     },
   },
+  knowledgeSearchEmpty: {
+    base: 'No matching knowledge entries. If you find the answer, suggest_knowledge can save it for the next person.',
+    language: {
+      mi: 'Kāore he mōhiohio e tau ana. Ki te kitea e koe te whakautu, mā te suggest_knowledge e tiaki mō te tangata e whai ake nei.',
+    },
+  },
   // --- moderation DM texts (moderation/moderator.ts) ------------------------
   mutedRoleNote: {
     base: MUTED_ROLE_NOTE_BASE,

@@ -61,6 +61,15 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   nothing is recorded; your own projects are never suggested to you. A
   genuine no-match with nothing similar to suggest looks exactly as it did
   before.
+- **A knowledge search with no results now points you at `suggest_knowledge`
+  instead of just saying no.** (#1180) `knowledge_search`'s (and `/kb`'s)
+  empty-state reply was a dead end — you were told the knowledge base had
+  nothing, and the conversation stopped there, even though you're the
+  person best placed to add the answer once you find it elsewhere. The
+  reply now also nudges you toward `suggest_knowledge` so it can be saved
+  for the next person to ask. Available in te reo Māori for members with
+  that language preference set. No new tool, data access, or admin-visible
+  signal — this only changes the wording of an existing reply.
 
 ## 2026-08-26
 

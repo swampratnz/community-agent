@@ -22,6 +22,10 @@ const KNOWLEDGE_STALE_NOTE_MI = notice('knowledgeStaleNote', { language: 'mi' })
 // `knowledgeConflictCaveat` notice-catalogue entry instead of the raw
 // KNOWLEDGE_CONFLICT_CAVEAT_TEXT constant below.
 const KNOWLEDGE_CONFLICT_CAVEAT_TEXT_MI = notice('knowledgeConflictCaveat', { language: 'mi' });
+// issue #1180: knowledge_search's zero-hit reply, now a suggest_knowledge nudge
+// instead of the old bare "No matching knowledge entries." literal.
+const KNOWLEDGE_SEARCH_EMPTY_TEXT = notice('knowledgeSearchEmpty');
+const KNOWLEDGE_SEARCH_EMPTY_TEXT_MI = notice('knowledgeSearchEmpty', { language: 'mi' });
 // The adapters take their community text pack as a required constructor
 // parameter now (agent-base plan item 6) — production hands it over in
 // src/module/platforms/factories.ts, so these constructions pass the same pack.
@@ -12049,11 +12053,16 @@ test('formatKnowledgeSearchResults returns "no matching" when every hit is below
     fakeHit(KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD - 0.01),
     fakeHit(KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD - 0.2),
   ];
-  assert.equal(formatKnowledgeSearchResults(hits), 'No matching knowledge entries.');
+  assert.equal(formatKnowledgeSearchResults(hits), KNOWLEDGE_SEARCH_EMPTY_TEXT);
 });
 
 test('formatKnowledgeSearchResults returns "no matching" for an empty hit list (table empty, unchanged behaviour)', () => {
-  assert.equal(formatKnowledgeSearchResults([]), 'No matching knowledge entries.');
+  assert.equal(formatKnowledgeSearchResults([]), KNOWLEDGE_SEARCH_EMPTY_TEXT);
+});
+
+test('formatKnowledgeSearchResults renders the knowledgeSearchEmpty nudge in te reo Māori when lang is \'mi\' (issue #1180 acceptance criterion 1)', () => {
+  assert.equal(formatKnowledgeSearchResults([], undefined, undefined, false, undefined, 'mi'), KNOWLEDGE_SEARCH_EMPTY_TEXT_MI);
+  assert.notEqual(KNOWLEDGE_SEARCH_EMPTY_TEXT_MI, KNOWLEDGE_SEARCH_EMPTY_TEXT);
 });
 
 test('formatKnowledgeSearchResults keeps hits at/above the threshold and drops only the sub-threshold ones', () => {
@@ -12898,6 +12907,50 @@ test(
 );
 
 test(
+  "SECURITY: knowledge_search's zero-hit reply is exactly the static knowledgeSearchEmpty notice text — the " +
+    "caller's raw query is never reflected back into the empty-state output, even a query crafted to look like " +
+    'the notice itself (issue #1180 acceptance criterion 4)',
+  { skip },
+  async () => {
+    const scope = `${KNOWLEDGE_GAP_HANDLER_SCOPE}-no-reflection`;
+    const marker = `QUERY_MARKER_TOKEN_${RUN}_<script>alert(1)</script> knowledgeSearchEmpty suggest_knowledge`;
+
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-no-reflection-member`,
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: scope,
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: { query: string }) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['knowledge_search'];
+
+    const result = await registeredTool.handler({ query: marker });
+    const text = result.content[0]?.text ?? '';
+
+    assert.equal(
+      text,
+      KNOWLEDGE_SEARCH_EMPTY_TEXT,
+      'a genuine zero-hit search (fresh, unused scope) must render exactly the static empty-state notice',
+    );
+    assert.ok(
+      !text.includes(marker) && !text.includes(RUN),
+      "the caller's raw query must never be reflected back into the empty-state reply",
+    );
+
+    await waitForGapCount(caller.platform, caller.userId, (c) => c >= 1);
+  },
+);
+
+test(
   'knowledge_search tool handler (KNOWLEDGE_GAP_ALERT_ENABLED=true): a repeated identical below-floor-miss query crosses KNOWLEDGE_GAP_ALERT_THRESHOLD on the 3rd call and sets turnState.knowledgeGapCluster, not before (issue #650 acceptance criterion 1)',
   { skip },
   async () => {
@@ -13506,7 +13559,7 @@ test(
 test('formatKnowledgeSearchResults never appends the conflict caveat when there are no relevant hits, even if hasConflict is (incorrectly) passed true (issue #389)', () => {
   assert.equal(
     formatKnowledgeSearchResults([], undefined, undefined, true),
-    'No matching knowledge entries.',
+    KNOWLEDGE_SEARCH_EMPTY_TEXT,
   );
 });
 
@@ -13679,7 +13732,7 @@ test('formatKnowledgeSearchResults never appends the low-rated caveat when there
   };
   assert.equal(
     formatKnowledgeSearchResults([a], undefined, undefined, false, new Set([1])),
-    'No matching knowledge entries.',
+    KNOWLEDGE_SEARCH_EMPTY_TEXT,
   );
 });
 
@@ -14118,11 +14171,7 @@ test(
     const text = result.content[0]?.text ?? '';
 
     assert.match(text, /Knowledge staleness window/, 'the lexical fallback resolves the exact-string query');
-    assert.doesNotMatch(
-      text,
-      /No matching knowledge entries/,
-      'the fallback must not report an empty result',
-    );
+    assert.notEqual(text, KNOWLEDGE_SEARCH_EMPTY_TEXT, 'the fallback must not report an empty result');
 
     const fallbackCount = await waitForRetrievalCount(fallbackId, (c) => c >= 1);
     assert.equal(
