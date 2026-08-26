@@ -17,6 +17,7 @@ import {
   listAdmins,
   type ResponseStyle,
 } from '@swampratnz/agent-base/storage/repository.js';
+import { getCommunityGuidelines, getCommunityGuidelinesMi } from '../../storage/policies.js';
 import { truncateForEcho } from './helpers.js';
 
 // Every registered platform, derived from the platform registry (agent-base
@@ -227,6 +228,18 @@ export async function notifyAdmins(
  * attempted and the send threw/rejected for any OTHER reason (issue #556) —
  * `add_member` uses this to tell the acting admin the confirmation DM
  * didn't land, since today it can't.
+ *
+ * Issue #1171: this is the one grant-DM path #212 didn't reach, so a member
+ * who is pre-registered or `team_setup`-batched — and therefore never
+ * generates a join/first-contact event — otherwise never sees the community
+ * guidelines anywhere. When guidelines are set, they're appended the same
+ * way the join-welcome adapters already append them (`guidelinesHeading` +
+ * the text, verbatim, never model-translated), `mi`-aware with the same
+ * `getGuidelinesMi() ?? getGuidelines()` fallback `community_guidelines`
+ * itself uses. The whole lookup is wrapped in one `.catch(() => null)` so a
+ * DB hiccup degrades to "no guidelines appended" — same #52 invariant as the
+ * language/style lookups above — rather than throwing out of this function
+ * or blocking the DM.
  */
 export async function notifyMemberApproved(
   adapter: PlatformAdapter,
@@ -235,6 +248,8 @@ export async function notifyMemberApproved(
   platform: Platform,
   getLangPref: typeof getLanguagePreference = getLanguagePreference,
   getRespStyle: typeof getResponseStyle = getResponseStyle,
+  getGuidelines: typeof getCommunityGuidelines = getCommunityGuidelines,
+  getGuidelinesMi: typeof getCommunityGuidelinesMi = getCommunityGuidelinesMi,
 ): Promise<boolean> {
   if (wasAlreadyMember) return true;
   const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
@@ -245,7 +260,13 @@ export async function notifyMemberApproved(
   // lookup above. Variant selection itself lives in strings/notices.ts.
   const style: ResponseStyle | undefined =
     lang === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
-  const message = notice('memberApprovedMessage', { language: lang, style });
+  const baseMessage = notice('memberApprovedMessage', { language: lang, style });
+  const guidelines = await (
+    lang === 'mi' ? getGuidelinesMi().then((mi) => mi ?? getGuidelines()) : getGuidelines()
+  ).catch(() => null);
+  const message = guidelines
+    ? `${baseMessage}\n\n${notice('guidelinesHeading')}\n${guidelines}`
+    : baseMessage;
   return adapter
     .sendDirectMessage(userId, message)
     .then(() => true)

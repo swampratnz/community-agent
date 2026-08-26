@@ -116,6 +116,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   which read as the bot endorsing both. All three call sites now compute the
   same conflict check the search path already pays for and show the same
   caveat, fail-safe on a lookup error (never blocks or errors the reply).
+- **The approval DM a newly-added or `team_setup`-batched member gets now
+  carries the community guidelines, when set.** (#1171) The join-welcome
+  message already appended guidelines (#212), but a member who is
+  pre-registered or bulk-onboarded via `team_setup` never generates a join
+  event — for that population, this approval DM was their only bot-initiated
+  message ever, and it never mentioned the community's own rules. It now
+  resolves guidelines the same `mi`-then-fallback way `community_guidelines`
+  itself does, appended only when set — byte-identical to before when
+  guidelines are unset, and never blocking or failing the DM if the lookup
+  errors.
 
 ## 2026-08-25
 

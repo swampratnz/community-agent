@@ -226,7 +226,8 @@ const { formatEventTime } = await import('@swampratnz/agent-base/util/eventTime.
 await import('./support/registerPolicyKeys.js');
 const { getCommunityGuidelines, getCommunityGuidelinesMi, getWelcomeMessage, getWelcomeMessageMi } =
   await import('../src/module/storage/policies.js');
-const { resetPolicyCacheForTests } = await import('@swampratnz/agent-base/storage/policyStore.js');
+const { resetPolicyCacheForTests, updatePolicy } =
+  await import('@swampratnz/agent-base/storage/policyStore.js');
 const { MEMBER_TOOLS, ADMIN_TOOLS, SUPER_ADMIN_TOOLS } = await import('@swampratnz/agent-base/auth/rbac.js');
 const { superAdminIds } = await import('@swampratnz/agent-base/auth/roles.js');
 const { WhatsAppCloudAdapter, WindowClosedError } =
@@ -674,6 +675,215 @@ test("SECURITY: notifyMemberApproved never consults the response-style lookup on
 
   assert.equal(respStyleCalls, 0);
 });
+
+// Issue #1171: notifyMemberApproved is the one grant-DM path #212 didn't
+// reach — a pre-registered or team_setup-batched member never generates a
+// join event, so this DM is often the only bot-initiated message they ever
+// get. These tests use injected getGuidelines/getGuidelinesMi stubs, the
+// same shape as the getLangPref/getRespStyle stubs above, so they exercise
+// this function without a DB round trip.
+test('notifyMemberApproved appends the community guidelines when set, with no mi preference (issue #1171)', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+  const guidelines = 'Be respectful. No spam. Keep discussion on-topic.';
+
+  await notifyMemberApproved(
+    adapter,
+    'user-1',
+    false,
+    'discord',
+    async () => 'auto',
+    async () => 'standard',
+    async () => guidelines,
+    async () => null,
+  );
+
+  const expectedBase = notice('memberApprovedMessage', { language: 'auto', style: 'standard' });
+  assert.ok(calls[0].startsWith(expectedBase), 'the original approval text must be unchanged/prefixed');
+  assert.equal(calls[0], `${expectedBase}\n\n${notice('guidelinesHeading')}\n${guidelines}`);
+});
+
+test('notifyMemberApproved is byte-identical to the guidelines-free DM when guidelines are unset (issue #1171)', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyMemberApproved(
+    adapter,
+    'user-1',
+    false,
+    'discord',
+    async () => 'auto',
+    async () => 'standard',
+    async () => null,
+    async () => null,
+  );
+
+  assert.equal(calls[0], notice('memberApprovedMessage', { language: 'auto', style: 'standard' }));
+});
+
+test(
+  "notifyMemberApproved appends the mi guidelines variant for a caller with a standing 'mi' preference " +
+    'when both variants are set (issue #1171)',
+  async () => {
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (_userId, message) => {
+      calls.push(message);
+    });
+    const guidelines = 'Be respectful.';
+    const guidelinesMi = 'Kia ngākau pai.';
+
+    await notifyMemberApproved(
+      adapter,
+      'user-1',
+      false,
+      'discord',
+      async () => 'mi',
+      async () => 'standard',
+      async () => guidelines,
+      async () => guidelinesMi,
+    );
+
+    assert.match(calls[0], /Kia ngākau pai\./);
+    assert.doesNotMatch(calls[0], /Be respectful\./);
+  },
+);
+
+test(
+  "notifyMemberApproved falls back to the English guidelines for a 'mi'-preference caller when only the " +
+    'base variant is set (issue #1171)',
+  async () => {
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (_userId, message) => {
+      calls.push(message);
+    });
+    const guidelines = 'Be respectful.';
+
+    await notifyMemberApproved(
+      adapter,
+      'user-1',
+      false,
+      'discord',
+      async () => 'mi',
+      async () => 'standard',
+      async () => guidelines,
+      async () => null,
+    );
+
+    assert.match(calls[0], /Be respectful\./);
+  },
+);
+
+test(
+  'SECURITY: notifyMemberApproved sends the base (guidelines-free) DM, rather than throwing or dropping it, ' +
+    "when the guidelines lookup rejects — both on the default-language and the 'mi' branch (issue #1171's " +
+    "extension of issue #52's invariant)",
+  async () => {
+    const defaultLangCalls: string[] = [];
+    const defaultLangAdapter = stubAdapter(async (_userId, message) => {
+      defaultLangCalls.push(message);
+    });
+
+    await notifyMemberApproved(
+      defaultLangAdapter,
+      'user-1',
+      false,
+      'discord',
+      async () => 'auto',
+      async () => 'standard',
+      async () => {
+        throw new Error('DB unreachable');
+      },
+      async () => null,
+    );
+
+    assert.equal(defaultLangCalls.length, 1);
+    assert.equal(
+      defaultLangCalls[0],
+      notice('memberApprovedMessage', { language: 'auto', style: 'standard' }),
+    );
+
+    const miCalls: string[] = [];
+    const miAdapter = stubAdapter(async (_userId, message) => {
+      miCalls.push(message);
+    });
+
+    await notifyMemberApproved(
+      miAdapter,
+      'user-1',
+      false,
+      'discord',
+      async () => 'mi',
+      async () => 'standard',
+      async () => null,
+      async () => {
+        throw new Error('DB unreachable');
+      },
+    );
+
+    assert.equal(miCalls.length, 1);
+    assert.equal(miCalls[0], notice('memberApprovedMessage', { language: 'mi' }));
+  },
+);
+
+test(
+  'notifyMemberApproved reverts to the guidelines-free DM once guidelines are cleared to empty string, ' +
+    'distinct from having never been set (issue #1171)',
+  { skip },
+  async () => {
+    resetPolicyCacheForTests();
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (_userId, message) => {
+      calls.push(message);
+    });
+    const expectedBase = notice('memberApprovedMessage', { language: 'auto', style: 'standard' });
+
+    try {
+      await notifyMemberApproved(
+        adapter,
+        'user-1',
+        false,
+        'discord',
+        async () => 'auto',
+        async () => 'standard',
+      );
+      assert.equal(calls[0], expectedBase, 'never-set guidelines: DM is guidelines-free');
+
+      const guidelines = 'Be respectful. No spam.';
+      await updatePolicy('community_guidelines', guidelines, 'test');
+      await notifyMemberApproved(
+        adapter,
+        'user-1',
+        false,
+        'discord',
+        async () => 'auto',
+        async () => 'standard',
+      );
+      assert.equal(
+        calls[1],
+        `${expectedBase}\n\n${notice('guidelinesHeading')}\n${guidelines}`,
+        'guidelines set: DM carries them',
+      );
+
+      await updatePolicy('community_guidelines', '', 'test');
+      await notifyMemberApproved(
+        adapter,
+        'user-1',
+        false,
+        'discord',
+        async () => 'auto',
+        async () => 'standard',
+      );
+      assert.equal(calls[2], expectedBase, 'cleared to empty string: DM reverts to guidelines-free');
+    } finally {
+      await updatePolicy('community_guidelines', '', 'test');
+      resetPolicyCacheForTests();
+    }
+  },
+);
 
 // notifyAdminApproved holds all of grant_admin's new (issue #201) notification
 // behaviour, tested directly here the same way notifyMemberApproved is above.
@@ -18917,6 +19127,70 @@ test(
       await pool.query(
         `DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = ANY($1::text[])`,
         [[existingA, existingB, existingC, freshA, freshB]],
+      );
+    }
+  },
+);
+
+test(
+  "team_setup's welcome DM carries the community guidelines with no separate code change — it inherits the " +
+    'fix through the same notifyMemberApproved path #1065 wired it to (issue #1171)',
+  { skip },
+  async () => {
+    resetPolicyCacheForTests();
+    const conv = `${RUN}-team-setup-dm-guidelines`;
+    const slug = `${RUN}-team-setup-dm-guidelines`;
+    const freshMember = teamSetupMemberId();
+    const guidelines = 'Be respectful. No spam. Keep discussion on-topic.';
+
+    const dmCalls: string[] = [];
+    const adapter = stubAdapter(async (_userId, message) => {
+      dmCalls.push(message);
+    });
+    const adminId = 'team-setup-dm-guidelines-admin';
+    const caller = {
+      platform: 'discord' as const,
+      userId: adminId,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: conv,
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          {
+            handler: (
+              args: object,
+            ) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+          }
+        >;
+      }
+    )._registeredTools['team_setup'];
+
+    try {
+      await updatePolicy('community_guidelines', guidelines, 'test');
+
+      const result = await registeredTool.handler({
+        slug,
+        name: 'DM Guidelines Team',
+        members: [freshMember],
+      });
+      assert.equal(result.isError, false);
+
+      const pending = takePendingAction('discord', conv, adminId);
+      assert.ok(pending);
+      await pending?.execute();
+
+      assert.equal(dmCalls.length, 1);
+      assert.match(dmCalls[0], /Be respectful\. No spam\. Keep discussion on-topic\./);
+    } finally {
+      await updatePolicy('community_guidelines', '', 'test');
+      resetPolicyCacheForTests();
+      await pool.query(
+        `DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = ANY($1::text[])`,
+        [[freshMember]],
       );
     }
   },
