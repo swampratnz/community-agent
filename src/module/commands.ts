@@ -37,10 +37,12 @@ import {
   formatMutedMembersList,
   formatProjectResults,
   formatReviewQueueSummary,
+  formatTopKnowledgeList,
   formatWhoIsIntoEmptyText,
   LIST_PROJECTS_DEFAULT_LIMIT,
   MOST_HELPFUL_KNOWLEDGE_FETCH_CAP,
   rankKnowledgeByRetrieval,
+  TOP_KNOWLEDGE_FETCH_CAP,
 } from './agent/tools.js';
 import { buildMemberDigestContent } from './memberDigest.js';
 import {
@@ -64,10 +66,10 @@ import { notice } from './strings/notices.js';
  * `status` (issue #995), `warnings` (issue #1000), `mysubmissions`/`mydata`
  * (issue #1018), `help` (issue #993), `kbtopics` (issue #1036),
  * `kbhelpful` (issue #1087), `reviewqueue` (issue #1095, the first
- * admin-tier entry), `mutedlist` (issue #1114, the second), and
- * `blockedlist` (issue #1145, the third) appended — also safe for the
- * WhatsApp side because every `!` matcher is anchored and mutually
- * exclusive.
+ * admin-tier entry), `mutedlist` (issue #1114, the second), `blockedlist`
+ * (issue #1145, the third), and `topknowledge` (issue #1165, the fourth)
+ * appended — also safe for the WhatsApp side because every `!` matcher is
+ * anchored and mutually exclusive.
  *
  * The Discord halves are BOUND by `bindCommunitySlashCommands()`
  * (slashCommands.ts), which `createConfiguredAdapters()` calls — never at
@@ -471,6 +473,33 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
       if (!atLeast(role, 'admin')) return null;
       const rows = await listBlockedUsers(msg.platform);
       return formatBlockedMembersList(rows);
+    },
+  },
+  {
+    // Fourth admin-tier entry (issue #1165), same shape as `reviewqueue`/
+    // `mutedlist`/`blockedlist` directly above. Anchored, argument-rejecting
+    // matcher: `!topknowledge anything` falls through to
+    // TEXT_COMMAND_UNMATCHED rather than matching, so no message-supplied
+    // text ever reaches a repository read. Calls listKnowledge with the
+    // exact same (scope: undefined, offset: 0, limit: TOP_KNOWLEDGE_FETCH_CAP)
+    // arguments list_top_knowledge's own handler uses — unset scope, i.e.
+    // every scope, never narrowed to 'global' the way `!kbhelpful` is
+    // (list_top_knowledge, unlike most_helpful_knowledge, is admin-tier and
+    // may see channel/platform-scoped entries) — then renders through the
+    // SAME shared formatTopKnowledgeList (tools/helpers.ts) that handler now
+    // uses too, so the two can never drift.
+    name: 'topknowledge',
+    platforms: ['discord', 'whatsapp'],
+    whatsapp: async (text, _msg, role) => {
+      if (!/^!topknowledge$/i.test(text)) return TEXT_COMMAND_UNMATCHED;
+      if (!atLeast(role, 'admin')) return null;
+      const entries = await listKnowledge({
+        scope: undefined,
+        offset: 0,
+        limit: TOP_KNOWLEDGE_FETCH_CAP,
+      });
+      const ranked = rankKnowledgeByRetrieval(entries, 10);
+      return formatTopKnowledgeList(ranked);
     },
   },
 ];

@@ -68,11 +68,13 @@ import {
   formatMutedMembersList,
   formatProjectResults,
   formatReviewQueueSummary,
+  formatTopKnowledgeList,
   formatWhoIsIntoEmptyText,
   KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD,
   LIST_PROJECTS_DEFAULT_LIMIT,
   MOST_HELPFUL_KNOWLEDGE_FETCH_CAP,
   rankKnowledgeByRetrieval,
+  TOP_KNOWLEDGE_FETCH_CAP,
 } from '../../agent/tools.js';
 import { chunkText } from '@swampratnz/agent-base/platforms/textChunk.js';
 import { bindDiscordCommand, type SlashCommandDeps } from '@swampratnz/agent-base/commands/registry.js';
@@ -729,6 +731,40 @@ async function handleBlockedList(
 }
 
 /**
+ * `list_top_knowledge` is structurally in ADMIN_TOOLS — the fourth
+ * admin-tier shortcut in this file (issue #1165), mirrored here via
+ * `toolsForRole` + `atLeast(role, 'admin')`, same double-check shape as
+ * `handleReviewQueue`/`handleMutedList`/`handleBlockedList` above. No
+ * options: renders `formatTopKnowledgeList`'s output for
+ * `listKnowledge({ scope: undefined, offset: 0, limit: TOP_KNOWLEDGE_FETCH_CAP })`
+ * ranked via `rankKnowledgeByRetrieval(entries, 10)` — the SAME calls with
+ * the SAME arguments `list_top_knowledge`'s own handler uses.
+ */
+async function handleTopKnowledge(
+  interaction: ChatInputCommandInteraction,
+  deps: SlashCommandDeps,
+): Promise<void> {
+  await deferEphemeral(interaction);
+  const role = await resolveRole('discord', interaction.user.id);
+  if (
+    !toolsForRole(role, 'discord').includes('mcp__community__list_top_knowledge') ||
+    !atLeast(role, 'admin')
+  ) {
+    await replyEphemeral(interaction, NOT_AUTHORIZED_TEXT, deps);
+    return;
+  }
+  const entries = await listKnowledge({
+    scope: undefined,
+    offset: 0,
+    limit: TOP_KNOWLEDGE_FETCH_CAP,
+  });
+  const ranked = rankKnowledgeByRetrieval(entries, 10);
+  const message = formatTopKnowledgeList(ranked);
+  recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
+  await replyEphemeral(interaction, message, deps);
+}
+
+/**
  * `list_events` is structurally in MEMBER_TOOLS with no extra runtime floor
  * beyond `toolsForRole` (unlike `/warnings`/`/whois`/`/projects`/`/digest`
  * above) — mirrored here exactly like `/kb`'s gate (issue #1004). Takes no
@@ -946,6 +982,14 @@ export function bindCommunitySlashCommands(adapter: PlatformAdapter): void {
         .setDescription("Admin: enumerate the bot's block list by identity.")
         .toJSON(),
     handle: handleBlockedList,
+  });
+  bindDiscordCommand('topknowledge', {
+    build: () =>
+      new SlashCommandBuilder()
+        .setName('topknowledge')
+        .setDescription('Admin: rank knowledge entries by retrieval count, most relied-on first.')
+        .toJSON(),
+    handle: handleTopKnowledge,
   });
   bindDiscordCommand('events', {
     build: () =>

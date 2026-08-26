@@ -78,9 +78,11 @@ const {
   formatMostHelpfulKnowledge,
   formatMutedMembersList,
   formatReviewQueueSummary,
+  formatTopKnowledgeList,
   formatWhoIsIntoEmptyText,
   MOST_HELPFUL_KNOWLEDGE_FETCH_CAP,
   rankKnowledgeByRetrieval,
+  TOP_KNOWLEDGE_FETCH_CAP,
 } = await import('../src/module/agent/tools.js');
 const { formatStatusMessage, getStatusCache, pollAnthropicStatus, resetStatusCacheForTests } =
   await import('../src/module/status/anthropicStatus.js');
@@ -3257,6 +3259,212 @@ test("a successful !blockedlist invocation calls recordShortcutHit('whatsapp_tex
   router.register(adapter);
 
   await trigger(makeMessage({ text: '!blockedlist', userId: 'admin-1' }));
+
+  assert.equal(sent.length, 1);
+  assert.deepEqual(hits, ['whatsapp_text_command']);
+});
+
+// --- !topknowledge (issue #1165) ----------------------------------------------
+
+/**
+ * Stubs `pool.query`'s role branch plus `listKnowledge`'s single query
+ * against `knowledge`, mirroring `mockPoolRoleAndMutedList`'s
+ * single-mock-per-test discipline above. `rows` are raw snake_case DB rows,
+ * the same shape the `!kbhelpful` tests above use — both queries share the
+ * exact same `retrieval_count` + `FROM knowledge` SQL shape, matched here the
+ * same way `!kbhelpful`'s inline mocks do.
+ */
+function mockPoolRoleAndTopKnowledge(
+  t: { mock: { method: typeof import('node:test').mock.method } },
+  role: 'admin' | 'member' | null,
+  rows: Array<Record<string, unknown>> = [],
+): void {
+  t.mock.method(pool, 'query', (async (sql: string) => {
+    if (sql.includes('SELECT role FROM community_users')) {
+      return { rows: role ? [{ role }] : [], rowCount: 0 };
+    }
+    if (sql.includes('retrieval_count') && sql.includes('FROM knowledge')) {
+      return { rows, rowCount: 0 };
+    }
+    return { rows: [], rowCount: 0 };
+  }) as typeof pool.query);
+}
+
+test(
+  '!topknowledge returns the same content formatTopKnowledgeList(rankKnowledgeByRetrieval(...)) renders for ' +
+    'the given rows as list_top_knowledge would produce, over every scope — never narrowed to scope: global ' +
+    'the way !kbhelpful is (issue #1165 acceptance criteria 2, 3)',
+  async (t) => {
+    const rows = [
+      {
+        id: 1,
+        scope: 'global',
+        title: 'Low count',
+        content: 'ENTRY_LOW',
+        created_by_role: 'admin',
+        updated_at: new Date(),
+        retrieval_count: 2,
+        last_retrieved_at: new Date(),
+      },
+      {
+        id: 2,
+        scope: 'whatsapp',
+        title: 'High count',
+        content: 'ENTRY_HIGH',
+        created_by_role: 'admin',
+        updated_at: new Date(),
+        retrieval_count: 9,
+        last_retrieved_at: new Date(),
+      },
+    ];
+    mockPoolRoleAndTopKnowledge(t, 'admin', rows);
+    const router = makeRouter({ runTurn: throwingRunTurn });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!topknowledge', userId: 'admin-1' }));
+
+    const entries = await listKnowledge({ scope: undefined, offset: 0, limit: TOP_KNOWLEDGE_FETCH_CAP });
+    const expected = formatTopKnowledgeList(rankKnowledgeByRetrieval(entries, 10));
+    assert.equal(sent[0].text, expected);
+    assert.ok(sent[0].text.indexOf('ENTRY_HIGH') < sent[0].text.indexOf('ENTRY_LOW'));
+    assert.match(
+      sent[0].text,
+      /ENTRY_HIGH/,
+      'a non-global-scoped entry must appear — !topknowledge never narrows to scope: global',
+    );
+  },
+);
+
+test('!topknowledge reports "No knowledge entries found." when nothing qualifies (issue #1165 acceptance criterion 4)', async (t) => {
+  mockPoolRoleAndTopKnowledge(t, 'admin', []);
+  const router = makeRouter({ runTurn: throwingRunTurn });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!topknowledge', userId: 'admin-1' }));
+
+  assert.equal(sent[0].text, 'No knowledge entries found.');
+});
+
+test(
+  'a bare "!topknowledgex" (no space, unrecognised) is not matched as the !topknowledge command — anchored ' +
+    'matcher (issue #1165 acceptance criterion 8)',
+  async (t) => {
+    mockPoolRole(t, 'admin');
+    const router = makeRouter({});
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!topknowledgex', userId: 'admin-1' }));
+
+    assert.equal(sent[0].text, REAL_TURN_REPLY);
+  },
+);
+
+test(
+  'SECURITY: "!topknowledge <anything>" is never matched — the anchored matcher rejects any argument, so no ' +
+    'message-supplied text can ever reach a knowledge repository read (issue #1165 acceptance criterion 8)',
+  async (t) => {
+    let queried = false;
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users')) return { rows: [{ role: 'admin' }], rowCount: 0 };
+      if (sql.includes('retrieval_count') && sql.includes('FROM knowledge')) queried = true;
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!topknowledge; DROP TABLE knowledge', userId: 'admin-1' }));
+
+    assert.equal(sent[0].text, REAL_TURN_REPLY, 'an argument must fall through to a normal turn');
+    assert.equal(queried, false, 'no knowledge repository read must run when an argument is present');
+  },
+);
+
+test(
+  'SECURITY: a member-tier caller\'s "!topknowledge" falls through to the normal turn — no ranked knowledge ' +
+    'list is ever rendered and no knowledge repository read runs (issue #1165 acceptance criterion 7)',
+  async (t) => {
+    let queried = false;
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users'))
+        return { rows: [{ role: 'member' }], rowCount: 0 };
+      if (sql.includes('retrieval_count') && sql.includes('FROM knowledge')) queried = true;
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!topknowledge', userId: 'member-1' }));
+
+    assert.equal(sent.length, 1);
+    assert.equal(
+      sent[0].text,
+      REAL_TURN_REPLY,
+      'a member gets no distinguishing denial reply, per the family norm',
+    );
+    assert.equal(queried, false, 'no knowledge repository read must run for a member-tier caller');
+  },
+);
+
+test(
+  'SECURITY: a guest caller\'s "!topknowledge" falls through to the normal turn — no ranked knowledge list ' +
+    'is ever rendered and no knowledge repository read runs (issue #1165 acceptance criterion 7)',
+  async (t) => {
+    let queried = false;
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users')) return { rows: [], rowCount: 0 };
+      if (sql.includes('retrieval_count') && sql.includes('FROM knowledge')) queried = true;
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!topknowledge', userId: 'guest-1' }));
+
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].text, REAL_TURN_REPLY);
+    assert.equal(queried, false, 'no knowledge repository read must run for a guest caller');
+  },
+);
+
+test(
+  'config.behaviour.whatsappTextCommandsEnabled === false disables !topknowledge exactly as it does every ' +
+    'other WhatsApp shortcut (issue #1165 acceptance criterion 10)',
+  async (t) => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    config.behaviour.whatsappTextCommandsEnabled = false;
+    t.after(() => {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    });
+    mockPoolRoleAndTopKnowledge(t, 'admin', []);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!topknowledge', userId: 'admin-1' }));
+
+    assert.equal(sent[0].text, REAL_TURN_REPLY);
+  },
+);
+
+test("a successful !topknowledge invocation calls recordShortcutHit('whatsapp_text_command') exactly once (issue #1165)", async (t) => {
+  mockPoolRoleAndTopKnowledge(t, 'admin', []);
+  const hits: string[] = [];
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    recordShortcutHitFn: async (kind) => {
+      hits.push(kind);
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!topknowledge', userId: 'admin-1' }));
 
   assert.equal(sent.length, 1);
   assert.deepEqual(hits, ['whatsapp_text_command']);
