@@ -169,15 +169,33 @@ export function formatSetHelperAvailabilityText(
 }
 
 /**
+ * `find_helper`'s no-live-match fetch/render caps (issue #1178) — module-scope
+ * constants, no new env var (a new knob would be an agent-base config-schema
+ * change). FETCH pulls a few extra rows so the caller's own project(s) can be
+ * filtered out before the LIMIT slice still leaves up to LIMIT results.
+ */
+export const FIND_HELPER_PROJECT_SUGGESTION_FETCH_LIMIT = 4;
+export const FIND_HELPER_PROJECT_SUGGESTION_LIMIT = 2;
+
+/**
  * `find_helper`'s four caller-facing reply strings (issue #1163). The two
  * DMs it sends to the MATCHED helper (not the caller) stay untranslated by
  * design — out of scope, per the issue's explicit carve-out for
  * member-to-member DM bodies. `dailyLimit` is an unchanged interpolation.
+ *
+ * Issue #1178: `noMatch` optionally accepts a pre-rendered `suggestionBlock`
+ * (already-quarantined `formatProjectResults` output over seeking-
+ * collaborators projects related to the caller's topic) and appends it after
+ * an added bot-authored framing sentence. Omitting it (the common case today)
+ * renders byte-identical to the pre-#1178 `noMatch` text — only the framing
+ * sentence is bilingual; the appended project rows stay member-authored and
+ * untranslated, same as `formatProjectResults`' other call sites.
  */
 export function formatFindHelperText(
   outcome: 'disabled' | 'dailyCap' | 'matched' | 'noMatch',
   dailyLimit: number,
   language: LanguagePreference,
+  suggestionBlock?: string,
 ): string {
   const mi = language === 'mi';
   switch (outcome) {
@@ -193,10 +211,16 @@ export function formatFindHelperText(
       return mi
         ? 'Kua whakapā atu ki tētahi tangata ka taea pea te āwhina — kia manawanui.'
         : 'Reached out to someone who may be able to help — hang tight.';
-    case 'noMatch':
-      return mi
+    case 'noMatch': {
+      const base = mi
         ? 'Kāore he tangata e wātea ana hei āwhina i tērā i tēnei wā.'
         : 'No one available to help with that right now.';
+      if (!suggestionBlock) return base;
+      const framing = mi
+        ? 'Engari, kei kōnei tētahi kaupapa e rapu hoa mahi ana mō tētahi mea e rite ana ki tērā:'
+        : "but there's a project already looking for help with something similar:";
+      return `${base} ${framing}\n\n${suggestionBlock}`;
+    }
   }
 }
 
@@ -559,8 +583,28 @@ export const socialTools = [
         const language = await getLanguagePreference(caller.platform, caller.userId);
         return text(formatFindHelperText('matched', FIND_HELPER_REQUESTER_DAILY_LIMIT, language));
       }
+      // Issue #1178: no live person matched — before giving up, check
+      // list_projects' own seeking-collaborators search for a related
+      // project. Read + render only (searchProjects/formatProjectResults are
+      // both already side-effect-free), so this adds no DM, no notification
+      // row, and no new disclosure — the same data list_projects already
+      // shows every member. Self-exclusion runs BEFORE the LIMIT slice so a
+      // caller's own project can never consume a suggestion slot.
+      const suggestionCandidates = await searchProjects(
+        args.topic,
+        FIND_HELPER_PROJECT_SUGGESTION_FETCH_LIMIT,
+        {
+          seekingCollaboratorsOnly: true,
+        },
+      );
+      const suggestions = suggestionCandidates
+        .filter((p) => !(p.platform === caller.platform && p.userId === caller.userId))
+        .slice(0, FIND_HELPER_PROJECT_SUGGESTION_LIMIT);
+      const suggestionBlock = suggestions.length > 0 ? await formatProjectResults(suggestions) : undefined;
       const language = await getLanguagePreference(caller.platform, caller.userId);
-      return text(formatFindHelperText('noMatch', FIND_HELPER_REQUESTER_DAILY_LIMIT, language));
+      return text(
+        formatFindHelperText('noMatch', FIND_HELPER_REQUESTER_DAILY_LIMIT, language, suggestionBlock),
+      );
     },
   }),
 
