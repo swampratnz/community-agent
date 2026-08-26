@@ -108,6 +108,7 @@ const {
   CATCH_UP_DEFAULT_HOURS,
   CATCH_UP_MAX_HOURS,
   CATCH_UP_MAX_MESSAGES,
+  formatMemoryEmptyText,
   COMMUNITY_GUIDELINES_MAX_CHARS,
   WELCOME_MESSAGE_MAX_CHARS,
   POLL_MIN_OPTIONS,
@@ -15811,11 +15812,11 @@ test(
 // the repository function) so the RBAC-adjacent scope lock — always
 // caller.platform/caller.conversationId, never a model-supplied id — is
 // proven at the same layer a real tool call goes through.
-function catchUpHandlerFor(conversationId: string) {
+function catchUpHandlerFor(conversationId: string, userId = 'member-1') {
   const adapter = stubAdapter(async () => {});
   const caller = {
     platform: 'discord' as const,
-    userId: 'member-1',
+    userId,
     userName: 'Member',
     role: 'member' as const,
     conversationId,
@@ -15833,6 +15834,35 @@ function catchUpHandlerFor(conversationId: string) {
       >;
     }
   )._registeredTools['catch_up'];
+}
+
+// remember_search tool handler (issue #1176's language-fallback tests):
+// same "handler factory parameterized by user" shape as catchUpHandlerFor
+// above, so a language-preference test can build two callers with distinct
+// userIds against the same conversation.
+function rememberSearchHandlerFor(conversationId: string, userId: string) {
+  const adapter = stubAdapter(async () => {});
+  const caller = {
+    platform: 'discord' as const,
+    userId,
+    userName: 'Member',
+    role: 'member' as const,
+    conversationId,
+  };
+  const server = buildToolServer(caller, adapter);
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: {
+            query: string;
+            scope?: 'conversation' | 'mine' | 'all';
+          }) => Promise<{ content: Array<{ type: string; text: string }>; isError: boolean }>;
+        }
+      >;
+    }
+  )._registeredTools['remember_search'];
 }
 
 test(
@@ -16055,6 +16085,194 @@ test(
     );
 
     await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [scope]);
+  },
+);
+
+test(
+  "remember_search's/catch_up's empty-result reply reflects the caller's OWN getLanguagePreference — te reo " +
+    "Māori when it resolves to 'mi', byte-identical English (including catch_up's hour/hours singular/" +
+    'plural) for anything else, including a caller with no stored preference at all (issue #1176 ' +
+    'acceptance criteria 1, 2)',
+  { skip },
+  async () => {
+    const searchScope = `${RUN}-remember-search-empty-lang`;
+    const miSearchUser = `${RUN}-remember-search-empty-lang-mi`;
+    const enSearchUser = `${RUN}-remember-search-empty-lang-en`;
+    await setLanguagePreference('discord', miSearchUser, 'mi');
+    // enSearchUser deliberately has NO stored preference — proves the default
+    // (not just an explicit 'en') renders the exact English string too.
+
+    const miSearchResult = await rememberSearchHandlerFor(searchScope, miSearchUser).handler({
+      query: `${RUN}-nonexistent-search-topic`,
+    });
+    assert.equal(miSearchResult.content[0]?.text, formatMemoryEmptyText('search', 'mi'));
+    const enSearchResult = await rememberSearchHandlerFor(searchScope, enSearchUser).handler({
+      query: `${RUN}-nonexistent-search-topic`,
+    });
+    assert.equal(enSearchResult.content[0]?.text, 'No relevant past interactions found.');
+
+    const catchUpScope = `${RUN}-catch-up-empty-lang`;
+    const miCatchUpUser = `${RUN}-catch-up-empty-lang-mi`;
+    const enCatchUpUser = `${RUN}-catch-up-empty-lang-en`;
+    await setLanguagePreference('discord', miCatchUpUser, 'mi');
+
+    const miCatchUp = catchUpHandlerFor(catchUpScope, miCatchUpUser);
+    const enCatchUp = catchUpHandlerFor(catchUpScope, enCatchUpUser);
+
+    const miDefaultResult = await miCatchUp.handler({});
+    assert.equal(
+      miDefaultResult.content[0]?.text,
+      formatMemoryEmptyText('catchUp', 'mi', CATCH_UP_DEFAULT_HOURS),
+    );
+    const enDefaultResult = await enCatchUp.handler({});
+    assert.equal(
+      enDefaultResult.content[0]?.text,
+      `Nothing new here in the last ${CATCH_UP_DEFAULT_HOURS} hours.`,
+    );
+
+    const miSingularResult = await miCatchUp.handler({ hours: 1 });
+    assert.equal(miSingularResult.content[0]?.text, formatMemoryEmptyText('catchUp', 'mi', 1));
+    const enSingularResult = await enCatchUp.handler({ hours: 1 });
+    assert.equal(enSingularResult.content[0]?.text, 'Nothing new here in the last 1 hour.');
+
+    await pool.query(`DELETE FROM language_prefs WHERE platform = 'discord' AND user_id IN ($1, $2)`, [
+      miSearchUser,
+      miCatchUpUser,
+    ]);
+  },
+);
+
+test(
+  "remember_search's/catch_up's non-empty untrusted() results are byte-identical regardless of the caller's " +
+    'language preference — only the empty-result fallback is ever translated, never the header or any ' +
+    'quoted recalled content (issue #1176 acceptance criterion 3)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-remember-search-nonempty-lang`;
+    const uniqueContent = `Lang-preserving search content ${RUN}`;
+    await recordInteraction({
+      platform: 'discord',
+      conversationId: scope,
+      userId: 'member-1',
+      role: 'member',
+      direction: 'inbound',
+      content: uniqueContent,
+    });
+    const miUser = `${RUN}-remember-search-nonempty-mi`;
+    const enUser = `${RUN}-remember-search-nonempty-en`;
+    await setLanguagePreference('discord', miUser, 'mi');
+
+    const miResult = await rememberSearchHandlerFor(scope, miUser).handler({
+      query: 'Lang-preserving search content',
+    });
+    const enResult = await rememberSearchHandlerFor(scope, enUser).handler({
+      query: 'Lang-preserving search content',
+    });
+    assert.equal(miResult.content[0]?.text, enResult.content[0]?.text);
+    assert.match(miResult.content[0]?.text ?? '', /Search results/);
+
+    const catchUpScope = `${RUN}-catch-up-nonempty-lang`;
+    const catchUpContent = `Lang-preserving catch_up content ${RUN}`;
+    await recordInteraction({
+      platform: 'discord',
+      conversationId: catchUpScope,
+      userId: 'member-1',
+      role: 'member',
+      direction: 'inbound',
+      content: catchUpContent,
+    });
+    const miCatchUpUser = `${RUN}-catch-up-nonempty-mi`;
+    const enCatchUpUser = `${RUN}-catch-up-nonempty-en`;
+    await setLanguagePreference('discord', miCatchUpUser, 'mi');
+
+    const miCatchUpResult = await catchUpHandlerFor(catchUpScope, miCatchUpUser).handler({});
+    const enCatchUpResult = await catchUpHandlerFor(catchUpScope, enCatchUpUser).handler({});
+    assert.equal(miCatchUpResult.content[0]?.text, enCatchUpResult.content[0]?.text);
+    assert.match(miCatchUpResult.content[0]?.text ?? '', /Recent activity/);
+
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [[scope, catchUpScope]]);
+    await pool.query(`DELETE FROM language_prefs WHERE platform = 'discord' AND user_id IN ($1, $2)`, [
+      miUser,
+      miCatchUpUser,
+    ]);
+  },
+);
+
+test(
+  'SECURITY: remember_search/catch_up invoke getLanguagePreference at most once per call, only on the ' +
+    'empty-result branch, and pass only caller.platform/caller.userId — never a model-supplied ' +
+    'query/scope/hours argument (issue #1176 SECURITY criterion)',
+  { skip },
+  async (t) => {
+    const langPrefCalls: unknown[][] = [];
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && sql.includes('FROM language_prefs')) {
+        langPrefCalls.push(rest[0] as unknown[]);
+      }
+      return (realQuery as (...args: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+
+    const emptySearchScope = `${RUN}-remember-search-security-empty`;
+    const searchUser = `${RUN}-remember-search-security-user`;
+    const searchResult = await rememberSearchHandlerFor(emptySearchScope, searchUser).handler({
+      query: `SECURITY-PROBE-${RUN}`,
+    });
+    assert.equal(searchResult.content[0]?.text, 'No relevant past interactions found.');
+    assert.equal(langPrefCalls.length, 1, 'exactly one language_prefs lookup on the empty branch');
+    assert.deepEqual(
+      langPrefCalls[0],
+      ['discord', searchUser],
+      'must pass only caller.platform/caller.userId — never args.query',
+    );
+
+    langPrefCalls.length = 0;
+    const nonEmptySearchScope = `${RUN}-remember-search-security-nonempty`;
+    const nonEmptyContent = `Security non-empty content ${RUN}`;
+    await recordInteraction({
+      platform: 'discord',
+      conversationId: nonEmptySearchScope,
+      userId: 'member-1',
+      role: 'member',
+      direction: 'inbound',
+      content: nonEmptyContent,
+    });
+    const nonEmptyResult = await rememberSearchHandlerFor(nonEmptySearchScope, searchUser).handler({
+      query: 'Security non-empty content',
+    });
+    assert.match(nonEmptyResult.content[0]?.text ?? '', /Security non-empty content/);
+    assert.equal(langPrefCalls.length, 0, 'no language_prefs lookup on the non-empty branch');
+
+    langPrefCalls.length = 0;
+    const emptyCatchUpScope = `${RUN}-catch-up-security-empty`;
+    const catchUpUser = `${RUN}-catch-up-security-user`;
+    const catchUpResult = await catchUpHandlerFor(emptyCatchUpScope, catchUpUser).handler({ hours: 9 });
+    assert.equal(catchUpResult.content[0]?.text, 'Nothing new here in the last 9 hours.');
+    assert.equal(langPrefCalls.length, 1, "exactly one language_prefs lookup on catch_up's empty branch");
+    assert.deepEqual(
+      langPrefCalls[0],
+      ['discord', catchUpUser],
+      'must pass only caller.platform/caller.userId — never args.hours',
+    );
+
+    langPrefCalls.length = 0;
+    const nonEmptyCatchUpScope = `${RUN}-catch-up-security-nonempty`;
+    const nonEmptyCatchUpContent = `Security catch_up content ${RUN}`;
+    await recordInteraction({
+      platform: 'discord',
+      conversationId: nonEmptyCatchUpScope,
+      userId: 'member-1',
+      role: 'member',
+      direction: 'inbound',
+      content: nonEmptyCatchUpContent,
+    });
+    const nonEmptyCatchUpResult = await catchUpHandlerFor(nonEmptyCatchUpScope, catchUpUser).handler({});
+    assert.match(nonEmptyCatchUpResult.content[0]?.text ?? '', /Security catch_up content/);
+    assert.equal(langPrefCalls.length, 0, "no language_prefs lookup on catch_up's non-empty branch");
+
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [
+      [nonEmptySearchScope, nonEmptyCatchUpScope],
+    ]);
   },
 );
 

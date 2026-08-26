@@ -2,7 +2,12 @@ import { z } from 'zod';
 import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
 import { config } from '@swampratnz/agent-base/config.js';
 import { logger, hashId } from '@swampratnz/agent-base/logger.js';
-import { recentConversationHistory, searchMemory } from '@swampratnz/agent-base/storage/repository.js';
+import {
+  getLanguagePreference,
+  type LanguagePreference,
+  recentConversationHistory,
+  searchMemory,
+} from '@swampratnz/agent-base/storage/repository.js';
 import { sanitizeName } from '@swampratnz/agent-base/util/sanitizeName.js';
 import { memoryHitJumpLink } from '@swampratnz/agent-base/agent/discordLink.js';
 import { text, untrusted } from './helpers.js';
@@ -27,6 +32,29 @@ export const CATCH_UP_MAX_HOURS = 24 * 7;
  * injected each turn.
  */
 export const CATCH_UP_MAX_MESSAGES = 40;
+
+/**
+ * `remember_search`/`catch_up`'s bot-authored empty-result fallback strings
+ * (issue #1176), same "language threaded as an explicit parameter" shape as
+ * `formatWhoIsIntoEmptyText`/`formatSetHelperAvailabilityText` in social.ts —
+ * only the empty/fallback state is translated, never the `untrusted()`
+ * header or any quoted recalled content.
+ */
+export function formatMemoryEmptyText(
+  kind: 'search' | 'catchUp',
+  language: LanguagePreference,
+  hours?: number,
+): string {
+  const mi = language === 'mi';
+  switch (kind) {
+    case 'search':
+      return mi ? 'Kāore he kōrero o mua e hāngai ana i kitea.' : 'No relevant past interactions found.';
+    case 'catchUp':
+      return mi
+        ? `Kāore he mea hou i konei i roto i ngā haora ${hours} kua hipa.`
+        : `Nothing new here in the last ${hours} hour${hours === 1 ? '' : 's'}.`;
+  }
+}
 
 export const memoryTools = [
   defineTool({
@@ -63,7 +91,10 @@ export const memoryTools = [
           conversationId: caller.conversationId,
         });
       }
-      if (hits.length === 0) return text('No relevant past interactions found.');
+      if (hits.length === 0) {
+        const language = await getLanguagePreference(caller.platform, caller.userId);
+        return text(formatMemoryEmptyText('search', language));
+      }
       return text(
         untrusted(
           'Search results',
@@ -130,7 +161,8 @@ export const memoryTools = [
         'catch_up invocation',
       );
       if (entries.length === 0) {
-        return text(`Nothing new here in the last ${hours} hour${hours === 1 ? '' : 's'}.`);
+        const language = await getLanguagePreference(caller.platform, caller.userId);
+        return text(formatMemoryEmptyText('catchUp', language, hours));
       }
       return text(
         untrusted(

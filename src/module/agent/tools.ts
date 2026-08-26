@@ -68,7 +68,12 @@ export {
 } from './tools/notify.js';
 export { reserveDevTeamDispatchDaily } from './tools/devTeam.js';
 export { EVENTS_LIST_LIMIT, formatCommunityInfoText, formatListEventsEmptyText } from './tools/info.js';
-export { CATCH_UP_DEFAULT_HOURS, CATCH_UP_MAX_HOURS, CATCH_UP_MAX_MESSAGES } from './tools/memory.js';
+export {
+  CATCH_UP_DEFAULT_HOURS,
+  CATCH_UP_MAX_HOURS,
+  CATCH_UP_MAX_MESSAGES,
+  formatMemoryEmptyText,
+} from './tools/memory.js';
 export {
   APPEAL_MODERATION_REASON_MAX_CHARS,
   formatAppealModerationText,
