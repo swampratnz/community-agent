@@ -64,6 +64,7 @@ export {
   notifyAppealResolved,
   notifyKnowledgeTipResolved,
   notifyWarningsCleared,
+  notifyKnowledgeEntryFixed,
 } from './tools/notify.js';
 export { reserveDevTeamDispatchDaily } from './tools/devTeam.js';
 export { EVENTS_LIST_LIMIT, formatCommunityInfoText, formatListEventsEmptyText } from './tools/info.js';
@@ -92,7 +93,11 @@ export {
   WHO_IS_INTO_NO_PROFILE_HINT,
 } from './tools/social.js';
 export { MOST_HELPFUL_KNOWLEDGE_FETCH_CAP } from './tools/knowledgeMember.js';
-export { TOP_KNOWLEDGE_FETCH_CAP } from './tools/knowledgeAdmin.js';
+export {
+  TOP_KNOWLEDGE_FETCH_CAP,
+  KNOWLEDGE_FIX_NOTIFY_CAP,
+  KNOWLEDGE_FIX_NOTIFY_FETCH_CAP,
+} from './tools/knowledgeAdmin.js';
 export { WARN_USER_RATE_LIMIT_PER_HOUR } from './tools/moderation.js';
 export { TEAM_SETUP_MEMBER_CAP } from './tools/teamSetup.js';
 export {

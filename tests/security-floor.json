@@ -148,7 +148,7 @@
   "systemPromptSlots.test.ts": 5,
   "toolRegistry.test.ts": 4,
   "toolTierMap.test.ts": 2,
-  "tools.test.ts": 381,
+  "tools.test.ts": 387,
   "unhelpfulAnswerEscalationRouter.test.ts": 2,
   "usageAlertPendingQueue.test.ts": 3,
   "usageCostDigest.test.ts": 4,

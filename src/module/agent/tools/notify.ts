@@ -785,6 +785,54 @@ export async function notifyWarningsCleared(
 }
 
 /**
+ * Best-effort confirmation DM to a member who previously rated one of the
+ * bot's answers unhelpful, sent when an admin's `update_knowledge`/
+ * `merge_knowledge` call fixes the entry that answer was served from (issue
+ * #1169) — closes the one member-initiated write in `feedback.ts`
+ * (`rate_answer`'s thumbs-down) that had no sibling in this file: every other
+ * member-initiated queue here (`notifySuggestionResolved`,
+ * `notifyReportResolved`, `notifyAppealResolved`, `notifyKnowledgeTipResolved`,
+ * `notifyAccessRequestDeclined`, `notifyWarningsCleared`) already tells the
+ * submitter when their thing is resolved. Deliberately generic and static —
+ * no knowledge-entry title/content, no other rater's identity, no acting
+ * admin's identity — since the rater never submitted any of that themselves
+ * (unlike `notifyKnowledgeTipResolved`, which echoes the tip's OWN title back
+ * to the member who wrote it). Mirrors `notifyWarningsCleared`'s shape:
+ * fire-and-forget, `.catch(logger.warn)`, never blocks or changes
+ * `update_knowledge`/`merge_knowledge`'s own reported outcome. Honours the
+ * rater's standing `'mi'` language preference (issue #331), same
+ * degrade-to-`'auto'`-on-failure shape as every sibling in this file. A
+ * `WindowClosedError` rejection is queued via `queueForWindowReopen` at
+ * `'low'` priority instead of logged-and-dropped, the same #602/#644 recovery
+ * extended to this member-facing DM.
+ */
+export async function notifyKnowledgeEntryFixed(
+  adapter: PlatformAdapter,
+  userId: string,
+  platform: Platform,
+  getLangPref: typeof getLanguagePreference = getLanguagePreference,
+): Promise<void> {
+  const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
+  const message =
+    lang === 'mi'
+      ? 'Kua whakatikaina tētahi whakautu i kīia e koe he kore-āwhina i mua — nau mai ki te pātai anō mehemea ' +
+        'kei te hiahia koe ki ngā mōhiohanga hōu.'
+      : "An answer you rated unhelpful earlier has since been corrected — feel free to ask again if you'd " +
+        'like the updated info.';
+  await adapter.sendDirectMessage(userId, message).catch((err) => {
+    if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+      adapter.queueForWindowReopen(userId, message, 'low');
+      logger.warn(
+        { userId: hashId(userId), platform },
+        "Knowledge-fix resolution DM: recipient's window is closed, queued for reopen",
+      );
+      return;
+    }
+    logger.warn({ err, userId: hashId(userId) }, 'Knowledge-fix resolution DM failed');
+  });
+}
+
+/**
  * Wires a manual `warn_user` into the same strike system `Moderator.scan`
  * feeds for auto-detected hits (issue #384) — writes the warning row with
  * `source: 'admin'` (unless the target resolves admin+, who are never warned

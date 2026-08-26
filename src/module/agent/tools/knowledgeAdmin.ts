@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { Platform } from '@swampratnz/agent-base/platforms/types.js';
+import type { Platform, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
 import { config } from '@swampratnz/agent-base/config.js';
 import {
@@ -32,7 +32,7 @@ import {
   text,
   untrusted,
 } from './helpers.js';
-import { notifyKnowledgeTipResolved } from './notify.js';
+import { notifyKnowledgeEntryFixed, notifyKnowledgeTipResolved } from './notify.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 // list_top_knowledge's internal fetch cap (issue #1024): comfortably above
@@ -44,6 +44,74 @@ import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 // so the `!topknowledge`/`/topknowledge` admin shortcut references this same
 // constant rather than a duplicated literal.
 export const TOP_KNOWLEDGE_FETCH_CAP = 500;
+
+// update_knowledge/merge_knowledge's pre-edit unhelpful-rater lookup (issue
+// #1169) — the fetch cap for `listAnswerFeedback(allowed, true, ...)`, fetched
+// as a bounded superset and THEN deduped/sorted/sliced in
+// collectUnhelpfulRaters below, same "fetch wide, rank after" shape
+// list_top_knowledge uses TOP_KNOWLEDGE_FETCH_CAP for — sorting only an
+// unsorted first page would silently pick an arbitrary prefix instead of the
+// true most-recent raters.
+export const KNOWLEDGE_FIX_NOTIFY_FETCH_CAP = 200;
+
+// Fan-out cap (issue #1169 acceptance criterion 5): the most-recent unique
+// unhelpful raters notified per update_knowledge/merge_knowledge edit, so a
+// heavily-flagged entry can't trigger an unbounded DM burst.
+export const KNOWLEDGE_FIX_NOTIFY_CAP = 10;
+
+/**
+ * Collects the deduped, capped set of unhelpful raters to notify when
+ * update_knowledge/merge_knowledge fixes one of `entryIds` (issue #1169).
+ * Callers capture this BEFORE the edit lands, alongside the existing `prior`
+ * content capture, so the notified set reflects who rated the entry as the
+ * admin found it. Scoped to the acting admin's own `callerScope()` exactly
+ * like list_answer_feedback/list_low_rated_knowledge — an unhelpful rating
+ * from a conversation outside that scope is never surfaced here. Deduped by
+ * (platform, userId) so a rater who rated more than one matching row is
+ * notified once, excludes the acting admin even if they rated it themselves,
+ * sorted most-recent-first, and capped at KNOWLEDGE_FIX_NOTIFY_CAP.
+ */
+async function collectUnhelpfulRaters(
+  entryIds: readonly number[],
+  allowed: string[] | null,
+  caller: { platform: Platform; userId: string },
+): Promise<Array<{ platform: Platform; userId: string }>> {
+  const rows = await listAnswerFeedback(allowed, true, KNOWLEDGE_FIX_NOTIFY_FETCH_CAP);
+  const matching = rows
+    .filter((r) => r.knowledgeEntryId != null && entryIds.includes(r.knowledgeEntryId))
+    .filter((r) => !(r.platform === caller.platform && r.userId === caller.userId))
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  const seen = new Set<string>();
+  const targets: Array<{ platform: Platform; userId: string }> = [];
+  for (const r of matching) {
+    const key = `${r.platform}:${r.userId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    targets.push({ platform: r.platform, userId: r.userId });
+    if (targets.length >= KNOWLEDGE_FIX_NOTIFY_CAP) break;
+  }
+  return targets;
+}
+
+/**
+ * Best-effort fan-out of notifyKnowledgeEntryFixed to `targets` (issue
+ * #1169). A target whose platform has no registered/connected adapter is
+ * silently skipped, matching every other `adapterFor` call site in this file
+ * (accept/decline_knowledge_candidate above). notifyKnowledgeEntryFixed never
+ * throws (it catches its own send failures), so this never affects
+ * update_knowledge/merge_knowledge's own reported outcome.
+ */
+async function notifyUnhelpfulRatersFixed(
+  targets: Array<{ platform: Platform; userId: string }>,
+  adapterFor: (platform: Platform) => PlatformAdapter | undefined,
+): Promise<void> {
+  await Promise.all(
+    targets.map((target) => {
+      const adapter = adapterFor(target.platform);
+      return adapter ? notifyKnowledgeEntryFixed(adapter, target.userId, target.platform) : Promise.resolve();
+    }),
+  );
+}
 
 export const knowledgeAdminTools = [
   defineTool({
@@ -322,7 +390,7 @@ export const knowledgeAdminTools = [
         .optional()
         .describe('New human-readable label for sourceUrl; omit to leave unchanged'),
     },
-    handler: async (args, { caller, requireConfirm, audited }) => {
+    handler: async (args, { caller, requireConfirm, audited, callerScope, adapterFor }) => {
       assertAtLeast(caller.role, 'admin', 'update_knowledge');
       // CONFIRM-gated like delete_knowledge: an in-place overwrite of a
       // knowledge entry is destructive to trusted content that's served
@@ -334,6 +402,11 @@ export const knowledgeAdminTools = [
         // (in-place UPDATE keeps no history) — recoverability if a bad/hostile
         // edit slips through.
         const prior = await getKnowledgeContentById(args.id);
+        // issue #1169: capture this entry's unhelpful raters BEFORE the edit
+        // lands, same "before" timing as the `prior` content capture above —
+        // see collectUnhelpfulRaters's doc comment.
+        const allowed = await callerScope();
+        const raterTargets = await collectUnhelpfulRaters([args.id], allowed, caller);
         const state: { similarEntry?: KnowledgeDuplicateMatch } = {};
         const { success, result } = await audited({
           actionKind: 'update_knowledge',
@@ -363,6 +436,7 @@ export const knowledgeAdminTools = [
           },
         });
         if (!success) return `Failed: ${result}`;
+        await notifyUnhelpfulRatersFixed(raterTargets, adapterFor);
         let reply = `Updated knowledge entry #${args.id}.`;
         if (state.similarEntry) {
           const { similarEntry } = state;
@@ -429,7 +503,7 @@ export const knowledgeAdminTools = [
         .optional()
         .describe("New scope for the survivor; omit to leave keepId's scope unchanged"),
     },
-    handler: async (args, { caller, requireConfirm, audited }) => {
+    handler: async (args, { caller, requireConfirm, audited, callerScope, adapterFor }) => {
       assertAtLeast(caller.role, 'admin', 'merge_knowledge');
       return requireConfirm(
         `merge knowledge entry #${args.mergeId} into #${args.keepId}`,
@@ -439,6 +513,11 @@ export const knowledgeAdminTools = [
           // precedent as update_knowledge's `prior` capture — a merge deletes
           // mergeId, so this is the only record of what it contained.
           const prior = await getKnowledgeContentById(args.mergeId);
+          // issue #1169: capture BOTH sides' unhelpful raters before the merge
+          // lands — keepId's history plus mergeId's (which is about to be
+          // deleted), unioned and deduped by collectUnhelpfulRaters.
+          const allowed = await callerScope();
+          const raterTargets = await collectUnhelpfulRaters([args.keepId, args.mergeId], allowed, caller);
           const { success, result } = await audited({
             actionKind: 'merge_knowledge',
             params: {
@@ -460,9 +539,9 @@ export const knowledgeAdminTools = [
               return 'merged';
             },
           });
-          return success
-            ? `Merged knowledge entry #${args.mergeId} into #${args.keepId}.`
-            : `Failed: ${result}`;
+          if (!success) return `Failed: ${result}`;
+          await notifyUnhelpfulRatersFixed(raterTargets, adapterFor);
+          return `Merged knowledge entry #${args.mergeId} into #${args.keepId}.`;
         },
       );
     },

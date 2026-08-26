@@ -83,6 +83,19 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   only on both platforms; no new tool, table, or data access — it reuses
   `list_top_knowledge`'s own repository call and renderer verbatim, so the
   shortcut can never diverge from the tool it mirrors.
+- **A member who thumbs-downed a bot answer is now told when an admin fixes
+  the entry it came from.** (#1169) `rate_answer`'s thumbs-down was the one
+  member-initiated write left with no resolution notification —
+  `update_knowledge`/`merge_knowledge` (#540) already reset a fixed entry's
+  low-rated flag for everyone else, but the rater who flagged it never heard
+  back, unlike every other member-initiated queue in this bot (suggestions,
+  reports, appeals, knowledge tips, access requests, cleared warnings).
+  Admins now capture that entry's unhelpful raters (scoped to their own
+  `list_answer_feedback`/`list_low_rated_knowledge` visibility) before the
+  edit lands and send each a short, generic confirmation DM afterwards — no
+  knowledge content, no other rater's identity, and never the acting admin's
+  identity. Capped at 10 most-recent unique raters per edit; zero raters means
+  zero DMs and a byte-identical reply to today.
 
 ### Fixed
 - **The "no guidelines set" and "nothing to report" replies now honour a
