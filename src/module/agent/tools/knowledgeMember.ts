@@ -292,8 +292,22 @@ export const knowledgeMemberTools = [
               return new Set<number>();
             })
           : new Set<number>();
+      // Member-facing conflict caveat (issue #1167) — the sibling gap #1143
+      // (above) and #1127 both left on this exact renderer: every other
+      // knowledge-serving surface warns when two shown entries may disagree,
+      // and this ranked "most trusted" surface never did. Same gating
+      // (>= 2 ids, matching hasConflictAmongIds' own short-circuit) and
+      // fail-safe (`.catch` -> `false`, never fail the read) as
+      // knowledge_search's identical lookup above in this file.
+      const hasConflict =
+        rankedIds.length >= 2
+          ? await hasConflictAmongIds(rankedIds).catch((err) => {
+              logger.warn({ err }, 'Knowledge conflict check failed; omitting the conflict note');
+              return false;
+            })
+          : false;
       const language = await getLanguagePreference(caller.platform, caller.userId);
-      return text(formatMostHelpfulKnowledge(ranked, language, lowRatedIds));
+      return text(formatMostHelpfulKnowledge(ranked, language, lowRatedIds, hasConflict));
     },
   }),
 

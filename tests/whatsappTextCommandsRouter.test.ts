@@ -60,6 +60,7 @@ const { config } = await import('@swampratnz/agent-base/config.js');
 const { logger } = await import('@swampratnz/agent-base/logger.js');
 const { notice } = await import('../src/module/strings/notices.js');
 const KNOWLEDGE_LOW_RATED_CAVEAT_TEXT = notice('knowledgeLowRatedCaveat');
+const KNOWLEDGE_CONFLICT_CAVEAT_TEXT = notice('knowledgeConflictCaveat');
 // Side-effect import (mechanism/content split): the router's text-command
 // dispatcher reads commands/registry.ts's registered list, which only the
 // community commands module populates — src/index.ts does this in
@@ -2534,6 +2535,116 @@ test('!kbhelpful issues NO low-rated-lookup query when KNOWLEDGE_LOW_RATED_CAVEA
     !calls.some((c) => c.sql.includes('FROM answer_feedback')),
     'the low-rated lookup query must never run when the feature is disabled',
   );
+});
+
+// --- !kbhelpful conflict caveat parity (issue #1167) --------------------------
+
+test('SECURITY: !kbhelpful reply appends the conflict caveat exactly once when hasConflictAmongIds resolves true, byte-identical to formatMostHelpfulKnowledge(..., hasConflict)', async (t) => {
+  const rows = [
+    {
+      id: 1,
+      scope: 'global',
+      title: 'Entry one',
+      content: 'CONFLICT_KBHELPFUL_ONE',
+      created_by_role: 'admin',
+      updated_at: new Date(),
+      retrieval_count: 9,
+      last_retrieved_at: new Date(),
+    },
+    {
+      id: 2,
+      scope: 'global',
+      title: 'Entry two',
+      content: 'CONFLICT_KBHELPFUL_TWO',
+      created_by_role: 'admin',
+      updated_at: new Date(),
+      retrieval_count: 4,
+      last_retrieved_at: new Date(),
+    },
+  ];
+  t.mock.method(pool, 'query', (async (sql: string) => {
+    if (sql.includes('SELECT role FROM community_users')) return { rows: [{ role: 'member' }], rowCount: 0 };
+    if (sql.includes('JOIN knowledge b')) {
+      return { rows: [{ '?column?': 1 }], rowCount: 1 };
+    }
+    if (sql.includes('retrieval_count') && sql.includes('FROM knowledge')) {
+      return { rows, rowCount: 0 };
+    }
+    return { rows: [], rowCount: 0 };
+  }) as typeof pool.query);
+  const router = makeRouter({ runTurn: throwingRunTurn });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!kbhelpful', userId: 'member-1' }));
+
+  const escapedCaveat = KNOWLEDGE_CONFLICT_CAVEAT_TEXT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  assert.equal(
+    (sent[0].text.match(new RegExp(escapedCaveat, 'g')) ?? []).length,
+    1,
+    'the caveat appears exactly once, never per-entry',
+  );
+
+  const entries = await listKnowledge({
+    scope: 'global',
+    offset: 0,
+    limit: MOST_HELPFUL_KNOWLEDGE_FETCH_CAP,
+  });
+  const expected = formatMostHelpfulKnowledge(rankKnowledgeByRetrieval(entries, 10), 'auto', new Set(), true);
+  assert.equal(sent[0].text, expected);
+});
+
+test('SECURITY: !kbhelpful still replies successfully with the entries and no conflict caveat when hasConflictAmongIds rejects (fail-safe, issue #1167 acceptance criterion 5)', async (t) => {
+  const warnLog = t.mock.method(logger, 'warn', () => {});
+
+  t.mock.method(pool, 'query', (async (sql: string) => {
+    if (sql.includes('SELECT role FROM community_users')) return { rows: [{ role: 'member' }], rowCount: 0 };
+    if (sql.includes('JOIN knowledge b')) {
+      throw new Error('conflict lookup unavailable');
+    }
+    if (sql.includes('retrieval_count') && sql.includes('FROM knowledge')) {
+      return {
+        rows: [
+          {
+            id: 1,
+            scope: 'global',
+            title: 'Entry one',
+            content: 'STILL_SERVED_KBHELPFUL_CONFLICT_1',
+            created_by_role: 'admin',
+            updated_at: new Date(),
+            retrieval_count: 5,
+            last_retrieved_at: new Date(),
+          },
+          {
+            id: 2,
+            scope: 'global',
+            title: 'Entry two',
+            content: 'STILL_SERVED_KBHELPFUL_CONFLICT_2',
+            created_by_role: 'admin',
+            updated_at: new Date(),
+            retrieval_count: 3,
+            last_retrieved_at: new Date(),
+          },
+        ],
+        rowCount: 0,
+      };
+    }
+    return { rows: [], rowCount: 0 };
+  }) as typeof pool.query);
+  const router = makeRouter({ runTurn: throwingRunTurn });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await assert.doesNotReject(() => trigger(makeMessage({ text: '!kbhelpful', userId: 'member-1' })));
+
+  assert.equal(sent.length, 1);
+  assert.ok(sent[0].text.includes('STILL_SERVED_KBHELPFUL_CONFLICT_1'), 'the entries must still be served');
+  assert.ok(sent[0].text.includes('STILL_SERVED_KBHELPFUL_CONFLICT_2'), 'the entries must still be served');
+  assert.ok(
+    !sent[0].text.includes(KNOWLEDGE_CONFLICT_CAVEAT_TEXT),
+    'a lookup failure must degrade to no conflict caveat, never an error',
+  );
+  assert.ok(warnLog.mock.calls.length >= 1, 'the lookup failure must be logged, not silently swallowed');
 });
 
 // --- !reviewqueue (issue #1095) -----------------------------------------------

@@ -14770,6 +14770,125 @@ test(
   },
 );
 
+// formatMostHelpfulKnowledge's hasConflict param (issue #1167) — the sibling
+// gap #1143/#1127 both left on this renderer: every other knowledge-serving
+// surface (formatKnowledgeSearchResults, the /kb shortcut) already warns a
+// member when two shown entries may disagree.
+const MOST_HELPFUL_CONFLICT_FIXTURE_ENTRY = {
+  id: 1,
+  scope: 'global',
+  createdByRole: 'admin',
+  title: 'Plain entry',
+  content: 'Plain body',
+  retrievalCount: 5,
+  updatedAt: new Date('2024-01-01T00:00:00Z'),
+  lastRetrievedAt: new Date('2024-01-01T00:00:00Z'),
+  sourceUrl: null,
+  sourceTitle: null,
+  verifiedAt: null,
+  sourceUnreachable: null,
+  sourceCheckedAt: null,
+};
+
+test(
+  'formatMostHelpfulKnowledge with hasConflict omitted is byte-identical to hasConflict=false (issue #1167 ' +
+    'acceptance criterion 2)',
+  () => {
+    assert.equal(
+      formatMostHelpfulKnowledge([MOST_HELPFUL_CONFLICT_FIXTURE_ENTRY], 'en'),
+      formatMostHelpfulKnowledge([MOST_HELPFUL_CONFLICT_FIXTURE_ENTRY], 'en', new Set(), false),
+      'omitting hasConflict must render identically to passing false explicitly',
+    );
+  },
+);
+
+test(
+  'SECURITY: formatMostHelpfulKnowledge appends the fixed knowledgeConflictCaveat notice as an EXACT ' +
+    'trailing line, exactly once, when hasConflict is true — never interpolated with entry content or id ' +
+    '(issue #1167 acceptance criterion 1)',
+  () => {
+    const other = {
+      ...MOST_HELPFUL_CONFLICT_FIXTURE_ENTRY,
+      id: 2,
+      title: 'Other entry',
+      content: 'Other body',
+    };
+    const withoutConflict = formatMostHelpfulKnowledge(
+      [MOST_HELPFUL_CONFLICT_FIXTURE_ENTRY, other],
+      'en',
+      new Set(),
+      false,
+    );
+    const withConflict = formatMostHelpfulKnowledge(
+      [MOST_HELPFUL_CONFLICT_FIXTURE_ENTRY, other],
+      'en',
+      new Set(),
+      true,
+    );
+    const caveat = notice('knowledgeConflictCaveat');
+    assert.equal(
+      withConflict,
+      `${withoutConflict}\n\n(${caveat})`,
+      'must be byte-identical to the shared conflict caveat appended once as a trailing line after the ' +
+        'closing </community-knowledge> tag',
+    );
+    assert.equal(
+      withConflict.split(caveat).length - 1,
+      1,
+      'the caveat must appear exactly once, never per-entry',
+    );
+    assert.ok(
+      !caveat.includes('1') && !caveat.includes('2') && !caveat.includes('Plain entry'),
+      'the caveat text itself must never name an entry id or title',
+    );
+  },
+);
+
+test(
+  "formatMostHelpfulKnowledge renders the conflict caveat in te reo Māori when language is 'mi', and stays " +
+    "byte-identical to today's English rendering for 'en' (issue #1167 acceptance criterion 4)",
+  () => {
+    const other = {
+      ...MOST_HELPFUL_CONFLICT_FIXTURE_ENTRY,
+      id: 2,
+      title: 'Other entry',
+      content: 'Other body',
+    };
+    const withEnConflict = formatMostHelpfulKnowledge(
+      [MOST_HELPFUL_CONFLICT_FIXTURE_ENTRY, other],
+      'en',
+      new Set(),
+      true,
+    );
+    assert.match(
+      withEnConflict,
+      new RegExp(`\\(${KNOWLEDGE_CONFLICT_CAVEAT_TEXT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\)$`),
+    );
+    const withMiConflict = formatMostHelpfulKnowledge(
+      [MOST_HELPFUL_CONFLICT_FIXTURE_ENTRY, other],
+      'mi',
+      new Set(),
+      true,
+    );
+    assert.match(
+      withMiConflict,
+      new RegExp(`\\(${KNOWLEDGE_CONFLICT_CAVEAT_TEXT_MI.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\)$`),
+    );
+    assert.notEqual(withMiConflict, withEnConflict);
+  },
+);
+
+test(
+  'formatMostHelpfulKnowledge never appends the conflict caveat for an empty entry list, even if ' +
+    'hasConflict is (incorrectly) passed true (issue #1167)',
+  () => {
+    assert.equal(
+      formatMostHelpfulKnowledge([], 'en', new Set(), true),
+      'No knowledge entries yet — check back once the community has saved some.',
+    );
+  },
+);
+
 test(
   'rankKnowledgeByRetrieval ranks by retrievalCount descending, tie-broken by lastRetrievedAt descending, ' +
     'then id ascending — the shared logic behind both list_top_knowledge and most_helpful_knowledge (issue ' +
@@ -15139,6 +15258,157 @@ test(
       assert.ok(warnLog.mock.calls.length >= 1, 'the lookup failure must be logged, not silently swallowed');
     } finally {
       await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
+    }
+  },
+);
+
+// most_helpful_knowledge's live conflict-caveat wiring (issue #1167) — the
+// sibling gap #1143's own low-rated caveat above left on this exact renderer.
+// Mirrors hasConflictAmongIds' own SQL substring already relied on by
+// discordSlashCommands.test.ts's mockPool ('JOIN knowledge b'), rather than
+// constructing real conflict-band embeddings, to keep this test independent
+// of the embed() model's actual semantic judgement (same reasoning the
+// low-rated fail-safe test above uses for `FROM answer_feedback`).
+test(
+  'most_helpful_knowledge tool handler appends the conflict caveat exactly once when hasConflictAmongIds ' +
+    'resolves true for the ranked ids (issue #1167 acceptance criterion 3)',
+  { skip },
+  async (t) => {
+    const ids: number[] = [];
+    for (let i = 0; i < 2; i++) {
+      const { id } = await saveKnowledge({
+        title: `most-helpful-conflict-present-${i}-${RUN}`,
+        content: `Fixture entry ${i} for the most_helpful_knowledge conflict test.`,
+        scope: 'global',
+      });
+      ids.push(id);
+      await pool.query(`UPDATE knowledge SET retrieval_count = $1 WHERE id = $2`, [20_000_000 - i, id]);
+    }
+    try {
+      const realQuery = pool.query.bind(pool);
+      t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+        if (typeof sql === 'string' && sql.includes('JOIN knowledge b')) {
+          return Promise.resolve({ rows: [{ '?column?': 1 }], rowCount: 1 });
+        }
+        return (realQuery as (...args: unknown[]) => unknown)(sql, ...rest);
+      }) as typeof pool.query);
+
+      const caller = {
+        platform: 'discord' as const,
+        userId: `${RUN}-most-helpful-conflict-present-member`,
+        userName: 'Member',
+        role: 'member' as const,
+        conversationId: `${MOST_HELPFUL_KNOWLEDGE_GLOBAL_SCOPE_PREFIX}-conflict-present-${RUN}`,
+      };
+      const result = await getMostHelpfulKnowledgeHandler(caller).handler({ limit: 2 });
+      const text = result.content[0]?.text ?? '';
+
+      const escapedCaveat = KNOWLEDGE_CONFLICT_CAVEAT_TEXT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      assert.equal(
+        (text.match(new RegExp(escapedCaveat, 'g')) ?? []).length,
+        1,
+        'the caveat appears exactly once, never per-entry',
+      );
+      assert.match(
+        text,
+        new RegExp(`\\n\\n\\(${escapedCaveat}\\)$`),
+        'the caveat is the exact fixed exported string, appended as a trailing line',
+      );
+    } finally {
+      await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [ids]);
+    }
+  },
+);
+
+test(
+  'SECURITY: most_helpful_knowledge tool handler never calls hasConflictAmongIds when a caller-supplied ' +
+    'limit caps the ranked ids below 2, regardless of how many conflict-candidate entries exist in the ' +
+    "'global' scope (issue #1167 acceptance criterion 3, matching hasConflictAmongIds' own short-circuit)",
+  { skip },
+  async (t) => {
+    const { id } = await saveKnowledge({
+      title: `most-helpful-conflict-capped-${RUN}`,
+      content: 'Fixture entry capped to a single-id ranked list.',
+      scope: 'global',
+    });
+    try {
+      await pool.query(`UPDATE knowledge SET retrieval_count = $1 WHERE id = $2`, [30_000_000, id]);
+
+      let conflictQueryRan = false;
+      const realQuery = pool.query.bind(pool);
+      t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+        if (typeof sql === 'string' && sql.includes('JOIN knowledge b')) {
+          conflictQueryRan = true;
+        }
+        return (realQuery as (...args: unknown[]) => unknown)(sql, ...rest);
+      }) as typeof pool.query);
+
+      const caller = {
+        platform: 'discord' as const,
+        userId: `${RUN}-most-helpful-conflict-capped-member`,
+        userName: 'Member',
+        role: 'member' as const,
+        conversationId: `${MOST_HELPFUL_KNOWLEDGE_GLOBAL_SCOPE_PREFIX}-conflict-capped-${RUN}`,
+      };
+      await getMostHelpfulKnowledgeHandler(caller).handler({ limit: 1 });
+
+      assert.equal(
+        conflictQueryRan,
+        false,
+        'hasConflictAmongIds must never even be called with fewer than 2 ranked ids',
+      );
+    } finally {
+      await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
+    }
+  },
+);
+
+test(
+  'SECURITY: most_helpful_knowledge tool handler still replies successfully with the full ranked list and ' +
+    'no caveat, no error surfaced, when hasConflictAmongIds rejects (fail-safe, issue #1167 acceptance ' +
+    'criterion 5)',
+  { skip },
+  async (t) => {
+    const ids: number[] = [];
+    for (let i = 0; i < 2; i++) {
+      const { id } = await saveKnowledge({
+        title: `most-helpful-conflict-failsafe-${i}-${RUN}`,
+        content: `STILL_SERVED_CONFLICT_TEXT_${i}`,
+        scope: 'global',
+      });
+      ids.push(id);
+      await pool.query(`UPDATE knowledge SET retrieval_count = $1 WHERE id = $2`, [40_000_000 - i, id]);
+    }
+    try {
+      const warnLog = t.mock.method(logger, 'warn', () => {});
+      const realQuery = pool.query.bind(pool);
+      t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+        if (typeof sql === 'string' && sql.includes('JOIN knowledge b')) {
+          return Promise.reject(new Error('conflict lookup unavailable'));
+        }
+        return (realQuery as (...args: unknown[]) => unknown)(sql, ...rest);
+      }) as typeof pool.query);
+
+      const caller = {
+        platform: 'discord' as const,
+        userId: `${RUN}-most-helpful-conflict-failsafe-member`,
+        userName: 'Member',
+        role: 'member' as const,
+        conversationId: `${MOST_HELPFUL_KNOWLEDGE_GLOBAL_SCOPE_PREFIX}-conflict-failsafe-${RUN}`,
+      };
+      const result = await getMostHelpfulKnowledgeHandler(caller).handler({ limit: 2 });
+      const text = result.content[0]?.text ?? '';
+
+      assert.equal(result.isError, false, 'a lookup rejection must never fail the whole reply');
+      assert.ok(text.includes('STILL_SERVED_CONFLICT_TEXT_0'), 'the entries must still be served');
+      assert.ok(text.includes('STILL_SERVED_CONFLICT_TEXT_1'), 'the entries must still be served');
+      assert.ok(
+        !text.includes(KNOWLEDGE_CONFLICT_CAVEAT_TEXT),
+        'a lookup failure must degrade to no conflict caveat, never an error',
+      );
+      assert.ok(warnLog.mock.calls.length >= 1, 'the lookup failure must be logged, not silently swallowed');
+    } finally {
+      await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [ids]);
     }
   },
 );
