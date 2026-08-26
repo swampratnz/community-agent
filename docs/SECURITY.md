@@ -1182,6 +1182,24 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   purge paths gained one new statement each, deleting a departed identity's
   rows in **either** role — as the notified helper, or as the requester whose
   call triggered the notification (pinned by a new purge test for each path).
+- **`find_helper` noMatch project suggestion** (issue #1178): when no live
+  helper matches, the handler additionally calls `searchProjects(topic, …,
+  { seekingCollaboratorsOnly: true })` and appends up to
+  `FIND_HELPER_PROJECT_SUGGESTION_LIMIT` results (rendered via the same
+  quarantined `formatProjectResults` `list_projects` already uses) to the
+  reply. **No new disclosure class**: the surfaced projects are already fully
+  member-visible via `list_projects`; this only changes *when* that
+  already-public data is shown to the caller, never who can see it. **No new
+  DM, no new `helper_notifications` row, no persistence** — read + render
+  only, unlike the `matched` branch a few paragraphs up, which does both;
+  pinned by a SECURITY test asserting zero sends and an unchanged
+  `helper_notifications` row count. **Self-exclusion**: a project owned by the
+  caller is filtered out before the suggestion-limit slice — not merely
+  afterward — so it can never fill the caller's own only available slot, even
+  as the closest topic match; pinned by a dedicated SECURITY test. The block
+  never appears on the `matched`/`dailyCap`/`disabled` outcomes, and a
+  zero-suggestion result renders byte-identical to the pre-#1178 `noMatch`
+  text.
 - **Project connection requests** (`request_project_connection`,
   `project_connection_requests`, issue #840): the action counterpart to
   `member_projects.seeking_collaborators` (#834) — a member who sees the 🤝

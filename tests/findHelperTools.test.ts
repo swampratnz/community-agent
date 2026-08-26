@@ -23,8 +23,12 @@ const skip = hasDb
 
 const { config } = await import('@swampratnz/agent-base/config.js');
 await import('./support/registerToolRegistry.js');
-const { formatFindHelperText, formatSetHelperAvailabilityText } =
-  await import('../src/module/agent/tools.js');
+const {
+  FIND_HELPER_PROJECT_SUGGESTION_FETCH_LIMIT,
+  FIND_HELPER_PROJECT_SUGGESTION_LIMIT,
+  formatFindHelperText,
+  formatSetHelperAvailabilityText,
+} = await import('../src/module/agent/tools.js');
 const { buildToolServer } = await import('../src/module/agent/tools.js');
 const {
   FIND_HELPER_REQUESTER_DAILY_LIMIT,
@@ -32,6 +36,7 @@ const {
   setLanguagePreference,
   setMemberInterests,
   setHelperAvailability,
+  shareProject,
 } = await import('@swampratnz/agent-base/storage/repository.js');
 const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
 
@@ -45,6 +50,9 @@ after(async () => {
     await pool.query(`DELETE FROM helper_notifications WHERE helper_user_id LIKE $1`, [`${RUN}%`]);
     await pool.query(`DELETE FROM helper_notifications WHERE requester_user_id LIKE $1`, [`${RUN}%`]);
     await pool.query(`DELETE FROM language_prefs WHERE platform = 'discord' AND user_id LIKE $1`, [
+      `${RUN}%`,
+    ]);
+    await pool.query(`DELETE FROM member_projects WHERE platform = 'discord' AND user_id LIKE $1`, [
       `${RUN}%`,
     ]);
   }
@@ -674,3 +682,292 @@ test(
     await pool.query(`DELETE FROM language_prefs WHERE platform = 'discord' AND user_id = $1`, [requester]);
   },
 );
+
+// --- issue #1178: find_helper's noMatch path suggests a related seeking-collaborators project ---
+
+test(
+  'find_helper noMatch enrichment: appends a rendered seeking-collaborators project suggestion when no live helper matches the topic (issue #1178 acceptance criterion 1)',
+  { skip },
+  async () => {
+    const requester = `${RUN}-find-helper-suggest-requester`;
+    const owner = `${RUN}-find-helper-suggest-owner`;
+    const topic = `${RUN} unique suggestion topic phrase for project matching`;
+    await shareProject({
+      platform: 'discord',
+      userId: owner,
+      name: 'Suggest Me',
+      description: topic,
+      seekingCollaborators: true,
+    });
+
+    const sends: Array<{ userId: string; text: string }> = [];
+    const findTool = findHelperHandler({ userId: requester }, stubAdapter(sends));
+    const result = await findTool.handler({ topic });
+
+    assert.equal(result.isError, false);
+    const replyText = result.content[0]?.text ?? '';
+    assert.match(replyText, /no one available/i, 'the base noMatch sentence is still present');
+    assert.match(
+      replyText,
+      /looking for help with something similar/i,
+      'the added framing sentence is present',
+    );
+    assert.match(replyText, /Suggest Me/, 'the seeking-collaborators project is rendered in the reply');
+    assert.equal(sends.length, 0, 'a project suggestion is informational only — no DM is ever sent for it');
+
+    await pool.query(`DELETE FROM member_projects WHERE platform = 'discord' AND user_id = $1`, [owner]);
+  },
+);
+
+test(
+  "find_helper noMatch reply stays byte-identical to the pre-#1178 text when zero seeking-collaborators projects match, and when the only match is the caller's own project (issue #1178 acceptance criteria 2, 5)",
+  { skip },
+  async () => {
+    const requester = `${RUN}-find-helper-suggest-none-requester`;
+
+    const noneTopic = `${RUN}-find-helper-suggest-none-unique-topic`;
+    const noneResult = await findHelperHandler({ userId: requester }, stubAdapter([])).handler({
+      topic: noneTopic,
+    });
+    assert.equal(noneResult.isError, false);
+    assert.equal(
+      noneResult.content[0]?.text,
+      formatFindHelperText('noMatch', FIND_HELPER_REQUESTER_DAILY_LIMIT, 'auto'),
+      'zero matching seeking-collaborators projects must render byte-identical to the pre-#1178 noMatch text',
+    );
+
+    // Self-exclusion runs BEFORE the FIND_HELPER_PROJECT_SUGGESTION_LIMIT
+    // slice, so the caller's own project — even as the single closest match —
+    // can never fill the one available suggestion slot.
+    const selfTopic = `${RUN}-find-helper-suggest-self-unique-topic`;
+    await shareProject({
+      platform: 'discord',
+      userId: requester,
+      name: 'My Own Project',
+      description: selfTopic,
+      seekingCollaborators: true,
+    });
+    const selfResult = await findHelperHandler({ userId: requester }, stubAdapter([])).handler({
+      topic: selfTopic,
+    });
+    assert.equal(selfResult.isError, false);
+    assert.equal(
+      selfResult.content[0]?.text,
+      formatFindHelperText('noMatch', FIND_HELPER_REQUESTER_DAILY_LIMIT, 'auto'),
+      "the caller's own project must never appear in their own suggestion — reply stays byte-identical",
+    );
+
+    await pool.query(`DELETE FROM member_projects WHERE platform = 'discord' AND user_id = $1`, [requester]);
+  },
+);
+
+test(
+  'find_helper: the project-suggestion block never appears on the matched or dailyCap outcomes — only on a genuine noMatch (issue #1178 acceptance criterion 3)',
+  { skip },
+  async () => {
+    const requester = `${RUN}-find-helper-suggest-isolation-requester`;
+    const helper = `${RUN}-find-helper-suggest-isolation-helper`;
+    const owner = `${RUN}-find-helper-suggest-isolation-owner`;
+    const topic = `${RUN} unique isolation topic phrase for the matched path`;
+    await setMemberInterests('discord', helper, topic);
+    await setHelperAvailability('discord', helper, true);
+    // A seeking-collaborators project on the SAME topic — if the suggestion
+    // branch ever leaked into the matched path, it would show up here.
+    await shareProject({
+      platform: 'discord',
+      userId: owner,
+      name: 'Isolation Project',
+      description: topic,
+      seekingCollaborators: true,
+    });
+
+    const matchedResult = await findHelperHandler({ userId: requester }, stubAdapter([])).handler({ topic });
+    assert.equal(matchedResult.isError, false);
+    assert.doesNotMatch(
+      matchedResult.content[0]?.text ?? '',
+      /shared-projects/,
+      'the matched outcome must never include the suggestion block',
+    );
+
+    const cappedRequester = `${RUN}-find-helper-suggest-isolation-cap-requester`;
+    for (let i = 0; i < FIND_HELPER_REQUESTER_DAILY_LIMIT; i++) {
+      await pool.query(
+        `INSERT INTO helper_notifications
+           (helper_platform, helper_user_id, requester_platform, requester_user_id, topic)
+         VALUES ('discord', $1, 'discord', $2, $3)`,
+        [`${RUN}-find-helper-suggest-isolation-prior-helper-${i}`, cappedRequester, `prior topic ${i}`],
+      );
+    }
+    const cappedResult = await findHelperHandler({ userId: cappedRequester }, stubAdapter([])).handler({
+      topic,
+    });
+    assert.equal(cappedResult.isError, true);
+    assert.doesNotMatch(
+      cappedResult.content[0]?.text ?? '',
+      /shared-projects/,
+      'the dailyCap outcome must never include the suggestion block',
+    );
+
+    const wasEnabled = config.findHelper.enabled;
+    try {
+      config.findHelper.enabled = false;
+      const disabledRequester = `${RUN}-find-helper-suggest-isolation-disabled-requester`;
+      const disabledResult = await findHelperHandler({ userId: disabledRequester }, stubAdapter([])).handler({
+        topic,
+      });
+      assert.equal(disabledResult.isError, true);
+      assert.doesNotMatch(
+        disabledResult.content[0]?.text ?? '',
+        /shared-projects/,
+        'the disabled outcome must never include the suggestion block',
+      );
+    } finally {
+      config.findHelper.enabled = wasEnabled;
+    }
+
+    await pool.query(`DELETE FROM member_interests WHERE platform = 'discord' AND user_id = $1`, [helper]);
+    await pool.query(`DELETE FROM helper_notifications WHERE helper_user_id = $1`, [helper]);
+    await pool.query(`DELETE FROM helper_notifications WHERE requester_user_id = ANY($1)`, [
+      [requester, cappedRequester],
+    ]);
+    await pool.query(`DELETE FROM member_projects WHERE platform = 'discord' AND user_id = $1`, [owner]);
+  },
+);
+
+test(
+  'SECURITY: find_helper noMatch-with-suggestion sends zero direct messages and writes zero rows to helper_notifications — distinguishing it from the matched branch, which does both (issue #1178 acceptance criterion 4)',
+  { skip },
+  async () => {
+    const requester = `${RUN}-find-helper-suggest-nodm-requester`;
+    const owner = `${RUN}-find-helper-suggest-nodm-owner`;
+    const topic = `${RUN} unique no-dm suggestion topic phrase`;
+    await shareProject({
+      platform: 'discord',
+      userId: owner,
+      name: 'No DM Project',
+      description: topic,
+      seekingCollaborators: true,
+    });
+
+    const before = await pool.query(`SELECT COUNT(*)::int AS n FROM helper_notifications`);
+    const sends: Array<{ userId: string; text: string }> = [];
+    const result = await findHelperHandler({ userId: requester }, stubAdapter(sends)).handler({ topic });
+    const after = await pool.query(`SELECT COUNT(*)::int AS n FROM helper_notifications`);
+
+    assert.equal(result.isError, false);
+    assert.match(result.content[0]?.text ?? '', /shared-projects/, 'precondition: the suggestion did render');
+    assert.equal(
+      sends.length,
+      0,
+      'SECURITY: zero direct messages are sent on the noMatch-with-suggestion path',
+    );
+    assert.equal(
+      after.rows[0].n,
+      before.rows[0].n,
+      'SECURITY: zero rows are written to helper_notifications on the noMatch-with-suggestion path',
+    );
+
+    await pool.query(`DELETE FROM member_projects WHERE platform = 'discord' AND user_id = $1`, [owner]);
+  },
+);
+
+test(
+  'SECURITY: a project owned by the calling member is never included in their own find_helper suggestion set, even when it is the single closest topic match — self-exclusion happens before the suggestion-limit slice (issue #1178 acceptance criterion 5)',
+  { skip },
+  async () => {
+    const requester = `${RUN}-find-helper-suggest-selfexclude-requester`;
+    const otherOwner = `${RUN}-find-helper-suggest-selfexclude-other`;
+    const topic = `${RUN} unique self-exclusion topic phrase for suggestion slicing`;
+
+    // The caller's own project is the closest possible match (identical
+    // description text) — a naive implementation that slices to
+    // FIND_HELPER_PROJECT_SUGGESTION_LIMIT before filtering could let it
+    // consume the only slot and hide the other member's project.
+    await shareProject({
+      platform: 'discord',
+      userId: requester,
+      name: 'Requester Own Project',
+      description: topic,
+      seekingCollaborators: true,
+    });
+    await shareProject({
+      platform: 'discord',
+      userId: otherOwner,
+      name: 'Other Member Project',
+      description: topic,
+      seekingCollaborators: true,
+    });
+
+    const result = await findHelperHandler({ userId: requester }, stubAdapter([])).handler({ topic });
+    assert.equal(result.isError, false);
+    const replyText = result.content[0]?.text ?? '';
+    assert.doesNotMatch(
+      replyText,
+      /Requester Own Project/,
+      "SECURITY: the caller's own seeking-collaborators project never appears in their own suggestion set",
+    );
+    assert.match(
+      replyText,
+      /Other Member Project/,
+      "the other member's project still surfaces once the caller's own is excluded",
+    );
+
+    await pool.query(`DELETE FROM member_projects WHERE platform = 'discord' AND user_id = ANY($1)`, [
+      [requester, otherOwner],
+    ]);
+  },
+);
+
+test(
+  "find_helper's noMatch project-suggestion framing sentence honours the caller's stored 'mi' language preference; the rendered project block itself is byte-identical regardless of language (issue #1178 acceptance criterion 6)",
+  { skip },
+  async () => {
+    const miRequester = `${RUN}-find-helper-suggest-mi-requester`;
+    const enRequester = `${RUN}-find-helper-suggest-en-requester`;
+    const owner = `${RUN}-find-helper-suggest-lang-owner`;
+    const topic = `${RUN} unique bilingual suggestion topic phrase`;
+    await setLanguagePreference('discord', miRequester, 'mi');
+    await shareProject({
+      platform: 'discord',
+      userId: owner,
+      name: 'Bilingual Project',
+      description: topic,
+      seekingCollaborators: true,
+    });
+
+    const miResult = await findHelperHandler({ userId: miRequester }, stubAdapter([])).handler({ topic });
+    const enResult = await findHelperHandler({ userId: enRequester }, stubAdapter([])).handler({ topic });
+
+    assert.equal(miResult.isError, false);
+    assert.equal(enResult.isError, false);
+    const miText = miResult.content[0]?.text ?? '';
+    const enText = enResult.content[0]?.text ?? '';
+    assert.match(
+      miText,
+      /rapu hoa mahi/,
+      'the mi framing sentence is used for a caller with a stored mi preference',
+    );
+    assert.match(
+      enText,
+      /looking for help with something similar/i,
+      'the default English framing sentence is used for a caller with no stored preference',
+    );
+
+    const miBlock = miText.split('<shared-projects')[1];
+    const enBlock = enText.split('<shared-projects')[1];
+    assert.ok(miBlock && enBlock, 'precondition: both replies rendered the suggestion block');
+    assert.equal(
+      miBlock,
+      enBlock,
+      'the rendered project block itself must never vary by language — only the framing sentence does',
+    );
+
+    await pool.query(`DELETE FROM member_projects WHERE platform = 'discord' AND user_id = $1`, [owner]);
+    await pool.query(`DELETE FROM language_prefs WHERE platform = 'discord' AND user_id = $1`, [miRequester]);
+  },
+);
+
+test('find_helper project-suggestion caps are the constants the acceptance criteria pinned (issue #1178)', () => {
+  assert.equal(FIND_HELPER_PROJECT_SUGGESTION_FETCH_LIMIT, 4);
+  assert.equal(FIND_HELPER_PROJECT_SUGGESTION_LIMIT, 2);
+});

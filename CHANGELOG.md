@@ -52,6 +52,15 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   deployment's own internals as worked examples. Same bundled-markdown shape
   as every other skill: no new tool, tier, or data access, reachable only
   behind the existing off-by-default `AGENT_SKILLS_ENABLED` gate.
+- **`find_helper`'s "no one available" reply now suggests a related project
+  looking for collaborators, instead of a dead end.** (#1178) If no live
+  member matches your topic, the bot now also checks the project showcase for
+  a `share_project`-published, seeking-collaborators project on a similar
+  topic and mentions it — the same data `list_projects` already shows every
+  member, just surfaced at the moment it's most useful. No DM is sent and
+  nothing is recorded; your own projects are never suggested to you. A
+  genuine no-match with nothing similar to suggest looks exactly as it did
+  before.
 
 ## 2026-08-26
 
