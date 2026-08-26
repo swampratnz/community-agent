@@ -76,6 +76,7 @@ const {
   notifyAppealResolved,
   notifyKnowledgeTipResolved,
   notifyWarningsCleared,
+  notifyKnowledgeEntryFixed,
   buildToolServer,
   formatFindHelperText,
   formatFoundKnowledge,
@@ -139,6 +140,8 @@ const {
   formatRequestHumanHelpText,
   formatSuggestImprovementText,
   TOP_KNOWLEDGE_FETCH_CAP,
+  KNOWLEDGE_FIX_NOTIFY_CAP,
+  KNOWLEDGE_FIX_NOTIFY_FETCH_CAP,
 } = await import('../src/module/agent/tools.js');
 const { reserveVoiceTranscriptionSlot } = await import('@swampratnz/agent-base/agent/rateReservers.js');
 const { filterOutbound } = await import('@swampratnz/agent-base/agent/outbound.js');
@@ -1846,6 +1849,86 @@ test("SECURITY: notifyWarningsCleared degrades to the English default, rather th
 
   assert.equal(calls.length, 1);
   assert.match(calls[0], /warnings have been cleared/i);
+});
+
+// notifyKnowledgeEntryFixed (issue #1169) — the last member-initiated write
+// in feedback.ts (rate_answer's thumbs-down) to gain a resolution DM, sent by
+// update_knowledge/merge_knowledge when the fixed entry is one the recipient
+// rated unhelpful. Deliberately generic/static, unlike notifyKnowledgeTipResolved
+// below (which echoes the tip's OWN title back to its author) — the rater
+// never submitted a title, so there is nothing of theirs to echo.
+test('notifyKnowledgeEntryFixed sends a generic confirmation naming no knowledge content, rater, or admin identity', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyKnowledgeEntryFixed(adapter, 'user-1', 'discord');
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /rated unhelpful earlier has since been corrected/i);
+});
+
+test("notifyKnowledgeEntryFixed sends the te reo Māori variant for a caller with a stored 'mi' preference (issue #331)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyKnowledgeEntryFixed(adapter, 'user-1', 'discord', async () => 'mi');
+
+  assert.match(calls[0], /whakatikaina/);
+});
+
+test("notifyKnowledgeEntryFixed sends the English default for the default 'auto' preference, byte-identical to today", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyKnowledgeEntryFixed(adapter, 'user-1', 'discord', async () => 'auto');
+
+  assert.match(calls[0], /feel free to ask again/i);
+});
+
+test("SECURITY: notifyKnowledgeEntryFixed degrades to the English default, rather than throwing or dropping the DM, when the language-preference lookup fails (issue #52's invariant extended to issue #331)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyKnowledgeEntryFixed(adapter, 'user-1', 'discord', async () => {
+    throw new Error('DB unreachable');
+  });
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /feel free to ask again/i);
+});
+
+test('SECURITY: notifyKnowledgeEntryFixed queues via queueForWindowReopen at "low" priority on a WindowClosedError, rather than dropping the DM (issue #644 recovery extended to issue #1169)', async () => {
+  const queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }> = [];
+  const adapter: PlatformAdapter = {
+    ...stubAdapter(async () => {
+      throw new WindowClosedError('user-1');
+    }),
+    queueForWindowReopen(userId: string, message: string, priority: 'system' | 'low') {
+      queued.push({ userId, message, priority });
+    },
+  };
+
+  await notifyKnowledgeEntryFixed(adapter, 'user-1', 'discord');
+
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0]?.userId, 'user-1');
+  assert.equal(queued[0]?.priority, 'low');
+});
+
+test('notifyKnowledgeEntryFixed swallows a DM failure rather than throwing (the resolution itself stays the source of truth)', async () => {
+  const adapter = stubAdapter(async () => {
+    throw new Error('send failed');
+  });
+
+  await assert.doesNotReject(notifyKnowledgeEntryFixed(adapter, 'user-1', 'discord'));
 });
 
 // notifyKnowledgeTipResolved holds all of accept_knowledge_candidate /
@@ -24907,6 +24990,392 @@ test(
 
     cancelPendingAction('discord', caller.conversationId, caller.userId);
     await pool.query(`DELETE FROM knowledge WHERE scope = $1`, [scope]);
+  },
+);
+
+// update_knowledge / merge_knowledge unhelpful-rater resolution DM (issue
+// #1169) — the member-facing half #540 left untouched: closing an
+// unhelpful-rated entry now tells the raters who flagged it, mirroring the
+// resolution-DM pattern every other member-initiated queue in this codebase
+// already has (notifySuggestionResolved/notifyReportResolved/
+// notifyAppealResolved/notifyKnowledgeTipResolved/notifyWarningsCleared).
+// notifyKnowledgeEntryFixed's own message-content/language/failure-isolation
+// behaviour is pinned directly above (no DB needed); these DB-integration
+// tests pin the WIRING in knowledgeAdmin.ts — which raters are collected,
+// deduped, scoped, and capped.
+function knowledgeFixAdminHandlers(userId: string, conversationId: string, adapter: PlatformAdapter) {
+  const caller = {
+    platform: 'discord' as const,
+    userId,
+    userName: 'Admin',
+    role: 'admin' as const,
+    conversationId,
+  };
+  const server = buildToolServer(caller, adapter);
+  const tools = (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (
+            args: Record<string, unknown>,
+          ) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+        }
+      >;
+    }
+  )._registeredTools;
+  return { caller, tools };
+}
+
+/** Records an unhelpful/helpful rating of a knowledge-shortcut-served answer bound to `entryId`, via the SAME rate_answer path list_low_rated_knowledge's own fixtures use above. */
+async function rateKnowledgeAnswer(
+  userId: string,
+  conversationId: string,
+  entryId: number,
+  helpful: boolean,
+) {
+  await recordInteraction({
+    platform: 'discord',
+    conversationId,
+    userId: 'bot',
+    role: 'member',
+    direction: 'outbound',
+    content: `shortcut answer for ${userId} re entry ${entryId}`,
+    meta: { replyToUserId: userId, knowledgeShortcut: true, knowledgeEntryId: entryId },
+  });
+  const result = await rateAnswerHandler(userId, conversationId).handler({ helpful });
+  assert.notEqual(result.isError, true);
+}
+
+test(
+  'update_knowledge notifies each unique unhelpful rater exactly once and excludes the acting admin even when they rated the entry themselves (issue #1169 acceptance criterion 1)',
+  { skip },
+  async () => {
+    const admin = `${RUN}-kf-update-admin`;
+    const conversationId = `${RUN}-kf-update-convo`;
+    const { id: entryId } = await saveKnowledge({
+      content: `${RUN} kf-update entry content`,
+      title: `${RUN} kf-update entry`,
+    });
+
+    const raterA = `${RUN}-kf-update-rater-a`;
+    const raterB = `${RUN}-kf-update-rater-b`;
+    // raterA rates unhelpful twice against two DISTINCT interactions — must
+    // still be notified exactly once (dedup by (platform, userId)).
+    await rateKnowledgeAnswer(raterA, conversationId, entryId, false);
+    await rateKnowledgeAnswer(raterA, conversationId, entryId, false);
+    await rateKnowledgeAnswer(raterB, conversationId, entryId, false);
+    // The acting admin's OWN unhelpful rating of this entry must never
+    // notify themselves.
+    await rateKnowledgeAnswer(admin, conversationId, entryId, false);
+
+    const dmCalls: string[] = [];
+    const adapter = stubAdapter(async (userId) => {
+      dmCalls.push(userId);
+    });
+    const { tools, caller } = knowledgeFixAdminHandlers(admin, conversationId, adapter);
+
+    await tools['update_knowledge'].handler({ id: entryId, content: 'corrected content' });
+    await takePendingAction('discord', caller.conversationId, caller.userId)?.execute();
+
+    assert.deepEqual(
+      new Set(dmCalls),
+      new Set([raterA, raterB]),
+      'exactly the deduped unhelpful raters are notified, never the acting admin',
+    );
+    assert.equal(dmCalls.length, 2, 'raterA is notified once despite rating unhelpful twice');
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [[raterA, raterB, admin]]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [entryId]);
+  },
+);
+
+test(
+  'merge_knowledge notifies the deduped unique unhelpful raters of BOTH keepId and mergeId (issue #1169 acceptance criterion 2)',
+  { skip },
+  async () => {
+    const admin = `${RUN}-kf-merge-admin`;
+    const conversationId = `${RUN}-kf-merge-convo`;
+    const { id: keepId } = await saveKnowledge({
+      content: `${RUN} kf-merge keep content`,
+      title: `${RUN} kf-merge keep`,
+    });
+    const { id: mergeId } = await saveKnowledge({
+      content: `${RUN} kf-merge merge content`,
+      title: `${RUN} kf-merge merge`,
+    });
+    const keepRater = `${RUN}-kf-merge-keep-rater`;
+    const mergeRater = `${RUN}-kf-merge-merge-rater`;
+    await rateKnowledgeAnswer(keepRater, conversationId, keepId, false);
+    await rateKnowledgeAnswer(mergeRater, conversationId, mergeId, false);
+
+    const dmCalls: string[] = [];
+    const adapter = stubAdapter(async (userId) => {
+      dmCalls.push(userId);
+    });
+    const { tools, caller } = knowledgeFixAdminHandlers(admin, conversationId, adapter);
+
+    await tools['merge_knowledge'].handler({ keepId, mergeId });
+    await takePendingAction('discord', caller.conversationId, caller.userId)?.execute();
+
+    assert.deepEqual(new Set(dmCalls), new Set([keepRater, mergeRater]));
+    assert.equal(dmCalls.length, 2);
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [[keepRater, mergeRater]]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [keepId]);
+  },
+);
+
+test(
+  'update_knowledge sends no DM and its reply stays byte-identical to today when the entry has zero in-scope unhelpful ratings (issue #1169 acceptance criterion 3)',
+  { skip },
+  async () => {
+    const admin = `${RUN}-kf-noop-admin`;
+    const conversationId = `${RUN}-kf-noop-convo`;
+    const { id: entryId } = await saveKnowledge({
+      content: `${RUN} kf-noop entry content`,
+      title: `${RUN} kf-noop entry`,
+    });
+
+    const dmCalls: string[] = [];
+    const adapter = stubAdapter(async (userId) => {
+      dmCalls.push(userId);
+    });
+    const { tools, caller } = knowledgeFixAdminHandlers(admin, conversationId, adapter);
+
+    await tools['update_knowledge'].handler({ id: entryId, content: 'no raters to notify' });
+    const reply = await takePendingAction('discord', caller.conversationId, caller.userId)?.execute();
+
+    assert.equal(reply, `Updated knowledge entry #${entryId}.`);
+    assert.equal(dmCalls.length, 0);
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [entryId]);
+  },
+);
+
+test(
+  'SECURITY: an unhelpful rating from a conversation outside the acting admin scope never produces a notification target (issue #1169 acceptance criterion 4)',
+  { skip },
+  async () => {
+    const admin = `${RUN}-kf-scope-admin`;
+    const adminConvo = `${RUN}-kf-scope-admin-convo`;
+    const outOfScopeConvo = `${RUN}-kf-scope-out-of-scope-convo`;
+    const { id: entryId } = await saveKnowledge({
+      content: `${RUN} kf-scope entry content`,
+      title: `${RUN} kf-scope entry`,
+    });
+    const outOfScopeRater = `${RUN}-kf-scope-rater`;
+    await rateKnowledgeAnswer(outOfScopeRater, outOfScopeConvo, entryId, false);
+
+    const dmCalls: string[] = [];
+    const adapter = stubAdapter(async (userId) => {
+      dmCalls.push(userId);
+    });
+    const { tools, caller } = knowledgeFixAdminHandlers(admin, adminConvo, adapter);
+
+    await tools['update_knowledge'].handler({
+      id: entryId,
+      content: 'corrected, out-of-scope rater must be excluded',
+    });
+    await takePendingAction('discord', caller.conversationId, caller.userId)?.execute();
+
+    assert.equal(dmCalls.length, 0, 'a rating from a conversation outside the admin scope must never notify');
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [outOfScopeRater]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [outOfScopeConvo]);
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [entryId]);
+  },
+);
+
+test(
+  'SECURITY: update_knowledge notifies exactly KNOWLEDGE_FIX_NOTIFY_CAP most-recent unique raters when more than that many are in scope, never an 11th (issue #1169 acceptance criterion 5)',
+  { skip },
+  async () => {
+    const admin = `${RUN}-kf-cap-admin`;
+    const conversationId = `${RUN}-kf-cap-convo`;
+    const { id: entryId } = await saveKnowledge({
+      content: `${RUN} kf-cap entry content`,
+      title: `${RUN} kf-cap entry`,
+    });
+
+    const raterCount = KNOWLEDGE_FIX_NOTIFY_CAP + 2;
+    const raters: string[] = [];
+    for (let i = 0; i < raterCount; i++) {
+      const rater = `${RUN}-kf-cap-rater-${i}`;
+      raters.push(rater);
+      await rateKnowledgeAnswer(rater, conversationId, entryId, false);
+      // Guarantee strictly increasing created_at across raters so "most
+      // recent" is unambiguous — same timing precaution the update_knowledge
+      // citation re-verify test above uses.
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    const mostRecent = raters.slice(-KNOWLEDGE_FIX_NOTIFY_CAP);
+
+    const dmCalls: string[] = [];
+    const adapter = stubAdapter(async (userId) => {
+      dmCalls.push(userId);
+    });
+    const { tools, caller } = knowledgeFixAdminHandlers(admin, conversationId, adapter);
+
+    await tools['update_knowledge'].handler({ id: entryId, content: 'corrected content, capped fan-out' });
+    await takePendingAction('discord', caller.conversationId, caller.userId)?.execute();
+
+    assert.equal(dmCalls.length, KNOWLEDGE_FIX_NOTIFY_CAP, 'exactly the cap, never an 11th DM');
+    assert.deepEqual(
+      new Set(dmCalls),
+      new Set(mostRecent),
+      'the notified set is exactly the most-recent KNOWLEDGE_FIX_NOTIFY_CAP raters',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [raters]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [entryId]);
+  },
+);
+
+// KNOWN LIMITATION regression (flagged in PR #1170 review): collectUnhelpfulRaters
+// filters an entry's raters out of a single KNOWLEDGE_FIX_NOTIFY_FETCH_CAP-sized
+// fetch of the admin's MOST-RECENT unhelpful ratings across their WHOLE scope, not
+// a per-entry query (listAnswerFeedback has no per-entry filter, and its own
+// internal limit is already hard-clamped at 200 — see KNOWLEDGE_FIX_NOTIFY_FETCH_CAP's
+// comment in knowledgeAdmin.ts). If enough more-recent unhelpful ratings land on
+// OTHER entries in the same scope, an older entry's true rater is pushed outside
+// the fetch window and gets silently dropped — zero DMs, no log line. This test
+// proves the gap exists rather than leaving it as an unverified claim; it is
+// expected to keep passing (i.e. the crowd-out keeps happening) until an
+// agent-base change adds a per-entry filter to listAnswerFeedback.
+test(
+  "known limitation: an entry's unhelpful rater is silently dropped when >= KNOWLEDGE_FIX_NOTIFY_FETCH_CAP more-recent unhelpful ratings exist elsewhere in the admin scope (issue #1169, PR #1170 review)",
+  { skip },
+  async () => {
+    const admin = `${RUN}-kf-crowd-admin`;
+    const conversationId = `${RUN}-kf-crowd-convo`;
+    const { id: targetEntryId } = await saveKnowledge({
+      content: `${RUN} kf-crowd target entry content`,
+      title: `${RUN} kf-crowd target entry`,
+    });
+    const { id: noiseEntryId } = await saveKnowledge({
+      content: `${RUN} kf-crowd noise entry content`,
+      title: `${RUN} kf-crowd noise entry`,
+    });
+
+    // The target entry's own rater rates FIRST, so its row is the OLDEST
+    // unhelpful rating in scope.
+    const targetRater = `${RUN}-kf-crowd-target-rater`;
+    await rateKnowledgeAnswer(targetRater, conversationId, targetEntryId, false);
+
+    // Flood the same admin scope with KNOWLEDGE_FIX_NOTIFY_FETCH_CAP unhelpful
+    // ratings against a DIFFERENT entry, all strictly more recent than the
+    // target rating above — enough to fill the fetch window entirely so the
+    // target rater's older row falls outside it.
+    const noiseRaters = Array.from(
+      { length: KNOWLEDGE_FIX_NOTIFY_FETCH_CAP },
+      (_, i) => `${RUN}-kf-crowd-noise-rater-${i}`,
+    );
+    const batchSize = 20;
+    for (let i = 0; i < noiseRaters.length; i += batchSize) {
+      const batch = noiseRaters.slice(i, i + batchSize);
+      await Promise.all(
+        batch.map((rater) => rateKnowledgeAnswer(rater, conversationId, noiseEntryId, false)),
+      );
+    }
+
+    const dmCalls: string[] = [];
+    const adapter = stubAdapter(async (userId) => {
+      dmCalls.push(userId);
+    });
+    const { tools, caller } = knowledgeFixAdminHandlers(admin, conversationId, adapter);
+
+    await tools['update_knowledge'].handler({ id: targetEntryId, content: 'corrected, but crowded out' });
+    await takePendingAction('discord', caller.conversationId, caller.userId)?.execute();
+
+    assert.equal(
+      dmCalls.length,
+      0,
+      'the target rater is silently crowded out by more-recent noise elsewhere in scope — the documented gap',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [[targetRater, ...noiseRaters]]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[targetEntryId, noiseEntryId]]);
+  },
+);
+
+test(
+  'SECURITY: the resolution DM update_knowledge sends never contains the knowledge entry title/content or the acting admin identity (issue #1169 acceptance criterion 6)',
+  { skip },
+  async () => {
+    const admin = `${RUN}-kf-leak-admin`;
+    const conversationId = `${RUN}-kf-leak-convo`;
+    const secretTitle = `${RUN} kf-leak SECRET TITLE`;
+    const { id: entryId } = await saveKnowledge({
+      content: `${RUN} kf-leak SECRET CONTENT`,
+      title: secretTitle,
+    });
+    const rater = `${RUN}-kf-leak-rater`;
+    await rateKnowledgeAnswer(rater, conversationId, entryId, false);
+
+    const dmMessages: string[] = [];
+    const adapter = stubAdapter(async (_userId, message) => {
+      dmMessages.push(message);
+    });
+    const { tools, caller } = knowledgeFixAdminHandlers(admin, conversationId, adapter);
+
+    await tools['update_knowledge'].handler({ id: entryId, content: 'corrected content, nothing leaked' });
+    await takePendingAction('discord', caller.conversationId, caller.userId)?.execute();
+
+    assert.equal(dmMessages.length, 1);
+    assert.ok(!dmMessages[0]?.includes(secretTitle), 'SECURITY: the entry title must never reach the DM');
+    assert.ok(
+      !dmMessages[0]?.includes('SECRET CONTENT'),
+      'SECURITY: the entry content must never reach the DM',
+    );
+    assert.ok(!dmMessages[0]?.includes(admin), 'SECURITY: the acting admin identity must never reach the DM');
+    assert.match(dmMessages[0] ?? '', /rated unhelpful earlier has since been corrected/i);
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [rater]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [entryId]);
+  },
+);
+
+test(
+  "SECURITY: update_knowledge's own reply and success stay unaffected when a rater's DM send fails, including a WindowClosedError which is queued via queueForWindowReopen (issue #1169 acceptance criterion 8)",
+  { skip },
+  async () => {
+    const admin = `${RUN}-kf-failopen-admin`;
+    const conversationId = `${RUN}-kf-failopen-convo`;
+    const { id: entryId } = await saveKnowledge({
+      content: `${RUN} kf-failopen entry content`,
+      title: `${RUN} kf-failopen entry`,
+    });
+    const rater = `${RUN}-kf-failopen-rater`;
+    await rateKnowledgeAnswer(rater, conversationId, entryId, false);
+
+    const queued: Array<{ userId: string; priority: string }> = [];
+    const adapter: PlatformAdapter = {
+      ...stubAdapter(async () => {
+        throw new WindowClosedError(rater);
+      }),
+      queueForWindowReopen(userId: string, _message: string, priority: 'system' | 'low') {
+        queued.push({ userId, priority });
+      },
+    };
+    const { tools, caller } = knowledgeFixAdminHandlers(admin, conversationId, adapter);
+
+    await tools['update_knowledge'].handler({ id: entryId, content: 'corrected despite DM failure' });
+    const reply = await takePendingAction('discord', caller.conversationId, caller.userId)?.execute();
+
+    assert.equal(reply, `Updated knowledge entry #${entryId}.`, "update_knowledge's own reply is unaffected");
+    assert.equal(queued.length, 1);
+    assert.equal(queued[0]?.userId, rater);
+    assert.equal(queued[0]?.priority, 'low');
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [rater]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [entryId]);
   },
 );
 
