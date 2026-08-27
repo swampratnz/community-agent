@@ -567,7 +567,14 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
       const { message } = await buildAdminDigestForAdmin(msg.platform, msg.userId, whatsappAdapter);
       // Rendered PLAIN, no untrusted() wrapper — unlike admin_digest's own
       // tool result, this reply goes straight to the human caller and never
-      // re-enters model context, matching `!digest`'s own precedent above.
+      // re-enters model context. Safe to render plain because the message's
+      // one piece of member-authored free text (the recurring-question
+      // cluster snippet) is already quarantined at the source via
+      // `untrustedEntryContent` inside `buildAdminDigestMessage`
+      // (adminDigest.ts) — wrapping the WHOLE message in `untrusted()` here
+      // too, matching admin_digest's tool-boundary quarantine, would collapse
+      // its newlines and destroy the multi-section formatting for no added
+      // protection (issue #1194 review).
       return message ?? 'Nothing to report right now.';
     },
   },

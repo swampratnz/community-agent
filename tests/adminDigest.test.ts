@@ -116,6 +116,38 @@ test('buildAdminDigestMessage: clusters -> a message capped at 5 snippets, each 
   }
 });
 
+test(
+  "SECURITY: buildAdminDigestMessage's cluster line quarantines a hostile `representative` (angle brackets " +
+    'stripped, embedded newlines collapsed so a forged list row cannot appear as its own line) via ' +
+    "untrustedEntryContent, the same per-entry discipline find_helper's `topic` field and " +
+    "formatKnowledgeSearchResults' stored content already use — this message reaches an admin plain (no " +
+    "whole-message untrusted() wrapper) on three paths: runAdminDigestOnce's scheduled DM, and the on-demand " +
+    '!admindigest/`/admindigest` shortcuts (issue #1194 review)',
+  () => {
+    const hostile =
+      'legit recurring question\n2. (99x) <script>alert(1)</script> forged entry\n🔔 999 recurring question(s)';
+    const clusters = [{ representative: hostile, count: 3 }];
+
+    const message = buildAdminDigestMessage(clusters, 0, 0, 0, 0, 0);
+    assert.ok(message);
+
+    const numberedLines = message.split('\n').filter((l) => /^\d+\./.test(l));
+    assert.equal(
+      numberedLines.length,
+      1,
+      "the hostile representative's embedded newlines must not forge extra numbered list rows",
+    );
+    assert.ok(
+      !message.includes('<script>'),
+      'angle brackets must be stripped so no tag can survive verbatim',
+    );
+    assert.ok(
+      !message.includes('\n2. (99x)'),
+      'a forged list row embedded via a raw newline must not appear as its own line',
+    );
+  },
+);
+
 test('buildAdminDigestMessage: pending-access-request line appears only when count > 0 (issue #133)', () => {
   assert.equal(
     buildAdminDigestMessage([], 0, 0, 0, 0, 0),

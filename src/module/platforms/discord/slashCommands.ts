@@ -820,7 +820,13 @@ async function handleFeatureFlags(
  * `buildAdminDigestForAdmin` level by tests/adminDigest.test.ts) — and
  * renders PLAIN, no `untrusted()` wrapper, since this reply goes straight to
  * the human caller and never re-enters model context (unlike the tool's own
- * quarantined result), matching `/digest`'s own precedent above.
+ * quarantined result). Safe to render plain because the message's one piece
+ * of member-authored free text (the recurring-question cluster snippet) is
+ * already quarantined at the source via `untrustedEntryContent` inside
+ * `buildAdminDigestMessage` (adminDigest.ts) — wrapping the WHOLE message in
+ * `untrusted()` here too, matching admin_digest's tool-boundary quarantine,
+ * would collapse its newlines and destroy the multi-section formatting for
+ * no added protection (issue #1194 review).
  */
 async function handleAdminDigest(
   interaction: ChatInputCommandInteraction,

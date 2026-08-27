@@ -1,6 +1,7 @@
 import { config } from '@swampratnz/agent-base/config.js';
 import { logger } from '@swampratnz/agent-base/logger.js';
 import { startTrackedJob } from '@swampratnz/agent-base/jobs/trackedJob.js';
+import { untrustedEntryContent } from '@swampratnz/agent-base/agent/systemPrompt.js';
 import { WindowClosedError } from '@swampratnz/agent-base/platforms/types.js';
 import {
   answerFeedbackOriginSummary,
@@ -59,7 +60,6 @@ import type { Platform, PlatformAdapter } from '@swampratnz/agent-base/platforms
  */
 export const FRESHNESS_DAYS = 7;
 export const CLUSTER_LIMIT = 5;
-const SNIPPET_MAX_CHARS = 300;
 
 /**
  * Week-over-week delta suffix for one digest signal (issue #497). Empty
@@ -919,9 +919,24 @@ export function buildAdminDigestMessage(
 
   const sections: string[] = [];
   if (clusters.length > 0) {
+    // The cluster line is this function's one deliberate exception to "no
+    // content ever reaches the DM" (every other signal above is a bare
+    // count) — showing the actual repeated question is the whole point, so
+    // an admin can act on it. That makes `c.representative` the only
+    // member-authored free text in this message, and it reaches every
+    // caller unmoderated: this scheduled DM (`runAdminDigestOnce`), the
+    // `admin_digest` tool (quarantined a second time at the tool boundary
+    // for model re-entry, digestsAdmin.ts), and the on-demand
+    // `!admindigest`/`/admindigest` shortcuts (commands.ts/slashCommands.ts,
+    // which render this message plain). `untrustedEntryContent` neutralizes
+    // it here at the source — `<>` stripped, whitespace collapsed so no
+    // forged list row, 300-char cap — the same per-entry quarantine
+    // `formatKnowledgeSearchResults` uses for embedded stored content, and
+    // the same discipline `find_helper`'s `topic` field applies before
+    // reaching a different member's DM (issue #1194 review).
     const lines = clusters
       .slice(0, CLUSTER_LIMIT)
-      .map((c, i) => `${i + 1}. (${c.count}x) ${c.representative.slice(0, SNIPPET_MAX_CHARS)}`);
+      .map((c, i) => `${i + 1}. (${c.count}x) ${untrustedEntryContent(c.representative)}`);
     sections.push(
       `🔔 ${clusters.length} recurring question(s) in your conversations this week:\n` +
         `${lines.join('\n')}\n` +
