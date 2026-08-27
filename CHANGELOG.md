@@ -137,6 +137,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   resolution DM; omitting it removes silently, useful for spam/abuse where
   alerting the actor isn't wanted. The reason is never persisted beyond that
   one DM. Admin only.
+- **New admin tool: `check_knowledge_source`, forcing an immediate re-check
+  of one knowledge entry's citation instead of waiting up to ~6 days.**
+  (#1188) The weekly link-rot checker was previously the ONLY way
+  `source_unreachable` could clear back to false, gated by its own ~6-day
+  minimum interval — so fixing a broken `sourceUrl` (or the cited site simply
+  coming back up) still left `knowledge_search`/`/kb` showing "⚠️ link
+  appears dead" and losing near-tie search ranking for up to six more days,
+  with no lever to force a fresh check. `check_knowledge_source({ id })`
+  reuses the weekly job's own SSRF-hardened reachability probe on demand for
+  one entry, so the fix is confirmed in the same turn. Admin only.
 
 ### Fixed
 - **Docs-ingest page fetches now retry a transient failure before giving up.**

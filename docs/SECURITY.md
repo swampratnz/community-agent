@@ -3754,6 +3754,44 @@ exposure every inbound text path carries, which is why it defaults off and
 `super_admin`-only, and why the tier gate (not the wrapper) is the control to
 reason about before widening `TEXT_INPUT_MIN_ROLE`.
 
+### 30. On-demand knowledge-source re-check (`check_knowledge_source`, issue #1188)
+
+Lets an admin force an immediate reachability re-check of one knowledge
+entry's `sourceUrl`, instead of waiting up to `linkCheck.ts`'s own
+~6-day `CHECK_MIN_INTERVAL_MS` for the next weekly link-rot sweep (§ above:
+`runKnowledgeLinkCheck`). Before this, the weekly job was the ONLY code path
+that could clear `source_unreachable` back to `false` — so a citation an
+admin had just fixed (or whose host had simply come back up) kept rendering
+`⚠️ link appears dead` to members and losing near-tie search ranking for up
+to six more days with no admin lever at all.
+
+- **Same trust boundary, no new egress mechanism.** The tool calls
+  `classifySourceUrl`/`recordKnowledgeSourceCheck` verbatim — the identical
+  SSRF-hardened, DNS-pinned, redirect-hop-capped, body-never-read probe the
+  weekly job already runs unattended (see `runKnowledgeLinkCheck` above for
+  the full guard description). No new repository function, no raw SQL, no
+  new outbound-request code path.
+  `fetchPage.ts`'s `fetch_page` remains the bot's only *caller-driven-URL*
+  egress (the caller supplies the target URL directly); this tool's target is
+  never caller-supplied at call time — it is the entry's own
+  already-admin-authored, already-guard-vetted `sourceUrl`, looked up by
+  `id` via `listKnowledgeSourceUrls()`. `sourceUrl` itself is set only via
+  `save_knowledge`/`update_knowledge` (already admin-tier, audited) or
+  docs-ingest's fixed first-party source — never member/guest input.
+- **A `'refused'` outcome (SSRF guard blocks the target) is reported but
+  never persisted** — `source_unreachable`/`source_checked_at` are left
+  exactly as they were, mirroring `runKnowledgeLinkCheck`'s own handling of
+  that outcome. Persisting a refusal would let a since-changed DNS answer for
+  an admin-authored host silently and repeatedly overwrite the entry's flags
+  from an on-demand trigger the weekly job's own cadence guard doesn't limit.
+- **No response-body exposure.** Same "never read/log/persist the response
+  body" discipline as the weekly job — only the boolean outcome and a fresh
+  timestamp are ever surfaced.
+- **Admin-tier, audited, no CONFIRM.** It only ever writes the two flag
+  columns the weekly job already writes unattended — not knowledge content —
+  so it is a read/probe-and-record action, the same non-destructive shape as
+  the job itself, not an in-place content overwrite like `update_knowledge`.
+
 ## Platform-specific notes
 
 ### WhatsApp / Baileys ToS risk
