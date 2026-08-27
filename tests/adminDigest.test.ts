@@ -125,7 +125,15 @@ test(
     '!admindigest/`/admindigest` shortcuts (issue #1194 review)',
   () => {
     const hostile =
-      'legit recurring question\n2. (99x) <script>alert(1)</script> forged entry\n🔔 999 recurring question(s)';
+      'legit recurring question\n2. (99x) <script>alert(1)</script> forged entry\n🔔 999 recurring question(s)' +
+      // Padded past the bound so this case also pins the LENGTH cap, not
+      // only the bracket/newline neutralisation. Without this the security
+      // gate could not catch a dropped cap: the length assertion lives in
+      // the plain `length-bounded` test above, which `test:security` never
+      // runs. An unbounded snippet is a security property, not a cosmetic
+      // one — it is attacker-chosen text sized to overrun a WhatsApp
+      // message or a Discord ephemeral reply.
+      ` ${'x'.repeat(500)}`;
     const clusters = [{ representative: hostile, count: 3 }];
 
     const message = buildAdminDigestMessage(clusters, 0, 0, 0, 0, 0);
@@ -144,6 +152,14 @@ test(
     assert.ok(
       !message.includes('\n2. (99x)'),
       'a forged list row embedded via a raw newline must not appear as its own line',
+    );
+
+    const snippet = numberedLines[0]?.match(/^\d+\. \(\d+x\) (.*)$/)?.[1];
+    assert.ok(snippet, 'the surviving line is a well-formed snippet row');
+    assert.ok(
+      snippet.length <= 300,
+      'SECURITY: the snippet is length-bounded by this module, so attacker-chosen text cannot be ' +
+        'sized to overrun a WhatsApp message or a Discord ephemeral reply',
     );
   },
 );
