@@ -61,14 +61,17 @@ function stubAdapter(): PlatformAdapter {
   };
 }
 
-function getKnowledgeSearchHandler(caller: {
-  platform: 'discord';
-  userId: string;
-  userName: string;
-  role: 'member';
-  conversationId: string;
-}) {
-  const server = buildToolServer(caller, stubAdapter());
+function getKnowledgeSearchHandler(
+  caller: {
+    platform: 'discord';
+    userId: string;
+    userName: string;
+    role: 'member';
+    conversationId: string;
+  },
+  turnState?: { lastKnowledgeHitId: number | null; humanHelpRequested?: boolean },
+) {
+  const server = buildToolServer(caller, stubAdapter(), undefined, turnState);
   return (
     server.instance as unknown as {
       _registeredTools: Record<
@@ -218,6 +221,39 @@ test(
     await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
     // The below-floor branch also fire-and-forgets a knowledge_gaps row for
     // this query; clear it so the fixture leaves nothing behind.
+    await pool.query(`DELETE FROM knowledge_gaps WHERE conversation_id = $1`, [scope]);
+  },
+);
+
+test(
+  'SECURITY: a zero-hit knowledge_search renders only the updated knowledgeSearchEmpty notice text and never itself ' +
+    'sets turnState.humanHelpRequested or otherwise escalates to a human absent an explicit member ask — the added ' +
+    'clause is a text-only offer, request_human_help still requires its own explicit call (issue #1196 acceptance ' +
+    'criterion 3)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-no-auto-escalate`;
+    // Deliberately distinctive so no unrelated fixture row (docs-ingest
+    // populates some 'global'-scope entries in CI) crosses the relevance floor.
+    const query = `zzq no auto escalate probe phrase ${RUN}`;
+
+    const turnState: { lastKnowledgeHitId: number | null; humanHelpRequested?: boolean } = {
+      lastKnowledgeHitId: null,
+    };
+    const result = await getKnowledgeSearchHandler(makeCaller(scope), turnState).handler({ query });
+    const text = result.content[0]?.text ?? '';
+
+    assert.equal(
+      text,
+      KNOWLEDGE_SEARCH_EMPTY_TEXT,
+      'a genuine zero-hit search must render exactly the static (now request_human_help-mentioning) empty-state notice',
+    );
+    assert.notEqual(
+      turnState.humanHelpRequested,
+      true,
+      'a KB miss alone must never set the same turn-state flag the explicit request_human_help tool call sets',
+    );
+
     await pool.query(`DELETE FROM knowledge_gaps WHERE conversation_id = $1`, [scope]);
   },
 );

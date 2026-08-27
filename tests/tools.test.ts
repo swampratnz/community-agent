@@ -12352,6 +12352,18 @@ test("formatKnowledgeSearchResults renders the knowledgeSearchEmpty nudge in te 
   assert.notEqual(KNOWLEDGE_SEARCH_EMPTY_TEXT_MI, KNOWLEDGE_SEARCH_EMPTY_TEXT);
 });
 
+test(
+  'knowledgeSearchEmpty mentions BOTH suggest_knowledge and a human-admin offer, in English and te reo Māori ' +
+    '(issue #1196 acceptance criterion 1) — the KB-miss dead end now covers the "asker also doesn\'t know" ' +
+    'branch #1180 left uncovered, alongside the "asker later finds the answer" branch #1180 added',
+  () => {
+    assert.match(KNOWLEDGE_SEARCH_EMPTY_TEXT, /suggest_knowledge/);
+    assert.match(KNOWLEDGE_SEARCH_EMPTY_TEXT, /human community admin/);
+    assert.match(KNOWLEDGE_SEARCH_EMPTY_TEXT_MI, /suggest_knowledge/);
+    assert.match(KNOWLEDGE_SEARCH_EMPTY_TEXT_MI, /kaiwhakahaere/);
+  },
+);
+
 test('formatKnowledgeSearchResults keeps hits at/above the threshold and drops only the sub-threshold ones', () => {
   const relevant = fakeHit(KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD, 'Relevant entry');
   const borderlineAbove = fakeHit(0.99, 'Very relevant entry');
