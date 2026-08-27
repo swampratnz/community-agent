@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { Platform, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
 import { config } from '@swampratnz/agent-base/config.js';
+import { logger } from '@swampratnz/agent-base/logger.js';
 import {
   acceptKnowledgeCandidate,
   declineKnowledgeCandidate,
@@ -20,6 +21,7 @@ import {
   recentUnhelpfulFeedbackClusters,
   saveKnowledge,
   searchKnowledge,
+  searchKnowledgeLexical,
   updateKnowledge,
 } from '@swampratnz/agent-base/storage/repository.js';
 import {
@@ -305,11 +307,20 @@ export const knowledgeAdminTools = [
     },
     handler: async (args, { caller }) => {
       assertAtLeast(caller.role, 'admin', 'find_knowledge');
-      const hits = await searchKnowledge(
-        args.query,
-        { platform: caller.platform, conversationId: caller.conversationId },
-        args.limit ?? 10,
-      );
+      const scope = { platform: caller.platform, conversationId: caller.conversationId };
+      let hits = await searchKnowledge(args.query, scope, args.limit ?? 10);
+      // Lexical fallback (issue #1192), find_knowledge's own take on #362's
+      // fix to knowledge_search/`/kb`: unlike those, this tool has no
+      // relevance floor (it deliberately shows weak sub-floor matches
+      // already), so the trigger here is a true zero-hit semantic result,
+      // not "nothing cleared the floor". Same scope, same fail-safe
+      // `.catch()` shape as knowledge_search's identical guard.
+      if (hits.length === 0) {
+        hits = await searchKnowledgeLexical(args.query, scope).catch((err) => {
+          logger.warn({ err }, 'Knowledge lexical fallback failed; returning empty semantic results');
+          return [];
+        });
+      }
       return text(formatFoundKnowledge(hits));
     },
   }),

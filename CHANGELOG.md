@@ -45,6 +45,20 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   the same embedding search `list_projects`'/`find_helper`'s suggestion path
   already run.
 
+### Fixed
+- **`find_knowledge` now falls back to a lexical (substring) search when a
+  semantic search finds nothing at all.** (#1192) `find_knowledge` is the
+  admin tool built for exact recall — "you know what an entry says but not
+  which id it is" — but it only ever searched semantically, so it missed the
+  same class of query `knowledge_search` and `/kb` were already fixed for: a
+  rare identifier or error code with no semantic neighbour, like
+  `KNOWLEDGE_STALE_DAYS`. An admin locating an entry by an exact string to
+  correct, merge, or delete it no longer gets a worse result from the tool
+  built for that lookup than a member gets from plain `knowledge_search`.
+  Only triggers on a true zero-hit semantic result — a weak-but-present match
+  (which `find_knowledge` already surfaces, unlike `knowledge_search`) never
+  invokes it, so the common path is unchanged.
+
 ## 2026-08-27
 
 ### Added
