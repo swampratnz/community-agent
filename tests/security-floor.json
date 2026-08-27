@@ -105,6 +105,7 @@
   "knowledgeSearchFailSafe.test.ts": 2,
   "knowledgeSearchLowRatedCaveat.test.ts": 1,
   "knowledgeShortcutRouter.test.ts": 5,
+  "knowledgeSourceCheckTool.test.ts": 2,
   "linkCheck.test.ts": 15,
   "lowRatedCaveatRouter.test.ts": 4,
   "memberDigest.test.ts": 25,

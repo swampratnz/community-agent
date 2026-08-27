@@ -57,8 +57,23 @@ mock.module('../src/module/context/linkCheck.js', {
 const { knowledgeAdminTools } = await import('../src/module/agent/tools/knowledgeAdmin.js');
 const { COMMUNITY_TOOL_TIERS } = await import('../src/module/agent/tools/index.js');
 
-const tool = knowledgeAdminTools.find((t) => t.name === 'check_knowledge_source');
-if (!tool) throw new Error('check_knowledge_source tool not found');
+// knowledgeAdminTools is a heterogeneous array (each entry's schema/handler
+// differ), so `.find(...).handler` resolves to a union whose call signature
+// demands every arm's params at once. Narrow to just the one shape this file
+// exercises, matching imageGenAudit.test.ts's local `RegisteredServer`
+// shape-cast for the same reason.
+type CheckSourceTool = {
+  name: string;
+  minTier: string;
+  handler: (
+    args: { id: number },
+    ctx: unknown,
+  ) => Promise<{ content: ReadonlyArray<{ type: string; text?: unknown }>; isError: boolean }>;
+};
+
+const found = knowledgeAdminTools.find((t) => t.name === 'check_knowledge_source');
+if (!found) throw new Error('check_knowledge_source tool not found');
+const tool = found as unknown as CheckSourceTool;
 
 interface Captured {
   auditKind?: string;
@@ -135,10 +150,7 @@ test('SECURITY: check_knowledge_source is admin-tier — absent from the member 
 
   for (const role of ['guest', 'member'] as const) {
     const cap = fresh();
-    await assert.rejects(
-      () => tool.handler({ id: 1 }, ctxFor(role, cap)),
-      `${role} must be refused`,
-    );
+    await assert.rejects(() => tool.handler({ id: 1 }, ctxFor(role, cap)), `${role} must be refused`);
     assert.equal(cap.ran, false, 'SECURITY: nothing may run for a below-admin caller');
     assert.equal(classifyCalls.length, 0, 'SECURITY: no probe may be issued for a below-admin caller');
     assert.equal(recordCalls.length, 0);
@@ -180,7 +192,11 @@ test('SECURITY: a refused outcome (SSRF guard blocks the target) is reported to 
     'SECURITY: a refused outcome must never reach recordKnowledgeSourceCheck — mirrors runKnowledgeLinkCheck',
   );
   assert.match(textOf(res), /refused/i);
-  assert.equal(cap.auditSuccess, true, 'the probe itself succeeded — refusal is a reported outcome, not a thrown error');
+  assert.equal(
+    cap.auditSuccess,
+    true,
+    'the probe itself succeeded — refusal is a reported outcome, not a thrown error',
+  );
 });
 
 test('an id with no sourceUrl (absent from listKnowledgeSourceUrls) returns a clear error and writes nothing', async () => {

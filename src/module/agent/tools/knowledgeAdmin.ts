@@ -592,7 +592,9 @@ export const knowledgeAdminTools = [
       'persisted. Admin only.',
     minTier: 'admin',
     readOnlyHint: false,
-    schema: { id: z.number().describe('Knowledge entry id (from list_knowledge/knowledge_search/find_knowledge)') },
+    schema: {
+      id: z.number().describe('Knowledge entry id (from list_knowledge/knowledge_search/find_knowledge)'),
+    },
     handler: async (args, { caller, audited }) => {
       assertAtLeast(caller.role, 'admin', 'check_knowledge_source');
       const state: { outcome?: 'reachable' | 'unreachable' | 'refused' } = {};
