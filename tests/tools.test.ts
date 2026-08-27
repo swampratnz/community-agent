@@ -3460,54 +3460,51 @@ test("SECURITY: formatKnowledgeSearchResults (knowledge_search's member-facing f
   assert.doesNotMatch(output, /#999\b/, 'knowledge_search must never leak the entry id to a member');
 });
 
-test(
-  'SECURITY: find_knowledge rejects a member (and guest) caller (assertAtLeast re-check, issue #1008) before either the semantic or lexical search branch runs (issue #1192 acceptance criterion 5)',
-  async (t) => {
-    const adapter = stubAdapter(async () => {});
-    // Spies the shared pool rather than a specific SQL fragment, so it
-    // catches EITHER search branch — the point is that assertAtLeast throws
-    // before any DB call, so the lexical-fallback addition can't have
-    // introduced a path that queries before the tier check.
-    let queryRan = false;
-    const realQuery = pool.query.bind(pool);
-    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
-      queryRan = true;
-      return (realQuery as (...args: unknown[]) => unknown)(sql, ...rest);
-    }) as typeof pool.query);
+test('SECURITY: find_knowledge rejects a member (and guest) caller (assertAtLeast re-check, issue #1008) before either the semantic or lexical search branch runs (issue #1192 acceptance criterion 5)', async (t) => {
+  const adapter = stubAdapter(async () => {});
+  // Spies the shared pool rather than a specific SQL fragment, so it
+  // catches EITHER search branch — the point is that assertAtLeast throws
+  // before any DB call, so the lexical-fallback addition can't have
+  // introduced a path that queries before the tier check.
+  let queryRan = false;
+  const realQuery = pool.query.bind(pool);
+  t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+    queryRan = true;
+    return (realQuery as (...args: unknown[]) => unknown)(sql, ...rest);
+  }) as typeof pool.query);
 
-    for (const role of ['member', 'guest'] as const) {
-      const caller = {
-        platform: 'discord' as const,
-        userId: `${role}-1`,
-        userName: 'Caller',
-        role,
-        conversationId: 'convo-find-knowledge-reject',
-      };
-      const server = buildToolServer(caller, adapter);
-      const registeredTool = (
-        server.instance as unknown as {
-          _registeredTools: Record<
-            string,
-            { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
-          >;
-        }
-      )._registeredTools['find_knowledge'];
+  for (const role of ['member', 'guest'] as const) {
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${role}-1`,
+      userName: 'Caller',
+      role,
+      conversationId: 'convo-find-knowledge-reject',
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['find_knowledge'];
 
-      await assert.rejects(
-        () => registeredTool.handler({ query: 'anything' }),
-        /admin/i,
-        `a ${role} caller must be rejected by the assertAtLeast re-check`,
-      );
-    }
-
-    assert.equal(
-      queryRan,
-      false,
-      'neither search branch may query the database before assertAtLeast rejects a below-admin caller',
+    await assert.rejects(
+      () => registeredTool.handler({ query: 'anything' }),
+      /admin/i,
+      `a ${role} caller must be rejected by the assertAtLeast re-check`,
     );
-    t.mock.reset();
-  },
-);
+  }
+
+  assert.equal(
+    queryRan,
+    false,
+    'neither search branch may query the database before assertAtLeast rejects a below-admin caller',
+  );
+  t.mock.reset();
+});
 
 test(
   'find_knowledge returns a weak-but-nonzero match (below KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD, which knowledge_search would have excluded it under) alongside a strong match, ids first, ranked by similarity descending (issue #1008)',
@@ -3653,7 +3650,10 @@ function getFindKnowledgeHandler(caller: {
   role: 'admin';
   conversationId: string;
 }) {
-  const server = buildToolServer(caller, stubAdapter(async () => {}));
+  const server = buildToolServer(
+    caller,
+    stubAdapter(async () => {}),
+  );
   return (
     server.instance as unknown as {
       _registeredTools: Record<
@@ -3821,7 +3821,10 @@ test(
       /DB unreachable/,
       'the raw driver error must never reach the tool result (and so model context)',
     );
-    assert.ok(warnLog.mock.calls.length >= 1, 'the lexical fallback failure must be logged, not silently swallowed');
+    assert.ok(
+      warnLog.mock.calls.length >= 1,
+      'the lexical fallback failure must be logged, not silently swallowed',
+    );
 
     t.mock.reset();
   },
