@@ -376,6 +376,21 @@ const NOTICE_ENTRIES = {
       mi: 'I arotakehia tō tono uru ki NZ Claude Community, ā, kāore i whakaaetia i tēnei wā.',
     },
   },
+  // --- remove_project resolution DM (agent/tools/notify.ts, issue #1185) ---
+  /**
+   * The neutral removal DM for the admin-tier `remove_project` — static, same
+   * shape as `accessRequestDeclinedMessage` above: the admin-authored
+   * `reason` field is never interpolated into this translated base string,
+   * only appended afterward as a distinct, quoted, `truncateForEcho`-capped
+   * clause (see `notifyProjectRemoved` in notify.ts). Sent only when the
+   * admin supplies a reason — omitting one removes the project silently.
+   */
+  projectRemovedMessage: {
+    base: 'One of your projects was removed from the NZ Claude Community project showcase by an admin.',
+    language: {
+      mi: 'I tangohia tētahi o āu kaupapa mai i te whakaaturanga kaupapa a NZ Claude Community e tētahi kaiwhakahaere.',
+    },
+  },
   // --- community_info member capabilities rundown (agent/tools/info.ts) ---
   /**
    * The member-tier segment of `community_info`/`/help`/`!help`'s capability
