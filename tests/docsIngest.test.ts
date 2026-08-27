@@ -30,8 +30,13 @@ const {
   shouldRunDocsIngest,
   runDocsIngest,
   partitionDeadUrls,
+  defaultFetchText,
   DOCS_PROVENANCE,
 } = await import('../src/module/context/docsIngest.js');
+
+function fakeResponse(status: number): { ok: boolean; status: number; text: () => Promise<string> } {
+  return { ok: status >= 200 && status < 300, status, text: async () => 'page body' };
+}
 
 // Pin the dead-URL feature OFF for this file by default (issue #611). Every
 // test written before it existed calls runDocsIngest WITHOUT stub deps, so with
@@ -134,6 +139,113 @@ test('shouldRunDocsIngest: first run always, then only after ~a week', () => {
   assert.equal(shouldRunDocsIngest(new Date(now - 2 * 24 * 3_600_000), now), false, '2 days ago → skip');
   assert.equal(shouldRunDocsIngest(new Date(now - 7 * 24 * 3_600_000), now), true, '7 days ago → run');
 });
+
+// --- defaultFetchText transient-failure retry (issue #1187), mirroring
+// linkCheck.ts's own retry coverage (issue #1112) — no network, no DB.
+
+test('defaultFetchText: a network error/timeout on the first attempt, followed by a 2xx within the retry budget, succeeds — a single blip no longer counts as a failure', async () => {
+  let calls = 0;
+  const fetchImpl = (async () => {
+    calls++;
+    if (calls === 1) throw new Error('fetch failed');
+    return fakeResponse(200);
+  }) as unknown as typeof fetch;
+  const text = await defaultFetchText('https://platform.claude.com/docs/en/api/messages.md', {
+    fetchImpl,
+    sleep: async () => {},
+  });
+  assert.equal(text, 'page body');
+  assert.equal(calls, 2, 'one retry after the initial network error');
+});
+
+test('defaultFetchText: a transient 5xx/429 that succeeds within the retry budget resolves, not fails', async () => {
+  for (const transientStatus of [500, 503, 429]) {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls++;
+      if (calls === 1) return fakeResponse(transientStatus);
+      return fakeResponse(200);
+    }) as unknown as typeof fetch;
+    const text = await defaultFetchText('https://platform.claude.com/docs/en/api/messages.md', {
+      fetchImpl,
+      sleep: async () => {},
+    });
+    assert.equal(text, 'page body', `a transient ${transientStatus} followed by a 2xx must succeed`);
+    assert.equal(calls, 2, `exactly one retry after the transient ${transientStatus}`);
+  }
+});
+
+test('defaultFetchText: a 4xx other than 429 (404, 403, 410) fails on the FIRST attempt with no retry — a real, deterministic answer, not a transient condition', async () => {
+  for (const status of [404, 403, 410]) {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls++;
+      return fakeResponse(status);
+    }) as unknown as typeof fetch;
+    await assert.rejects(
+      defaultFetchText('https://platform.claude.com/docs/en/api/messages.md', {
+        fetchImpl,
+        sleep: async () => {
+          throw new Error('unreachable: sleep must never be called — a non-429 4xx must not retry');
+        },
+      }),
+      /HTTP \d+/,
+    );
+    assert.equal(calls, 1, `status ${status} must fail on the first attempt, with no retry`);
+  }
+});
+
+test('defaultFetchText: a network error/timeout on every attempt (initial + both retries) still fails — a genuine outage is still caught, just not on a single blip', async () => {
+  let calls = 0;
+  const fetchImpl = (async () => {
+    calls++;
+    throw new Error('fetch failed');
+  }) as unknown as typeof fetch;
+  await assert.rejects(
+    defaultFetchText('https://platform.claude.com/docs/en/api/messages.md', {
+      fetchImpl,
+      sleep: async () => {},
+    }),
+    /fetch failed/,
+  );
+  assert.equal(calls, 3, 'the initial attempt plus exactly 2 retries, then gives up');
+});
+
+test('defaultFetchText: a persistent 5xx across every attempt still fails after exhausting the retry budget', async () => {
+  let calls = 0;
+  const fetchImpl = (async () => {
+    calls++;
+    return fakeResponse(503);
+  }) as unknown as typeof fetch;
+  await assert.rejects(
+    defaultFetchText('https://platform.claude.com/docs/en/api/messages.md', {
+      fetchImpl,
+      sleep: async () => {},
+    }),
+    /HTTP 503/,
+  );
+  assert.equal(calls, 3, 'the initial attempt plus exactly 2 retries, then gives up');
+});
+
+test(
+  'runDocsIngest: a page whose retry recovers is fetched and ingested normally — retry recovery is opaque to the caller, so it can never bump the dead-URL streak',
+  { skip },
+  async () => {
+    const u1 = 'https://platform.claude.com/docs/en/api/messages.md';
+    let calls = 0;
+    const fetchText = async (url: string): Promise<string> => {
+      if (url === config.docsIngest.indexUrl) return `- [a](${u1})`;
+      calls++;
+      // Simulate what defaultFetchText's retry produces: opaque success from
+      // runDocsIngest's point of view, however many attempts it internally took.
+      return 'Messages API.';
+    };
+    const res = await runDocsIngest(fetchText);
+    assert.equal(res.fetched, 1);
+    assert.equal(res.failed, 0, 'a page that ultimately resolves is never counted as a failure');
+    assert.equal(calls, 1);
+  },
+);
 
 // --- total-failure signal (issue #335) — no DB needed: both paths below
 // return before any DB call is made, so they run regardless of DATABASE_URL.
