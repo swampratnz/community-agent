@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
 import './support/registerNotices.js';
+import { fakePolicyStore } from './support/fakePolicyStore.js';
 import type { OutgoingMessage, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
@@ -31,6 +32,7 @@ const {
   startRosterStaleAlert,
 } = await import('../src/module/rosterStaleAlert.js');
 const { WindowClosedError } = await import('@swampratnz/agent-base/platforms/whatsapp/cloudAdapter.js');
+const { ROSTER_STALE_ALERT_POLICY_KEY } = await import('../src/module/storage/policies.js');
 
 type Platform = 'discord' | 'whatsapp';
 type RosterEntry = {
@@ -164,7 +166,12 @@ test('SECURITY: the crossing-tick alert DM contains no guest display name, user 
   const staleRows = [rosterRow({ ageHours: 200, userId: secretUserId, displayName: secretDisplayName })];
   const listNotMembers = async () => staleRows;
   const listAdminIdentities = async () => admins([{}]);
-  const runOnce = makeDefaultRosterStaleAlertRun([adapter], listNotMembers, listAdminIdentities);
+  const runOnce = makeDefaultRosterStaleAlertRun(
+    [adapter],
+    listNotMembers,
+    listAdminIdentities,
+    fakePolicyStore(),
+  );
 
   await runOnce();
 
@@ -190,7 +197,12 @@ test('makeDefaultRosterStaleAlertRun: a not_members set with no row older than t
     rosterRow({ ageHours: ROSTER_STALE_ALERT_THRESHOLD_HOURS - 1 }),
   ];
   const listAdminIdentities = async () => admins([{}]);
-  const runOnce = makeDefaultRosterStaleAlertRun([adapter], listNotMembers, listAdminIdentities);
+  const runOnce = makeDefaultRosterStaleAlertRun(
+    [adapter],
+    listNotMembers,
+    listAdminIdentities,
+    fakePolicyStore(),
+  );
 
   await runOnce();
 
@@ -203,7 +215,12 @@ test('makeDefaultRosterStaleAlertRun: alerts exactly once on the tick the stale 
   const listNotMembers = async () =>
     Array.from({ length: staleCount }, (_, i) => rosterRow({ ageHours: 200, userId: `guest-${i}` }));
   const listAdminIdentities = async () => admins([{}]);
-  const runOnce = makeDefaultRosterStaleAlertRun([adapter], listNotMembers, listAdminIdentities);
+  const runOnce = makeDefaultRosterStaleAlertRun(
+    [adapter],
+    listNotMembers,
+    listAdminIdentities,
+    fakePolicyStore(),
+  );
 
   await runOnce(); // 0 -> no alert
   assert.equal(dms.length, 0);
@@ -227,7 +244,12 @@ test('makeDefaultRosterStaleAlertRun: the latch re-arms once the stale count ret
   const listNotMembers = async () =>
     Array.from({ length: staleCount }, (_, i) => rosterRow({ ageHours: 200, userId: `guest-${i}` }));
   const listAdminIdentities = async () => admins([{}]);
-  const runOnce = makeDefaultRosterStaleAlertRun([adapter], listNotMembers, listAdminIdentities);
+  const runOnce = makeDefaultRosterStaleAlertRun(
+    [adapter],
+    listNotMembers,
+    listAdminIdentities,
+    fakePolicyStore(),
+  );
 
   await runOnce(); // 0 -> 2, crosses
   assert.equal(dms.length, 1);
@@ -241,6 +263,82 @@ test('makeDefaultRosterStaleAlertRun: the latch re-arms once the stale count ret
   assert.equal(dms.length, 2, 'a fresh crossing after returning to 0 fires a second, distinct alert');
 });
 
+// --- persisted latch (issue #1198) ------------------------------------------
+
+test('makeDefaultRosterStaleAlertRun: writes the active marker to the policy store only AFTER the alertAdmins fan-out returns, on the tick that crosses', async () => {
+  const { adapter } = makeAdapter();
+  const store = fakePolicyStore();
+  const listNotMembers = async () => [rosterRow({ ageHours: 200 })];
+  const listAdminIdentities = async () => admins([{}]);
+  const runOnce = makeDefaultRosterStaleAlertRun([adapter], listNotMembers, listAdminIdentities, store);
+
+  assert.equal(store.written.length, 0, 'no write before the tick runs');
+  await runOnce();
+
+  assert.deepEqual(store.written, [
+    { key: ROSTER_STALE_ALERT_POLICY_KEY, value: 'true', updatedBy: 'system' },
+  ]);
+});
+
+test('makeDefaultRosterStaleAlertRun: restart-safety — a fresh factory seeded with the active marker AND a still-stale count on its first tick does not re-alert, and leaves the marker active', async () => {
+  const { adapter, dms } = makeAdapter();
+  const store = fakePolicyStore({ [ROSTER_STALE_ALERT_POLICY_KEY]: 'true' });
+  const listNotMembers = async () => [
+    rosterRow({ ageHours: 200 }),
+    rosterRow({ ageHours: 300, userId: 'guest-2' }),
+  ];
+  const listAdminIdentities = async () => admins([{}]);
+  const runOnce = makeDefaultRosterStaleAlertRun([adapter], listNotMembers, listAdminIdentities, store);
+
+  await runOnce();
+  assert.equal(dms.length, 0, 'a restart mid-backlog must not re-fire a duplicate DM');
+
+  await runOnce();
+  assert.equal(dms.length, 0, 'a later tick with the same still-stale backlog must not fire either');
+  assert.equal(store.written.length, 0, 'the already-active marker is never rewritten while nothing crosses');
+});
+
+test('makeDefaultRosterStaleAlertRun: re-arm survives a restart — the marker clears to "" when the count returns to 0, and a fresh factory alerts again on the next crossing', async () => {
+  const { adapter, dms } = makeAdapter();
+  const store = fakePolicyStore({ [ROSTER_STALE_ALERT_POLICY_KEY]: 'true' });
+  const listAdminIdentities = async () => admins([{}]);
+
+  const firstProcess = makeDefaultRosterStaleAlertRun([adapter], async () => [], listAdminIdentities, store);
+  await firstProcess(); // count drops to 0 -> re-arm
+  assert.equal(dms.length, 0);
+  assert.deepEqual(store.written, [{ key: ROSTER_STALE_ALERT_POLICY_KEY, value: '', updatedBy: 'system' }]);
+
+  const secondProcess = makeDefaultRosterStaleAlertRun(
+    [adapter],
+    async () => [rosterRow({ ageHours: 200 })],
+    listAdminIdentities,
+    store,
+  );
+  await secondProcess();
+  assert.equal(dms.length, 1, 'a fresh crossing after the persisted re-arm alerts again');
+  assert.deepEqual(store.written, [
+    { key: ROSTER_STALE_ALERT_POLICY_KEY, value: '', updatedBy: 'system' },
+    { key: ROSTER_STALE_ALERT_POLICY_KEY, value: 'true', updatedBy: 'system' },
+  ]);
+});
+
+test('SECURITY: makeDefaultRosterStaleAlertRun never threads a member/admin identifier into updatePolicy — the actor is always the fixed "system" string', async () => {
+  const { adapter } = makeAdapter();
+  const store = fakePolicyStore();
+  const secretAdminId = 'admin-should-never-be-the-actor';
+  const listNotMembers = async () => [rosterRow({ ageHours: 200 })];
+  const listAdminIdentities = async () => admins([{ platformUserId: secretAdminId }]);
+  const runOnce = makeDefaultRosterStaleAlertRun([adapter], listNotMembers, listAdminIdentities, store);
+
+  await runOnce();
+
+  assert.ok(store.written.length > 0);
+  for (const write of store.written) {
+    assert.equal(write.updatedBy, 'system');
+    assert.notEqual(write.updatedBy, secretAdminId);
+  }
+});
+
 test('makeDefaultRosterStaleAlertRun: a guest added as a member before crossing the threshold never contributes to the count or triggers an alert for that guest', async () => {
   const { adapter, dms } = makeAdapter();
   // The guest is present but young at tick 1 (no alert either way), then
@@ -252,7 +350,12 @@ test('makeDefaultRosterStaleAlertRun: a guest added as a member before crossing 
   const listNotMembers = async () =>
     guestIsMember ? [] : [rosterRow({ ageHours: 1, userId: 'guest-added-early' })];
   const listAdminIdentities = async () => admins([{}]);
-  const runOnce = makeDefaultRosterStaleAlertRun([adapter], listNotMembers, listAdminIdentities);
+  const runOnce = makeDefaultRosterStaleAlertRun(
+    [adapter],
+    listNotMembers,
+    listAdminIdentities,
+    fakePolicyStore(),
+  );
 
   await runOnce();
   assert.equal(dms.length, 0, 'young guest, no alert yet');
@@ -274,6 +377,7 @@ test('makeDefaultRosterStaleAlertRun: combines the stale count across every gate
     [discordAdapter, whatsappAdapter],
     listNotMembers,
     listAdminIdentities,
+    fakePolicyStore(),
   );
 
   await runOnce();
@@ -297,7 +401,12 @@ test('alertAdmins recipient isolation: a WindowClosedError from sendDirectMessag
       { platform: 'whatsapp', platformUserId: 'admin-open' },
       { platform: 'whatsapp', platformUserId: 'admin-closed' },
     ]);
-  const runOnce = makeDefaultRosterStaleAlertRun([adapter], listNotMembers, listAdminIdentities);
+  const runOnce = makeDefaultRosterStaleAlertRun(
+    [adapter],
+    listNotMembers,
+    listAdminIdentities,
+    fakePolicyStore(),
+  );
 
   await runOnce();
 

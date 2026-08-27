@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
 import './support/registerNotices.js';
+import { fakePolicyStore } from './support/fakePolicyStore.js';
 import type { OutgoingMessage, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
@@ -26,6 +27,7 @@ const {
   startSuggestionStaleAlert,
 } = await import('../src/module/suggestionStaleAlert.js');
 const { WindowClosedError } = await import('@swampratnz/agent-base/platforms/whatsapp/cloudAdapter.js');
+const { SUGGESTION_STALE_ALERT_POLICY_KEY } = await import('../src/module/storage/policies.js');
 
 type Platform = 'discord' | 'whatsapp';
 type SuggestionStatus = 'new' | 'reviewed' | 'declined' | 'done';
@@ -175,7 +177,12 @@ test('SECURITY: the crossing-tick alert DM contains no suggestion id, content, u
   ];
   const listOpenSuggestions = async () => staleSuggestions;
   const listAdminIdentities = async () => admins([{}]);
-  const runOnce = makeDefaultSuggestionStaleAlertRun([adapter], listOpenSuggestions, listAdminIdentities);
+  const runOnce = makeDefaultSuggestionStaleAlertRun(
+    [adapter],
+    listOpenSuggestions,
+    listAdminIdentities,
+    fakePolicyStore(),
+  );
 
   await runOnce();
 
@@ -200,7 +207,12 @@ test('makeDefaultSuggestionStaleAlertRun: a pending-suggestion set with none old
     suggestion({ ageHours: SUGGESTION_STALE_ALERT_THRESHOLD_HOURS - 1 }),
   ];
   const listAdminIdentities = async () => admins([{}]);
-  const runOnce = makeDefaultSuggestionStaleAlertRun([adapter], listOpenSuggestions, listAdminIdentities);
+  const runOnce = makeDefaultSuggestionStaleAlertRun(
+    [adapter],
+    listOpenSuggestions,
+    listAdminIdentities,
+    fakePolicyStore(),
+  );
 
   await runOnce();
 
@@ -213,7 +225,12 @@ test('makeDefaultSuggestionStaleAlertRun: alerts exactly once on the tick the st
   const listOpenSuggestions = async () =>
     Array.from({ length: staleCount }, (_, i) => suggestion({ ageHours: 200, id: i }));
   const listAdminIdentities = async () => admins([{}]);
-  const runOnce = makeDefaultSuggestionStaleAlertRun([adapter], listOpenSuggestions, listAdminIdentities);
+  const runOnce = makeDefaultSuggestionStaleAlertRun(
+    [adapter],
+    listOpenSuggestions,
+    listAdminIdentities,
+    fakePolicyStore(),
+  );
 
   await runOnce(); // 0 -> no alert
   assert.equal(dms.length, 0);
@@ -237,7 +254,12 @@ test('makeDefaultSuggestionStaleAlertRun: the latch re-arms once the stale count
   const listOpenSuggestions = async () =>
     Array.from({ length: staleCount }, (_, i) => suggestion({ ageHours: 200, id: i }));
   const listAdminIdentities = async () => admins([{}]);
-  const runOnce = makeDefaultSuggestionStaleAlertRun([adapter], listOpenSuggestions, listAdminIdentities);
+  const runOnce = makeDefaultSuggestionStaleAlertRun(
+    [adapter],
+    listOpenSuggestions,
+    listAdminIdentities,
+    fakePolicyStore(),
+  );
 
   await runOnce(); // 0 -> 2, crosses
   assert.equal(dms.length, 1);
@@ -251,6 +273,104 @@ test('makeDefaultSuggestionStaleAlertRun: the latch re-arms once the stale count
   assert.equal(dms.length, 2, 'a fresh crossing after returning to 0 fires a second, distinct alert');
 });
 
+// --- persisted latch (issue #1198) ------------------------------------------
+
+test('makeDefaultSuggestionStaleAlertRun: writes the active marker to the policy store only AFTER the alertAdmins fan-out returns, on the tick that crosses', async () => {
+  const { adapter } = makeAdapter();
+  const store = fakePolicyStore();
+  const listOpenSuggestions = async () => [suggestion({ ageHours: 200 })];
+  const listAdminIdentities = async () => admins([{}]);
+  const runOnce = makeDefaultSuggestionStaleAlertRun(
+    [adapter],
+    listOpenSuggestions,
+    listAdminIdentities,
+    store,
+  );
+
+  assert.equal(store.written.length, 0, 'no write before the tick runs');
+  await runOnce();
+
+  assert.deepEqual(store.written, [
+    { key: SUGGESTION_STALE_ALERT_POLICY_KEY, value: 'true', updatedBy: 'system' },
+  ]);
+});
+
+test('makeDefaultSuggestionStaleAlertRun: restart-safety — a fresh factory seeded with the active marker AND a still-stale count on its first tick does not re-alert, and leaves the marker active', async () => {
+  const { adapter, dms } = makeAdapter();
+  const store = fakePolicyStore({ [SUGGESTION_STALE_ALERT_POLICY_KEY]: 'true' });
+  const listOpenSuggestions = async () => [
+    suggestion({ ageHours: 200 }),
+    suggestion({ ageHours: 300, id: 2 }),
+  ];
+  const listAdminIdentities = async () => admins([{}]);
+  const runOnce = makeDefaultSuggestionStaleAlertRun(
+    [adapter],
+    listOpenSuggestions,
+    listAdminIdentities,
+    store,
+  );
+
+  await runOnce();
+  assert.equal(dms.length, 0, 'a restart mid-backlog must not re-fire a duplicate DM');
+
+  await runOnce();
+  assert.equal(dms.length, 0, 'a later tick with the same still-stale backlog must not fire either');
+  assert.equal(store.written.length, 0, 'the already-active marker is never rewritten while nothing crosses');
+});
+
+test('makeDefaultSuggestionStaleAlertRun: re-arm survives a restart — the marker clears to "" when the count returns to 0, and a fresh factory alerts again on the next crossing', async () => {
+  const { adapter, dms } = makeAdapter();
+  const store = fakePolicyStore({ [SUGGESTION_STALE_ALERT_POLICY_KEY]: 'true' });
+  const listAdminIdentities = async () => admins([{}]);
+
+  const firstProcess = makeDefaultSuggestionStaleAlertRun(
+    [adapter],
+    async () => [],
+    listAdminIdentities,
+    store,
+  );
+  await firstProcess(); // count drops to 0 -> re-arm
+  assert.equal(dms.length, 0);
+  assert.deepEqual(store.written, [
+    { key: SUGGESTION_STALE_ALERT_POLICY_KEY, value: '', updatedBy: 'system' },
+  ]);
+
+  const secondProcess = makeDefaultSuggestionStaleAlertRun(
+    [adapter],
+    async () => [suggestion({ ageHours: 200 })],
+    listAdminIdentities,
+    store,
+  );
+  await secondProcess();
+  assert.equal(dms.length, 1, 'a fresh crossing after the persisted re-arm alerts again');
+  assert.deepEqual(store.written, [
+    { key: SUGGESTION_STALE_ALERT_POLICY_KEY, value: '', updatedBy: 'system' },
+    { key: SUGGESTION_STALE_ALERT_POLICY_KEY, value: 'true', updatedBy: 'system' },
+  ]);
+});
+
+test('SECURITY: makeDefaultSuggestionStaleAlertRun never threads a member/admin identifier into updatePolicy — the actor is always the fixed "system" string', async () => {
+  const { adapter } = makeAdapter();
+  const store = fakePolicyStore();
+  const secretAdminId = 'admin-should-never-be-the-actor';
+  const listOpenSuggestions = async () => [suggestion({ ageHours: 200 })];
+  const listAdminIdentities = async () => admins([{ platformUserId: secretAdminId }]);
+  const runOnce = makeDefaultSuggestionStaleAlertRun(
+    [adapter],
+    listOpenSuggestions,
+    listAdminIdentities,
+    store,
+  );
+
+  await runOnce();
+
+  assert.ok(store.written.length > 0);
+  for (const write of store.written) {
+    assert.equal(write.updatedBy, 'system');
+    assert.notEqual(write.updatedBy, secretAdminId);
+  }
+});
+
 test('a suggestion resolved before crossing the threshold never contributes to the stale count and never triggers an alert', async () => {
   const { adapter, dms } = makeAdapter();
   // listOpenSuggestions models listSuggestions('new', ...) — a resolved
@@ -259,7 +379,12 @@ test('a suggestion resolved before crossing the threshold never contributes to t
   // crossed the threshold had it stayed pending.
   const listOpenSuggestions = async () => [];
   const listAdminIdentities = async () => admins([{}]);
-  const runOnce = makeDefaultSuggestionStaleAlertRun([adapter], listOpenSuggestions, listAdminIdentities);
+  const runOnce = makeDefaultSuggestionStaleAlertRun(
+    [adapter],
+    listOpenSuggestions,
+    listAdminIdentities,
+    fakePolicyStore(),
+  );
 
   await runOnce();
 
@@ -276,7 +401,12 @@ test('SECURITY: a WindowClosedError for one admin is queued via queueForWindowRe
       { platform: 'whatsapp', platformUserId: 'admin-open' },
       { platform: 'whatsapp', platformUserId: 'admin-closed' },
     ]);
-  const runOnce = makeDefaultSuggestionStaleAlertRun([adapter], listOpenSuggestions, listAdminIdentities);
+  const runOnce = makeDefaultSuggestionStaleAlertRun(
+    [adapter],
+    listOpenSuggestions,
+    listAdminIdentities,
+    fakePolicyStore(),
+  );
 
   await runOnce();
 

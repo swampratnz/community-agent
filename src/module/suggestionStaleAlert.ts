@@ -1,6 +1,5 @@
 import { logger } from '@swampratnz/agent-base/logger.js';
 import { startTrackedJob } from '@swampratnz/agent-base/jobs/trackedJob.js';
-import { initialUsageAlertTracker, stepUsageAlertTracker } from '@swampratnz/agent-base/usageAlert.js';
 import {
   listAdmins,
   listSuggestions,
@@ -8,6 +7,8 @@ import {
   type Suggestion,
 } from '@swampratnz/agent-base/storage/repository.js';
 import { alertAdmins } from './appealStaleAlert.js';
+import { persistedCrossingLatch, type CrossingLatchDeps } from './crossingLatch.js';
+import { SUGGESTION_STALE_ALERT_POLICY_KEY } from './storage/policies.js';
 import type { JobSpec } from '@swampratnz/agent-base/jobs/types.js';
 import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
@@ -61,19 +62,18 @@ function staleSuggestions(suggestions: readonly Suggestion[], now: number): Sugg
 
 /**
  * Builds the default `runOnce` for `startSuggestionStaleAlert`: a guild-wide
- * crossing latch (`stepUsageAlertTracker`, imported by reference exactly like
- * `appealStaleAlert.ts`/`knowledgeCandidateStaleAlert.ts` do) over the COUNT
- * of pending (`status = 'new'`) suggestions older than
- * `SUGGESTION_STALE_ALERT_THRESHOLD_HOURS`, computed fresh each tick from a
- * bounded `listSuggestions` scan. Alerts once on the tick the stale count
- * first leaves 0, stays silent while it remains >=1 (including a partial
- * decrease that never reaches 0), and re-arms once every stale suggestion is
- * resolved (`resolve_suggestion` to `reviewed`/`declined`/`done`) and the
- * count returns to 0 — the identical semantics `appealStaleAlert.ts`/
- * `knowledgeCandidateStaleAlert.ts` ship with, accepted here as the same
- * explicit tradeoff for needing zero persistence. `listOpenSuggestions`/
- * `listAdminIdentities` are injectable so tests can drive the latch across
- * ticks with no real DB and no timers.
+ * crossing latch (`persistedCrossingLatch`, shared verbatim by every sibling
+ * alert — issue #1198) over the COUNT of pending (`status = 'new'`)
+ * suggestions older than `SUGGESTION_STALE_ALERT_THRESHOLD_HOURS`, computed
+ * fresh each tick from a bounded `listSuggestions` scan. Alerts once on the
+ * tick the stale count first leaves 0, stays silent while it remains >=1
+ * (including a partial decrease that never reaches 0), and re-arms once
+ * every stale suggestion is resolved (`resolve_suggestion` to
+ * `reviewed`/`declined`/`done`) and the count returns to 0. Unlike the
+ * pre-#1198 in-memory-only latch, this state now survives a process restart:
+ * see `persistedCrossingLatch`'s own doc comment. `listOpenSuggestions`/
+ * `listAdminIdentities`/`latchDeps` are injectable so tests can drive the
+ * latch across ticks with no real DB and no timers.
  *
  * The explicit `SUGGESTION_STALE_ALERT_SCAN_LIMIT` is load-bearing, not
  * decoration — see that constant's doc comment for why a bare call would be
@@ -87,14 +87,14 @@ export function makeDefaultSuggestionStaleAlertRun(
   listOpenSuggestions: () => Promise<Suggestion[]> = () =>
     listSuggestions('new', SUGGESTION_STALE_ALERT_SCAN_LIMIT),
   listAdminIdentities: () => Promise<AdminIdentity[]> = listAdmins,
+  latchDeps?: CrossingLatchDeps,
 ): () => Promise<void> {
-  let tracker = initialUsageAlertTracker();
+  const latch = persistedCrossingLatch(SUGGESTION_STALE_ALERT_POLICY_KEY, latchDeps);
   return async () => {
     const now = Date.now();
     const suggestions = await listOpenSuggestions();
     const stale = staleSuggestions(suggestions, now);
-    const step = stepUsageAlertTracker(tracker, stale.length, 1);
-    tracker = step.tracker;
+    const step = await latch.step(stale.length);
     if (!step.shouldAlert) return;
 
     const oldestAgeHours = Math.floor(
@@ -109,6 +109,7 @@ export function makeDefaultSuggestionStaleAlertRun(
       formatSuggestionStaleAlertMessage(stale.length, oldestAgeHours),
       listAdminIdentities,
     );
+    await step.commit();
   };
 }
 

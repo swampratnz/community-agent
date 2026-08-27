@@ -1,6 +1,5 @@
 import { logger } from '@swampratnz/agent-base/logger.js';
 import { startTrackedJob } from '@swampratnz/agent-base/jobs/trackedJob.js';
-import { initialUsageAlertTracker, stepUsageAlertTracker } from '@swampratnz/agent-base/usageAlert.js';
 import {
   listAdmins,
   listAccessRequests,
@@ -8,6 +7,8 @@ import {
   type AdminIdentity,
 } from '@swampratnz/agent-base/storage/repository.js';
 import { alertAdmins } from './appealStaleAlert.js';
+import { persistedCrossingLatch, type CrossingLatchDeps } from './crossingLatch.js';
+import { ACCESS_REQUEST_STALE_ALERT_POLICY_KEY } from './storage/policies.js';
 import type { JobSpec } from '@swampratnz/agent-base/jobs/types.js';
 import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
@@ -63,8 +64,8 @@ function staleAccessRequests(requests: readonly AccessRequest[], now: number): A
 
 /**
  * Builds the default `runOnce` for `startAccessRequestStaleAlert`: a
- * guild-wide crossing latch (`stepUsageAlertTracker`, imported by reference
- * exactly like every sibling alert does) over the COUNT of pending access
+ * guild-wide crossing latch (`persistedCrossingLatch`, shared verbatim by
+ * every sibling alert — issue #1198) over the COUNT of pending access
  * requests whose `firstRequestedAt` age is at least
  * `ACCESS_REQUEST_STALE_ALERT_THRESHOLD_HOURS`, computed fresh each tick from
  * a bounded `listAccessRequests` scan. Alerts once on the tick the stale
@@ -72,10 +73,11 @@ function staleAccessRequests(requests: readonly AccessRequest[], now: number): A
  * partial decrease that never reaches 0), and re-arms once every stale
  * request resolves (`add_member`, which calls `clearAccessRequest`, or
  * `purgeOldAccessRequests`' retention sweep if enabled) and the count
- * returns to 0 — the identical semantics every sibling alert ships with,
- * accepted here as the same explicit tradeoff for needing zero persistence.
- * `listPendingAccessRequests`/`listAdminIdentities` are injectable so tests
- * can drive the latch across ticks with no real DB and no timers.
+ * returns to 0. Unlike the pre-#1198 in-memory-only latch, this state now
+ * survives a process restart: see `persistedCrossingLatch`'s own doc
+ * comment. `listPendingAccessRequests`/`listAdminIdentities`/`latchDeps` are
+ * injectable so tests can drive the latch across ticks with no real DB and
+ * no timers.
  *
  * The explicit `ACCESS_REQUEST_STALE_ALERT_SCAN_LIMIT` is load-bearing, not
  * decoration — see that constant's doc comment for why a bare call would be
@@ -89,14 +91,14 @@ export function makeDefaultAccessRequestStaleAlertRun(
   listPendingAccessRequests: () => Promise<AccessRequest[]> = () =>
     listAccessRequests(ACCESS_REQUEST_STALE_ALERT_SCAN_LIMIT),
   listAdminIdentities: () => Promise<AdminIdentity[]> = listAdmins,
+  latchDeps?: CrossingLatchDeps,
 ): () => Promise<void> {
-  let tracker = initialUsageAlertTracker();
+  const latch = persistedCrossingLatch(ACCESS_REQUEST_STALE_ALERT_POLICY_KEY, latchDeps);
   return async () => {
     const now = Date.now();
     const requests = await listPendingAccessRequests();
     const stale = staleAccessRequests(requests, now);
-    const step = stepUsageAlertTracker(tracker, stale.length, 1);
-    tracker = step.tracker;
+    const step = await latch.step(stale.length);
     if (!step.shouldAlert) return;
 
     const oldestAgeHours = Math.floor(
@@ -111,6 +113,7 @@ export function makeDefaultAccessRequestStaleAlertRun(
       formatAccessRequestStaleAlertMessage(stale.length, oldestAgeHours),
       listAdminIdentities,
     );
+    await step.commit();
   };
 }
 
