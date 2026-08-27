@@ -7,6 +7,7 @@ import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js'
 import { getCommunityGuidelines, getCommunityGuidelinesMi } from '../../storage/policies.js';
 import { notice } from '../../strings/notices.js';
 import { buildMemberDigestContent } from '../../memberDigest.js';
+import { buildAdminDigestForAdmin } from '../../adminDigest.js';
 import { formatStatusMessage, getStatusCache } from '../../status/anthropicStatus.js';
 import {
   formatMyDataText,
@@ -806,6 +807,41 @@ async function handleFeatureFlags(
 }
 
 /**
+ * `admin_digest` is structurally in ADMIN_TOOLS — the sixth admin-tier
+ * shortcut in this file (issue #1194), mirrored here via `toolsForRole` +
+ * `atLeast(role, 'admin')`, same double-check shape as
+ * `handleReviewQueue`/`handleMutedList`/`handleBlockedList`/`handleTopKnowledge`
+ * above. No options: calls the SAME `buildAdminDigestForAdmin(caller.platform,
+ * caller.userId, adapter)` `admin_digest`'s own handler calls
+ * (digestsAdmin.ts), reusing the already-bound `discordAdapter` module var
+ * `/events` established (issue #1004) rather than adding a second binding —
+ * discards `currentCounts` so a pull can never advance the weekly digest's
+ * snapshot/trend baseline (issue #499/#497's own invariant, pinned at the
+ * `buildAdminDigestForAdmin` level by tests/adminDigest.test.ts) — and
+ * renders PLAIN, no `untrusted()` wrapper, since this reply goes straight to
+ * the human caller and never re-enters model context (unlike the tool's own
+ * quarantined result), matching `/digest`'s own precedent above.
+ */
+async function handleAdminDigest(
+  interaction: ChatInputCommandInteraction,
+  deps: SlashCommandDeps,
+): Promise<void> {
+  await deferEphemeral(interaction);
+  const role = await resolveRole('discord', interaction.user.id);
+  if (
+    !toolsForRole(role, 'discord').includes('mcp__community__admin_digest') ||
+    !atLeast(role, 'admin') ||
+    !discordAdapter
+  ) {
+    await replyEphemeral(interaction, NOT_AUTHORIZED_TEXT, deps);
+    return;
+  }
+  const { message } = await buildAdminDigestForAdmin('discord', interaction.user.id, discordAdapter);
+  recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
+  await replyEphemeral(interaction, message ?? 'Nothing to report right now.', deps);
+}
+
+/**
  * `list_events` is structurally in MEMBER_TOOLS with no extra runtime floor
  * beyond `toolsForRole` (unlike `/warnings`/`/whois`/`/projects`/`/digest`
  * above) — mirrored here exactly like `/kb`'s gate (issue #1004). Takes no
@@ -1039,6 +1075,14 @@ export function bindCommunitySlashCommands(adapter: PlatformAdapter): void {
         .setDescription('Super admin: list which optional off-by-default behaviours are on right now.')
         .toJSON(),
     handle: handleFeatureFlags,
+  });
+  bindDiscordCommand('admindigest', {
+    build: () =>
+      new SlashCommandBuilder()
+        .setName('admindigest')
+        .setDescription('Admin: pull your own admin-digest snapshot on demand.')
+        .toJSON(),
+    handle: handleAdminDigest,
   });
   bindDiscordCommand('events', {
     build: () =>

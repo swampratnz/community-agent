@@ -23,6 +23,11 @@ import { BAILEYS_TEXT_PACK, DISCORD_TEXT_PACK, WHATSAPP_CLOUD_TEXT_PACK } from '
 // registers that list from the manifest well after this module has been
 // evaluated as part of index.ts's static import graph.
 import { bindCommunitySlashCommands } from './discord/slashCommands.js';
+// Same rationale, WhatsApp side (issue #1194): `!admindigest` needs the live
+// WhatsApp adapter, and commands.ts's WhatsApp handlers are the fixed,
+// zero-adapter WhatsAppTextCommandDeps shape — called below, never at module
+// scope, for the identical reason bindCommunitySlashCommands is.
+import { bindCommunityWhatsAppAdapter } from '../commands.js';
 
 /**
  * The adapter factory registrations (agent-base plan item 9, §3 `adapters`
@@ -112,6 +117,13 @@ export function createConfiguredAdapters(): PlatformAdapter[] {
     // static imports are evaluated before index.ts's body runs at all.
     if (factory.platform === 'discord') {
       bindCommunitySlashCommands(adapter);
+    }
+    // Same need, WhatsApp side (issue #1194): `!admindigest` calls
+    // `buildAdminDigestForAdmin`, which needs a live `PlatformAdapter` for
+    // `adapter.conversationsForUser` — captured here, before any WhatsApp
+    // message can be routed to the command dispatcher.
+    if (factory.platform === 'whatsapp') {
+      bindCommunityWhatsAppAdapter(adapter);
     }
   }
   return adapters;

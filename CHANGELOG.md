@@ -28,6 +28,19 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-08-28
 
 ### Added
+- **New admin shortcut: `!admindigest`/`/admindigest`, a zero-model-call way
+  to pull your own admin-digest snapshot on demand.** (#1194) `admin_digest`
+  (#499) — the on-demand pull of the recurring-question, review-queue,
+  roster, and moderation signals the weekly digest DM would send — sat right
+  next to `review_queue` in the same file but never got its own shortcut when
+  `!reviewqueue` (#1095), `!mutedlist` (#1114), `!blockedlist` (#1145), and
+  `!topknowledge` (#1165) swept the rest of that admin-tier family. Renders
+  the exact same text `buildAdminDigestForAdmin` already returns, plain (no
+  `untrusted()` quarantine, unlike the tool's own reply) since it goes
+  straight to the human caller and never re-enters model context, matching
+  `!digest`'s existing precedent. A pull can never suppress or reset the next
+  scheduled weekly push. Admin-tier only on both platforms; no new tool,
+  table, or data access.
 - **`share_project` now nudges you when a fresh share looks like an existing
   member's project, instead of publishing two near-identical showcase
   entries silently.** (#1190) `save_knowledge` has always flagged a

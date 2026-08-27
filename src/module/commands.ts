@@ -1,6 +1,8 @@
 import { atLeast } from '@swampratnz/agent-base/auth/rbac.js';
 import { config } from '@swampratnz/agent-base/config.js';
 import { logger } from '@swampratnz/agent-base/logger.js';
+import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
+import { buildAdminDigestForAdmin } from './adminDigest.js';
 import {
   areKnowledgeEntriesLowRated,
   countAccessRequests,
@@ -535,7 +537,62 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
       return `${formatFeatureFlags()}\n\n${formatOtherConfiguredKnobs()}`;
     },
   },
+  {
+    // Sixth admin-tier entry (issue #1194), same shape as `reviewqueue`/
+    // `mutedlist`/`blockedlist`/`topknowledge` above — but unlike those,
+    // `buildAdminDigestForAdmin` needs a live `PlatformAdapter`
+    // (`adapter.conversationsForUser`) to resolve the admin's own scope, and
+    // the fixed, base-owned `WhatsAppTextCommandDeps` carries no adapter
+    // field. `whatsappAdapter` below is captured at composition time
+    // (`bindCommunityWhatsAppAdapter`, called from
+    // `platforms/factories.ts`'s `createConfiguredAdapters()`), mirroring
+    // the same need `/events`' `discordAdapter` module-scope binding solved
+    // on the Discord side (issue #1004). Anchored, argument-rejecting
+    // matcher, same discipline as every sibling above: `!admindigest
+    // anything` falls through to TEXT_COMMAND_UNMATCHED. Deliberately
+    // discards `currentCounts` — a pull must never advance the weekly
+    // digest's snapshot/trend baseline (issue #499/#497's own invariant,
+    // pinned at the `buildAdminDigestForAdmin` level by
+    // tests/adminDigest.test.ts) — matching `admin_digest`'s own tool
+    // handler (digestsAdmin.ts), which takes only `message` the same way.
+    name: 'admindigest',
+    platforms: ['discord', 'whatsapp'],
+    whatsapp: async (text, msg, role) => {
+      if (!/^!admindigest$/i.test(text)) return TEXT_COMMAND_UNMATCHED;
+      if (!atLeast(role, 'admin')) return null;
+      // Unreachable in practice — createConfiguredAdapters() binds the
+      // WhatsApp adapter before any message can be routed — but keeps this
+      // handler type-safe without a non-null assertion.
+      if (!whatsappAdapter) return null;
+      const { message } = await buildAdminDigestForAdmin(msg.platform, msg.userId, whatsappAdapter);
+      // Rendered PLAIN, no untrusted() wrapper — unlike admin_digest's own
+      // tool result, this reply goes straight to the human caller and never
+      // re-enters model context, matching `!digest`'s own precedent above.
+      return message ?? 'Nothing to report right now.';
+    },
+  },
 ];
+
+/**
+ * The live WhatsApp adapter, captured at composition time — see the
+ * `admindigest` entry's comment above for why this is needed (issue #1194).
+ * Assigned on EVERY call, mirroring slashCommands.ts's `discordAdapter`
+ * latch: a second `createConfiguredAdapters()` call (tests build adapters
+ * more than once per process) must refresh the reference to the new, live
+ * adapter rather than staying closed over a torn-down one.
+ */
+let whatsappAdapter: PlatformAdapter | undefined;
+
+/**
+ * Called from `createConfiguredAdapters()` (`platforms/factories.ts`) right
+ * after the WhatsApp adapter is constructed — never at module scope, mirroring
+ * `bindCommunitySlashCommands`'s own rationale (slashCommands.ts): this file
+ * is evaluated as part of the static import graph, long before `index.ts`'s
+ * body runs, so a module-scope call would always see `undefined` here.
+ */
+export function bindCommunityWhatsAppAdapter(adapter: PlatformAdapter): void {
+  whatsappAdapter = adapter;
+}
 
 // Registration is the manifest's job now (src/module/agentModule.ts):
 // `createAgent` hands this list to `commands/registry.ts` before a turn can
