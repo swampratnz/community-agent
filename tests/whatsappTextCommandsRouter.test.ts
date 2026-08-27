@@ -75,9 +75,11 @@ const { countRepliesToUser, upsertMember, insertContextDigest, listKnowledge, se
   await import('@swampratnz/agent-base/storage/repository.js');
 const {
   formatBlockedMembersList,
+  formatFeatureFlags,
   formatListProjectsEmptyText,
   formatMostHelpfulKnowledge,
   formatMutedMembersList,
+  formatOtherConfiguredKnobs,
   formatReviewQueueSummary,
   formatTopKnowledgeList,
   formatWhoIsIntoEmptyText,
@@ -3576,6 +3578,149 @@ test("a successful !topknowledge invocation calls recordShortcutHit('whatsapp_te
   router.register(adapter);
 
   await trigger(makeMessage({ text: '!topknowledge', userId: 'admin-1' }));
+
+  assert.equal(sent.length, 1);
+  assert.deepEqual(hits, ['whatsapp_text_command']);
+});
+
+// --- !featureflags (issue #1183) --------------------------------------------
+
+/**
+ * `feature_flags` is super_admin-only and, unlike every DB-backed sibling
+ * above, needs no repository stub at all — `formatFeatureFlags`/
+ * `formatOtherConfiguredKnobs` read the already-loaded `config` object
+ * directly. super_admin is resolved from `config.rbac.superAdminWhatsappNumbers`,
+ * never `community_users` (mirroring the `!help` super_admin case above), so
+ * this helper only ever needs to stub the role-lookup branch for the
+ * DB-backed roles ('admin'/'member'/null-for-guest).
+ */
+function pushSuperAdminWhatsappNumber(t: { after: (fn: () => void) => void }, userId: string): void {
+  const original = [...config.rbac.superAdminWhatsappNumbers];
+  config.rbac.superAdminWhatsappNumbers.push(userId);
+  t.after(() => {
+    config.rbac.superAdminWhatsappNumbers.length = 0;
+    config.rbac.superAdminWhatsappNumbers.push(...original);
+  });
+}
+
+test(
+  '!featureflags returns text equal to `${formatFeatureFlags()}\\n\\n${formatOtherConfiguredKnobs()}` for a ' +
+    "super_admin caller — the exact same two formatters feature_flags's own handler calls — with no agent " +
+    'turn invoked (issue #1183 acceptance criterion 1)',
+  async (t) => {
+    mockPoolRole(t, null);
+    pushSuperAdminWhatsappNumber(t, 'super-1');
+    const router = makeRouter({ runTurn: throwingRunTurn });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!featureflags', userId: 'super-1' }));
+
+    const expected = `${formatFeatureFlags()}\n\n${formatOtherConfiguredKnobs()}`;
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].text, expected);
+  },
+);
+
+test(
+  '"!featureflags extra text" is not matched as the !featureflags command — anchored, argument-rejecting ' +
+    'matcher falls through to the normal agent turn (issue #1183 acceptance criterion 2)',
+  async (t) => {
+    mockPoolRole(t, null);
+    pushSuperAdminWhatsappNumber(t, 'super-1');
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!featureflags extra text', userId: 'super-1' }));
+
+    assert.equal(sent[0].text, REAL_TURN_REPLY);
+  },
+);
+
+test(
+  'SECURITY: an admin-tier caller\'s "!featureflags" falls through to the normal turn — no feature-flag text ' +
+    'is ever rendered for a caller below super_admin (issue #1183 acceptance criterion 3)',
+  async (t) => {
+    mockPoolRole(t, 'admin');
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!featureflags', userId: 'admin-1' }));
+
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].text, REAL_TURN_REPLY);
+  },
+);
+
+test(
+  'SECURITY: a member-tier caller\'s "!featureflags" falls through to the normal turn — no feature-flag text ' +
+    'is ever rendered (issue #1183 acceptance criterion 3)',
+  async (t) => {
+    mockPoolRole(t, 'member');
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!featureflags', userId: 'member-1' }));
+
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].text, REAL_TURN_REPLY);
+  },
+);
+
+test(
+  'SECURITY: a guest caller\'s "!featureflags" falls through to the normal turn — no feature-flag text is ' +
+    'ever rendered (issue #1183 acceptance criterion 3)',
+  async (t) => {
+    mockPoolRole(t, null);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!featureflags', userId: 'guest-1' }));
+
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].text, REAL_TURN_REPLY);
+  },
+);
+
+test(
+  'config.behaviour.whatsappTextCommandsEnabled === false disables !featureflags exactly as it does every ' +
+    'other WhatsApp shortcut',
+  async (t) => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    config.behaviour.whatsappTextCommandsEnabled = false;
+    t.after(() => {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    });
+    mockPoolRole(t, null);
+    pushSuperAdminWhatsappNumber(t, 'super-1');
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!featureflags', userId: 'super-1' }));
+
+    assert.equal(sent[0].text, REAL_TURN_REPLY);
+  },
+);
+
+test("a successful !featureflags invocation calls recordShortcutHit('whatsapp_text_command') exactly once (issue #1183)", async (t) => {
+  mockPoolRole(t, null);
+  pushSuperAdminWhatsappNumber(t, 'super-1');
+  const hits: string[] = [];
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    recordShortcutHitFn: async (kind) => {
+      hits.push(kind);
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!featureflags', userId: 'super-1' }));
 
   assert.equal(sent.length, 1);
   assert.deepEqual(hits, ['whatsapp_text_command']);

@@ -60,12 +60,14 @@ import {
 import {
   formatBlockedMembersList,
   formatCommunityInfoText,
+  formatFeatureFlags,
   formatInterestResults,
   formatKnowledgeSearchResults,
   formatKnowledgeTopics,
   formatListProjectsEmptyText,
   formatMostHelpfulKnowledge,
   formatMutedMembersList,
+  formatOtherConfiguredKnobs,
   formatProjectResults,
   formatReviewQueueSummary,
   formatTopKnowledgeList,
@@ -776,6 +778,34 @@ async function handleTopKnowledge(
 }
 
 /**
+ * `feature_flags` is the fifth shortcut in this file (issue #1183) and the
+ * first at the **super_admin** floor rather than `admin` — mirrored here via
+ * `toolsForRole` + `atLeast(role, 'super_admin')`, same double-check shape as
+ * `handleReviewQueue`/`handleMutedList`/`handleBlockedList`/`handleTopKnowledge`
+ * above. No options, no DB call: renders the SAME
+ * `` `${formatFeatureFlags()}\n\n${formatOtherConfiguredKnobs()}` `` text
+ * `feature_flags`'s own handler returns, straight off the already-loaded
+ * `config` object.
+ */
+async function handleFeatureFlags(
+  interaction: ChatInputCommandInteraction,
+  deps: SlashCommandDeps,
+): Promise<void> {
+  await deferEphemeral(interaction);
+  const role = await resolveRole('discord', interaction.user.id);
+  if (
+    !toolsForRole(role, 'discord').includes('mcp__community__feature_flags') ||
+    !atLeast(role, 'super_admin')
+  ) {
+    await replyEphemeral(interaction, NOT_AUTHORIZED_TEXT, deps);
+    return;
+  }
+  const message = `${formatFeatureFlags()}\n\n${formatOtherConfiguredKnobs()}`;
+  recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
+  await replyEphemeral(interaction, message, deps);
+}
+
+/**
  * `list_events` is structurally in MEMBER_TOOLS with no extra runtime floor
  * beyond `toolsForRole` (unlike `/warnings`/`/whois`/`/projects`/`/digest`
  * above) — mirrored here exactly like `/kb`'s gate (issue #1004). Takes no
@@ -1001,6 +1031,14 @@ export function bindCommunitySlashCommands(adapter: PlatformAdapter): void {
         .setDescription('Admin: rank knowledge entries by retrieval count, most relied-on first.')
         .toJSON(),
     handle: handleTopKnowledge,
+  });
+  bindDiscordCommand('featureflags', {
+    build: () =>
+      new SlashCommandBuilder()
+        .setName('featureflags')
+        .setDescription('Super admin: list which optional off-by-default behaviours are on right now.')
+        .toJSON(),
+    handle: handleFeatureFlags,
   });
   bindDiscordCommand('events', {
     build: () =>
