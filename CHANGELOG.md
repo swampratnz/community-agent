@@ -156,6 +156,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   resolution DM; omitting it removes silently, useful for spam/abuse where
   alerting the actor isn't wanted. The reason is never persisted beyond that
   one DM. Admin only.
+- **New admin tool: `check_knowledge_source`, forcing an immediate re-check
+  of one knowledge entry's citation instead of waiting up to ~6 days.**
+  (#1188) The weekly link-rot checker was previously the ONLY way
+  `source_unreachable` could clear back to false, gated by its own ~6-day
+  minimum interval — so fixing a broken `sourceUrl` (or the cited site simply
+  coming back up) still left `knowledge_search`/`/kb` showing "⚠️ link
+  appears dead" and losing near-tie search ranking for up to six more days,
+  with no lever to force a fresh check. `check_knowledge_source({ id })`
+  reuses the weekly job's own SSRF-hardened reachability probe on demand for
+  one entry, so the fix is confirmed in the same turn. Admin only.
 
 ### Fixed
 - **Docs-ingest page fetches now retry a transient failure before giving up.**
@@ -270,6 +280,17 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   itself does, appended only when set — byte-identical to before when
   guidelines are unset, and never blocking or failing the DM if the lookup
   errors.
+- **`remember_search` and `catch_up`'s "nothing found" replies now honour a
+  standing te reo Māori preference too.** (#1177) Both tools in
+  `memory.ts` were the last member-tier tool file with zero language-preference
+  handling — their empty-result fallback strings ("No relevant past
+  interactions found.", "Nothing new here in the last N hours.") stayed
+  hardcoded English even for a member with a stored `mi` preference. Both now
+  resolve the caller's own preference on the empty-result branch only and
+  render the `mi` variant, including `catch_up`'s singular/plural "hour"
+  handling. Non-empty results are untouched — no language lookup happens on
+  that path, and no quoted recalled content is ever translated. No new tool,
+  tier, or data read; the English default is byte-identical to before.
 
 ## 2026-08-25
 
