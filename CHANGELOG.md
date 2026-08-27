@@ -68,6 +68,17 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   alert for a backlog that hadn't actually changed. That state now survives a
   restart, so admins see one alert per real crossing, not one per crossing
   plus one per redeploy in between.
+- **A knowledge search with no results now also offers to loop in a human
+  admin, not just a `suggest_knowledge` nudge.** (#1196) #1180 fixed the "you
+  found the answer elsewhere" branch of `knowledge_search`'s (and `/kb`'s)
+  empty-state reply, but left the "you don't know the answer either" branch —
+  arguably the more common one — as a dead end. The reply now also mentions
+  that you can ask for a human community admin, which you can already do any
+  time with `request_human_help`; nothing about that tool's own explicit-ask
+  requirement, tier, or daily limit has changed, this only surfaces it at the
+  moment it's most useful. Available in te reo Māori for members with that
+  language preference set. No new tool, data access, or admin-visible signal
+  — this only changes the wording of an existing reply.
 
 ## 2026-08-27
 

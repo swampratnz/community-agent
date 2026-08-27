@@ -103,7 +103,7 @@
   "knowledgeGapAlert.router.test.ts": 2,
   "knowledgeRefresh.test.ts": 2,
   "knowledgeRefreshStructuredOutput.test.ts": 4,
-  "knowledgeSearchFailSafe.test.ts": 2,
+  "knowledgeSearchFailSafe.test.ts": 3,
   "knowledgeSearchLowRatedCaveat.test.ts": 1,
   "knowledgeShortcutRouter.test.ts": 5,
   "linkCheck.test.ts": 15,

@@ -807,9 +807,14 @@ const NOTICE_ENTRIES = {
     },
   },
   knowledgeSearchEmpty: {
-    base: 'No matching knowledge entries. If you find the answer, suggest_knowledge can save it for the next person.',
+    base:
+      'No matching knowledge entries. If you find the answer, suggest_knowledge can save it for the ' +
+      "next person, or if you'd like, I can loop in a human community admin instead.",
     language: {
-      mi: 'Kāore he mōhiohio e tau ana. Ki te kitea e koe te whakautu, mā te suggest_knowledge e tiaki mō te tangata e whai ake nei.',
+      mi:
+        'Kāore he mōhiohio e tau ana. Ki te kitea e koe te whakautu, mā te suggest_knowledge e tiaki mō ' +
+        'te tangata e whai ake nei, ki te hiahia koe, ka taea e au te karanga i tētahi kaiwhakahaere ' +
+        'ā-tangata hei āwhina.',
     },
   },
   // --- moderation DM texts (moderation/moderator.ts) ------------------------
