@@ -97,6 +97,8 @@ export {
   formatShareProjectText,
   formatWhoIsIntoEmptyText,
   LIST_PROJECTS_DEFAULT_LIMIT,
+  PROJECT_DUPLICATE_SEARCH_LIMIT,
+  PROJECT_DUPLICATE_SIMILARITY_THRESHOLD,
   WHO_IS_INTO_NO_PROFILE_HINT,
 } from './tools/social.js';
 export { MOST_HELPFUL_KNOWLEDGE_FETCH_CAP } from './tools/knowledgeMember.js';

@@ -4,6 +4,7 @@ import { config } from '@swampratnz/agent-base/config.js';
 import { logger, hashId } from '@swampratnz/agent-base/logger.js';
 import type { Platform } from '@swampratnz/agent-base/platforms/types.js';
 import { WindowClosedError } from '@swampratnz/agent-base/platforms/types.js';
+import { untrustedEntryContent } from '@swampratnz/agent-base/agent/systemPrompt.js';
 import {
   FIND_HELPER_REQUESTER_DAILY_LIMIT,
   FIND_HELPER_TOPIC_MAX_CHARS,
@@ -228,10 +229,34 @@ export function formatFindHelperText(
 }
 
 /**
- * `share_project`'s seven caller-facing reply outcomes (issue #1163). `name`/
- * `limit` are unchanged interpolations, threaded through as discriminated
- * union fields — same shape `formatReportContentText`/
- * `formatSuggestImprovementText` use for an outcome that carries data.
+ * `share_project`'s write-time duplicate-content nudge (issue #1190), mirroring
+ * `save_knowledge`'s own similarity check (`knowledgeAdmin.ts`). A high bar —
+ * two members legitimately building similar-sounding tools must never be
+ * blocked or discouraged from showcasing their own work, so this only ever
+ * appends an informational note, never blocks the share. `PROJECT_DUPLICATE_SEARCH_LIMIT`
+ * is the small, bounded `N` passed to `searchProjects` — only the top
+ * non-self hit is ever compared against the threshold.
+ */
+export const PROJECT_DUPLICATE_SIMILARITY_THRESHOLD = 0.9;
+export const PROJECT_DUPLICATE_SEARCH_LIMIT = 3;
+
+/**
+ * `share_project`'s eight caller-facing reply outcomes (issue #1163, `similar`
+ * added by #1190). `name`/`limit` are unchanged interpolations, threaded
+ * through as discriminated union fields — same shape
+ * `formatReportContentText`/`formatSuggestImprovementText` use for an outcome
+ * that carries data.
+ *
+ * `similar` (issue #1190) is appended after the plain `created` line rather
+ * than replacing it — a near-duplicate share is never blocked, only flagged,
+ * mirroring `save_knowledge`'s own write-time similarity nudge
+ * (`knowledgeAdmin.ts`). `matchName` is rendered through `untrustedEntryContent`
+ * because it is ANOTHER member's stored project name reaching the caller's
+ * reply — the same quarantine `formatProjectResults` applies to every project
+ * name it renders — so a crafted name can't escape this sentence or forge
+ * additional reply content. `matchOwner` arrives pre-sanitized (the caller
+ * resolves it via `resolveSanitizedLabel` before constructing this outcome,
+ * same convention as `find_helper`'s `requesterLabel`).
  */
 export function formatShareProjectText(
   outcome:
@@ -241,7 +266,8 @@ export function formatShareProjectText(
     | { kind: 'removed'; name: string }
     | { kind: 'notFound'; name: string }
     | { kind: 'created'; name: string }
-    | { kind: 'updated'; name: string },
+    | { kind: 'updated'; name: string }
+    | { kind: 'similar'; name: string; matchId: number; matchName: string; matchOwner: string },
   language: LanguagePreference,
 ): string {
   const mi = language === 'mi';
@@ -276,6 +302,16 @@ export function formatShareProjectText(
         : `Shared "${outcome.name}" — other members can find it with list_projects.`;
     case 'updated':
       return mi ? `Kua whakahoutia a "${outcome.name}".` : `Updated "${outcome.name}".`;
+    case 'similar': {
+      const matchName = untrustedEntryContent(outcome.matchName);
+      return mi
+        ? `Kua tohaina a "${outcome.name}" — ka kitea e ētahi atu mema mā te list_projects. Tuhinga: he rite ` +
+            `tēnei ki te kaupapa #${outcome.matchId} "${matchName}" a ${outcome.matchOwner} — tirohia te ` +
+            'list_projects, whakamahia rānei te request_project_connection mēnā he pai ake te mahi tahi.'
+        : `Shared "${outcome.name}" — other members can find it with list_projects. Note: this looks similar ` +
+            `to #${outcome.matchId} "${matchName}" by ${outcome.matchOwner} — check list_projects, or ` +
+            "request_project_connection if you'd rather team up.";
+    }
   }
 }
 
@@ -709,6 +745,30 @@ export const socialTools = [
         );
       }
       const language = await getLanguagePreference(caller.platform, caller.userId);
+      if (result.created) {
+        // Issue #1190: write-time duplicate-content nudge, only on a
+        // brand-new share (never `updated`/`removed`/a cap-or-rate-limit
+        // refusal above, which return earlier) — mirroring save_knowledge's
+        // own similarity check. Self-exclusion (by platform+userId+name)
+        // runs BEFORE the threshold comparison, mirroring find_helper's own
+        // pre-slice self-filter above, so the project just created can never
+        // be reported as its own match. `hits` is already similarity-ordered
+        // (searchProjects, same as list_projects' query path), so the first
+        // non-self hit IS the top match.
+        const hits = await searchProjects(args.description, PROJECT_DUPLICATE_SEARCH_LIMIT);
+        const match = hits.find(
+          (p) => !(p.platform === caller.platform && p.userId === caller.userId && p.name === args.name),
+        );
+        if (match && match.similarity >= PROJECT_DUPLICATE_SIMILARITY_THRESHOLD) {
+          const matchOwner = await resolveSanitizedLabel(match.platform, match.userId);
+          return text(
+            formatShareProjectText(
+              { kind: 'similar', name: args.name, matchId: match.id, matchName: match.name, matchOwner },
+              language,
+            ),
+          );
+        }
+      }
       return text(
         formatShareProjectText(
           result.created ? { kind: 'created', name: args.name } : { kind: 'updated', name: args.name },
