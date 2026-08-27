@@ -31,11 +31,13 @@ import {
 import {
   formatBlockedMembersList,
   formatCommunityInfoText,
+  formatFeatureFlags,
   formatInterestResults,
   formatKnowledgeTopics,
   formatListProjectsEmptyText,
   formatMostHelpfulKnowledge,
   formatMutedMembersList,
+  formatOtherConfiguredKnobs,
   formatProjectResults,
   formatReviewQueueSummary,
   formatTopKnowledgeList,
@@ -68,9 +70,10 @@ import { notice } from './strings/notices.js';
  * (issue #1018), `help` (issue #993), `kbtopics` (issue #1036),
  * `kbhelpful` (issue #1087), `reviewqueue` (issue #1095, the first
  * admin-tier entry), `mutedlist` (issue #1114, the second), `blockedlist`
- * (issue #1145, the third), and `topknowledge` (issue #1165, the fourth)
- * appended — also safe for the WhatsApp side because every `!` matcher is
- * anchored and mutually exclusive.
+ * (issue #1145, the third), `topknowledge` (issue #1165, the fourth), and
+ * `featureflags` (issue #1183, the fifth — and the first at the
+ * `super_admin` floor rather than `admin`) appended — also safe for the
+ * WhatsApp side because every `!` matcher is anchored and mutually exclusive.
  *
  * The Discord halves are BOUND by `bindCommunitySlashCommands()`
  * (slashCommands.ts), which `createConfiguredAdapters()` calls — never at
@@ -512,6 +515,24 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
       });
       const ranked = rankKnowledgeByRetrieval(entries, 10);
       return formatTopKnowledgeList(ranked);
+    },
+  },
+  {
+    // Fifth entry (issue #1183), and the first at the `super_admin` floor
+    // rather than `admin` — same shape as `reviewqueue`/`mutedlist`/
+    // `blockedlist`/`topknowledge` directly above. Anchored,
+    // argument-rejecting matcher: `!featureflags anything` falls through to
+    // TEXT_COMMAND_UNMATCHED rather than matching, so no message-supplied
+    // text ever reaches a formatter. No DB call at all — renders the SAME
+    // `${formatFeatureFlags()}\n\n${formatOtherConfiguredKnobs()}` text
+    // feature_flags's own handler returns, straight off the already-loaded
+    // config object, so the two can never drift.
+    name: 'featureflags',
+    platforms: ['discord', 'whatsapp'],
+    whatsapp: async (text, _msg, role) => {
+      if (!/^!featureflags$/i.test(text)) return TEXT_COMMAND_UNMATCHED;
+      if (!atLeast(role, 'super_admin')) return null;
+      return `${formatFeatureFlags()}\n\n${formatOtherConfiguredKnobs()}`;
     },
   },
 ];

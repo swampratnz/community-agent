@@ -4781,12 +4781,19 @@ test(
     // reasoning as `reviewqueue` — its discovery line lives in the
     // `whatsappAdminTextCommands` notice instead, asserted separately below.
     // `blockedlist` (issue #1145) is the third, same reasoning. `topknowledge`
-    // (issue #1165) is the fourth, same reasoning.
+    // (issue #1165) is the fourth, same reasoning. `featureflags` (issue
+    // #1183) is exempted for a stronger reason still: it is gated at
+    // `super_admin`, not `admin`, so even the admin-tier discovery notice
+    // that the exempted commands above use (`whatsappAdminTextCommands`)
+    // would over-advertise it to a plain admin — adding a super_admin-only
+    // discovery line is explicitly out of scope for #1183's approved
+    // acceptance criteria (the shortcut itself, not its discoverability).
     const WHATSAPP_DISCOVERY_EXEMPT_COMMANDS: readonly string[] = [
       'reviewqueue',
       'mutedlist',
       'blockedlist',
       'topknowledge',
+      'featureflags',
     ];
 
     const original = config.behaviour.whatsappTextCommandsEnabled;
@@ -12047,6 +12054,69 @@ test('SECURITY: feature_flags handler + "Other configured knobs" formatter never
   const region = source.slice(formatterStart, source.indexOf('\n}\n', formatterStart) + 3);
   assert.doesNotMatch(region, /Object\.entries\(|Object\.values\(|\.\.\.(source|config)\b/);
 });
+
+// --- issue #1183: !featureflags zero-model-call shortcut --------------------
+
+test(
+  'anti-drift: feature_flags and the !featureflags shortcut render byte-identical text — both via the SAME ' +
+    '`${formatFeatureFlags()}\\n\\n${formatOtherConfiguredKnobs()}` composition (issue #1183 acceptance ' +
+    'criterion 1)',
+  async () => {
+    const toolResult = (await featureFlagsHandler('super_admin').handler({})) as {
+      content: Array<{ type: string; text: string }>;
+    };
+    const expected = `${formatFeatureFlags()}\n\n${formatOtherConfiguredKnobs()}`;
+    assert.equal(
+      toolResult.content[0]?.text,
+      expected,
+      'feature_flags tool handler must match the shared formatter composition',
+    );
+
+    const featureFlagsCommand = COMMUNITY_COMMANDS.find((c) => c.name === 'featureflags');
+    assert.ok(featureFlagsCommand?.whatsapp, 'the featureflags command must define a whatsapp handler');
+    const shortcutResult = await featureFlagsCommand.whatsapp(
+      '!featureflags',
+      {
+        platform: 'discord',
+        conversationId: 'convo-featureflags-drift',
+        userId: 'super-admin-featureflags-drift',
+        userName: 'Super Admin',
+        text: '!featureflags',
+      } as never,
+      'super_admin',
+      {} as never,
+    );
+    assert.equal(
+      shortcutResult,
+      expected,
+      '!featureflags must render byte-identical text to feature_flags for the same config',
+    );
+  },
+);
+
+test(
+  "SECURITY: the !featureflags command's whatsapp handler returns null (never TEXT_COMMAND_UNMATCHED, never " +
+    'the formatter output) for a caller below super_admin (issue #1183 acceptance criterion 3)',
+  async () => {
+    const featureFlagsCommand = COMMUNITY_COMMANDS.find((c) => c.name === 'featureflags');
+    assert.ok(featureFlagsCommand?.whatsapp, 'the featureflags command must define a whatsapp handler');
+    for (const role of ['admin', 'member', 'guest'] as const) {
+      const result = await featureFlagsCommand.whatsapp(
+        '!featureflags',
+        {
+          platform: 'discord',
+          conversationId: 'convo-featureflags-auth',
+          userId: `${role}-featureflags-auth`,
+          userName: 'Caller',
+          text: '!featureflags',
+        } as never,
+        role,
+        {} as never,
+      );
+      assert.equal(result, null, `a ${role}-tier caller must get null, not the formatter output`);
+    }
+  },
+);
 
 test('formatKnowledgeSearchResults returns "no matching" when every hit is below the relevance threshold, even though hits exist', () => {
   const hits = [

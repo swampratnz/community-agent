@@ -70,6 +70,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   for the next person to ask. Available in te reo Māori for members with
   that language preference set. No new tool, data access, or admin-visible
   signal — this only changes the wording of an existing reply.
+- **New super-admin shortcut: `!featureflags`/`/featureflags`, a
+  zero-model-call way to see which optional behaviours are currently on.**
+  (#1183) `feature_flags` — the config reflection listing every off-by-default
+  `*_ENABLED` behaviour plus a handful of bounded operator knobs — needed no
+  database call at all, making it the purest fit yet for this repo's
+  zero-model-call shortcut pattern (`!reviewqueue` #1095, `!mutedlist` #1114,
+  `!blockedlist` #1145, `!topknowledge` #1165). Super-admin only on both
+  platforms; no new tool, table, or data access — it reuses `feature_flags`'s
+  own two formatters verbatim, so the shortcut can never diverge from the tool
+  it mirrors.
 
 ## 2026-08-26
 

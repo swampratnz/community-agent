@@ -60,10 +60,12 @@ await import('./support/registerPolicyKeys.js');
 // assertions below pin exactly what they did before.
 const {
   formatBlockedMembersList,
+  formatFeatureFlags,
   formatKnowledgeTopics,
   formatListProjectsEmptyText,
   formatMostHelpfulKnowledge,
   formatMutedMembersList,
+  formatOtherConfiguredKnobs,
   formatReviewQueueSummary,
   formatTopKnowledgeList,
   formatWhoIsIntoEmptyText,
@@ -560,6 +562,7 @@ test('with DISCORD_SLASH_COMMANDS_ENABLED=true, all commands are registered guil
     'blockedlist',
     'digest',
     'events',
+    'featureflags',
     'guidelines',
     'help',
     'kb',
@@ -592,13 +595,14 @@ test("a slash-command registration failure is caught and logged, never thrown, m
   assert.ok(warnLog.mock.calls.length >= 1, 'a registration failure must be logged, not swallowed silently');
 });
 
-test('buildSlashCommands defines exactly the seventeen approved read-only commands, each with its expected required-ness', () => {
+test('buildSlashCommands defines exactly the eighteen approved read-only commands, each with its expected required-ness', () => {
   const commands = buildSlashCommands();
   const byName = new Map(commands.map((c) => [c.name, c]));
   assert.deepEqual([...byName.keys()].sort(), [
     'blockedlist',
     'digest',
     'events',
+    'featureflags',
     'guidelines',
     'help',
     'kb',
@@ -715,6 +719,12 @@ test('buildSlashCommands defines exactly the seventeen approved read-only comman
     [],
     "/topknowledge takes no options — always list_top_knowledge's own default arguments (unset scope, " +
       'limit 10), admin-tier only (issue #1165)',
+  );
+  assert.deepEqual(
+    (byName.get('featureflags') as { options?: unknown[] }).options ?? [],
+    [],
+    '/featureflags takes no options — a fixed reflection of the already-loaded config object, super_admin ' +
+      'only (issue #1183)',
   );
 });
 
@@ -2936,6 +2946,124 @@ test('/topknowledge replies ephemerally, deferring before its DB round trip', as
 
   assert.equal(replies[0].ephemeral, true);
   assert.deepEqual(order, ['deferReply', 'editReply']);
+});
+
+// --- Issue #1183: /featureflags (the fifth slash command, and the first at --
+// --- the super_admin floor rather than admin) -------------------------------
+
+test(
+  '/featureflags renders text equal to `${formatFeatureFlags()}\\n\\n${formatOtherConfiguredKnobs()}` for a ' +
+    "super_admin caller and calls recordShortcutHit('slash_command') exactly once (issue #1183 acceptance " +
+    'criterion 4)',
+  async (t) => {
+    const originalSuperAdmins = [...config.rbac.superAdminDiscordIds];
+    config.rbac.superAdminDiscordIds.push('super-1');
+    t.after(() => {
+      config.rbac.superAdminDiscordIds.length = 0;
+      config.rbac.superAdminDiscordIds.push(...originalSuperAdmins);
+    });
+    const calls = mockPool(t, { memberRole: null });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const result = fakeInteraction({ commandName: 'featureflags', userId: 'super-1' });
+
+    await handleInteraction(result.interaction as never, adapterDeps(adapter));
+
+    // Feature-flag text routinely exceeds Discord's 2000-char single-message
+    // limit (unlike the shorter admin-tier siblings above), so — like /help's
+    // own admin/super_admin text (fullReplyText's own doc comment) —
+    // replyEphemeral chunks it across editReply + one or more followUp calls.
+    const expected = `${formatFeatureFlags()}\n\n${formatOtherConfiguredKnobs()}`;
+    assert.equal(fullReplyText(result), stripEmDashes(expected));
+    assert.equal(
+      shortcutHitCalls(calls).length,
+      1,
+      '/featureflags must record exactly one slash_command hit',
+    );
+  },
+);
+
+test(
+  "SECURITY: an admin-tier caller is rejected on /featureflags — the same atLeast(role, 'super_admin') gate " +
+    'renders no feature-flag content and records no shortcut hit (issue #1183 acceptance criterion 5)',
+  async (t) => {
+    const calls = mockPool(t, { memberRole: 'admin' });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'featureflags', userId: 'admin-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].ephemeral, true);
+    assert.match(
+      replies[0].content,
+      /don't have access/i,
+      'an admin-tier caller must be denied — feature_flags is super_admin only',
+    );
+    assert.doesNotMatch(replies[0].content, /feature/i, 'no feature-flag content must ever be rendered');
+    assert.equal(shortcutHitCalls(calls).length, 0, 'an auth-denied reply must never record a shortcut hit');
+  },
+);
+
+test(
+  'SECURITY: a member-tier caller is rejected on /featureflags without any feature-flag content ever being ' +
+    'rendered (issue #1183 acceptance criterion 5)',
+  async (t) => {
+    const calls = mockPool(t, { memberRole: 'member' });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'featureflags', userId: 'member-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].ephemeral, true);
+    assert.match(replies[0].content, /don't have access/i);
+    assert.equal(shortcutHitCalls(calls).length, 0, 'an auth-denied reply must never record a shortcut hit');
+  },
+);
+
+test(
+  'SECURITY: a guest caller is rejected on /featureflags without any feature-flag content ever being rendered ' +
+    '(issue #1183 acceptance criterion 5)',
+  async (t) => {
+    const calls = mockPool(t, { memberRole: null });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'featureflags', userId: 'guest-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].ephemeral, true);
+    assert.match(replies[0].content, /don't have access/i);
+    assert.equal(shortcutHitCalls(calls).length, 0, 'an auth-denied reply must never record a shortcut hit');
+  },
+);
+
+test('/featureflags replies ephemerally, deferring before formatting its output', async (t) => {
+  const originalSuperAdmins = [...config.rbac.superAdminDiscordIds];
+  config.rbac.superAdminDiscordIds.push('super-1');
+  t.after(() => {
+    config.rbac.superAdminDiscordIds.length = 0;
+    config.rbac.superAdminDiscordIds.push(...originalSuperAdmins);
+  });
+  mockPool(t, { memberRole: null });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies, order } = fakeInteraction({
+    commandName: 'featureflags',
+    userId: 'super-1',
+  });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies[0].ephemeral, true);
+  // Chunked (see the equality test above for why): 'deferReply' always comes
+  // first and 'editReply' is always the first answer chunk, with any
+  // remaining length spilling into one or more 'followUp' calls.
+  assert.equal(order[0], 'deferReply');
+  assert.equal(order[1], 'editReply');
+  assert.ok(
+    order.slice(2).every((step) => step === 'followUp'),
+    'every step after the first answer chunk must be a followUp',
+  );
 });
 
 // --- Criterion 7 / SECURITY criterion 14: /kb excludes auto-provenance -------
