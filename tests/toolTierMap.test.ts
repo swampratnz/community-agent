@@ -128,6 +128,7 @@ const EXPECTED: Record<string, readonly string[]> = {
     'question_digest',
     'remove_community_role',
     'remove_member',
+    'remove_project',
     'resolve_appeal',
     'resolve_report',
     'resolve_suggestion',

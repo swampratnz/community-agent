@@ -212,6 +212,7 @@ const {
   listMutedMembers,
   shareProject,
   removeMemberProject,
+  getActiveProjectById,
   setMemberInterests,
   purgeUserData,
   recordProjectConnectionIfUnderCap,
@@ -4171,7 +4172,7 @@ test('community_info: admin-tier reply stays byte-identical, never gains SUPER_A
 
   const expectedAdminCapabilitiesText =
     'As an admin, you also have:\n' +
-    "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread, review the moderation history log, pull one member's full warning history, list everyone who's currently muted, list who's currently blocked on WhatsApp, or review and resolve filed appeals\n" +
+    "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread, review the moderation history log, pull one member's full warning history, list everyone who's currently muted, list who's currently blocked on WhatsApp, review and resolve filed appeals, or remove a project from the community showcase\n" +
     "- Manage membership: add a new member, remove a member, link a member's cross-platform identity, or unlink a member's cross-platform identity\n" +
     '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, check which knowledge entries are rated poorly, and review recurring unhelpful-answer themes across all answers\n' +
     '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
@@ -4193,8 +4194,8 @@ test('community_info: admin-tier reply stays byte-identical, never gains SUPER_A
     adminReply,
     `${memberReply}\n${expectedAdminCapabilitiesText}`,
     "admin-tier reply must be byte-identical to today's deliberately-updated text (issue #1008 added the " +
-      'find_knowledge clause; issue #1024 added the list_top_knowledge clause) — this PR must not change ' +
-      'the admin branch beyond that documented addition',
+      'find_knowledge clause; issue #1024 added the list_top_knowledge clause; issue #1185 added the ' +
+      'remove_project clause) — this PR must not change the admin branch beyond that documented addition',
   );
   assert.doesNotMatch(
     adminReply,
@@ -4417,6 +4418,7 @@ const ADMIN_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__list_unhelpful_themes', /recurring unhelpful-answer themes/i],
   ['mcp__community__list_suggestions', /review suggestions members submit/i],
   ['mcp__community__resolve_suggestion', /resolve each suggestion/i],
+  ['mcp__community__remove_project', /remove a project from the community showcase/i],
 ]);
 // Every ADMIN_TOOLS entry gets its own line — no exemptions needed (unlike
 // MEMBER_CAPABILITY_EXEMPT, ADMIN_TOOLS has no self-referential tool like
@@ -4499,7 +4501,9 @@ test('community_info: admin reply stays under a hard char cap, not a wall of tex
   // cap for issue #1070's most_helpful_knowledge line (the admin reply
   // includes the full member segment, so a member-segment addition grows
   // this reply too).
-  assert.ok(adminReply.length < 4630, `admin reply should stay short; was ${adminReply.length} chars`);
+  // Bumped once more for issue #1185's remove_project clause (consolidated
+  // into the existing moderation bullet, not a new bullet).
+  assert.ok(adminReply.length < 4660, `admin reply should stay short; was ${adminReply.length} chars`);
 });
 
 test('SECURITY: community_info member-tier and guest-tier replies never name an admin/super_admin-only tool or contain any ADMIN_CAPABILITIES_TEXT-unique line (issue #367, issue #311)', async () => {
@@ -4643,8 +4647,10 @@ test('community_info: super_admin reply stays under a hard char cap, not a wall 
   // once more alongside the admin cap for issue #1024's list_top_knowledge
   // clause; bumped once more alongside the member/admin caps for issue
   // #1070's most_helpful_knowledge line.
+  // Bumped once more alongside the admin cap for issue #1185's remove_project
+  // clause.
   assert.ok(
-    superAdminReply.length < 5280,
+    superAdminReply.length < 5310,
     `super_admin reply should stay short; was ${superAdminReply.length} chars`,
   );
 });
@@ -22136,6 +22142,341 @@ test(
 
     await pool.query(`DELETE FROM member_projects WHERE platform = 'discord' AND user_id = $1`, [owner]);
     await pool.query(`DELETE FROM project_connection_requests WHERE owner_user_id = $1`, [owner]);
+  },
+);
+
+// remove_project (issue #1185): the admin-moderation counterpart to
+// share_project's self-service removal — the project showcase was the one
+// member-authored, community-wide-visible content surface with no admin
+// removal lever (every comparable surface — knowledge, chat, moderation
+// state — already had one). CONFIRM-gated + audited(), identical shape to
+// delete_knowledge, reusing getActiveProjectById/removeMemberProject with
+// the ADMIN-resolved owner instead of caller.
+function removeProjectHandler(
+  caller: {
+    platform: 'discord' | 'whatsapp';
+    userId: string;
+    userName?: string;
+    role?: 'member' | 'guest' | 'admin' | 'super_admin';
+    conversationId?: string;
+  },
+  adapter: PlatformAdapter = stubAdapter(async () => {}),
+) {
+  const server = buildToolServer(
+    {
+      platform: caller.platform,
+      userId: caller.userId,
+      userName: caller.userName ?? 'Admin',
+      role: caller.role ?? 'admin',
+      conversationId: caller.conversationId ?? 'convo-remove-project',
+    },
+    adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: {
+            projectId: number;
+            reason?: string;
+          }) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+        }
+      >;
+    }
+  )._registeredTools['remove_project'];
+}
+
+test('SECURITY: remove_project rejects member and guest callers before any repository call (issue #1185 acceptance criterion 1)', async () => {
+  for (const role of ['member', 'guest'] as const) {
+    const tool = removeProjectHandler({
+      platform: 'discord',
+      userId: `${role}-remove-project-1`,
+      role,
+      conversationId: `convo-remove-project-${role}`,
+    });
+    await assert.rejects(
+      () => tool.handler({ projectId: 1 }),
+      /Permission denied/,
+      `${role} must never reach remove_project`,
+    );
+    assert.equal(
+      hasPendingAction('discord', `convo-remove-project-${role}`, `${role}-remove-project-1`),
+      false,
+      `${role} must never reach the CONFIRM gate, let alone a repository call`,
+    );
+  }
+});
+
+test('SECURITY: remove_project registers a pending CONFIRM action instead of removing in place (issue #1185 acceptance criterion 2)', async () => {
+  const tool = removeProjectHandler({
+    platform: 'discord',
+    userId: 'admin-remove-project-1',
+    conversationId: 'convo-remove-project-confirm',
+  });
+  const result = await tool.handler({ projectId: 999 });
+  assert.match(result.content[0].text, /CONFIRM/, 'must ask for out-of-band confirmation');
+  assert.ok(
+    hasPendingAction('discord', 'convo-remove-project-confirm', 'admin-remove-project-1'),
+    'a destructive removal must be CONFIRM-gated like delete_knowledge',
+  );
+  cancelPendingAction('discord', 'convo-remove-project-confirm', 'admin-remove-project-1');
+});
+
+test(
+  'remove_project performs no deletion until confirmed, then resolves the owner via getActiveProjectById and ' +
+    "deletes that owner's row via removeMemberProject regardless of who requested removal, auditing projectId " +
+    'without ever persisting the optional reason (issue #1185 acceptance criteria 2, 3, 5)',
+  { skip },
+  async () => {
+    const owner = `${RUN}-remove-project-cross-owner`;
+    const shareTool = shareProjectHandler({ platform: 'discord', userId: owner, userName: 'Owner' });
+    const created = await shareTool.handler({
+      name: 'Cross Owner Removal Project',
+      description: 'to be removed by an admin, not its own owner',
+    });
+    assert.equal(created.isError, false);
+    const dbRow = await pool.query(
+      `SELECT id FROM member_projects WHERE platform = 'discord' AND user_id = $1 AND name = $2`,
+      [owner, 'Cross Owner Removal Project'],
+    );
+    const projectId = Number(dbRow.rows[0].id);
+
+    const admin = `${RUN}-remove-project-cross-owner-admin`;
+    const convo = `convo-remove-project-cross-owner-${projectId}`;
+    const tool = removeProjectHandler({ platform: 'discord', userId: admin, conversationId: convo });
+    const result = await tool.handler({ projectId, reason: 'contained a scam link' });
+    assert.equal(result.isError, false);
+    assert.match(result.content[0]?.text ?? '', /CONFIRM/);
+
+    const stillActive = await getActiveProjectById(projectId);
+    assert.ok(stillActive, 'an unconfirmed remove_project must perform no deletion (acceptance criterion 2)');
+
+    const { rows: beforeConfirm } = await pool.query(
+      `SELECT count(*)::int AS n FROM admin_audit WHERE action_kind = 'remove_project'`,
+    );
+
+    const pending = takePendingAction('discord', convo, admin);
+    assert.ok(pending, 'must register a pending action');
+    const execResult = await pending?.execute();
+    assert.match(execResult ?? '', new RegExp(`Removed project #${projectId}`));
+
+    const removed = await getActiveProjectById(projectId);
+    assert.equal(removed, null, "the owner's row is deleted once confirmed, regardless of who owns it");
+
+    const { rows: afterConfirm } = await pool.query(
+      `SELECT count(*)::int AS n FROM admin_audit WHERE action_kind = 'remove_project'`,
+    );
+    assert.equal(
+      afterConfirm[0].n,
+      beforeConfirm[0].n + 1,
+      'exactly one new admin_audit row for the confirmed removal',
+    );
+
+    const { rows: auditRows } = await pool.query(
+      `SELECT params FROM admin_audit WHERE action_kind = 'remove_project' ORDER BY id DESC LIMIT 1`,
+    );
+    const params = auditRows[0].params as Record<string, unknown>;
+    assert.equal(params.projectId, projectId, 'audited params carry the projectId');
+    assert.equal(
+      'reason' in params,
+      false,
+      'SECURITY: the optional reason must never be persisted into admin_audit params',
+    );
+
+    await pool.query(`DELETE FROM member_projects WHERE platform = 'discord' AND user_id = $1`, [owner]);
+    await pool.query(
+      `DELETE FROM admin_audit WHERE action_kind = 'remove_project' AND params->>'projectId' = $1`,
+      [String(projectId)],
+    );
+  },
+);
+
+test(
+  'SECURITY: remove_project fails cleanly on an unknown or already-removed projectId — no uncaught throw, zero ' +
+    'mutation, and no successful admin_audit row (issue #1185 acceptance criterion 4)',
+  { skip },
+  async () => {
+    const owner = `${RUN}-remove-project-already-removed`;
+    const shareTool = shareProjectHandler({ platform: 'discord', userId: owner, userName: 'Owner' });
+    await shareTool.handler({
+      name: 'Already Removed Project',
+      description: 'removed before the admin call',
+    });
+    const dbRow = await pool.query(
+      `SELECT id FROM member_projects WHERE platform = 'discord' AND user_id = $1 AND name = $2`,
+      [owner, 'Already Removed Project'],
+    );
+    const removedProjectId = Number(dbRow.rows[0].id);
+    await removeMemberProject('discord', owner, 'Already Removed Project');
+
+    const admin = `${RUN}-remove-project-unknown-admin`;
+
+    for (const [label, projectId] of [
+      ['never existed', -1],
+      ['already removed', removedProjectId],
+    ] as const) {
+      const convo = `convo-remove-project-unknown-${label.replace(/\s+/g, '-')}`;
+      const tool = removeProjectHandler({ platform: 'discord', userId: admin, conversationId: convo });
+      const confirmResult = await tool.handler({ projectId });
+      assert.match(confirmResult.content[0]?.text ?? '', /CONFIRM/);
+      const execResult = await takePendingAction('discord', convo, admin)?.execute();
+      assert.match(execResult ?? '', /Failed/, `a ${label} projectId must fail cleanly, not throw`);
+    }
+
+    const { rows } = await pool.query(
+      `SELECT 1 FROM admin_audit WHERE action_kind = 'remove_project' AND success = true AND actor_user_id = $1`,
+      [admin],
+    );
+    assert.equal(rows.length, 0, 'neither rejected call produced a successful admin_audit row');
+
+    await pool.query(`DELETE FROM member_projects WHERE platform = 'discord' AND user_id = $1`, [owner]);
+    await pool.query(`DELETE FROM admin_audit WHERE action_kind = 'remove_project' AND actor_user_id = $1`, [
+      admin,
+    ]);
+  },
+);
+
+test(
+  'remove_project sends exactly one resolution DM to the original owner when a reason is supplied, and none ' +
+    'when omitted (issue #1185 acceptance criterion 6)',
+  { skip },
+  async () => {
+    const owner = `${RUN}-remove-project-notify-owner`;
+    const shareTool = shareProjectHandler({ platform: 'discord', userId: owner, userName: 'Owner' });
+    await shareTool.handler({ name: 'Notify With Reason', description: 'x' });
+    await shareTool.handler({ name: 'Notify Without Reason', description: 'x' });
+    const rows = await pool.query(
+      `SELECT id, name FROM member_projects WHERE platform = 'discord' AND user_id = $1 AND name = ANY($2)`,
+      [owner, ['Notify With Reason', 'Notify Without Reason']],
+    );
+    const withReasonId = Number(rows.rows.find((r) => r.name === 'Notify With Reason')?.id);
+    const withoutReasonId = Number(rows.rows.find((r) => r.name === 'Notify Without Reason')?.id);
+
+    const sends: Array<{ userId: string; text: string }> = [];
+    const adapter = stubAdapter(async (userId: string, text: string) => {
+      sends.push({ userId, text });
+    });
+    const admin = `${RUN}-remove-project-notify-admin`;
+
+    const withConvo = 'convo-remove-project-notify-with';
+    const toolWithReason = removeProjectHandler(
+      { platform: 'discord', userId: admin, conversationId: withConvo },
+      adapter,
+    );
+    await toolWithReason.handler({ projectId: withReasonId, reason: 'contained a scam link' });
+    const withResult = await takePendingAction('discord', withConvo, admin)?.execute();
+    assert.match(withResult ?? '', new RegExp(`Removed project #${withReasonId}`));
+
+    assert.equal(sends.length, 1, 'exactly one DM when a reason is supplied');
+    assert.equal(sends[0]?.userId, owner);
+    assert.match(sends[0]?.text ?? '', /removed/i);
+    assert.match(sends[0]?.text ?? '', /contained a scam link/);
+
+    const withoutConvo = 'convo-remove-project-notify-without';
+    const toolWithoutReason = removeProjectHandler(
+      { platform: 'discord', userId: admin, conversationId: withoutConvo },
+      adapter,
+    );
+    await toolWithoutReason.handler({ projectId: withoutReasonId });
+    const withoutResult = await takePendingAction('discord', withoutConvo, admin)?.execute();
+    assert.match(withoutResult ?? '', new RegExp(`Removed project #${withoutReasonId}`));
+
+    assert.equal(sends.length, 1, 'no DM sent when reason is omitted');
+
+    await pool.query(`DELETE FROM member_projects WHERE platform = 'discord' AND user_id = $1`, [owner]);
+    await pool.query(`DELETE FROM admin_audit WHERE action_kind = 'remove_project' AND actor_user_id = $1`, [
+      admin,
+    ]);
+  },
+);
+
+test(
+  'remove_project queues the resolution DM via queueForWindowReopen on a WindowClosedError, rather than ' +
+    'dropping it (issue #1185 acceptance criterion 6)',
+  { skip },
+  async () => {
+    const owner = `${RUN}-remove-project-window-closed-owner`;
+    const shareTool = shareProjectHandler({ platform: 'discord', userId: owner, userName: 'Owner' });
+    await shareTool.handler({ name: 'Window Closed Removal', description: 'x' });
+    const dbRow = await pool.query(
+      `SELECT id FROM member_projects WHERE platform = 'discord' AND user_id = $1 AND name = $2`,
+      [owner, 'Window Closed Removal'],
+    );
+    const projectId = Number(dbRow.rows[0].id);
+
+    const queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }> = [];
+    const adapter: PlatformAdapter = {
+      platform: 'discord',
+      start: async () => {},
+      stop: async () => {},
+      isConnected: () => true,
+      onMessage: () => {},
+      sendMessage: async () => {},
+      sendDirectMessage: async () => {
+        throw new WindowClosedError(owner);
+      },
+      queueForWindowReopen(userId: string, message: string, priority: 'system' | 'low') {
+        queued.push({ userId, message, priority });
+      },
+      conversationsForUser: async () => [],
+      adminCapabilities: new Set(),
+      performAdminAction: async () => {
+        throw new Error('not implemented in stub');
+      },
+    };
+    const admin = `${RUN}-remove-project-window-closed-admin`;
+    const convo = 'convo-remove-project-window-closed';
+    const tool = removeProjectHandler({ platform: 'discord', userId: admin, conversationId: convo }, adapter);
+    await tool.handler({ projectId, reason: 'spam' });
+    const execResult = await takePendingAction('discord', convo, admin)?.execute();
+    assert.match(execResult ?? '', new RegExp(`Removed project #${projectId}`));
+
+    assert.equal(queued.length, 1);
+    assert.equal(queued[0]?.userId, owner);
+    assert.equal(queued[0]?.priority, 'low');
+
+    await pool.query(`DELETE FROM admin_audit WHERE action_kind = 'remove_project' AND actor_user_id = $1`, [
+      admin,
+    ]);
+  },
+);
+
+test(
+  "remove_project degrades to a silent skip — no DM, no throw — when the owner's platform has no registered " +
+    'adapter in this deployment (issue #1185 acceptance criterion 6)',
+  { skip },
+  async () => {
+    const owner = `${RUN}-remove-project-no-adapter-owner`;
+    // Shared on whatsapp; the admin below calls from discord with no
+    // getAdapter lookup wired in, so adapterFor('whatsapp') resolves to
+    // undefined — the same "platform not registered in this deployment"
+    // silent-skip every sibling notify path degrades to.
+    const shareTool = shareProjectHandler({ platform: 'whatsapp', userId: owner, userName: 'Owner' });
+    await shareTool.handler({ name: 'No Adapter Removal', description: 'x' });
+    const dbRow = await pool.query(
+      `SELECT id FROM member_projects WHERE platform = 'whatsapp' AND user_id = $1 AND name = $2`,
+      [owner, 'No Adapter Removal'],
+    );
+    const projectId = Number(dbRow.rows[0].id);
+
+    const admin = `${RUN}-remove-project-no-adapter-admin`;
+    const convo = 'convo-remove-project-no-adapter';
+    const tool = removeProjectHandler({ platform: 'discord', userId: admin, conversationId: convo });
+    await tool.handler({ projectId, reason: 'spam' });
+    const execResult = await takePendingAction('discord', convo, admin)?.execute();
+    assert.match(
+      execResult ?? '',
+      new RegExp(`Removed project #${projectId}`),
+      'the removal itself must still succeed even though no DM can be sent',
+    );
+
+    const removed = await getActiveProjectById(projectId);
+    assert.equal(removed, null);
+
+    await pool.query(`DELETE FROM admin_audit WHERE action_kind = 'remove_project' AND actor_user_id = $1`, [
+      admin,
+    ]);
   },
 );
 

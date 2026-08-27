@@ -392,6 +392,53 @@ export async function notifyAccessRequestDeclined(
 }
 
 /**
+ * Best-effort resolution DM to a project's original owner when an admin
+ * removes it from the showcase via `remove_project` (issue #1185) — the
+ * admin-moderation counterpart to `notifyAccessRequestDeclined`, same shape:
+ * fire-and-forget, `.catch(logger.warn)`, never blocks or changes
+ * `remove_project`'s own reported outcome. The base text is a static,
+ * translated catalogue entry (`strings/notices.ts`'s `projectRemovedMessage`,
+ * same static shape as `accessRequestDeclinedMessage`) rather than an
+ * inline-ternary, since there is no per-row content to select wording by —
+ * only a fixed neutral removal notice. Only called when the admin supplies a
+ * `reason` (the tool handler skips this entirely when it's omitted, so
+ * removal stays silent by default). `reason` is an admin-authored, one-line
+ * explanation appended via `truncateForEcho`, as a distinct trailing clause,
+ * never interpolated into the translated base string — same
+ * non-interpolation convention as `notifyAccessRequestDeclined`'s `reason`.
+ * Never persisted: the caller keeps it out of `audited()`'s params. Honours
+ * the owner's standing `'mi'` language preference, same degrade-to-`'auto'`-
+ * on-failure shape as every sibling in this file. A `WindowClosedError`
+ * rejection is queued via `queueForWindowReopen` at `'low'` priority instead
+ * of logged-and-dropped, same #644 recovery every sibling gets. Exported
+ * separately so it's unit-testable without the MCP tool-call transport, same
+ * convention as every sibling notify function in this file.
+ */
+export async function notifyProjectRemoved(
+  adapter: PlatformAdapter,
+  userId: string,
+  platform: Platform,
+  getLangPref: typeof getLanguagePreference = getLanguagePreference,
+  reason?: string,
+): Promise<void> {
+  const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
+  const base = notice('projectRemovedMessage', { language: lang });
+  const echoedReason = reason ? truncateForEcho(reason) : null;
+  const message = echoedReason ? `${base} ${lang === 'mi' ? 'Take' : 'Reason'}: "${echoedReason}"` : base;
+  await adapter.sendDirectMessage(userId, message).catch((err) => {
+    if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+      adapter.queueForWindowReopen(userId, message, 'low');
+      logger.warn(
+        { userId: hashId(userId), platform },
+        "Project removal DM: recipient's window is closed, queued for reopen",
+      );
+      return;
+    }
+    logger.warn({ err, userId: hashId(userId) }, 'Project removal DM failed');
+  });
+}
+
+/**
  * Best-effort confirmation DM to a member when their suggest_improvement
  * submission is resolved — closes the "suggestion box into the void" gap
  * (issue #116), mirroring notifyMemberApproved's shape exactly: fire-and-

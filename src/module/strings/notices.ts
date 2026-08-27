@@ -376,6 +376,21 @@ const NOTICE_ENTRIES = {
       mi: 'I arotakehia tō tono uru ki NZ Claude Community, ā, kāore i whakaaetia i tēnei wā.',
     },
   },
+  // --- remove_project resolution DM (agent/tools/notify.ts, issue #1185) ---
+  /**
+   * The neutral removal DM for the admin-tier `remove_project` — static, same
+   * shape as `accessRequestDeclinedMessage` above: the admin-authored
+   * `reason` field is never interpolated into this translated base string,
+   * only appended afterward as a distinct, quoted, `truncateForEcho`-capped
+   * clause (see `notifyProjectRemoved` in notify.ts). Sent only when the
+   * admin supplies a reason — omitting one removes the project silently.
+   */
+  projectRemovedMessage: {
+    base: 'One of your projects was removed from the NZ Claude Community project showcase by an admin.',
+    language: {
+      mi: 'I tangohia tētahi o āu kaupapa mai i te whakaaturanga kaupapa a NZ Claude Community e tētahi kaiwhakahaere.',
+    },
+  },
   // --- community_info member capabilities rundown (agent/tools/info.ts) ---
   /**
    * The member-tier segment of `community_info`/`/help`/`!help`'s capability
@@ -502,7 +517,7 @@ const NOTICE_ENTRIES = {
   communityInfoAdminCapabilities: {
     base:
       'As an admin, you also have:\n' +
-      "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread, review the moderation history log, pull one member's full warning history, list everyone who's currently muted, list who's currently blocked on WhatsApp, or review and resolve filed appeals\n" +
+      "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread, review the moderation history log, pull one member's full warning history, list everyone who's currently muted, list who's currently blocked on WhatsApp, review and resolve filed appeals, or remove a project from the community showcase\n" +
       "- Manage membership: add a new member, remove a member, link a member's cross-platform identity, or unlink a member's cross-platform identity\n" +
       '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, check which knowledge entries are rated poorly, and review recurring unhelpful-answer themes across all answers\n' +
       '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
@@ -525,7 +540,8 @@ const NOTICE_ENTRIES = {
         'ūkui i ngā whakatūpato o tētahi mema, pupuri i tētahi kōrero (thread) Discord, arotake i te ' +
         'pukapuka hītori whakahaere, tiki i te hītori whakatūpato katoa o tētahi mema, whakarārangi i te ' +
         'hunga e aukatia ana ināianei, whakarārangi i te hunga kua ārairia i runga i WhatsApp ināianei, ' +
-        'arotake me te whakatau rānei i ngā pīra (appeal) kua tukuna\n' +
+        'arotake me te whakatau rānei i ngā pīra (appeal) kua tukuna, tango rānei i tētahi kaupapa mai i te ' +
+        'whakaaturanga kaupapa a te hapori\n' +
         '- Whakahaere i te whakaurunga mema: tāpiri mema hōu, tango mema, hono i te tuakiri-ā-papa-rārangi-' +
         'maha o tētahi mema, wetewete rānei i taua hononga\n' +
         '- Arotake i ngā pūrongo tohu tuhinga kua tukuna, ā, whakatau i ia pūrongo, arotake i ngā ' +

@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
 import { config } from '@swampratnz/agent-base/config.js';
 import { logger, hashId } from '@swampratnz/agent-base/logger.js';
+import type { Platform } from '@swampratnz/agent-base/platforms/types.js';
 import { WindowClosedError } from '@swampratnz/agent-base/platforms/types.js';
 import {
   FIND_HELPER_REQUESTER_DAILY_LIMIT,
@@ -39,9 +40,11 @@ import {
   formatInterestResults,
   formatProjectResults,
   resolveSanitizedLabel,
+  SUGGESTION_RESOLUTION_ECHO_CHARS,
   text,
   untrusted,
 } from './helpers.js';
+import { notifyProjectRemoved } from './notify.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 /** list_projects' row cap for both the no-query (recent) and query (similarity) paths. */
@@ -882,6 +885,86 @@ export const socialTools = [
       });
       const language = await getLanguagePreference(caller.platform, caller.userId);
       return text(formatRequestProjectConnectionText('sent', language));
+    },
+  }),
+
+  // Admin-moderation counterpart to share_project's self-service removal
+  // (issue #1185) — the project showcase was the one member-authored,
+  // community-wide-visible content surface with no admin removal lever.
+  // CONFIRM-gated + audited(), identical shape to delete_knowledge; reuses
+  // the two repository functions request_project_connection above already
+  // imports (getActiveProjectById/removeMemberProject), now with the
+  // ADMIN-resolved owner instead of caller — zero new schema, zero new
+  // repository export.
+  defineTool({
+    name: 'remove_project',
+    description:
+      'Remove a project from the community project showcase, regardless of who owns it — the ' +
+      "admin-moderation counterpart to share_project's self-service removal (which only the owner can do), " +
+      "for a scam link, harassment in a description, spam, or an uncooperative/blocked member's entry. Looks " +
+      'up the project by the id shown in list_projects/who_is_into (e.g. 42 from "[#42]"). Optional reason ' +
+      `(max ${SUGGESTION_RESOLUTION_ECHO_CHARS} characters) sends the project's original owner a one-line ` +
+      'resolution DM; omit it to remove silently (e.g. for spam/abuse where alerting the actor is ' +
+      'undesirable). Requires confirmation. Admin only.',
+    minTier: 'admin',
+    readOnlyHint: false,
+    schema: {
+      projectId: z
+        .number()
+        .int()
+        .positive()
+        .describe(
+          'The id of the project to remove, as shown by list_projects/who_is_into (e.g. 42 from "[#42]").',
+        ),
+      reason: z
+        .string()
+        .max(SUGGESTION_RESOLUTION_ECHO_CHARS)
+        .optional()
+        .describe(
+          "Optional, one-line, member-facing explanation sent to the project's original owner as a " +
+            'resolution DM — omit to remove the project silently, with no notification. Never persisted.',
+        ),
+    },
+    handler: async (args, { caller, requireConfirm, audited, adapterFor }) => {
+      assertAtLeast(caller.role, 'admin', 'remove_project');
+      return requireConfirm(`remove project #${args.projectId} from the showcase`, 'admin', async () => {
+        // Resolved inside run() so a failed/unknown lookup never produces a
+        // successful audited() row, and so the owner is never trusted from
+        // anything but this admin-tier repository read.
+        const state: { owner: { platform: Platform; userId: string; name: string } | null } = { owner: null };
+        const { success, result } = await audited({
+          actionKind: 'remove_project',
+          // reason is deliberately excluded — it only ever reaches the one DM
+          // below, same non-persistence convention as resolve_report's.
+          params: { projectId: args.projectId },
+          run: async () => {
+            const project = await getActiveProjectById(args.projectId);
+            if (!project) throw new Error(`No project with id ${args.projectId}.`);
+            const removed = await removeMemberProject(project.platform, project.userId, project.name);
+            if (!removed) throw new Error(`No project with id ${args.projectId}.`);
+            state.owner = { platform: project.platform, userId: project.userId, name: project.name };
+            return `removed "${project.name}"`;
+          },
+        });
+        // Best-effort, same fire-and-forget/WindowClosedError-queue shape as
+        // notifyReportResolved — only sent when the admin supplied a reason;
+        // omitting one keeps the removal silent (useful for spam/abuse).
+        if (success && state.owner && args.reason) {
+          const target = adapterFor(state.owner.platform);
+          if (target) {
+            await notifyProjectRemoved(
+              target,
+              state.owner.userId,
+              state.owner.platform,
+              undefined,
+              args.reason,
+            );
+          }
+        }
+        return success
+          ? `Removed project #${args.projectId} ("${state.owner?.name}") from the showcase.`
+          : `Failed: ${result}`;
+      });
     },
   }),
 ];
