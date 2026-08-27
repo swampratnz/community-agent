@@ -15,13 +15,16 @@ import {
   listKnowledgeCandidates,
   listKnowledgeConflictCandidates,
   listKnowledgeFeedbackSummary,
+  listKnowledgeSourceUrls,
   mergeKnowledgeEntries,
   recentKnowledgeGapClusters,
   recentUnhelpfulFeedbackClusters,
+  recordKnowledgeSourceCheck,
   saveKnowledge,
   searchKnowledge,
   updateKnowledge,
 } from '@swampratnz/agent-base/storage/repository.js';
+import { classifySourceUrl } from '../../context/linkCheck.js';
 import {
   formatFoundKnowledge,
   formatKnowledgeEntryLine,
@@ -564,6 +567,57 @@ export const knowledgeAdminTools = [
           return `Merged knowledge entry #${args.mergeId} into #${args.keepId}.`;
         },
       );
+    },
+  }),
+
+  // On-demand single-entry counterpart to the weekly runKnowledgeLinkCheck
+  // job (issue #1188): the job is the only path that can clear
+  // source_unreachable back to false, gated by its own ~6-day
+  // CHECK_MIN_INTERVAL_MS, so a citation an admin just fixed (or whose host
+  // just recovered) keeps rendering "⚠️ link appears dead" and losing
+  // near-tie ranking (#465/#1054) for up to ~6 more days with no lever to
+  // force a fresh check. Reuses classifySourceUrl/recordKnowledgeSourceCheck
+  // verbatim — same SSRF-hardened, DNS-pinned, body-never-read path the
+  // weekly job runs unattended, just triggered for one entry on demand
+  // instead of every entry on a timer. No CONFIRM: this only ever writes the
+  // two flag columns the weekly job already writes unattended, not content.
+  defineTool({
+    name: 'check_knowledge_source',
+    description:
+      "Force an immediate reachability re-check of one knowledge entry's sourceUrl, instead of waiting up " +
+      'to ~6 days for the next weekly link-rot sweep — use this right after fixing a broken sourceUrl (or ' +
+      'when the cited site may have come back up) so knowledge_search/list_knowledge stop showing ' +
+      '"⚠️ link appears dead" immediately. Persists the same source_unreachable/source_checked_at columns ' +
+      'the weekly job writes. If the SSRF guard refuses the target, the result is reported but nothing is ' +
+      'persisted. Admin only.',
+    minTier: 'admin',
+    readOnlyHint: false,
+    schema: { id: z.number().describe('Knowledge entry id (from list_knowledge/knowledge_search/find_knowledge)') },
+    handler: async (args, { caller, audited }) => {
+      assertAtLeast(caller.role, 'admin', 'check_knowledge_source');
+      const state: { outcome?: 'reachable' | 'unreachable' | 'refused' } = {};
+      const { success, result } = await audited({
+        actionKind: 'check_knowledge_source',
+        params: { id: args.id },
+        run: async () => {
+          const entries = await listKnowledgeSourceUrls();
+          const entry = entries.find((e) => e.id === args.id);
+          if (!entry) throw new Error(`No knowledge entry with id ${args.id} has a sourceUrl to check.`);
+          const outcome = await classifySourceUrl(entry.sourceUrl);
+          state.outcome = outcome;
+          if (outcome === 'refused') return 'refused by the SSRF guard; left untouched';
+          await recordKnowledgeSourceCheck(args.id, outcome === 'unreachable');
+          return outcome;
+        },
+      });
+      if (!success) return text(`Failed: ${result}`, true);
+      if (state.outcome === 'refused') {
+        return text(
+          `Entry #${args.id}'s sourceUrl was refused by the SSRF guard (blocked target) — nothing was ` +
+            "persisted, matching the weekly job's own handling of a refused target.",
+        );
+      }
+      return text(`Entry #${args.id}'s sourceUrl is now ${state.outcome} (checked just now).`);
     },
   }),
 
