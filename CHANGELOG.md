@@ -80,6 +80,18 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   platforms; no new tool, table, or data access — it reuses `feature_flags`'s
   own two formatters verbatim, so the shortcut can never diverge from the tool
   it mirrors.
+- **New admin tool: `remove_project`, giving admins a moderation lever over
+  the project showcase.** (#1185) `share_project`/`list_projects` (#646) made
+  the project showcase visible to every member, but removal was possible only
+  by the project's own owner — the one community-wide-visible,
+  member-authored content surface with no admin takedown path for a scam
+  link, harassment in a description, or spam. `remove_project` looks a
+  project up by the id shown in `list_projects`/`who_is_into` and removes it
+  regardless of owner, CONFIRM-gated and audited exactly like
+  `delete_knowledge`. An optional one-line reason sends the original owner a
+  resolution DM; omitting it removes silently, useful for spam/abuse where
+  alerting the actor isn't wanted. The reason is never persisted beyond that
+  one DM. Admin only.
 
 ## 2026-08-26
 

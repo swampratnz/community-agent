@@ -952,7 +952,13 @@ export const socialTools = [
         if (success && state.owner && args.reason) {
           const target = adapterFor(state.owner.platform);
           if (target) {
-            await notifyProjectRemoved(target, state.owner.userId, state.owner.platform, undefined, args.reason);
+            await notifyProjectRemoved(
+              target,
+              state.owner.userId,
+              state.owner.platform,
+              undefined,
+              args.reason,
+            );
           }
         }
         return success

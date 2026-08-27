@@ -1054,7 +1054,27 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   Rows are deleted by `forget_me`/`purge_user_data` and on roster leave (a
   departed member's published projects go with them, unlike most other
   member data which waits for an explicit privacy request), and counted in
-  `my_data`.
+  `my_data`. Until issue #1185, the soft-delete mechanism just described was
+  reachable only by a project's own owner (`share_project({remove: true})`)
+  — the one community-wide-visible, member-authored content surface with no
+  admin removal lever, unlike knowledge (`delete_knowledge`), chat
+  (`moderate`), or moderation state itself. The admin-tier `remove_project(
+  projectId, reason?)` tool closes that gap: **CONFIRM-gated and `audited()`,
+  identical shape to `delete_knowledge`**, re-asserting `admin` in the
+  handler. It resolves the owner via the same `getActiveProjectById` lookup
+  `request_project_connection` uses and deletes via the same
+  `removeMemberProject` `share_project`'s self-removal path already calls —
+  no new schema, no new repository export, just an admin-resolved owner in
+  place of `caller`. `projectId` is an integer already rendered to every
+  admin by `list_projects`/`who_is_into` (`[#N]`), the same trust level as
+  `delete_knowledge`'s `id`. The optional `reason` is echoed into exactly one
+  best-effort resolution DM to the original owner (the same cross-platform
+  `notify.ts` + `WindowClosedError`→`queueForWindowReopen` pattern every
+  other resolution DM in this file uses) and is **never persisted** — kept
+  out of `audited()`'s `params`, so it cannot leak into `admin_audit` or any
+  other durable record beyond that one DM. Omitting `reason` removes
+  silently, the same discretion `resolve_report`'s optional reason already
+  gives admins for spam/abuse cases where alerting the actor is undesirable.
 - **Member interests / member-to-member discovery** (`member_interests`,
   issue #634): a member publishes a single free-text blob of their own
   interests with `set_my_interests(text | 'clear')`, discoverable by every
