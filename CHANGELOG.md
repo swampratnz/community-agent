@@ -75,6 +75,17 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   Only triggers on a true zero-hit semantic result — a weak-but-present match
   (which `find_knowledge` already surfaces, unlike `knowledge_search`) never
   invokes it, so the common path is unchanged.
+- **A knowledge search with no results now also offers to loop in a human
+  admin, not just a `suggest_knowledge` nudge.** (#1196) #1180 fixed the "you
+  found the answer elsewhere" branch of `knowledge_search`'s (and `/kb`'s)
+  empty-state reply, but left the "you don't know the answer either" branch —
+  arguably the more common one — as a dead end. The reply now also mentions
+  that you can ask for a human community admin, which you can already do any
+  time with `request_human_help`; nothing about that tool's own explicit-ask
+  requirement, tier, or daily limit has changed, this only surfaces it at the
+  moment it's most useful. Available in te reo Māori for members with that
+  language preference set. No new tool, data access, or admin-visible signal
+  — this only changes the wording of an existing reply.
 
 ## 2026-08-27
 
@@ -143,6 +154,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   resolution DM; omitting it removes silently, useful for spam/abuse where
   alerting the actor isn't wanted. The reason is never persisted beyond that
   one DM. Admin only.
+- **New admin tool: `check_knowledge_source`, forcing an immediate re-check
+  of one knowledge entry's citation instead of waiting up to ~6 days.**
+  (#1188) The weekly link-rot checker was previously the ONLY way
+  `source_unreachable` could clear back to false, gated by its own ~6-day
+  minimum interval — so fixing a broken `sourceUrl` (or the cited site simply
+  coming back up) still left `knowledge_search`/`/kb` showing "⚠️ link
+  appears dead" and losing near-tie search ranking for up to six more days,
+  with no lever to force a fresh check. `check_knowledge_source({ id })`
+  reuses the weekly job's own SSRF-hardened reachability probe on demand for
+  one entry, so the fix is confirmed in the same turn. Admin only.
 
 ### Fixed
 - **Docs-ingest page fetches now retry a transient failure before giving up.**
@@ -257,6 +278,17 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   itself does, appended only when set — byte-identical to before when
   guidelines are unset, and never blocking or failing the DM if the lookup
   errors.
+- **`remember_search` and `catch_up`'s "nothing found" replies now honour a
+  standing te reo Māori preference too.** (#1177) Both tools in
+  `memory.ts` were the last member-tier tool file with zero language-preference
+  handling — their empty-result fallback strings ("No relevant past
+  interactions found.", "Nothing new here in the last N hours.") stayed
+  hardcoded English even for a member with a stored `mi` preference. Both now
+  resolve the caller's own preference on the empty-result branch only and
+  render the `mi` variant, including `catch_up`'s singular/plural "hour"
+  handling. Non-empty results are untouched — no language lookup happens on
+  that path, and no quoted recalled content is ever translated. No new tool,
+  tier, or data read; the English default is byte-identical to before.
 
 ## 2026-08-25
 

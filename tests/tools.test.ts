@@ -4384,7 +4384,7 @@ test('community_info: admin-tier reply stays byte-identical, never gains SUPER_A
     "- Manage membership: add a new member, remove a member, link a member's cross-platform identity, or unlink a member's cross-platform identity\n" +
     '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, check which knowledge entries are rated poorly, and review recurring unhelpful-answer themes across all answers\n' +
     '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
-    "- Curate the knowledge base: save a new knowledge entry, browse knowledge entries, semantically find a knowledge entry's id by what it says, edit a knowledge entry, delete a knowledge entry, or merge two entries together, check for near-duplicate entries or conflicting entries, or rank entries by how often they're retrieved\n" +
+    "- Curate the knowledge base: save a new knowledge entry, browse knowledge entries, semantically find a knowledge entry's id by what it says, edit a knowledge entry, delete a knowledge entry, or merge two entries together, check for near-duplicate entries or conflicting entries, rank entries by how often they're retrieved, or force an immediate reachability re-check of a knowledge entry's citation\n" +
     "- Review knowledge candidates, accept a candidate or decline a candidate, track knowledge gaps (questions I couldn't answer), recurring question clusters, raw context digests, pull your own admin-digest snapshot on demand, get a review-queue roll-up of all five review queues at once, or check how quickly I've been answering members (response latency)\n" +
     '- See who is waiting for access, decline a pending access request without granting it, or see who ' +
     'has joined or left the server\n' +
@@ -4403,7 +4403,8 @@ test('community_info: admin-tier reply stays byte-identical, never gains SUPER_A
     `${memberReply}\n${expectedAdminCapabilitiesText}`,
     "admin-tier reply must be byte-identical to today's deliberately-updated text (issue #1008 added the " +
       'find_knowledge clause; issue #1024 added the list_top_knowledge clause; issue #1185 added the ' +
-      'remove_project clause) — this PR must not change the admin branch beyond that documented addition',
+      'remove_project clause; issue #1188 added the check_knowledge_source clause) — this PR must not ' +
+      'change the admin branch beyond that documented addition',
   );
   assert.doesNotMatch(
     adminReply,
@@ -4627,6 +4628,7 @@ const ADMIN_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__list_suggestions', /review suggestions members submit/i],
   ['mcp__community__resolve_suggestion', /resolve each suggestion/i],
   ['mcp__community__remove_project', /remove a project from the community showcase/i],
+  ['mcp__community__check_knowledge_source', /reachability re-check of a knowledge entry's citation/i],
 ]);
 // Every ADMIN_TOOLS entry gets its own line — no exemptions needed (unlike
 // MEMBER_CAPABILITY_EXEMPT, ADMIN_TOOLS has no self-referential tool like
@@ -4710,8 +4712,10 @@ test('community_info: admin reply stays under a hard char cap, not a wall of tex
   // includes the full member segment, so a member-segment addition grows
   // this reply too).
   // Bumped once more for issue #1185's remove_project clause (consolidated
-  // into the existing moderation bullet, not a new bullet).
-  assert.ok(adminReply.length < 4660, `admin reply should stay short; was ${adminReply.length} chars`);
+  // into the existing moderation bullet, not a new bullet), and once more
+  // for issue #1188's check_knowledge_source clause (consolidated into the
+  // existing knowledge-base curation bullet, not a new bullet).
+  assert.ok(adminReply.length < 4780, `admin reply should stay short; was ${adminReply.length} chars`);
 });
 
 test('SECURITY: community_info member-tier and guest-tier replies never name an admin/super_admin-only tool or contain any ADMIN_CAPABILITIES_TEXT-unique line (issue #367, issue #311)', async () => {
@@ -4856,9 +4860,10 @@ test('community_info: super_admin reply stays under a hard char cap, not a wall 
   // clause; bumped once more alongside the member/admin caps for issue
   // #1070's most_helpful_knowledge line.
   // Bumped once more alongside the admin cap for issue #1185's remove_project
-  // clause.
+  // clause, and once more alongside the admin cap for issue #1188's
+  // check_knowledge_source clause.
   assert.ok(
-    superAdminReply.length < 5310,
+    superAdminReply.length < 5400,
     `super_admin reply should stay short; was ${superAdminReply.length} chars`,
   );
 });
@@ -12445,6 +12450,18 @@ test("formatKnowledgeSearchResults renders the knowledgeSearchEmpty nudge in te 
   );
   assert.notEqual(KNOWLEDGE_SEARCH_EMPTY_TEXT_MI, KNOWLEDGE_SEARCH_EMPTY_TEXT);
 });
+
+test(
+  'knowledgeSearchEmpty mentions BOTH suggest_knowledge and a human-admin offer, in English and te reo Māori ' +
+    '(issue #1196 acceptance criterion 1) — the KB-miss dead end now covers the "asker also doesn\'t know" ' +
+    'branch #1180 left uncovered, alongside the "asker later finds the answer" branch #1180 added',
+  () => {
+    assert.match(KNOWLEDGE_SEARCH_EMPTY_TEXT, /suggest_knowledge/);
+    assert.match(KNOWLEDGE_SEARCH_EMPTY_TEXT, /human community admin/);
+    assert.match(KNOWLEDGE_SEARCH_EMPTY_TEXT_MI, /suggest_knowledge/);
+    assert.match(KNOWLEDGE_SEARCH_EMPTY_TEXT_MI, /kaiwhakahaere/);
+  },
+);
 
 test('formatKnowledgeSearchResults keeps hits at/above the threshold and drops only the sub-threshold ones', () => {
   const relevant = fakeHit(KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD, 'Relevant entry');

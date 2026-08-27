@@ -102,6 +102,7 @@ const EXPECTED: ReadonlyArray<readonly [string, string]> = [
     '29',
     'Discord text-attachment input (`TEXT_INPUT_ENABLED`, off by default, `super_admin`-only default, agent-base #44)',
   ],
+  ['30', 'On-demand knowledge-source re-check (`check_knowledge_source`, issue #1188)'],
 ];
 
 /** Parsed straight from the document — the same regex the dump script uses. */
