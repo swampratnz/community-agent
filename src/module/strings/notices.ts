@@ -678,20 +678,25 @@ const NOTICE_ENTRIES = {
    * it — the discovery gap #1097 had to file separately after `!reviewqueue`
    * itself shipped without a line here. `!blockedlist` (issue #1145) is the
    * third, appended in the SAME diff that shipped it for the same reason.
+   * `!topknowledge` (issue #1165) is the fourth, appended in the SAME diff
+   * for the same reason. `!admindigest` (issue #1194) is the fifth,
+   * appended in the SAME diff that shipped it, for the same reason.
    */
   whatsappAdminTextCommands: {
     base:
       '- `!reviewqueue` — access-request/suggestion/knowledge-candidate/appeal backlog at a glance\n' +
       '- `!mutedlist` — currently muted members, by identity\n' +
       '- `!blockedlist` — currently blocked users, by identity\n' +
-      '- `!topknowledge` — knowledge entries ranked by retrieval count, most relied-on first',
+      '- `!topknowledge` — knowledge entries ranked by retrieval count, most relied-on first\n' +
+      '- `!admindigest` — your own admin-digest snapshot, on demand',
     language: {
       mi:
         '- `!reviewqueue` — te whakarāpopototanga o ngā ratonga arotake e rima i te tirohanga kotahi\n' +
         '- `!mutedlist` — ngā mema kua whakarahua i tēnei wā, mā te tuakiri\n' +
         '- `!blockedlist` — ngā kaiwhakamahi kua ārairia i tēnei wā, mā te tuakiri\n' +
         '- `!topknowledge` — ngā whiwhinga mōhiotanga kua raupapatia mā te tatauranga tikiake, ko te mea ' +
-        'whakawhirinaki nuitia i mua',
+        'whakawhirinaki nuitia i mua\n' +
+        '- `!admindigest` — tō ake whakarāpopototanga whakahaere, i te wā e hiahiatia ana',
     },
   },
   // --- member digest section labels (memberDigest.ts) ----------------------

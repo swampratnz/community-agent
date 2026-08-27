@@ -1,6 +1,7 @@
 import { config } from '@swampratnz/agent-base/config.js';
 import { logger } from '@swampratnz/agent-base/logger.js';
 import { startTrackedJob } from '@swampratnz/agent-base/jobs/trackedJob.js';
+import { untrustedEntryContent } from '@swampratnz/agent-base/agent/systemPrompt.js';
 import { WindowClosedError } from '@swampratnz/agent-base/platforms/types.js';
 import {
   answerFeedbackOriginSummary,
@@ -59,6 +60,19 @@ import type { Platform, PlatformAdapter } from '@swampratnz/agent-base/platforms
  */
 export const FRESHNESS_DAYS = 7;
 export const CLUSTER_LIMIT = 5;
+/**
+ * Length bound on one cluster snippet, applied HERE rather than relied on
+ * from `untrustedEntryContent`. That helper does currently slice to 300 as
+ * well, but that is an undocumented internal of `@swampratnz/agent-base` —
+ * every description of it in this repo's docs and in its own call sites
+ * says bracket-stripping and whitespace-collapsing, never truncation. The
+ * bound is a stated invariant of THIS module (docs/SECURITY.md §"admin
+ * digest": each snippet is length-bounded, mirroring `question_digest`'s
+ * own 300-char slice), so it is asserted locally instead of inherited from
+ * a package that could change it without this repo noticing. Same shape as
+ * `formatMostHelpfulKnowledge`, which calls `untrustedEntryContent` and
+ * then applies its own explicit `.slice(0, 200)`.
+ */
 const SNIPPET_MAX_CHARS = 300;
 
 /**
@@ -919,9 +933,27 @@ export function buildAdminDigestMessage(
 
   const sections: string[] = [];
   if (clusters.length > 0) {
+    // The cluster line is this function's one deliberate exception to "no
+    // content ever reaches the DM" (every other signal above is a bare
+    // count) — showing the actual repeated question is the whole point, so
+    // an admin can act on it. That makes `c.representative` the only
+    // member-authored free text in this message, and it reaches every
+    // caller unmoderated: this scheduled DM (`runAdminDigestOnce`), the
+    // `admin_digest` tool (quarantined a second time at the tool boundary
+    // for model re-entry, digestsAdmin.ts), and the on-demand
+    // `!admindigest`/`/admindigest` shortcuts (commands.ts/slashCommands.ts,
+    // which render this message plain). `untrustedEntryContent` neutralizes
+    // it here at the source — `<>` stripped, whitespace collapsed so no
+    // forged list row — the same per-entry quarantine
+    // `formatKnowledgeSearchResults` uses for embedded stored content, and
+    // the same discipline `find_helper`'s `topic` field applies before
+    // reaching a different member's DM (issue #1194 review).
     const lines = clusters
       .slice(0, CLUSTER_LIMIT)
-      .map((c, i) => `${i + 1}. (${c.count}x) ${c.representative.slice(0, SNIPPET_MAX_CHARS)}`);
+      .map(
+        (c, i) =>
+          `${i + 1}. (${c.count}x) ${untrustedEntryContent(c.representative).slice(0, SNIPPET_MAX_CHARS)}`,
+      );
     sections.push(
       `🔔 ${clusters.length} recurring question(s) in your conversations this week:\n` +
         `${lines.join('\n')}\n` +
