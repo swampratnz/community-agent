@@ -103,6 +103,18 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   reuses the weekly job's own SSRF-hardened reachability probe on demand for
   one entry, so the fix is confirmed in the same turn. Admin only.
 
+### Fixed
+- **Docs-ingest page fetches now retry a transient failure before giving up.**
+  (#1187) The weekly docs-ingest job's per-page fetch made exactly one attempt
+  and counted any network error/timeout or non-2xx as a real failure, unlike
+  its sibling `linkCheck.ts`'s retry (#1112). On a ~weekly job, a "consecutive
+  failing run" streak is really a handful of snapshots at roughly the same
+  wall-clock moment, so a recurring upstream blip could get a live, trusted
+  docs page marked dead and skipped until the next re-probe. It now retries a
+  network error/timeout or a 5xx/429 up to twice with a short fixed backoff; a
+  deterministic 4xx (other than 429) still fails immediately, exactly as
+  before.
+
 ## 2026-08-26
 
 ### Added

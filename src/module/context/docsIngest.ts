@@ -33,6 +33,19 @@ import { pageKeyOf } from '@swampratnz/agent-base/context/docTitles.js';
  * refresh only pays for genuinely changed docs, and the returned
  * created/updated/unchanged/removed counts ARE the "what changed" view. Sections
  * that vanish upstream are pruned (scoped to the 'docs' provenance only).
+ *
+ * Transient-failure retry (issue #1187): `defaultFetchText` used to make
+ * exactly one attempt per page and count any network error/timeout or non-2xx
+ * as a real failure — on a ~weekly job, a handful of runs is really a handful
+ * of snapshots at roughly the same wall-clock moment, so a recurring upstream
+ * blip could hit the #611 dead-URL streak and get a live page skipped for
+ * `deadUrlRecheckDays`. It now retries a network error/timeout or a 5xx/429 up
+ * to MAX_RETRIES times with a fixed backoff before giving up — the same shape
+ * linkCheck.ts already has (issue #1112), kept as a self-contained function
+ * here rather than shared, since linkCheck.ts's retry is entangled with its
+ * own per-hop SSRF/DNS-pinning state that this single-fixed-host job doesn't
+ * need. A deterministic 4xx (other than 429) still fails on the first
+ * attempt.
  */
 
 export const DOCS_PROVENANCE = 'docs' as const;
@@ -164,19 +177,66 @@ function splitToSize(text: string, maxChars: number): string[] {
   return pieces;
 }
 
-/** Fetch text over HTTPS with a timeout. Injectable so tests never hit the network. */
-async function defaultFetchText(url: string): Promise<string> {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 30_000);
-  try {
-    const res = await fetch(url, {
-      signal: ctrl.signal,
-      headers: { 'user-agent': 'nz-claude-community-agent/docs-ingest (+community bot)' },
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
-    return await res.text();
-  } finally {
-    clearTimeout(timer);
+const FETCH_TIMEOUT_MS = 30_000;
+
+/** Retries beyond the initial attempt, only for a network error/timeout or a 5xx/429 — never a deterministic 4xx. */
+const MAX_RETRIES = 2;
+
+/** Fixed short backoff between retry attempts — mirrors linkCheck.ts's own constant, deliberately not shared (see the module header's "Alternatives considered"). */
+const RETRY_BACKOFF_MS = 1_000;
+
+/** 5xx or 429 — a plausibly transient condition worth retrying; any other 4xx is a real, deterministic answer. */
+function isRetryableStatus(status: number): boolean {
+  return status === 429 || (status >= 500 && status < 600);
+}
+
+export type SleepFn = (ms: number) => Promise<void>;
+
+async function defaultSleep(ms: number): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
+export interface FetchTextDeps {
+  /** Defaults to the global fetch. Injectable so retry tests never touch the network. */
+  fetchImpl?: typeof fetch;
+  /** The retry backoff delay. Defaults to a real timer; tests inject an instant no-op. */
+  sleep?: SleepFn;
+}
+
+/**
+ * Fetch text over HTTPS with a timeout, retrying a network error/timeout or a
+ * 5xx/429 response up to MAX_RETRIES times with a fixed backoff before giving
+ * up — the same "confirmed outage, not a blip" shape linkCheck.ts already has
+ * (issue #1112), applied here to docs-ingest's own per-page fetch (issue
+ * #1187). A deterministic 4xx (other than 429) still fails on the FIRST
+ * attempt, no retry, no added delay — a genuinely moved/removed page is
+ * detected exactly as fast as before. Injectable so tests never hit the
+ * network or a real timer.
+ */
+export async function defaultFetchText(url: string, deps: FetchTextDeps = {}): Promise<string> {
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const sleep = deps.sleep ?? defaultSleep;
+
+  for (let attempt = 0; ; attempt++) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+    let res: Response | undefined;
+    let networkErr: unknown;
+    try {
+      res = await fetchImpl(url, {
+        signal: ctrl.signal,
+        headers: { 'user-agent': 'nz-claude-community-agent/docs-ingest (+community bot)' },
+      });
+    } catch (err) {
+      networkErr = err;
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (res?.ok) return await res.text();
+    if (res && !isRetryableStatus(res.status)) throw new Error(`HTTP ${res.status} for ${url}`);
+    if (attempt >= MAX_RETRIES) throw res ? new Error(`HTTP ${res.status} for ${url}`) : networkErr;
+    await sleep(RETRY_BACKOFF_MS);
   }
 }
 
