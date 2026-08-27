@@ -139,6 +139,7 @@
   "securityDocSections.test.ts": 1,
   "securityGateCanary.test.ts": 1,
   "securityGateWrite.test.ts": 7,
+  "shareProjectHelperPush.test.ts": 4,
   "staleKnowledgeAlert.router.test.ts": 3,
   "statusCheckAlert.test.ts": 4,
   "stringsCatalogue.test.ts": 5,
