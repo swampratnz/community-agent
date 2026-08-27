@@ -3322,6 +3322,14 @@ test("/kb's zero-hit reply nudges the asker toward suggest_knowledge, in te reo 
     unsetResult.replies[0].content.includes('suggest_knowledge'),
     'the zero-hit reply must nudge the asker toward suggest_knowledge',
   );
+  assert.ok(
+    unsetResult.replies[0].content.includes('human community admin'),
+    'the zero-hit reply must also offer to loop in a human community admin (issue #1196)',
+  );
+  assert.ok(
+    miResult.replies[0].content.includes('kaiwhakahaere'),
+    'the mi zero-hit reply must offer the human-admin option in te reo Māori too (issue #1196)',
+  );
 });
 
 test(
