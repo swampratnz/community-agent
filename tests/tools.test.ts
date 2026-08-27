@@ -259,6 +259,8 @@ const KNOWLEDGE_ENTRY_ID_SCOPE_LEAK_SCOPE_A = `${RUN}-knowledge-entry-id-scope-l
 const KNOWLEDGE_ENTRY_ID_SCOPE_LEAK_SCOPE_B = `${RUN}-knowledge-entry-id-scope-leak-b`;
 const KNOWLEDGE_LEXICAL_NOT_INVOKED_SCOPE = `${RUN}-knowledge-lexical-not-invoked`;
 const KNOWLEDGE_LEXICAL_FALLBACK_SCOPE = `${RUN}-knowledge-lexical-fallback`;
+const FIND_KNOWLEDGE_LEXICAL_FALLBACK_SCOPE = `${RUN}-find-knowledge-lexical-fallback`;
+const FIND_KNOWLEDGE_LEXICAL_NOT_INVOKED_SCOPE = `${RUN}-find-knowledge-lexical-not-invoked`;
 const KNOWLEDGE_STALE_ALERT_HANDLER_SCOPE = `${RUN}-knowledge-stale-alert-handler`;
 const RESOLVE_SUGGESTION_HANDLER_USER = `${RUN}-resolve-suggestion-handler`;
 const RESOLVE_REPORT_HANDLER_USER = `${RUN}-resolve-report-handler`;
@@ -3458,33 +3460,54 @@ test("SECURITY: formatKnowledgeSearchResults (knowledge_search's member-facing f
   assert.doesNotMatch(output, /#999\b/, 'knowledge_search must never leak the entry id to a member');
 });
 
-test('SECURITY: find_knowledge rejects a member (and guest) caller (assertAtLeast re-check, issue #1008)', async () => {
-  const adapter = stubAdapter(async () => {});
-  for (const role of ['member', 'guest'] as const) {
-    const caller = {
-      platform: 'discord' as const,
-      userId: `${role}-1`,
-      userName: 'Caller',
-      role,
-      conversationId: 'convo-find-knowledge-reject',
-    };
-    const server = buildToolServer(caller, adapter);
-    const registeredTool = (
-      server.instance as unknown as {
-        _registeredTools: Record<
-          string,
-          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
-        >;
-      }
-    )._registeredTools['find_knowledge'];
+test(
+  'SECURITY: find_knowledge rejects a member (and guest) caller (assertAtLeast re-check, issue #1008) before either the semantic or lexical search branch runs (issue #1192 acceptance criterion 5)',
+  async (t) => {
+    const adapter = stubAdapter(async () => {});
+    // Spies the shared pool rather than a specific SQL fragment, so it
+    // catches EITHER search branch — the point is that assertAtLeast throws
+    // before any DB call, so the lexical-fallback addition can't have
+    // introduced a path that queries before the tier check.
+    let queryRan = false;
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      queryRan = true;
+      return (realQuery as (...args: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
 
-    await assert.rejects(
-      () => registeredTool.handler({ query: 'anything' }),
-      /admin/i,
-      `a ${role} caller must be rejected by the assertAtLeast re-check`,
+    for (const role of ['member', 'guest'] as const) {
+      const caller = {
+        platform: 'discord' as const,
+        userId: `${role}-1`,
+        userName: 'Caller',
+        role,
+        conversationId: 'convo-find-knowledge-reject',
+      };
+      const server = buildToolServer(caller, adapter);
+      const registeredTool = (
+        server.instance as unknown as {
+          _registeredTools: Record<
+            string,
+            { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+          >;
+        }
+      )._registeredTools['find_knowledge'];
+
+      await assert.rejects(
+        () => registeredTool.handler({ query: 'anything' }),
+        /admin/i,
+        `a ${role} caller must be rejected by the assertAtLeast re-check`,
+      );
+    }
+
+    assert.equal(
+      queryRan,
+      false,
+      'neither search branch may query the database before assertAtLeast rejects a below-admin caller',
     );
-  }
-});
+    t.mock.reset();
+  },
+);
 
 test(
   'find_knowledge returns a weak-but-nonzero match (below KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD, which knowledge_search would have excluded it under) alongside a strong match, ids first, ranked by similarity descending (issue #1008)',
@@ -3620,6 +3643,187 @@ test(
     );
 
     await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[outOfScopeId, globalId]]);
+  },
+);
+
+function getFindKnowledgeHandler(caller: {
+  platform: 'discord';
+  userId: string;
+  userName: string;
+  role: 'admin';
+  conversationId: string;
+}) {
+  const server = buildToolServer(caller, stubAdapter(async () => {}));
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: {
+            query: string;
+            limit?: number;
+          }) => Promise<{ content: Array<{ type: string; text: string }> }>;
+        }
+      >;
+    }
+  )._registeredTools['find_knowledge'];
+}
+
+test(
+  'find_knowledge resolves an exact-string query via the lexical fallback when semantic search returns zero hits, using the same platform/conversationId scope as the semantic call (issue #1192 acceptance criteria 1, 4)',
+  { skip },
+  async (t) => {
+    const identifier = `FIND_KNOWLEDGE_FALLBACK_PROBE_${RUN}`;
+    const { id: fallbackId } = await saveKnowledge({
+      title: 'find_knowledge lexical fallback fixture',
+      content:
+        `A bespoke identifier that has no semantic neighbour: ${identifier}. Saved purely so ` +
+        'searchKnowledge has no confident semantic match to return for it.',
+      scope: FIND_KNOWLEDGE_LEXICAL_FALLBACK_SCOPE,
+    });
+
+    // searchKnowledge has no relevance floor of its own — it always returns
+    // the nearest rows in scope, so a genuine zero-hit result can't be
+    // reliably produced against a shared test DB (a 'global'-scoped entry
+    // from another fixture would still match the `scope IN ('global', ...)`
+    // predicate). Force it deterministically instead: intercept the ONE
+    // query shape unique to searchKnowledge's `ORDER BY embedding <=>`
+    // ranking and return zero rows, while every other query — including
+    // searchKnowledgeLexical's own `word_similarity` query — passes through
+    // to the real database untouched.
+    let lexicalCallParams: unknown[] | null = null;
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && sql.includes('ORDER BY embedding <=>')) {
+        return Promise.resolve({ rows: [] });
+      }
+      if (typeof sql === 'string' && sql.includes("word_similarity($1, COALESCE(title, '')")) {
+        lexicalCallParams = rest[0] as unknown[];
+      }
+      return (realQuery as (...args: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-find-knowledge-lexical-admin`,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: FIND_KNOWLEDGE_LEXICAL_FALLBACK_SCOPE,
+    };
+    const result = await getFindKnowledgeHandler(caller).handler({ query: identifier });
+    const output = result.content[0]?.text ?? '';
+
+    assert.match(
+      output,
+      new RegExp(`#${fallbackId}\\b`),
+      'the entry must be returned via the lexical fallback when semantic search comes up empty',
+    );
+    assert.ok(lexicalCallParams, 'the lexical fallback query must have run');
+    assert.equal(
+      lexicalCallParams?.[1],
+      caller.platform,
+      'the lexical fallback must scope by the same caller.platform as the semantic call',
+    );
+    assert.equal(
+      lexicalCallParams?.[2],
+      caller.conversationId,
+      'the lexical fallback must scope by the same caller.conversationId as the semantic call — no widening',
+    );
+
+    t.mock.reset();
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [fallbackId]);
+  },
+);
+
+test(
+  'find_knowledge never invokes the lexical fallback when semantic search already returned at least one hit — including a weak sub-floor match find_knowledge already surfaces (issue #1192 acceptance criterion 2)',
+  { skip },
+  async (t) => {
+    // No relevance floor on this tool, so a single saved entry in scope is
+    // enough to guarantee hits.length >= 1 regardless of how weak its
+    // similarity to the query is.
+    const { id: weakId } = await saveKnowledge({
+      title: `Distractor entry ${RUN}`,
+      content: 'The community hall parking lot closes at 10pm on weekdays.',
+      scope: FIND_KNOWLEDGE_LEXICAL_NOT_INVOKED_SCOPE,
+    });
+
+    let lexicalQueryRan = false;
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && sql.includes('word_similarity')) {
+        lexicalQueryRan = true;
+      }
+      return (realQuery as (...args: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-find-knowledge-lexical-not-invoked-admin`,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: FIND_KNOWLEDGE_LEXICAL_NOT_INVOKED_SCOPE,
+    };
+    const result = await getFindKnowledgeHandler(caller).handler({
+      query: 'completely unrelated query about something else entirely',
+    });
+    const output = result.content[0]?.text ?? '';
+
+    assert.match(output, new RegExp(`#${weakId}\\b`), 'the weak, below-floor hit is still returned');
+    assert.equal(
+      lexicalQueryRan,
+      false,
+      'the lexical fallback query must never execute once semantic search already returned a hit, ' +
+        'weak or not — call-count 0 on this branch',
+    );
+
+    t.mock.reset();
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [weakId]);
+  },
+);
+
+test(
+  'SECURITY: find_knowledge degrades to the empty-result reply instead of throwing when the lexical fallback query rejects after semantic search returns zero hits, and logs a warning (issue #1192 acceptance criterion 3)',
+  { skip },
+  async (t) => {
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && sql.includes('ORDER BY embedding <=>')) {
+        return Promise.resolve({ rows: [] });
+      }
+      if (typeof sql === 'string' && sql.includes("word_similarity($1, COALESCE(title, '')")) {
+        return Promise.reject(new Error('DB unreachable'));
+      }
+      return (realQuery as (...args: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+    const warnLog = t.mock.method(logger, 'warn', () => {});
+
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-find-knowledge-lexical-failsafe-admin`,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: `${RUN}-find-knowledge-lexical-failsafe-scope`,
+    };
+    // Must RESOLVE, not reject: the MCP layer turns a thrown handler into an
+    // isError result carrying error.message, which would surface the raw
+    // driver error straight into model context.
+    const result = await getFindKnowledgeHandler(caller).handler({ query: 'anything at all' });
+    const output = result.content[0]?.text ?? '';
+
+    assert.equal(
+      output,
+      'No knowledge entries found.',
+      'a failed lexical fallback must degrade to the already-fetched (empty) semantic result, not an error',
+    );
+    assert.doesNotMatch(
+      output,
+      /DB unreachable/,
+      'the raw driver error must never reach the tool result (and so model context)',
+    );
+    assert.ok(warnLog.mock.calls.length >= 1, 'the lexical fallback failure must be logged, not silently swallowed');
+
+    t.mock.reset();
   },
 );
 
