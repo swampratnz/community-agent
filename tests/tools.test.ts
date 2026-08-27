@@ -4384,7 +4384,7 @@ test('community_info: admin-tier reply stays byte-identical, never gains SUPER_A
     "- Manage membership: add a new member, remove a member, link a member's cross-platform identity, or unlink a member's cross-platform identity\n" +
     '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, check which knowledge entries are rated poorly, and review recurring unhelpful-answer themes across all answers\n' +
     '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
-    "- Curate the knowledge base: save a new knowledge entry, browse knowledge entries, semantically find a knowledge entry's id by what it says, edit a knowledge entry, delete a knowledge entry, or merge two entries together, check for near-duplicate entries or conflicting entries, or rank entries by how often they're retrieved\n" +
+    "- Curate the knowledge base: save a new knowledge entry, browse knowledge entries, semantically find a knowledge entry's id by what it says, edit a knowledge entry, delete a knowledge entry, or merge two entries together, check for near-duplicate entries or conflicting entries, rank entries by how often they're retrieved, or force an immediate reachability re-check of a knowledge entry's citation\n" +
     "- Review knowledge candidates, accept a candidate or decline a candidate, track knowledge gaps (questions I couldn't answer), recurring question clusters, raw context digests, pull your own admin-digest snapshot on demand, get a review-queue roll-up of all five review queues at once, or check how quickly I've been answering members (response latency)\n" +
     '- See who is waiting for access, decline a pending access request without granting it, or see who ' +
     'has joined or left the server\n' +
@@ -4403,7 +4403,8 @@ test('community_info: admin-tier reply stays byte-identical, never gains SUPER_A
     `${memberReply}\n${expectedAdminCapabilitiesText}`,
     "admin-tier reply must be byte-identical to today's deliberately-updated text (issue #1008 added the " +
       'find_knowledge clause; issue #1024 added the list_top_knowledge clause; issue #1185 added the ' +
-      'remove_project clause) — this PR must not change the admin branch beyond that documented addition',
+      'remove_project clause; issue #1188 added the check_knowledge_source clause) — this PR must not ' +
+      'change the admin branch beyond that documented addition',
   );
   assert.doesNotMatch(
     adminReply,
@@ -4627,6 +4628,7 @@ const ADMIN_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__list_suggestions', /review suggestions members submit/i],
   ['mcp__community__resolve_suggestion', /resolve each suggestion/i],
   ['mcp__community__remove_project', /remove a project from the community showcase/i],
+  ['mcp__community__check_knowledge_source', /reachability re-check of a knowledge entry's citation/i],
 ]);
 // Every ADMIN_TOOLS entry gets its own line — no exemptions needed (unlike
 // MEMBER_CAPABILITY_EXEMPT, ADMIN_TOOLS has no self-referential tool like
@@ -4710,8 +4712,10 @@ test('community_info: admin reply stays under a hard char cap, not a wall of tex
   // includes the full member segment, so a member-segment addition grows
   // this reply too).
   // Bumped once more for issue #1185's remove_project clause (consolidated
-  // into the existing moderation bullet, not a new bullet).
-  assert.ok(adminReply.length < 4660, `admin reply should stay short; was ${adminReply.length} chars`);
+  // into the existing moderation bullet, not a new bullet), and once more
+  // for issue #1188's check_knowledge_source clause (consolidated into the
+  // existing knowledge-base curation bullet, not a new bullet).
+  assert.ok(adminReply.length < 4780, `admin reply should stay short; was ${adminReply.length} chars`);
 });
 
 test('SECURITY: community_info member-tier and guest-tier replies never name an admin/super_admin-only tool or contain any ADMIN_CAPABILITIES_TEXT-unique line (issue #367, issue #311)', async () => {
@@ -4856,9 +4860,10 @@ test('community_info: super_admin reply stays under a hard char cap, not a wall 
   // clause; bumped once more alongside the member/admin caps for issue
   // #1070's most_helpful_knowledge line.
   // Bumped once more alongside the admin cap for issue #1185's remove_project
-  // clause.
+  // clause, and once more alongside the admin cap for issue #1188's
+  // check_knowledge_source clause.
   assert.ok(
-    superAdminReply.length < 5310,
+    superAdminReply.length < 5400,
     `super_admin reply should stay short; was ${superAdminReply.length} chars`,
   );
 });
@@ -5002,12 +5007,17 @@ test(
     // would over-advertise it to a plain admin — adding a super_admin-only
     // discovery line is explicitly out of scope for #1183's approved
     // acceptance criteria (the shortcut itself, not its discoverability).
+    // `admindigest` (issue #1194) is the fifth admin-tier exception, same
+    // reasoning as `reviewqueue`/`mutedlist`/`blockedlist`/`topknowledge` —
+    // its discovery line lives in the `whatsappAdminTextCommands` notice
+    // instead, asserted separately below.
     const WHATSAPP_DISCOVERY_EXEMPT_COMMANDS: readonly string[] = [
       'reviewqueue',
       'mutedlist',
       'blockedlist',
       'topknowledge',
       'featureflags',
+      'admindigest',
     ];
 
     const original = config.behaviour.whatsappTextCommandsEnabled;
@@ -5541,6 +5551,95 @@ test(
         /!topknowledge/,
         'with the flag off, !topknowledge must not be mentioned even for a super_admin-tier WhatsApp caller',
       );
+    } finally {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    }
+  },
+);
+
+// --- issue #1194: !admindigest discovery for admin-tier WhatsApp callers,
+// the same whatsappAdminTextCommands notice !reviewqueue (#1097)/!mutedlist
+// (#1114)/!blockedlist (#1145)/!topknowledge (#1165) discover through,
+// appended in the same diff rather than needing a follow-up issue.
+
+test(
+  'community_info/formatCommunityInfoText mention !admindigest for admin- and super_admin-tier WhatsApp ' +
+    'callers with whatsappTextCommandsEnabled on, in both the default/en and mi language variants (issue ' +
+    '#1194 acceptance criterion 6)',
+  { skip },
+  async () => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    try {
+      config.behaviour.whatsappTextCommandsEnabled = true;
+
+      const enAdmin = `${RUN}-info-admin-admindigest-en`;
+      const enReply = (await communityInfoHandler('admin', 'whatsapp', enAdmin)).content[0]?.text ?? '';
+      assert.match(enReply, /!admindigest/, 'an admin-tier WhatsApp caller must be told about !admindigest');
+
+      const miAdmin = `${RUN}-info-admin-admindigest-mi`;
+      await setLanguagePreferenceHandler({ platform: 'whatsapp', userId: miAdmin }).handler({
+        language: 'mi',
+      });
+      const miReply = (await communityInfoHandler('admin', 'whatsapp', miAdmin)).content[0]?.text ?? '';
+      assert.match(
+        miReply,
+        /!admindigest/,
+        "an admin-tier WhatsApp caller with a 'mi' preference must also be told about !admindigest",
+      );
+
+      const enSuperAdmin = `${RUN}-info-super-admin-admindigest-en`;
+      const superAdminReply =
+        (await communityInfoHandler('super_admin', 'whatsapp', enSuperAdmin)).content[0]?.text ?? '';
+      assert.match(
+        superAdminReply,
+        /!admindigest/,
+        'a super_admin-tier WhatsApp caller must be told about !admindigest',
+      );
+
+      assert.equal(
+        await formatCommunityInfoText('admin', 'whatsapp', enAdmin),
+        enReply,
+        "formatCommunityInfoText's own output must match the tool handler's (single source of truth)",
+      );
+    } finally {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    }
+  },
+);
+
+test(
+  'SECURITY: !admindigest is never mentioned in community_info/formatCommunityInfoText output for a member ' +
+    'or guest WhatsApp caller (whatsappTextCommandsEnabled on), nor for a Discord caller at any tier (issue ' +
+    '#1194 acceptance criterion 6)',
+  async () => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    try {
+      config.behaviour.whatsappTextCommandsEnabled = true;
+
+      const memberReply = (await communityInfoHandler('member', 'whatsapp')).content[0]?.text ?? '';
+      assert.doesNotMatch(
+        memberReply,
+        /!admindigest/,
+        'a member-tier WhatsApp caller must never be told about the admin-only !admindigest shortcut',
+      );
+
+      const guestReply = (await communityInfoHandler('guest', 'whatsapp')).content[0]?.text ?? '';
+      assert.doesNotMatch(
+        guestReply,
+        /!admindigest/,
+        'a guest-tier WhatsApp caller must never be told about the admin-only !admindigest shortcut',
+      );
+
+      const roles = ['guest', 'member', 'admin', 'super_admin'] as const;
+      for (const role of roles) {
+        const discordReply = (await communityInfoHandler(role, 'discord')).content[0]?.text ?? '';
+        assert.doesNotMatch(
+          discordReply,
+          /!admindigest/,
+          `a Discord caller (${role}) must never see the WhatsApp-only !admindigest shortcut block — ` +
+            'Discord already surfaces /admindigest via its own slash-command autocomplete',
+        );
+      }
     } finally {
       config.behaviour.whatsappTextCommandsEnabled = original;
     }

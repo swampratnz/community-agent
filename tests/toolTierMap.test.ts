@@ -81,6 +81,7 @@ const EXPECTED: Record<string, readonly string[]> = {
     'archive_thread',
     'assign_community_role',
     'cancel_event',
+    'check_knowledge_source',
     'clear_warnings',
     'create_event',
     'create_poll',

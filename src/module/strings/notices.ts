@@ -521,7 +521,7 @@ const NOTICE_ENTRIES = {
       "- Manage membership: add a new member, remove a member, link a member's cross-platform identity, or unlink a member's cross-platform identity\n" +
       '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, check which knowledge entries are rated poorly, and review recurring unhelpful-answer themes across all answers\n' +
       '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
-      "- Curate the knowledge base: save a new knowledge entry, browse knowledge entries, semantically find a knowledge entry's id by what it says, edit a knowledge entry, delete a knowledge entry, or merge two entries together, check for near-duplicate entries or conflicting entries, or rank entries by how often they're retrieved\n" +
+      "- Curate the knowledge base: save a new knowledge entry, browse knowledge entries, semantically find a knowledge entry's id by what it says, edit a knowledge entry, delete a knowledge entry, or merge two entries together, check for near-duplicate entries or conflicting entries, rank entries by how often they're retrieved, or force an immediate reachability re-check of a knowledge entry's citation\n" +
       "- Review knowledge candidates, accept a candidate or decline a candidate, track knowledge gaps (questions I couldn't answer), recurring question clusters, raw context digests, pull your own admin-digest snapshot on demand, get a review-queue roll-up of all five review queues at once, or check how quickly I've been answering members (response latency)\n" +
       '- See who is waiting for access, decline a pending access request without granting it, or see who ' +
       'has joined or left the server\n' +
@@ -554,7 +554,8 @@ const NOTICE_ENTRIES = {
         '(semantic search) i te tuhinga ID o tētahi whakaurunga mā tāna kōrero, whakatika i tētahi ' +
         'whakaurunga, muku i tētahi whakaurunga, kōpui rānei i ētahi whakaurunga e rua, tirotiro mō ngā ' +
         'whakaurunga rite tonu, whakatau taupatupatu rānei, tātari rānei i ngā whakaurunga e ai ki te maha ' +
-        'o ā rātou tikinga\n' +
+        'o ā rātou tikinga, whakatinanahia rānei ināianei tonu tētahi arotake mō te taea o te tohutoro a ' +
+        'tētahi whakaurunga\n' +
         '- Arotake i ngā kaupapa mōhiotanga tūmataiti, whakaae rānei whakakore i tētahi, whāia ngā āputa ' +
         'mōhiotanga (ngā pātai kāore au i taea te whakautu), ngā kāhui pātai e hoki mai tonu ana, ngā ' +
         'rīpoata horopaki mata, tiki i tō ake whārangi whakarāpopototanga ā-kaiwhakahaere i ngā wā katoa e ' +
@@ -677,20 +678,25 @@ const NOTICE_ENTRIES = {
    * it — the discovery gap #1097 had to file separately after `!reviewqueue`
    * itself shipped without a line here. `!blockedlist` (issue #1145) is the
    * third, appended in the SAME diff that shipped it for the same reason.
+   * `!topknowledge` (issue #1165) is the fourth, appended in the SAME diff
+   * for the same reason. `!admindigest` (issue #1194) is the fifth,
+   * appended in the SAME diff that shipped it, for the same reason.
    */
   whatsappAdminTextCommands: {
     base:
       '- `!reviewqueue` — access-request/suggestion/knowledge-candidate/appeal backlog at a glance\n' +
       '- `!mutedlist` — currently muted members, by identity\n' +
       '- `!blockedlist` — currently blocked users, by identity\n' +
-      '- `!topknowledge` — knowledge entries ranked by retrieval count, most relied-on first',
+      '- `!topknowledge` — knowledge entries ranked by retrieval count, most relied-on first\n' +
+      '- `!admindigest` — your own admin-digest snapshot, on demand',
     language: {
       mi:
         '- `!reviewqueue` — te whakarāpopototanga o ngā ratonga arotake e rima i te tirohanga kotahi\n' +
         '- `!mutedlist` — ngā mema kua whakarahua i tēnei wā, mā te tuakiri\n' +
         '- `!blockedlist` — ngā kaiwhakamahi kua ārairia i tēnei wā, mā te tuakiri\n' +
         '- `!topknowledge` — ngā whiwhinga mōhiotanga kua raupapatia mā te tatauranga tikiake, ko te mea ' +
-        'whakawhirinaki nuitia i mua',
+        'whakawhirinaki nuitia i mua\n' +
+        '- `!admindigest` — tō ake whakarāpopototanga whakahaere, i te wā e hiahiatia ana',
     },
   },
   // --- member digest section labels (memberDigest.ts) ----------------------
