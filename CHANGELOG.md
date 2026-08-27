@@ -47,6 +47,23 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   are all unaffected. No new tool, config, or data access — it reuses
   `find_helper`'s existing matching, capping, and DM-send machinery from a
   second call site.
+- **New admin shortcut: `!admindigest`/`/admindigest`, a zero-model-call way
+  to pull your own admin-digest snapshot on demand.** (#1194) `admin_digest`
+  (#499) — the on-demand pull of the recurring-question, review-queue,
+  roster, and moderation signals the weekly digest DM would send — sat right
+  next to `review_queue` in the same file but never got its own shortcut when
+  `!reviewqueue` (#1095), `!mutedlist` (#1114), `!blockedlist` (#1145), and
+  `!topknowledge` (#1165) swept the rest of that admin-tier family. Renders
+  the exact same text `buildAdminDigestForAdmin` already returns, plain (no
+  whole-message `untrusted()` quarantine, unlike the tool's own reply) since
+  it goes straight to the human caller and never re-enters model context —
+  safe because the message's one piece of member-authored free text (the
+  recurring-question cluster snippet) is quarantined at the source via
+  `untrustedEntryContent`, the same per-entry discipline `find_helper`'s
+  `topic` field uses, closing a review-flagged gap that also existed in the
+  weekly digest DM itself. A pull can never suppress or reset the next
+  scheduled weekly push. Admin-tier only on both platforms; no new tool,
+  table, or data access.
 - **`share_project` now nudges you when a fresh share looks like an existing
   member's project, instead of publishing two near-identical showcase
   entries silently.** (#1190) `save_knowledge` has always flagged a

@@ -91,6 +91,9 @@ const { formatStatusMessage, getStatusCache, pollAnthropicStatus, resetStatusCac
   await import('../src/module/status/anthropicStatus.js');
 const { formatMyDataText, formatMySubmissionsText, formatMyWarningsText } =
   await import('../src/module/agent/tools/selfService.js');
+// !admindigest (issue #1194) below.
+const { buildAdminDigestForAdmin } = await import('../src/module/adminDigest.js');
+const { bindCommunityWhatsAppAdapter } = await import('../src/module/commands.js');
 
 const RUN = `wa-cmd-router-${Date.now()}`;
 
@@ -3725,6 +3728,152 @@ test("a successful !featureflags invocation calls recordShortcutHit('whatsapp_te
   assert.equal(sent.length, 1);
   assert.deepEqual(hits, ['whatsapp_text_command']);
 });
+
+// --- !admindigest (issue #1194) -----------------------------------------------
+//
+// Unlike every sibling admin-tier shortcut above, `buildAdminDigestForAdmin`
+// needs a live `PlatformAdapter` (`adapter.conversationsForUser`) — the
+// fixed, base-owned `WhatsAppTextCommandDeps` this router injects carries no
+// adapter field, so the handler reads the module-scope `whatsappAdapter`
+// binding instead (`bindCommunityWhatsAppAdapter`, called from
+// `platforms/factories.ts` in production). Tests bind it explicitly here,
+// mirroring how `discordSlashCommands.test.ts` calls `bindCommunitySlashCommands`
+// for the identical Discord-side need.
+//
+// `buildAdminDigestForAdmin` also fans out to ~30 repository reads, so — like
+// `discordSlashCommands.test.ts`'s `/admindigest` tests — the content/shortcut-
+// hit test below runs against a real Postgres (`{ skip: !hasDb }`, the same
+// convention this file already uses for `!digest`'s mi-rendering test above).
+// The auth-gate/anchoring tests stay fully mocked, since they never reach
+// buildAdminDigestForAdmin at all.
+
+test(
+  'a bare "!admindigestx" (no space, unrecognised) is not matched as the !admindigest command — anchored ' +
+    'matcher (issue #1194 acceptance criterion 3)',
+  async (t) => {
+    mockPoolRole(t, 'admin');
+    const router = makeRouter({});
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!admindigestx', userId: 'admin-1' }));
+
+    assert.equal(sent[0].text, REAL_TURN_REPLY);
+  },
+);
+
+test(
+  'SECURITY: "!admindigest <anything>" is never matched — the anchored matcher rejects any argument, so no ' +
+    'admin-digest content is ever rendered (issue #1194 acceptance criterion 3)',
+  async (t) => {
+    mockPoolRole(t, 'admin');
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!admindigest extra text', userId: 'admin-1' }));
+
+    assert.equal(sent[0].text, REAL_TURN_REPLY, 'an argument must fall through to a normal turn');
+  },
+);
+
+test(
+  'SECURITY: a member-tier caller\'s "!admindigest" falls through to the normal turn — no admin-digest ' +
+    'content is ever rendered (issue #1194 acceptance criterion 5)',
+  async (t) => {
+    mockPoolRole(t, 'member');
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!admindigest', userId: 'member-1' }));
+
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].text, REAL_TURN_REPLY);
+  },
+);
+
+test(
+  'SECURITY: a guest caller\'s "!admindigest" falls through to the normal turn — no admin-digest content is ' +
+    'ever rendered (issue #1194 acceptance criterion 5)',
+  async (t) => {
+    mockPoolRole(t, null);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!admindigest', userId: 'guest-1' }));
+
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].text, REAL_TURN_REPLY);
+  },
+);
+
+test(
+  'config.behaviour.whatsappTextCommandsEnabled === false disables !admindigest exactly as it does every ' +
+    'other WhatsApp shortcut',
+  async (t) => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    config.behaviour.whatsappTextCommandsEnabled = false;
+    t.after(() => {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    });
+    mockPoolRole(t, 'admin');
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!admindigest', userId: 'admin-1' }));
+
+    assert.equal(sent[0].text, REAL_TURN_REPLY);
+  },
+);
+
+test(
+  "!admindigest renders text identical to buildAdminDigestForAdmin('whatsapp', userId, adapter)'s own " +
+    "return (or the tool's 'Nothing to report right now.' fallback when it resolves null), calls " +
+    "recordShortcutHit('whatsapp_text_command') exactly once, and never advances the weekly digest's " +
+    'snapshot/trend baseline — the deeper #499/#497 invariant is pinned at the buildAdminDigestForAdmin ' +
+    'level by tests/adminDigest.test.ts (issue #1194 acceptance criteria 2, 4)',
+  { skip: !hasDb },
+  async () => {
+    const adminId = `${RUN}-admindigest-content`;
+    try {
+      await upsertMember({ platform: 'whatsapp', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+      const { adapter, sent, trigger } = makeAdapter();
+      bindCommunityWhatsAppAdapter(adapter);
+      const { wasAdminDigestSentRecently } = await import('@swampratnz/agent-base/storage/repository.js');
+      const sentBefore = await wasAdminDigestSentRecently('whatsapp', adminId, 7);
+
+      const hits: string[] = [];
+      const router = makeRouter({
+        runTurn: throwingRunTurn,
+        recordShortcutHitFn: async (kind) => {
+          hits.push(kind);
+        },
+      });
+      router.register(adapter);
+
+      await trigger(makeMessage({ text: '!admindigest', userId: adminId }));
+
+      const { message: direct } = await buildAdminDigestForAdmin('whatsapp', adminId, adapter);
+      assert.equal(sent.length, 1);
+      assert.equal(sent[0].text, direct ?? 'Nothing to report right now.');
+      assert.deepEqual(hits, ['whatsapp_text_command']);
+
+      const sentAfter = await wasAdminDigestSentRecently('whatsapp', adminId, 7);
+      assert.equal(
+        sentAfter,
+        sentBefore,
+        'a pull must never mark the admin as recently sent — the freshness row stays untouched (issue #499/#497)',
+      );
+    } finally {
+      await pool.query(`DELETE FROM community_users WHERE platform = 'whatsapp' AND platform_user_id = $1`, [
+        adminId,
+      ]);
+    }
+  },
+);
 
 // --- shortcut_hits tracking (issue #874, acceptance criterion 1) ------------
 

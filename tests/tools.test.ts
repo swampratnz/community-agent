@@ -5007,12 +5007,17 @@ test(
     // would over-advertise it to a plain admin — adding a super_admin-only
     // discovery line is explicitly out of scope for #1183's approved
     // acceptance criteria (the shortcut itself, not its discoverability).
+    // `admindigest` (issue #1194) is the fifth admin-tier exception, same
+    // reasoning as `reviewqueue`/`mutedlist`/`blockedlist`/`topknowledge` —
+    // its discovery line lives in the `whatsappAdminTextCommands` notice
+    // instead, asserted separately below.
     const WHATSAPP_DISCOVERY_EXEMPT_COMMANDS: readonly string[] = [
       'reviewqueue',
       'mutedlist',
       'blockedlist',
       'topknowledge',
       'featureflags',
+      'admindigest',
     ];
 
     const original = config.behaviour.whatsappTextCommandsEnabled;
@@ -5546,6 +5551,95 @@ test(
         /!topknowledge/,
         'with the flag off, !topknowledge must not be mentioned even for a super_admin-tier WhatsApp caller',
       );
+    } finally {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    }
+  },
+);
+
+// --- issue #1194: !admindigest discovery for admin-tier WhatsApp callers,
+// the same whatsappAdminTextCommands notice !reviewqueue (#1097)/!mutedlist
+// (#1114)/!blockedlist (#1145)/!topknowledge (#1165) discover through,
+// appended in the same diff rather than needing a follow-up issue.
+
+test(
+  'community_info/formatCommunityInfoText mention !admindigest for admin- and super_admin-tier WhatsApp ' +
+    'callers with whatsappTextCommandsEnabled on, in both the default/en and mi language variants (issue ' +
+    '#1194 acceptance criterion 6)',
+  { skip },
+  async () => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    try {
+      config.behaviour.whatsappTextCommandsEnabled = true;
+
+      const enAdmin = `${RUN}-info-admin-admindigest-en`;
+      const enReply = (await communityInfoHandler('admin', 'whatsapp', enAdmin)).content[0]?.text ?? '';
+      assert.match(enReply, /!admindigest/, 'an admin-tier WhatsApp caller must be told about !admindigest');
+
+      const miAdmin = `${RUN}-info-admin-admindigest-mi`;
+      await setLanguagePreferenceHandler({ platform: 'whatsapp', userId: miAdmin }).handler({
+        language: 'mi',
+      });
+      const miReply = (await communityInfoHandler('admin', 'whatsapp', miAdmin)).content[0]?.text ?? '';
+      assert.match(
+        miReply,
+        /!admindigest/,
+        "an admin-tier WhatsApp caller with a 'mi' preference must also be told about !admindigest",
+      );
+
+      const enSuperAdmin = `${RUN}-info-super-admin-admindigest-en`;
+      const superAdminReply =
+        (await communityInfoHandler('super_admin', 'whatsapp', enSuperAdmin)).content[0]?.text ?? '';
+      assert.match(
+        superAdminReply,
+        /!admindigest/,
+        'a super_admin-tier WhatsApp caller must be told about !admindigest',
+      );
+
+      assert.equal(
+        await formatCommunityInfoText('admin', 'whatsapp', enAdmin),
+        enReply,
+        "formatCommunityInfoText's own output must match the tool handler's (single source of truth)",
+      );
+    } finally {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    }
+  },
+);
+
+test(
+  'SECURITY: !admindigest is never mentioned in community_info/formatCommunityInfoText output for a member ' +
+    'or guest WhatsApp caller (whatsappTextCommandsEnabled on), nor for a Discord caller at any tier (issue ' +
+    '#1194 acceptance criterion 6)',
+  async () => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    try {
+      config.behaviour.whatsappTextCommandsEnabled = true;
+
+      const memberReply = (await communityInfoHandler('member', 'whatsapp')).content[0]?.text ?? '';
+      assert.doesNotMatch(
+        memberReply,
+        /!admindigest/,
+        'a member-tier WhatsApp caller must never be told about the admin-only !admindigest shortcut',
+      );
+
+      const guestReply = (await communityInfoHandler('guest', 'whatsapp')).content[0]?.text ?? '';
+      assert.doesNotMatch(
+        guestReply,
+        /!admindigest/,
+        'a guest-tier WhatsApp caller must never be told about the admin-only !admindigest shortcut',
+      );
+
+      const roles = ['guest', 'member', 'admin', 'super_admin'] as const;
+      for (const role of roles) {
+        const discordReply = (await communityInfoHandler(role, 'discord')).content[0]?.text ?? '';
+        assert.doesNotMatch(
+          discordReply,
+          /!admindigest/,
+          `a Discord caller (${role}) must never see the WhatsApp-only !admindigest shortcut block — ` +
+            'Discord already surfaces /admindigest via its own slash-command autocomplete',
+        );
+      }
     } finally {
       config.behaviour.whatsappTextCommandsEnabled = original;
     }
