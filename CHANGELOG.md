@@ -25,6 +25,26 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #1122 #1123 #1132
 -->
 
+## 2026-08-28
+
+### Added
+- **`share_project` now nudges you when a fresh share looks like an existing
+  member's project, instead of publishing two near-identical showcase
+  entries silently.** (#1190) `save_knowledge` has always flagged a
+  near-duplicate at save time; the project showcase never got the same
+  treatment, so two members (or the same member under a slightly different
+  name) could publish near-identical descriptions and dilute
+  `list_projects`/`who_is_into`'s results with no signal either way. Sharing
+  a brand-new project now also checks it against the rest of the showcase,
+  and if another member's project scores a very high match, the reply adds
+  one note pointing at it by name/id and owner, suggesting `list_projects`
+  or `request_project_connection` if you'd rather team up. Purely
+  informational — the project is always shared regardless, exactly like
+  `save_knowledge`'s own nudge. Editing or removing an existing project
+  never triggers the check. No new tool, table, or data access — it reuses
+  the same embedding search `list_projects`'/`find_helper`'s suggestion path
+  already run.
+
 ## 2026-08-27
 
 ### Added
