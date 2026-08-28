@@ -26130,6 +26130,314 @@ test(
   },
 );
 
+/**
+ * save_knowledge's admin_audit coverage (issue #1201): unlike every sibling
+ * knowledge-mutating tool in this file (update_knowledge, delete_knowledge,
+ * merge_knowledge, check_knowledge_source, accept/decline_knowledge_candidate),
+ * save_knowledge previously called saveKnowledge() directly with no
+ * audited() wrapper, so a successful save left no admin_audit row and fired
+ * no real-time notifySuperAdmins alert — the exact gap #1157 closed for
+ * generate_image, one file over.
+ */
+function saveKnowledgeHandler(
+  caller: { platform: 'discord' | 'whatsapp'; userId: string; conversationId: string },
+  adapter: PlatformAdapter,
+  getAdapter?: AdapterLookup,
+) {
+  const server = buildToolServer(
+    {
+      platform: caller.platform,
+      userId: caller.userId,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: caller.conversationId,
+    },
+    adapter,
+    getAdapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (
+            args: Record<string, unknown>,
+          ) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+        }
+      >;
+    }
+  )._registeredTools['save_knowledge'];
+}
+
+test(
+  'A successful save_knowledge call writes exactly one admin_audit row with action_kind = save_knowledge, the calling admin as actor, and title/content/scope/sourceUrl/sourceTitle in params; the success reply is byte-identical to before this fix (issue #1201 acceptance criteria 1 and 3)',
+  { skip },
+  async () => {
+    const adapter = stubAdapter(async () => {});
+    const actor = `${RUN}-save-knowledge-audit-admin`;
+    const scope = `${RUN}-save-knowledge-audit-scope`;
+    const content = `${RUN} save_knowledge audit fixture content, unique so it never near-duplicates another entry.`;
+    const tool = saveKnowledgeHandler(
+      { platform: 'discord', userId: actor, conversationId: `${RUN}-save-knowledge-audit-convo` },
+      adapter,
+    );
+
+    const result = await tool.handler({
+      title: 'Save-knowledge audit fixture',
+      content,
+      scope,
+      sourceUrl: 'https://example.com/save-knowledge-audit',
+      sourceTitle: 'Save-knowledge audit fixture source',
+    });
+    assert.equal(result.isError, false);
+
+    const row = await pool.query(`SELECT id FROM knowledge WHERE scope = $1`, [scope]);
+    assert.equal(row.rows.length, 1);
+    const id = Number(row.rows[0].id);
+    assert.equal(
+      result.content[0]?.text,
+      `Saved knowledge entry #${id}.`,
+      'reply text is unchanged by the audit wrapping',
+    );
+
+    const audit = await pool.query(
+      `SELECT success, params FROM admin_audit WHERE action_kind = 'save_knowledge' AND actor_user_id = $1`,
+      [actor],
+    );
+    assert.equal(audit.rows.length, 1, 'exactly one admin_audit row for the successful call');
+    assert.equal(audit.rows[0].success, true);
+    const params = audit.rows[0].params as Record<string, unknown>;
+    assert.equal(params.title, 'Save-knowledge audit fixture');
+    assert.equal(params.content, content);
+    assert.equal(params.scope, scope);
+    assert.equal(params.sourceUrl, 'https://example.com/save-knowledge-audit');
+    assert.equal(params.sourceTitle, 'Save-knowledge audit fixture source');
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
+    await pool.query(`DELETE FROM admin_audit WHERE action_kind = 'save_knowledge' AND actor_user_id = $1`, [
+      actor,
+    ]);
+  },
+);
+
+test(
+  "The save_knowledge near-duplicate nudge is unaffected by the audit wrapping — it still appends the same nudge after the base 'Saved knowledge entry #N.' line (issue #1201 acceptance criterion 3)",
+  { skip },
+  async () => {
+    const scope = `${RUN}-save-knowledge-nudge-scope`;
+    const { id: anchorId } = await saveKnowledge({
+      title: 'WhatsApp linking steps',
+      content: 'To link WhatsApp, open settings and scan the QR code shown in the admin panel.',
+      scope,
+    });
+
+    const adapter = stubAdapter(async () => {});
+    const actor = `${RUN}-save-knowledge-nudge-admin`;
+    const tool = saveKnowledgeHandler(
+      { platform: 'discord', userId: actor, conversationId: `${RUN}-save-knowledge-nudge-convo` },
+      adapter,
+    );
+
+    const result = await tool.handler({
+      title: 'How to link WhatsApp',
+      content: 'To link WhatsApp, go to settings and scan the QR code from the admin panel.',
+      scope,
+    });
+    assert.equal(result.isError, false);
+    const reply = result.content[0]?.text ?? '';
+    assert.match(
+      reply,
+      /^Saved knowledge entry #\d+\./,
+      'the base reply is unchanged, the nudge is appended after it',
+    );
+    assert.match(
+      reply,
+      /Note: this looks similar \(\d+%\) to existing entry #\d+ \(.+\) — consider update_knowledge on #\d+ instead if this is the same topic\.$/,
+      'the nudge uses the same format as before this fix',
+    );
+    assert.match(reply, new RegExp(`existing entry #${anchorId}\\b`));
+
+    await pool.query(`DELETE FROM knowledge WHERE scope = $1`, [scope]);
+    await pool.query(`DELETE FROM admin_audit WHERE action_kind = 'save_knowledge' AND actor_user_id = $1`, [
+      actor,
+    ]);
+  },
+);
+
+test(
+  'SECURITY: a save_knowledge call where the underlying write rejects (a NOT NULL violation on content) still writes an admin_audit row with success: false, and returns an error-flagged reply — never a silently dropped audit (issue #1201 acceptance criterion 2)',
+  { skip },
+  async () => {
+    const adapter = stubAdapter(async () => {});
+    const actor = `${RUN}-save-knowledge-fail-admin`;
+    const tool = saveKnowledgeHandler(
+      { platform: 'discord', userId: actor, conversationId: `${RUN}-save-knowledge-fail-convo` },
+      adapter,
+    );
+
+    // Omitting `content` bypasses the tool's zod schema (enforced by the MCP
+    // server layer around the handler, not the handler itself — the same gap
+    // merge_knowledge's own SECURITY test below exploits with an invalid id)
+    // so saveKnowledge's one unguarded write, the `content NOT NULL` INSERT,
+    // rejects for real against the local DB — no repository mock needed.
+    const result = await tool.handler({ title: 'No content', scope: `${RUN}-save-knowledge-fail-scope` });
+    assert.equal(result.isError, true);
+    assert.match(result.content[0]?.text ?? '', /^Failed:/);
+
+    const audit = await pool.query(
+      `SELECT success FROM admin_audit WHERE action_kind = 'save_knowledge' AND actor_user_id = $1`,
+      [actor],
+    );
+    assert.equal(audit.rows.length, 1, 'the failure must still be recorded, not silently dropped');
+    assert.equal(audit.rows[0].success, false);
+
+    await pool.query(`DELETE FROM admin_audit WHERE action_kind = 'save_knowledge' AND actor_user_id = $1`, [
+      actor,
+    ]);
+  },
+);
+
+test(
+  'SECURITY: a save_knowledge call refused before the write (a non-admin caller) writes no admin_audit row — refused is never recorded as attempted, matching the sibling knowledge-mutating tools (issue #1201 acceptance criterion 4)',
+  { skip },
+  async () => {
+    const adapter = stubAdapter(async () => {});
+    const actor = `${RUN}-save-knowledge-refused-member`;
+    const server = buildToolServer(
+      {
+        platform: 'discord' as const,
+        userId: actor,
+        userName: 'Member',
+        role: 'member' as const,
+        conversationId: `${RUN}-save-knowledge-refused-convo`,
+      },
+      adapter,
+    );
+    const tool = (
+      server.instance as unknown as {
+        _registeredTools: Record<string, { handler: (args: Record<string, unknown>) => Promise<unknown> }>;
+      }
+    )._registeredTools['save_knowledge'];
+
+    await assert.rejects(() => tool.handler({ content: 'a member-supplied fact' }), /Permission denied/);
+
+    const audit = await pool.query(
+      `SELECT 1 FROM admin_audit WHERE action_kind = 'save_knowledge' AND actor_user_id = $1`,
+      [actor],
+    );
+    assert.equal(audit.rows.length, 0, 'a refused call before audited() runs must never write a row');
+  },
+);
+
+test(
+  'SECURITY: a successful save_knowledge call is visible to audit_view — the super-admin oversight tool that answers "who did what" now sees knowledge-creation activity it was previously blind to (issue #1201 acceptance criterion 5)',
+  { skip },
+  async () => {
+    const adapter = stubAdapter(async () => {});
+    const actor = `${RUN}-save-knowledge-audit-view-admin`;
+    const scope = `${RUN}-save-knowledge-audit-view-scope`;
+    const tool = saveKnowledgeHandler(
+      { platform: 'discord', userId: actor, conversationId: `${RUN}-save-knowledge-audit-view-convo` },
+      adapter,
+    );
+    const saveResult = await tool.handler({
+      content: `${RUN} a fact only a super admin should see logged`,
+      scope,
+    });
+    assert.equal(saveResult.isError, false);
+
+    const superServer = buildToolServer(
+      {
+        platform: 'discord' as const,
+        userId: `${RUN}-save-knowledge-audit-view-super`,
+        userName: 'SuperAdmin',
+        role: 'super_admin' as const,
+        conversationId: `${RUN}-save-knowledge-audit-view-convo`,
+      },
+      adapter,
+    );
+    const auditViewTool = (
+      superServer.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          {
+            handler: (args: {
+              limit?: number;
+            }) => Promise<{ content: Array<{ text: string }>; isError?: boolean }>;
+          }
+        >;
+      }
+    )._registeredTools['audit_view'];
+    // Generously large so this row survives even if other test files are
+    // concurrently writing their own admin_audit rows against the same
+    // shared DB — matches imageGenAudit.test.ts's audit_view test.
+    const auditResult = await auditViewTool.handler({ limit: 2000 });
+    assert.equal(auditResult.isError, false);
+
+    const lines = auditResult.content[0]?.text.split('\n') ?? [];
+    const ourLine = lines.find((l) => l.includes(actor) && l.includes('save_knowledge'));
+    assert.ok(ourLine, 'audit_view must surface the save_knowledge row for this actor');
+    assert.match(ourLine ?? '', /✓/, 'the successful call must show as a success in audit_view');
+
+    await pool.query(`DELETE FROM knowledge WHERE scope = $1`, [scope]);
+    await pool.query(`DELETE FROM admin_audit WHERE action_kind = 'save_knowledge' AND actor_user_id = $1`, [
+      actor,
+    ]);
+  },
+);
+
+test(
+  'SECURITY: a successful save_knowledge call fires the real-time notifySuperAdmins alert, and a failed one does not — the invariant audited() already guarantees for every sibling tool, verified here for save_knowledge specifically (issue #1201 acceptance criterion 6)',
+  { skip },
+  async () => {
+    // No discord super admins are configured in this test process (only
+    // process.env.SUPER_ADMIN_WHATSAPP_NUMBERS above), so the alert reaches
+    // only the whatsapp adapter threaded through getAdapter — same shape as
+    // the clear_warnings cross-platform notifySuperAdmins test above (#288).
+    const discordAdapter = stubAdapter(async () => {});
+    const whatsappCalls: string[] = [];
+    const whatsappAdapter = stubAdapter(async (userId) => {
+      whatsappCalls.push(userId);
+    });
+    const getAdapter: AdapterLookup = (platform) => (platform === 'whatsapp' ? whatsappAdapter : undefined);
+
+    const successActor = `${RUN}-save-knowledge-notify-success-admin`;
+    const successScope = `${RUN}-save-knowledge-notify-success-scope`;
+    const successTool = saveKnowledgeHandler(
+      { platform: 'discord', userId: successActor, conversationId: `${RUN}-save-knowledge-notify-convo` },
+      discordAdapter,
+      getAdapter,
+    );
+    const successResult = await successTool.handler({
+      content: `${RUN} a fact whose save should alert every super admin`,
+      scope: successScope,
+    });
+    assert.equal(successResult.isError, false);
+    assert.deepEqual(
+      whatsappCalls.sort(),
+      ['super-1', 'super-2'],
+      'a successful save_knowledge call alerts every configured super admin',
+    );
+
+    whatsappCalls.length = 0;
+    const failActor = `${RUN}-save-knowledge-notify-fail-admin`;
+    const failTool = saveKnowledgeHandler(
+      { platform: 'discord', userId: failActor, conversationId: `${RUN}-save-knowledge-notify-convo` },
+      discordAdapter,
+      getAdapter,
+    );
+    const failResult = await failTool.handler({ title: 'No content' });
+    assert.equal(failResult.isError, true);
+    assert.equal(whatsappCalls.length, 0, 'a failed save_knowledge call must never alert super admins');
+
+    await pool.query(`DELETE FROM knowledge WHERE scope = $1`, [successScope]);
+    await pool.query(
+      `DELETE FROM admin_audit WHERE action_kind = 'save_knowledge' AND actor_user_id = ANY($1)`,
+      [[successActor, failActor]],
+    );
+  },
+);
+
 test(
   'update_knowledge re-verifies the citation (bumps verified_at) only when sourceUrl/sourceTitle is explicitly supplied (issue #214)',
   { skip },
