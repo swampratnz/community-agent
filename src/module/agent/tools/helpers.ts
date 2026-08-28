@@ -1023,25 +1023,55 @@ export function formatEngagementStats(s: Awaited<ReturnType<typeof engagementSta
 
 /**
  * Pure renderer shared by the `!reviewqueue`/`/reviewqueue` admin shortcut
- * (issue #1095) across both platforms, so WhatsApp and Discord render
- * byte-identical text from one implementation rather than two hand-copied
- * templates that could drift. Renders four of `review_queue`'s five lines —
- * access requests, suggestions, knowledge candidates, appeals — each an
- * integer with an "oldest Nd" suffix only when that queue is non-empty,
- * exactly mirroring `review_queue`'s own `ageSuffix` behaviour (a `null` age
- * means no suffix, never a fabricated "0d").
- *
- * Reports is deliberately never rendered here, not even as a guild-wide
- * approximation: that line needs `callerScope()`/`resolveLinkedIdentities`
- * (a live adapter/conversation-scope lookup unavailable to the WhatsApp
- * text-command dispatch path's fixed, zero-opts deps shape — the same
- * constraint `!projects seeking`/`!whois mine` document), and approximating
- * it guild-wide would widen the SQL-scoped admin-data-access boundary
- * docs/SECURITY.md pins ("Admin data access is scoped in SQL to
- * conversations the admin is in"). The trailing note points at the full
- * tool instead.
+ * (issue #1095, reports line added #1207) across both platforms, so WhatsApp
+ * and Discord render byte-identical text from one implementation rather than
+ * two hand-copied templates that could drift. Renders all five of
+ * `review_queue`'s lines — access requests, suggestions, knowledge
+ * candidates, reports, appeals — each an integer with an "oldest Nd" suffix
+ * only when that queue is non-empty, exactly mirroring `review_queue`'s own
+ * `ageSuffix` behaviour (a `null` age means no suffix, never a fabricated
+ * "0d"). The reports line is byte-identical to `review_queue`'s own
+ * (`digestsAdmin.ts`): `reportCount`/`reportAgeDays` must already be scoped
+ * by the caller via `callerScope()`'s own arithmetic plus
+ * `resolveLinkedIdentities`'s accused-admin exclusion — this formatter is
+ * pure and trusts its caller for that scoping, exactly as it already does for
+ * the appeals count's `platform` scoping.
  */
 export function formatReviewQueueSummary(counts: {
+  accessRequestCount: number;
+  accessRequestAgeDays: number | null;
+  suggestionCount: number;
+  suggestionAgeDays: number | null;
+  candidateCount: number;
+  candidateAgeDays: number | null;
+  reportCount: number;
+  reportAgeDays: number | null;
+  appealCount: number;
+  appealAgeDays: number | null;
+}): string {
+  const ageSuffix = (ageDays: number | null) => (ageDays !== null ? ` (oldest ${ageDays}d)` : '');
+  const lines = [
+    `- Access requests: ${counts.accessRequestCount} pending${ageSuffix(counts.accessRequestAgeDays)}`,
+    `- Suggestions: ${counts.suggestionCount} pending${ageSuffix(counts.suggestionAgeDays)}`,
+    `- Knowledge candidates: ${counts.candidateCount} pending${ageSuffix(counts.candidateAgeDays)}`,
+    `- Reports (your conversations): ${counts.reportCount} open${ageSuffix(counts.reportAgeDays)}`,
+    `- Appeals: ${counts.appealCount} open${ageSuffix(counts.appealAgeDays)}`,
+  ];
+  return `📋 Review queue\n${lines.join('\n')}`;
+}
+
+/**
+ * Fallback renderer for the same shortcut (issue #1207 acceptance criterion
+ * 4), used ONLY on the practically-unreachable path where the platform's live
+ * adapter reference (`whatsappAdapter`/`discordAdapter`) is unbound — the
+ * scope lookup `formatReviewQueueSummary`'s reports line depends on needs
+ * that adapter, and there is no safe count to show without it (a guild-wide
+ * approximation would widen the admin-data-access boundary; a fabricated `0`
+ * would misrepresent an unknown queue as empty). Renders the other four
+ * lines identically and omits the reports line entirely, rather than
+ * throwing or blocking the whole reply on one degraded field.
+ */
+export function formatReviewQueueSummaryWithoutReports(counts: {
   accessRequestCount: number;
   accessRequestAgeDays: number | null;
   suggestionCount: number;
@@ -1058,10 +1088,7 @@ export function formatReviewQueueSummary(counts: {
     `- Knowledge candidates: ${counts.candidateCount} pending${ageSuffix(counts.candidateAgeDays)}`,
     `- Appeals: ${counts.appealCount} open${ageSuffix(counts.appealAgeDays)}`,
   ];
-  return (
-    `📋 Review queue\n${lines.join('\n')}\n\n` +
-    'Reports: see list_reports or review_queue (scoped to your conversations)'
-  );
+  return `📋 Review queue\n${lines.join('\n')}`;
 }
 
 /**

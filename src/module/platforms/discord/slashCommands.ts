@@ -24,6 +24,7 @@ import {
   countAccessRequests,
   countActiveWarnings,
   countOpenAppeals,
+  countOpenReports,
   countPendingKnowledgeCandidates,
   countPendingSuggestions,
   countRepliesToUser,
@@ -47,11 +48,13 @@ import {
   listRecentProjects,
   oldestAccessRequestAgeDays,
   oldestOpenAppealAgeDays,
+  oldestOpenReportAgeDays,
   oldestPendingCandidateAgeDays,
   oldestPendingSuggestionAgeDays,
   recordKnowledgeGap,
   recordKnowledgeRetrieval,
   recordShortcutHit,
+  resolveLinkedIdentities,
   searchKnowledge,
   searchKnowledgeLexical,
   searchMemberInterests,
@@ -71,6 +74,7 @@ import {
   formatOtherConfiguredKnobs,
   formatProjectResults,
   formatReviewQueueSummary,
+  formatReviewQueueSummaryWithoutReports,
   formatTopKnowledgeList,
   formatWhoIsIntoEmptyText,
   KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD,
@@ -635,12 +639,17 @@ async function handleKbHelpful(
 
 /**
  * `review_queue` is structurally in ADMIN_TOOLS — the first admin-tier
- * shortcut in this file (issue #1095) — mirrored here via `toolsForRole` +
- * `atLeast(role, 'admin')`, same double-check shape as every member-tier
- * handler above. No options: renders `formatReviewQueueSummary`'s four
- * guild-wide/`discord`-platform-scoped lines, the SAME repository functions
- * with the SAME arguments `review_queue`'s own handler uses — see that
- * function (tools/helpers.ts) for why the reports line is never rendered.
+ * shortcut in this file (issue #1095; reports line added #1207) — mirrored
+ * here via `toolsForRole` + `atLeast(role, 'admin')`, same double-check shape
+ * as every member-tier handler above. No options: renders
+ * `formatReviewQueueSummary`'s guild-wide/`discord`-platform-scoped lines,
+ * the SAME repository functions with the SAME arguments `review_queue`'s own
+ * handler uses. The reports line replicates `callerScope()`'s exact
+ * arithmetic (context.ts) — using the already-bound `discordAdapter` module
+ * var `/admindigest` below reuses — plus `resolveLinkedIdentities`'s
+ * accused-admin exclusion, the same pair `review_queue`'s own handler calls
+ * (digestsAdmin.ts), so the rendered count can never diverge from what that
+ * tool/`list_reports` would show the same caller in the same turn.
  */
 async function handleReviewQueue(
   interaction: ChatInputCommandInteraction,
@@ -671,16 +680,50 @@ async function handleReviewQueue(
     countOpenAppeals('discord'),
     oldestOpenAppealAgeDays('discord'),
   ]);
-  const message = formatReviewQueueSummary({
-    accessRequestCount,
-    accessRequestAgeDays,
-    suggestionCount,
-    suggestionAgeDays,
-    candidateCount,
-    candidateAgeDays,
-    appealCount,
-    appealAgeDays,
-  });
+  let message: string;
+  // Unreachable in practice — `bindCommunitySlashCommands` binds the
+  // adapter before any interaction can be dispatched, same as
+  // `handleAdminDigest` below — but degrades to omitting the reports line
+  // rather than throwing or fabricating a count when it isn't.
+  if (!discordAdapter) {
+    message = formatReviewQueueSummaryWithoutReports({
+      accessRequestCount,
+      accessRequestAgeDays,
+      suggestionCount,
+      suggestionAgeDays,
+      candidateCount,
+      candidateAgeDays,
+      appealCount,
+      appealAgeDays,
+    });
+  } else {
+    const scope =
+      role === 'super_admin'
+        ? null
+        : [
+            ...new Set([
+              ...(await discordAdapter.conversationsForUser(interaction.user.id)),
+              interaction.channelId,
+            ]),
+          ];
+    const viewerIds = (await resolveLinkedIdentities('discord', interaction.user.id)).map((i) => i.userId);
+    const [reportCount, reportAgeDays] = await Promise.all([
+      countOpenReports(scope, viewerIds),
+      oldestOpenReportAgeDays(scope, viewerIds),
+    ]);
+    message = formatReviewQueueSummary({
+      accessRequestCount,
+      accessRequestAgeDays,
+      suggestionCount,
+      suggestionAgeDays,
+      candidateCount,
+      candidateAgeDays,
+      reportCount,
+      reportAgeDays,
+      appealCount,
+      appealAgeDays,
+    });
+  }
   recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
   await replyEphemeral(interaction, message, deps);
 }
