@@ -15,6 +15,7 @@ import {
   getMyDataSummary,
   getPublishedInterestsForOwners,
   hasConflictAmongIds,
+  listAdminRoster,
   listBlockedUsers,
   listKnowledge,
   listKnowledgeTopics,
@@ -32,6 +33,7 @@ import {
   rosterCounts,
 } from '@swampratnz/agent-base/storage/repository.js';
 import {
+  formatAdminRoster,
   formatBlockedMembersList,
   formatCommunityInfoText,
   formatFeatureFlags,
@@ -73,10 +75,12 @@ import { notice } from './strings/notices.js';
  * (issue #1018), `help` (issue #993), `kbtopics` (issue #1036),
  * `kbhelpful` (issue #1087), `reviewqueue` (issue #1095, the first
  * admin-tier entry), `mutedlist` (issue #1114, the second), `blockedlist`
- * (issue #1145, the third), `topknowledge` (issue #1165, the fourth), and
+ * (issue #1145, the third), `topknowledge` (issue #1165, the fourth),
  * `featureflags` (issue #1183, the fifth — and the first at the
- * `super_admin` floor rather than `admin`) appended — also safe for the
- * WhatsApp side because every `!` matcher is anchored and mutually exclusive.
+ * `super_admin` floor rather than `admin`), `admindigest` (issue #1194, the
+ * sixth), and `adminlist` (issue #1218, the seventh, and the second at the
+ * `super_admin` floor) appended — also safe for the WhatsApp side because
+ * every `!` matcher is anchored and mutually exclusive.
  *
  * The Discord halves are BOUND by `bindCommunitySlashCommands()`
  * (slashCommands.ts), which `createConfiguredAdapters()` calls — never at
@@ -583,6 +587,24 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
       // its newlines and destroy the multi-section formatting for no added
       // protection (issue #1194 review).
       return message ?? 'Nothing to report right now.';
+    },
+  },
+  {
+    // Seventh entry (issue #1218), and the second at the `super_admin` floor
+    // (after `featureflags`) — same shape as `reviewqueue`/`mutedlist`/
+    // `blockedlist`/`topknowledge`/`featureflags` above. Anchored,
+    // argument-rejecting matcher: `!adminlist anything` falls through to
+    // TEXT_COMMAND_UNMATCHED rather than matching, so no message-supplied
+    // text ever reaches a repository read. Calls the exact same
+    // `listAdminRoster()` + `formatAdminRoster()` pair `list_admins`'s own
+    // tool handler now delegates to (helpers.ts), so the two can never drift.
+    name: 'adminlist',
+    platforms: ['discord', 'whatsapp'],
+    whatsapp: async (text, _msg, role) => {
+      if (!/^!adminlist$/i.test(text)) return TEXT_COMMAND_UNMATCHED;
+      if (!atLeast(role, 'super_admin')) return null;
+      const roster = await listAdminRoster();
+      return formatAdminRoster(roster);
     },
   },
 ];

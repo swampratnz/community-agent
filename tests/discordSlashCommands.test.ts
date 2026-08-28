@@ -67,6 +67,7 @@ await import('./support/registerPolicyKeys.js');
 // `createAgent`, after imports). Same catalogue entries, same selection — the
 // assertions below pin exactly what they did before.
 const {
+  formatAdminRoster,
   formatBlockedMembersList,
   formatFeatureFlags,
   formatKnowledgeTopics,
@@ -209,6 +210,8 @@ function mockPool(
     mutedMemberRows?: PoolRow[];
     /** `listBlockedUsers`' rows for `/blockedlist` (issue #1145), raw snake_case DB shape. */
     blockedUserRows?: PoolRow[];
+    /** `listAdminRoster`'s rows for `/adminlist` (issue #1218), raw snake_case DB shape. */
+    adminRosterRows?: PoolRow[];
   } = {},
 ): Array<{ sql: string; params: unknown[] }> {
   const calls: Array<{ sql: string; params: unknown[] }> = [];
@@ -374,6 +377,14 @@ function mockPool(
     // needed, matching countAccessRequests' single-table simplicity above.
     if (sql.includes('FROM blocked_users')) {
       return { rows: opts.blockedUserRows ?? [], rowCount: 0 };
+    }
+    // listAdminRoster's joined read (issue #1218's /adminlist), distinguished
+    // from the role-lookup branch above by its `cu.`-qualified column list
+    // (the role branch selects the bare, unqualified `SELECT role FROM
+    // community_users`) — the only other query against this table in this
+    // file, so no further disambiguation is needed.
+    if (sql.includes('cu.platform_user_id')) {
+      return { rows: opts.adminRosterRows ?? [], rowCount: 0 };
     }
     if (sql.includes('FROM member_warnings')) {
       const windowDays = params[2];
@@ -593,6 +604,7 @@ test('with DISCORD_SLASH_COMMANDS_ENABLED=true, all commands are registered guil
   const names = (commands as Array<{ name: string }>).map((c) => c.name).sort();
   assert.deepEqual(names, [
     'admindigest',
+    'adminlist',
     'blockedlist',
     'digest',
     'events',
@@ -629,11 +641,12 @@ test("a slash-command registration failure is caught and logged, never thrown, m
   assert.ok(warnLog.mock.calls.length >= 1, 'a registration failure must be logged, not swallowed silently');
 });
 
-test('buildSlashCommands defines exactly the nineteen approved read-only commands, each with its expected required-ness', () => {
+test('buildSlashCommands defines exactly the twenty approved read-only commands, each with its expected required-ness', () => {
   const commands = buildSlashCommands();
   const byName = new Map(commands.map((c) => [c.name, c]));
   assert.deepEqual([...byName.keys()].sort(), [
     'admindigest',
+    'adminlist',
     'blockedlist',
     'digest',
     'events',
@@ -766,6 +779,11 @@ test('buildSlashCommands defines exactly the nineteen approved read-only command
     [],
     "/admindigest takes no options — always buildAdminDigestForAdmin() for the caller's own identity, " +
       'admin-tier only (issue #1194)',
+  );
+  assert.deepEqual(
+    (byName.get('adminlist') as { options?: unknown[] }).options ?? [],
+    [],
+    '/adminlist takes no options — always listAdminRoster() with no filter, super_admin-tier only (issue #1218)',
   );
 });
 
@@ -3303,6 +3321,128 @@ test(
     }
   },
 );
+
+// --- Issue #1218: /adminlist (the seventh slash command, and the second at --
+// --- the super_admin floor, after /featureflags) -----------------------------
+
+test(
+  '/adminlist renders text equal to formatAdminRoster(...) for the same rows listAdminRoster returns, for a ' +
+    "super_admin caller, and calls recordShortcutHit('slash_command') exactly once (issue #1218 acceptance " +
+    'criterion 6)',
+  async (t) => {
+    const originalSuperAdmins = [...config.rbac.superAdminDiscordIds];
+    config.rbac.superAdminDiscordIds.push('super-1');
+    t.after(() => {
+      config.rbac.superAdminDiscordIds.length = 0;
+      config.rbac.superAdminDiscordIds.push(...originalSuperAdmins);
+    });
+    const calls = mockPool(t, {
+      memberRole: null,
+      adminRosterRows: [
+        {
+          platform: 'discord',
+          platform_user_id: 'present-1',
+          display_name: 'Present One',
+          left_server: false,
+        },
+        { platform: 'whatsapp', platform_user_id: 'departed-1', display_name: null, left_server: true },
+      ],
+    });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const result = fakeInteraction({ commandName: 'adminlist', userId: 'super-1' });
+
+    await handleInteraction(result.interaction as never, adapterDeps(adapter));
+
+    const expected = formatAdminRoster([
+      { platform: 'discord', platformUserId: 'present-1', displayName: 'Present One', leftServer: false },
+      { platform: 'whatsapp', platformUserId: 'departed-1', displayName: null, leftServer: true },
+    ]);
+    assert.equal(fullReplyText(result), stripEmDashes(expected));
+    assert.equal(shortcutHitCalls(calls).length, 1, '/adminlist must record exactly one slash_command hit');
+  },
+);
+
+test(
+  "SECURITY: an admin-tier caller is rejected on /adminlist — the same atLeast(role, 'super_admin') gate " +
+    'renders no admin-roster content and records no shortcut hit, and no admin-roster repository read runs ' +
+    '(issue #1218 acceptance criterion 8)',
+  async (t) => {
+    const calls = mockPool(t, { memberRole: 'admin' });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'adminlist', userId: 'admin-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].ephemeral, true);
+    assert.match(
+      replies[0].content,
+      /don't have access/i,
+      'an admin-tier caller must be denied — list_admins is super_admin only',
+    );
+    assert.ok(
+      !calls.some((c) => c.sql.includes('cu.platform_user_id')),
+      'no admin-roster repository read must run for a rejected caller',
+    );
+    assert.equal(shortcutHitCalls(calls).length, 0, 'an auth-denied reply must never record a shortcut hit');
+  },
+);
+
+test(
+  'SECURITY: a member-tier caller is rejected on /adminlist without any admin-roster content ever being ' +
+    'rendered (issue #1218 acceptance criterion 8)',
+  async (t) => {
+    const calls = mockPool(t, { memberRole: 'member' });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'adminlist', userId: 'member-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].ephemeral, true);
+    assert.match(replies[0].content, /don't have access/i);
+    assert.ok(!calls.some((c) => c.sql.includes('cu.platform_user_id')));
+    assert.equal(shortcutHitCalls(calls).length, 0, 'an auth-denied reply must never record a shortcut hit');
+  },
+);
+
+test(
+  'SECURITY: a guest caller is rejected on /adminlist without any admin-roster content ever being rendered ' +
+    '(issue #1218 acceptance criterion 8)',
+  async (t) => {
+    const calls = mockPool(t, { memberRole: null });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'adminlist', userId: 'guest-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].ephemeral, true);
+    assert.match(replies[0].content, /don't have access/i);
+    assert.ok(!calls.some((c) => c.sql.includes('cu.platform_user_id')));
+    assert.equal(shortcutHitCalls(calls).length, 0, 'an auth-denied reply must never record a shortcut hit');
+  },
+);
+
+test('/adminlist replies ephemerally, deferring before its DB round trip', async (t) => {
+  const originalSuperAdmins = [...config.rbac.superAdminDiscordIds];
+  config.rbac.superAdminDiscordIds.push('super-1');
+  t.after(() => {
+    config.rbac.superAdminDiscordIds.length = 0;
+    config.rbac.superAdminDiscordIds.push(...originalSuperAdmins);
+  });
+  mockPool(t, { memberRole: null, adminRosterRows: [] });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies, order } = fakeInteraction({
+    commandName: 'adminlist',
+    userId: 'super-1',
+  });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies[0].ephemeral, true);
+  assert.deepEqual(order, ['deferReply', 'editReply']);
+});
 
 // --- Criterion 7 / SECURITY criterion 14: /kb excludes auto-provenance -------
 

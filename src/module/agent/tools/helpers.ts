@@ -8,6 +8,7 @@ import { ENABLED_SKILLS } from '../enabledSkills.js';
 import { redactSecrets } from '@swampratnz/agent-base/agent/outbound.js';
 import { devTeamField, type JobListEntry, type JobResult, type JobStatus } from '../../devTeam/client.js';
 import {
+  type AdminRosterEntry,
   type BlockedUserRow,
   engagementStats,
   getActiveProjectNamesForOwners,
@@ -971,6 +972,35 @@ export function formatAdminActivity(
         `${r.name} (${r.platform}): ${r.actionCount} actions (${r.successCount} success / ${r.failureCount} failed), last ${r.lastActionAt.toISOString()}`,
     )
     .join('\n');
+}
+
+/**
+ * Pure renderer shared by the `list_admins` tool handler and the
+ * `!adminlist`/`/adminlist` super-admin shortcut (issue #1218), hoisted
+ * verbatim out of the tool handler's own inline rendering so the two call
+ * sites can never drift — same reasoning as `formatMutedMembersList`/
+ * `formatBlockedMembersList`/`formatTopKnowledgeList` above. Empty input
+ * renders the tool's own fixed "No admins are currently configured in
+ * community_users." string; each row renders as `${platform}: ${name}
+ * (${platformUserId})${departed}`, where `name` falls back to "(no known
+ * name)" and `departed` is " — LEFT THE SERVER/GROUP" iff `leftServer`,
+ * followed by a trailing note that env-sourced super admins aren't listed
+ * here. `displayName` is stored raw (`grant_admin`/`add_member` write
+ * `args.displayName` verbatim, only the CONFIRM-prompt label goes through
+ * `resolveSanitizedLabel`) and reaches model-visible tool text here plus the
+ * two zero-model shortcuts, so it is run through `sanitizeName()` before
+ * interpolation — same quarantine-escape class as `formatUsageStats`'s
+ * `topUsers` line, flagged unaddressed in PR review (issue #1218).
+ */
+export function formatAdminRoster(roster: readonly AdminRosterEntry[]): string {
+  if (roster.length === 0) return 'No admins are currently configured in community_users.';
+  const lines = roster.map((a) => {
+    const name = a.displayName != null ? sanitizeName(a.displayName) : '(no known name)';
+    const departed = a.leftServer ? ' — LEFT THE SERVER/GROUP' : '';
+    return `${a.platform}: ${name} (${a.platformUserId})${departed}`;
+  });
+  lines.push('Super admins are configured separately (env-sourced) and are not listed here.');
+  return lines.join('\n');
 }
 
 /**

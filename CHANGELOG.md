@@ -28,6 +28,11 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-08-29
 
 ### Added
+- **`!adminlist`/`/adminlist`: a zero-model shortcut for `list_admins`.** (#1218)
+  Super admins can now see who currently holds bot-admin privilege without a full agent turn — the same
+  zero-wait-shortcut pattern already shipped for `reviewqueue`/`mutedlist`/`blockedlist`/`topknowledge`/
+  `featureflags`/`admindigest`, and the one member of that family that didn't have it yet (#1183 named it as
+  the deferred follow-up). Renders the exact same roster text `list_admins` already returns.
 - **Eight more member-resolution DMs now honour your "keep it simple" plain-language preference.** (#1212)
   `set_response_style('plain')` (#126) already simplified moderation warnings, approval DMs, and code-policy
   notes (#430/#657), but the DMs telling you the outcome of something you submitted — a suggestion, report,
