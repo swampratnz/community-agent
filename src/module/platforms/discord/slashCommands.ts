@@ -52,6 +52,7 @@ import {
   recordKnowledgeGap,
   recordKnowledgeRetrieval,
   recordShortcutHit,
+  rosterCounts,
   searchKnowledge,
   searchKnowledgeLexical,
   searchMemberInterests,
@@ -637,10 +638,13 @@ async function handleKbHelpful(
  * `review_queue` is structurally in ADMIN_TOOLS — the first admin-tier
  * shortcut in this file (issue #1095) — mirrored here via `toolsForRole` +
  * `atLeast(role, 'admin')`, same double-check shape as every member-tier
- * handler above. No options: renders `formatReviewQueueSummary`'s four
+ * handler above. No options: renders `formatReviewQueueSummary`'s
  * guild-wide/`discord`-platform-scoped lines, the SAME repository functions
  * with the SAME arguments `review_queue`'s own handler uses — see that
  * function (tools/helpers.ts) for why the reports line is never rendered.
+ * The sixth, onboarding-queue line (issue #1216) is gated on
+ * `config.rbac.accessMode.discord === 'gated'` verbatim, never on the
+ * `notMembers` count, mirroring `review_queue`'s own gating.
  */
 async function handleReviewQueue(
   interaction: ChatInputCommandInteraction,
@@ -661,6 +665,7 @@ async function handleReviewQueue(
     candidateAgeDays,
     appealCount,
     appealAgeDays,
+    roster,
   ] = await Promise.all([
     countAccessRequests(),
     oldestAccessRequestAgeDays(),
@@ -670,6 +675,7 @@ async function handleReviewQueue(
     oldestPendingCandidateAgeDays(),
     countOpenAppeals('discord'),
     oldestOpenAppealAgeDays('discord'),
+    rosterCounts('discord'),
   ]);
   const message = formatReviewQueueSummary({
     accessRequestCount,
@@ -680,6 +686,7 @@ async function handleReviewQueue(
     candidateAgeDays,
     appealCount,
     appealAgeDays,
+    onboardingQueueCount: config.rbac.accessMode.discord === 'gated' ? roster.notMembers : null,
   });
   recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
   await replyEphemeral(interaction, message, deps);

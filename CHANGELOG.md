@@ -45,6 +45,19 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   there's data to report. No new tool, table, or data access — same
   conversation-scoped aggregate the tool already used.
 
+### Fixed
+- **`!reviewqueue`/`/reviewqueue` now show the onboarding-queue line on a
+  gated-access community, matching `review_queue`.** (#1216) #1208 added a
+  sixth line to `review_queue` — how many guests are present but never added
+  as a member — but the free, no-model-call `!reviewqueue`/`/reviewqueue`
+  shortcuts never got the same line, so an admin using the fast path saw a
+  stale five-line picture while the full tool right next to it showed six.
+  Both shortcuts now render the identical sixth line under the identical
+  condition: only on a `'gated'`-access-mode community, never as a
+  meaningless "0 guests waiting" on an `'open'` one. No new tool, table, or
+  data access — same `rosterCounts` read `review_queue`'s own handler
+  already made for the same caller.
+
 ## 2026-08-28
 
 ### Added

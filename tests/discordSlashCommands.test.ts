@@ -203,6 +203,8 @@ function mockPool(
     appealCount?: number;
     /** `oldestOpenAppealAgeDays`'s age for `/reviewqueue` (issue #1095) — `null` means the queue is empty. */
     appealAgeDays?: number | null;
+    /** `rosterCounts(...).notMembers` for `/reviewqueue`'s sixth, onboarding-queue line (issue #1216). */
+    notMembers?: number;
     /** `listMutedMembers`' rows for `/mutedlist` (issue #1114), raw snake_case DB shape. */
     mutedMemberRows?: PoolRow[];
     /** `listBlockedUsers`' rows for `/blockedlist` (issue #1145), raw snake_case DB shape. */
@@ -302,6 +304,16 @@ function mockPool(
     }
     if (sql.includes('FROM moderation_appeals')) {
       return { rows: opts.appealRows ?? [], rowCount: 0 };
+    }
+    // rosterCounts (issue #1216's /reviewqueue sixth line) — the only query
+    // against this table in this file, so no specific-first disambiguation
+    // is needed, matching countAccessRequests'/listBlockedUsers' single-table
+    // simplicity above.
+    if (sql.includes('FROM server_roster')) {
+      return {
+        rows: [{ total: 0, joined_week: 0, left_week: 0, not_members: opts.notMembers ?? 0 }],
+        rowCount: 0,
+      };
     }
     if (sql.includes('FROM project_connection_requests')) {
       return { rows: opts.connectionRequestRows ?? [], rowCount: 0 };
@@ -723,7 +735,7 @@ test('buildSlashCommands defines exactly the nineteen approved read-only command
   assert.deepEqual(
     (byName.get('reviewqueue') as { options?: unknown[] }).options ?? [],
     [],
-    '/reviewqueue takes no options — a fixed roll-up of four review-queue counts, admin-tier only (issue #1095)',
+    '/reviewqueue takes no options — a fixed roll-up of review-queue counts, admin-tier only (issue #1095)',
   );
   assert.deepEqual(
     (byName.get('mutedlist') as { options?: unknown[] }).options ?? [],
@@ -2372,7 +2384,8 @@ test('SECURITY: /kbhelpful still replies successfully with the entries and no co
 
 test(
   "/reviewqueue renders formatReviewQueueSummary's output for the same counts/ages the repository returns, " +
-    'with no reports line anywhere (issue #1095 acceptance criteria 1, 3)',
+    "with no reports line anywhere and the sixth onboarding-queue line under this file's default " +
+    "'gated'-access-mode discord config (issue #1095 acceptance criteria 1, 3; issue #1216)",
   async (t) => {
     mockPool(t, {
       memberRole: 'admin',
@@ -2384,6 +2397,7 @@ test(
       candidateAgeDays: 1,
       appealCount: 1,
       appealAgeDays: 10,
+      notMembers: 0,
     });
     const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const { interaction, replies } = fakeInteraction({ commandName: 'reviewqueue', userId: 'admin-1' });
@@ -2399,6 +2413,7 @@ test(
       candidateAgeDays: 1,
       appealCount: 1,
       appealAgeDays: 10,
+      onboardingQueueCount: 0,
     });
     assert.equal(replies[0].content, stripEmDashes(expected));
     assert.match(replies[0].content, /Access requests: 3 pending \(oldest 5d\)/);
@@ -2440,7 +2455,8 @@ test(
           (c.sql.includes('FROM knowledge_candidates') &&
             (c.sql.includes('AS n') || c.sql.includes('age_days'))) ||
           (c.sql.includes('FROM moderation_appeals') &&
-            (c.sql.includes('AS n') || c.sql.includes('age_days'))),
+            (c.sql.includes('AS n') || c.sql.includes('age_days'))) ||
+          c.sql.includes('FROM server_roster'),
       ),
       'no review-queue repository read must run for a rejected caller',
     );
@@ -2479,7 +2495,8 @@ test(
           (c.sql.includes('FROM knowledge_candidates') &&
             (c.sql.includes('AS n') || c.sql.includes('age_days'))) ||
           (c.sql.includes('FROM moderation_appeals') &&
-            (c.sql.includes('AS n') || c.sql.includes('age_days'))),
+            (c.sql.includes('AS n') || c.sql.includes('age_days'))) ||
+          c.sql.includes('FROM server_roster'),
       ),
       'no review-queue repository read must run for a member-tier caller',
     );
@@ -2500,6 +2517,7 @@ test(
       candidateAgeDays: 9,
       appealCount: 6,
       appealAgeDays: 1,
+      notMembers: 8,
     });
     const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     const { interaction, replies } = fakeInteraction({ commandName: 'reviewqueue', userId: 'admin-1' });
@@ -2518,10 +2536,12 @@ test(
       (c) =>
         c.sql.includes('FROM moderation_appeals') && (c.sql.includes('AS n') || c.sql.includes('age_days')),
     );
+    const rosterCalls = calls.filter((c) => c.sql.includes('FROM server_roster'));
     assert.equal(accessCalls.length, 2, 'access requests must use the count+age pair, no arguments');
     assert.equal(suggestionCalls.length, 2, 'suggestions must use the count+age pair, no arguments');
     assert.equal(candidateCalls.length, 2, 'knowledge candidates must use the count+age pair, no arguments');
     assert.equal(appealCalls.length, 2, 'appeals must use the count+age pair, scoped by platform');
+    assert.equal(rosterCalls.length, 1, 'rosterCounts must be called exactly once for the onboarding line');
     for (const c of [...accessCalls, ...suggestionCalls, ...candidateCalls]) {
       assert.deepEqual(c.params, [], 'guild-wide reads must take no arguments, matching review_queue');
     }
@@ -2532,15 +2552,53 @@ test(
         "appeals must be scoped to the Discord command's own platform only",
       );
     }
+    for (const c of rosterCalls) {
+      assert.deepEqual(
+        c.params,
+        ['discord'],
+        "rosterCounts must be scoped to the command's own platform only",
+      );
+    }
     assert.match(replies[0].content, /Access requests: 7 pending \(oldest 4d\)/);
     assert.match(replies[0].content, /Suggestions: 5 pending \(oldest 2d\)/);
     assert.match(replies[0].content, /Knowledge candidates: 3 pending \(oldest 9d\)/);
     assert.match(replies[0].content, /Appeals: 6 open \(oldest 1d\)/);
+    assert.ok(
+      replies[0].content.includes(
+        stripEmDashes(
+          '- Onboarding queue: 8 guest(s) waiting to be added — run `list_roster` (filter: not_members) to review.',
+        ),
+      ),
+      'the onboarding-queue line must be present with the rosterCounts-derived count',
+    );
     assert.doesNotMatch(
       replies[0].content,
       /Reports:.*\d+ open/,
       'no reports count, guild-wide or otherwise',
     );
+  },
+);
+
+test(
+  "SECURITY: /reviewqueue never renders an onboarding-queue line when 'discord' access mode is 'open', even " +
+    'with a nonzero not_members count (issue #1216 acceptance criteria 5, 6)',
+  async (t) => {
+    mockPool(t, { memberRole: 'admin', notMembers: 4 });
+    const wasAccessMode = config.rbac.accessMode.discord;
+    config.rbac.accessMode.discord = 'open';
+    try {
+      const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+      const { interaction, replies } = fakeInteraction({ commandName: 'reviewqueue', userId: 'admin-1' });
+
+      await handleInteraction(interaction as never, adapterDeps(adapter));
+
+      assert.ok(
+        !replies[0].content.includes('Onboarding queue'),
+        "SECURITY: no onboarding-queue line for an 'open'-access-mode platform, even with a nonzero not_members count",
+      );
+    } finally {
+      config.rbac.accessMode.discord = wasAccessMode;
+    }
   },
 );
 

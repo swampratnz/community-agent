@@ -2655,11 +2655,12 @@ test('SECURITY: !kbhelpful still replies successfully with the entries and no co
 // --- !reviewqueue (issue #1095) -----------------------------------------------
 
 /**
- * Stubs `pool.query`'s role branch plus the four `review_queue`-shortcut
+ * Stubs `pool.query`'s role branch plus the `review_queue`-shortcut
  * repository reads (access requests, suggestions, knowledge candidates,
- * appeals) — each table's count/age pair is distinguished by whether the SQL
- * selects an `age_days` column, mirroring `mockPoolRoleAndWarnings`'s
- * single-mock-per-test discipline above.
+ * appeals, plus `rosterCounts`' `server_roster` scan for the onboarding
+ * queue, issue #1216) — each table's count/age pair is distinguished by
+ * whether the SQL selects an `age_days` column, mirroring
+ * `mockPoolRoleAndWarnings`'s single-mock-per-test discipline above.
  */
 function mockPoolRoleAndReviewQueue(
   t: { mock: { method: typeof import('node:test').mock.method } },
@@ -2673,6 +2674,7 @@ function mockPoolRoleAndReviewQueue(
     candidateAgeDays?: number | null;
     appealCount?: number;
     appealAgeDays?: number | null;
+    notMembers?: number;
   } = {},
 ): void {
   const {
@@ -2684,6 +2686,7 @@ function mockPoolRoleAndReviewQueue(
     candidateAgeDays = null,
     appealCount = 0,
     appealAgeDays = null,
+    notMembers = 0,
   } = counts;
   t.mock.method(pool, 'query', (async (sql: string) => {
     if (sql.includes('SELECT role FROM community_users')) {
@@ -2708,6 +2711,9 @@ function mockPoolRoleAndReviewQueue(
       return sql.includes('age_days')
         ? { rows: [{ age_days: appealAgeDays }], rowCount: 0 }
         : { rows: [{ n: appealCount }], rowCount: 0 };
+    }
+    if (sql.includes('FROM server_roster')) {
+      return { rows: [{ total: 0, joined_week: 0, left_week: 0, not_members: notMembers }], rowCount: 0 };
     }
     return { rows: [], rowCount: 0 };
   }) as typeof pool.query);
@@ -2972,6 +2978,54 @@ test("a successful !reviewqueue invocation calls recordShortcutHit('whatsapp_tex
   assert.equal(sent.length, 1);
   assert.deepEqual(hits, ['whatsapp_text_command']);
 });
+
+test(
+  "!reviewqueue renders a sixth onboarding-queue line, byte-identical to review_queue's own, when " +
+    "msg.platform's access mode is 'gated' (issue #1216 acceptance criteria 1, 3)",
+  async (t) => {
+    mockPoolRoleAndReviewQueue(t, 'admin', { notMembers: 4 });
+    const wasAccessMode = config.rbac.accessMode.whatsapp;
+    config.rbac.accessMode.whatsapp = 'gated';
+    try {
+      const router = makeRouter({ runTurn: throwingRunTurn });
+      const { adapter, sent, trigger } = makeAdapter();
+      router.register(adapter);
+
+      await trigger(makeMessage({ text: '!reviewqueue', userId: 'admin-1' }));
+
+      assert.match(
+        sent[0].text,
+        /- Onboarding queue: 4 guest\(s\) waiting to be added — run `list_roster` \(filter: not_members\) to review\.$/m,
+      );
+    } finally {
+      config.rbac.accessMode.whatsapp = wasAccessMode;
+    }
+  },
+);
+
+test(
+  "SECURITY: !reviewqueue never renders an onboarding-queue line when msg.platform's access mode is 'open', " +
+    'even with a nonzero not_members count (issue #1216 acceptance criteria 5, 6)',
+  async (t) => {
+    mockPoolRoleAndReviewQueue(t, 'admin', { notMembers: 4 });
+    const wasAccessMode = config.rbac.accessMode.whatsapp;
+    config.rbac.accessMode.whatsapp = 'open';
+    try {
+      const router = makeRouter({ runTurn: throwingRunTurn });
+      const { adapter, sent, trigger } = makeAdapter();
+      router.register(adapter);
+
+      await trigger(makeMessage({ text: '!reviewqueue', userId: 'admin-1' }));
+
+      assert.ok(
+        !sent[0].text.includes('Onboarding queue'),
+        "SECURITY: no onboarding-queue line for an 'open'-access-mode platform, even with a nonzero not_members count",
+      );
+    } finally {
+      config.rbac.accessMode.whatsapp = wasAccessMode;
+    }
+  },
+);
 
 // --- !mutedlist (issue #1114) -------------------------------------------------
 
