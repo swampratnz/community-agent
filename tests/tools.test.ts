@@ -200,6 +200,7 @@ const {
   listOwnKnowledgeCandidates,
   listOwnProjectConnectionRequests,
   markRosterLeave,
+  rosterCounts,
   upsertRosterMember,
   engagementStats,
   adminActivitySummary,
@@ -21842,6 +21843,7 @@ test(
     await pool.query(`DELETE FROM member_projects WHERE platform = 'discord' AND user_id = ANY($1)`, [
       [otherOwner, callerId, unrelatedCallerId, soloCallerId],
     ]);
+    await pool.query(`DELETE FROM server_roster WHERE platform = 'discord' AND user_id = $1`, [otherOwner]);
   },
 );
 
@@ -32789,6 +32791,12 @@ test(
     let appealId: number | undefined;
     let suggestionId: number | undefined;
     let candidateId: number | undefined;
+    // Forced 'open' so this test's byte-for-byte pin on the original five
+    // lines (issue #1208 acceptance criterion 4 regression guard) can never
+    // be perturbed by the new sixth onboarding-queue line, which only
+    // renders in 'gated' mode — that line gets its own dedicated tests below.
+    const wasAccessMode = config.rbac.accessMode.discord;
+    config.rbac.accessMode.discord = 'open';
     try {
       await recordAccessRequest({ platform: 'discord', userId: `${RUN}-review-queue-render-guest` });
 
@@ -32891,6 +32899,7 @@ test(
         'the fixture appeal must be reflected (appeals are guild-wide by platform, not test-scoped)',
       );
     } finally {
+      config.rbac.accessMode.discord = wasAccessMode;
       await pool.query(`DELETE FROM access_requests WHERE user_id = $1`, [
         `${RUN}-review-queue-render-guest`,
       ]);
@@ -33072,6 +33081,144 @@ test(
       if (whatsappAppealId !== undefined) {
         await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [whatsappAppealId]);
       }
+    }
+  },
+);
+
+// review_queue's sixth queue — onboarding (issue #1136's deferred follow-up,
+// built as issue #1208): reuses rosterCounts/config.rbac.accessMode verbatim
+// from adminDigest.ts's own notMembersCount gating.
+test("review_queue's description names all six queues, including the onboarding queue (issue #1208 acceptance criterion 3)", () => {
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId: `${RUN}-review-queue-description-admin`,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: `${RUN}-review-queue-description-convo`,
+    },
+    stubAdapter(async () => {}),
+  );
+  const description =
+    (server.instance as { _registeredTools: Record<string, { description?: string }> })._registeredTools[
+      'review_queue'
+    ].description ?? '';
+  assert.match(description, /all six admin review queues/i);
+  assert.match(description, /onboarding queue/i);
+});
+
+test(
+  "review_queue's onboarding-queue line reflects rosterCounts(caller.platform).notMembers when the caller's platform access mode is 'gated' (issue #1208 acceptance criterion 1)",
+  { skip },
+  async () => {
+    const admin = `${RUN}-review-queue-onboarding-gated-admin`;
+    const guestId = `${RUN}-review-queue-onboarding-gated-guest`;
+    const wasAccessMode = config.rbac.accessMode.discord;
+    config.rbac.accessMode.discord = 'gated';
+    try {
+      await upsertRosterMember({ platform: 'discord', userId: guestId });
+
+      const server = buildToolServer(
+        {
+          platform: 'discord' as const,
+          userId: admin,
+          userName: 'Admin',
+          role: 'admin' as const,
+          conversationId: `${RUN}-review-queue-onboarding-gated-convo`,
+        },
+        stubAdapter(async () => {}),
+      );
+      const out = (await reviewQueueToolFrom(server.instance).handler({})).content[0]?.text ?? '';
+      const onboardingLine = out.split('\n').find((l) => l.startsWith('- Onboarding queue:'));
+      assert.ok(onboardingLine, "the onboarding-queue line must be present in 'gated' mode");
+      const match = onboardingLine.match(
+        /^- Onboarding queue: (\d+) guest\(s\) waiting to be added — run `list_roster` \(filter: not_members\) to review\.$/,
+      );
+      assert.ok(match, `onboarding-queue line matches the expected format: ${onboardingLine}`);
+      const expectedCount = (await rosterCounts('discord')).notMembers;
+      assert.equal(
+        Number(match[1]),
+        expectedCount,
+        'the rendered count must equal rosterCounts(caller.platform).notMembers exactly',
+      );
+      assert.ok(expectedCount >= 1, 'the fixture guest must be reflected');
+    } finally {
+      config.rbac.accessMode.discord = wasAccessMode;
+      await pool.query(`DELETE FROM server_roster WHERE user_id = $1`, [guestId]);
+    }
+  },
+);
+
+test(
+  "SECURITY: review_queue's onboarding-queue line is never rendered for an 'open'-access-mode platform, even with a nonzero not_members count (issue #1208 acceptance criterion 2)",
+  { skip },
+  async () => {
+    const admin = `${RUN}-review-queue-onboarding-open-admin`;
+    const guestId = `${RUN}-review-queue-onboarding-open-guest`;
+    const wasAccessMode = config.rbac.accessMode.discord;
+    config.rbac.accessMode.discord = 'open';
+    try {
+      await upsertRosterMember({ platform: 'discord', userId: guestId });
+
+      const server = buildToolServer(
+        {
+          platform: 'discord' as const,
+          userId: admin,
+          userName: 'Admin',
+          role: 'admin' as const,
+          conversationId: `${RUN}-review-queue-onboarding-open-convo`,
+        },
+        stubAdapter(async () => {}),
+      );
+      const out = (await reviewQueueToolFrom(server.instance).handler({})).content[0]?.text ?? '';
+      assert.ok(
+        !out.includes('Onboarding queue'),
+        "SECURITY: no onboarding-queue line for an 'open'-access-mode platform, even with a nonzero not_members row",
+      );
+    } finally {
+      config.rbac.accessMode.discord = wasAccessMode;
+      await pool.query(`DELETE FROM server_roster WHERE user_id = $1`, [guestId]);
+    }
+  },
+);
+
+test(
+  "SECURITY: review_queue's onboarding-queue line never contains a guest's display name or user id — bare integer only (issue #1208 acceptance criterion 5)",
+  { skip },
+  async () => {
+    const admin = `${RUN}-review-queue-onboarding-privacy-admin`;
+    const guestId = `${RUN}-review-queue-onboarding-privacy-guest`;
+    const guestDisplayName = 'REVIEW-QUEUE-ONBOARDING-PRIVACY-SENTINEL-NAME';
+    const wasAccessMode = config.rbac.accessMode.discord;
+    config.rbac.accessMode.discord = 'gated';
+    try {
+      await upsertRosterMember({ platform: 'discord', userId: guestId, displayName: guestDisplayName });
+
+      const server = buildToolServer(
+        {
+          platform: 'discord' as const,
+          userId: admin,
+          userName: 'Admin',
+          role: 'admin' as const,
+          conversationId: `${RUN}-review-queue-onboarding-privacy-convo`,
+        },
+        stubAdapter(async () => {}),
+      );
+      const out = (await reviewQueueToolFrom(server.instance).handler({})).content[0]?.text ?? '';
+      const onboardingLine = out.split('\n').find((l) => l.startsWith('- Onboarding queue:'));
+      assert.ok(onboardingLine);
+      assert.match(
+        onboardingLine,
+        /^- Onboarding queue: \d+ guest\(s\) waiting to be added — run `list_roster` \(filter: not_members\) to review\.$/,
+        'the onboarding-queue line must be a bare integer count plus the fixed instructional text only',
+      );
+      assert.ok(
+        !out.includes(guestId) && !out.includes(guestDisplayName),
+        "SECURITY: review_queue's output must never contain a guest's user id or display name",
+      );
+    } finally {
+      config.rbac.accessMode.discord = wasAccessMode;
+      await pool.query(`DELETE FROM server_roster WHERE user_id = $1`, [guestId]);
     }
   },
 );
