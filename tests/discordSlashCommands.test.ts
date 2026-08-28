@@ -1,4 +1,4 @@
-import { test, type TestContext } from 'node:test';
+import { test, after, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 // The default bad-word list is community content registered at its own module
 // scope (src/index.ts imports it in production); the moderation wordlist fails
@@ -17,7 +17,14 @@ import type { PlatformAdapter, UpcomingEvent } from '@swampratnz/agent-base/plat
 
 // config.ts validates env at import time (see tests/discordAdapter.test.ts for
 // the same rationale) — DATABASE_URL points nowhere; every DB read below is
-// mocked on `pool.query` per test, no real Postgres required.
+// mocked on `pool.query` per test, no real Postgres required. The one
+// exception is /admindigest's real-DB-integration tests further down (issue
+// #1194): buildAdminDigestForAdmin's ~30-query gathering fan-out is
+// impractical to hand-mock branch-by-branch (mirroring how
+// tests/tools.test.ts/tests/adminDigest.test.ts already test the same
+// function), so `hasDb` is captured here, BEFORE the DATABASE_URL fallback
+// below, the same convention those files use.
+const hasDb = Boolean(process.env.DATABASE_URL);
 process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
 process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= 'guild-1';
@@ -28,7 +35,8 @@ process.env.STATUS_CHECK_API_URL ??= 'https://status.claude.com/api/v2/summary.j
 
 const { DiscordAdapter } = await import('@swampratnz/agent-base/platforms/discord/adapter.js');
 const { config } = await import('@swampratnz/agent-base/config.js');
-const { pool } = await import('@swampratnz/agent-base/storage/db.js');
+const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
+const ORIGINAL_POOL_QUERY = pool.query.bind(pool);
 const { resetPolicyCacheForTests } = await import('@swampratnz/agent-base/storage/policyStore.js');
 // The registration/dispatch mechanism is base (slashDispatch.ts): the command
 // list must be registered (the manifest's `commands` field in production)
@@ -75,11 +83,24 @@ const {
   TOP_KNOWLEDGE_FETCH_CAP,
   buildToolServer,
 } = await import('../src/module/agent/tools.js');
-const { listKnowledge } = await import('@swampratnz/agent-base/storage/repository.js');
+const { listKnowledge, upsertMember } = await import('@swampratnz/agent-base/storage/repository.js');
 const { EVENTS_LIST_LIMIT, formatListEventsEmptyText, formatUpcomingEvents } =
   await import('../src/module/agent/tools/info.js');
 const { createConfiguredAdapters } = await import('../src/module/platforms/factories.js');
 const { notice } = await import('../src/module/strings/notices.js');
+// /admindigest's real-DB tests (issue #1194) below.
+const { buildAdminDigestForAdmin } = await import('../src/module/adminDigest.js');
+const skip = hasDb
+  ? false
+  : 'DATABASE_URL not set — skipping DB-integration tests (CLAUDE.md: exercise against a local Postgres 16 + pgvector)';
+const RUN = `discord-slash-${Date.now()}`;
+
+after(async () => {
+  if (hasDb) {
+    await pool.query(`DELETE FROM community_users WHERE platform_user_id LIKE $1`, [`${RUN}%`]);
+    await closeDb();
+  }
+});
 const KNOWLEDGE_LOW_RATED_CAVEAT_TEXT = notice('knowledgeLowRatedCaveat');
 const KNOWLEDGE_SEARCH_EMPTY_TEXT = notice('knowledgeSearchEmpty');
 const KNOWLEDGE_SEARCH_EMPTY_TEXT_MI = notice('knowledgeSearchEmpty', { language: 'mi' });
@@ -559,6 +580,7 @@ test('with DISCORD_SLASH_COMMANDS_ENABLED=true, all commands are registered guil
   );
   const names = (commands as Array<{ name: string }>).map((c) => c.name).sort();
   assert.deepEqual(names, [
+    'admindigest',
     'blockedlist',
     'digest',
     'events',
@@ -595,10 +617,11 @@ test("a slash-command registration failure is caught and logged, never thrown, m
   assert.ok(warnLog.mock.calls.length >= 1, 'a registration failure must be logged, not swallowed silently');
 });
 
-test('buildSlashCommands defines exactly the eighteen approved read-only commands, each with its expected required-ness', () => {
+test('buildSlashCommands defines exactly the nineteen approved read-only commands, each with its expected required-ness', () => {
   const commands = buildSlashCommands();
   const byName = new Map(commands.map((c) => [c.name, c]));
   assert.deepEqual([...byName.keys()].sort(), [
+    'admindigest',
     'blockedlist',
     'digest',
     'events',
@@ -725,6 +748,12 @@ test('buildSlashCommands defines exactly the eighteen approved read-only command
     [],
     '/featureflags takes no options — a fixed reflection of the already-loaded config object, super_admin ' +
       'only (issue #1183)',
+  );
+  assert.deepEqual(
+    (byName.get('admindigest') as { options?: unknown[] }).options ?? [],
+    [],
+    "/admindigest takes no options — always buildAdminDigestForAdmin() for the caller's own identity, " +
+      'admin-tier only (issue #1194)',
   );
 });
 
@@ -3065,6 +3094,157 @@ test('/featureflags replies ephemerally, deferring before formatting its output'
     'every step after the first answer chunk must be a followUp',
   );
 });
+
+// --- Issue #1194: /admindigest (the sixth admin-tier slash command) ---------
+//
+// Unlike its admin-tier siblings above, buildAdminDigestForAdmin fans out to
+// ~30 repository reads (roster, clusters, review-queue counts/ages, appeal/
+// report/suggestion/candidate breakdowns, ...), so hand-mocking pool.query
+// branch-by-branch here is impractical — the real-content tests below run
+// against a real Postgres instead (`{ skip }`, same convention
+// tests/tools.test.ts/tests/adminDigest.test.ts already use for this exact
+// function). The auth-gate tests stay fully mocked, since they never reach
+// buildAdminDigestForAdmin at all.
+
+test(
+  "SECURITY: a member-tier caller is rejected on /admindigest without buildAdminDigestForAdmin's repository " +
+    'reads ever being invoked (issue #1194 acceptance criterion 5)',
+  async (t) => {
+    const calls = mockPool(t, { memberRole: 'member' });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'admindigest', userId: 'member-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].ephemeral, true);
+    assert.match(replies[0].content, /don't have access/i);
+    assert.ok(
+      !calls.some((c) => c.sql.includes('FROM access_requests') || c.sql.includes('FROM suggestions')),
+      'no admin-digest repository read must run for a rejected caller',
+    );
+    assert.equal(shortcutHitCalls(calls).length, 0, 'an auth-denied reply must never record a shortcut hit');
+  },
+);
+
+test(
+  "SECURITY: a guest caller is rejected on /admindigest without buildAdminDigestForAdmin's repository reads " +
+    'ever being invoked (issue #1194 acceptance criterion 5)',
+  async (t) => {
+    const calls = mockPool(t, { memberRole: null });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'admindigest', userId: 'guest-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].ephemeral, true);
+    assert.match(replies[0].content, /don't have access/i);
+    assert.ok(
+      !calls.some((c) => c.sql.includes('FROM access_requests') || c.sql.includes('FROM suggestions')),
+      'no admin-digest repository read must run for a rejected caller',
+    );
+    assert.equal(shortcutHitCalls(calls).length, 0, 'an auth-denied reply must never record a shortcut hit');
+  },
+);
+
+test(
+  '/admindigest replies ephemerally, deferring before its DB round trip (issue #1194)',
+  { skip },
+  async (t) => {
+    const adminId = `${RUN}-admindigest-defer`;
+    // Pre-existing mock leak (not introduced here): several earlier tests in
+    // this file call `mockPool(t, {...})` — which internally calls
+    // `t.mock.method(pool, 'query', impl)` — a SECOND time within one test
+    // (their own `for (const language of ['mi', 'en'])` loops, e.g. the
+    // /whois mine 'mi'/'en' tests around line 1011). Node's mock restoration
+    // only unwinds ONE layer per test at teardown, so `pool.query` is left
+    // permanently stuck on a stale mocked implementation for every test that
+    // runs afterwards in this file — the exact footgun
+    // whatsappTextCommandsRouter.test.ts's `mockPoolRoleAndWarnings` doc
+    // comment already documents having silently broken a real-DB assertion
+    // once before. Every other test in this file re-mocks pool.query itself
+    // before using it, so the leak was invisible until this file's first-ever
+    // real-DB test (this one) needed the PRISTINE implementation. Restoring
+    // it explicitly here — rather than fixing the pre-existing loop pattern
+    // across this large file, out of scope for issue #1194 — keeps this
+    // test correct regardless of what ran before it.
+    pool.query = ORIGINAL_POOL_QUERY;
+    try {
+      await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+      const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+      const { interaction, replies, order } = fakeInteraction({
+        commandName: 'admindigest',
+        userId: adminId,
+      });
+
+      await handleInteraction(interaction as never, adapterDeps(adapter));
+
+      assert.equal(replies[0].ephemeral, true);
+      assert.deepEqual(order, ['deferReply', 'editReply']);
+    } finally {
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        adminId,
+      ]);
+    }
+  },
+);
+
+test(
+  "/admindigest renders text identical to buildAdminDigestForAdmin('discord', userId, adapter)'s own return " +
+    "(or the tool's 'Nothing to report right now.' fallback when it resolves null), rendered PLAIN with no " +
+    "untrusted() wrapper (unlike the admin_digest tool's own quarantined result), calls " +
+    "recordShortcutHit('slash_command') exactly once, and never advances the weekly digest's snapshot/trend " +
+    'baseline — the deeper #499/#497 invariant is pinned at the buildAdminDigestForAdmin level by ' +
+    'tests/adminDigest.test.ts (issue #1194 acceptance criteria 1, 4)',
+  { skip },
+  async (t) => {
+    const adminId = `${RUN}-admindigest-content`;
+    // See the sibling test above for why this restore is needed — a
+    // pre-existing mock leak elsewhere in this file, not introduced here.
+    pool.query = ORIGINAL_POOL_QUERY;
+    try {
+      await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+      const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+      const { wasAdminDigestSentRecently } = await import('@swampratnz/agent-base/storage/repository.js');
+      const sentBefore = await wasAdminDigestSentRecently('discord', adminId, 7);
+
+      const querySpy = t.mock.method(pool, 'query');
+      const { interaction, replies } = fakeInteraction({ commandName: 'admindigest', userId: adminId });
+
+      await handleInteraction(interaction as never, adapterDeps(adapter));
+
+      const { message: direct } = await buildAdminDigestForAdmin('discord', adminId, adapter);
+      // Every slash-command reply passes through deps.filtered() (the same
+      // outbound pipeline as every other send path), which rewrites em
+      // dashes into a comma (stripEmDashes in outbound.ts) — the direct
+      // buildAdminDigestForAdmin() call above never passes through that
+      // filter, so its em dashes are compared post-filter here, matching
+      // this file's own /digest//featureflags convention.
+      assert.equal(replies[0].content, stripEmDashes(direct ?? 'Nothing to report right now.'));
+      assert.doesNotMatch(
+        replies[0].content,
+        /untrusted past chat content/,
+        '/admindigest must render buildAdminDigestForAdmin() plain, never quarantined via untrusted()',
+      );
+      const shortcutHitInserts = querySpy.mock.calls.filter((c) =>
+        String(c.arguments[0]).includes('INSERT INTO shortcut_hits'),
+      );
+      assert.equal(shortcutHitInserts.length, 1, '/admindigest must record exactly one slash_command hit');
+
+      const sentAfter = await wasAdminDigestSentRecently('discord', adminId, 7);
+      assert.equal(
+        sentAfter,
+        sentBefore,
+        'a pull must never mark the admin as recently sent — the freshness row stays untouched (issue #499/#497)',
+      );
+    } finally {
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        adminId,
+      ]);
+    }
+  },
+);
 
 // --- Criterion 7 / SECURITY criterion 14: /kb excludes auto-provenance -------
 

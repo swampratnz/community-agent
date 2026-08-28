@@ -1406,7 +1406,19 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   from a conversation outside their own membership. The DM goes through the
   same `sendDirectMessage` path as every other proactive alert (secret
   redaction applies), snippet count is capped at 5 and each snippet is
-  length-bounded (mirrors `question_digest`'s own 300-char slice). A quiet
+  length-bounded (mirrors `question_digest`'s own 300-char slice) — that
+  bound is applied by `adminDigest.ts` itself rather than inherited from
+  `untrustedEntryContent`, whose own truncation is an undocumented internal
+  of the framework package and so cannot be relied on to hold this
+  invariant. Each snippet is also QUARANTINED at that source with
+  `untrustedEntryContent` (angle brackets stripped, whitespace collapsed):
+  `representative` is the one piece of member-authored free text in this
+  message, and it reaches a human on three paths — the scheduled DM here,
+  the `admin_digest` tool (quarantined again at the tool boundary for model
+  re-entry), and the on-demand `!admindigest`/`/admindigest` shortcuts,
+  which render the message plain. That is the same discipline
+  `find_helper`'s `topic` applies before reaching another member's DM
+  (issue #1194). A quiet
   week (zero qualifying clusters) sends nothing and leaves the freshness row
   untouched — same "silently re-arm, no noise" convention as the disconnect/
   usage alerts. `admin_digest_sends` stores only `(platform, platform_user_id,
