@@ -69,6 +69,18 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   moment it's most useful. Available in te reo Māori for members with that
   language preference set. No new tool, data access, or admin-visible signal
   — this only changes the wording of an existing reply.
+- **`save_knowledge` now writes an `admin_audit` row and fires the usual
+  real-time super-admin alert, like every other knowledge-mutating tool
+  already does.** (#1201) `save_knowledge` was the one write path into the
+  knowledge base — the content `knowledge_search` and the zero-token
+  knowledge shortcut serve back verbatim to every tier — that left no trace
+  in `admin_audit`/`audit_view`, unlike its siblings `update_knowledge`,
+  `delete_knowledge`, `merge_knowledge`, `check_knowledge_source`,
+  `accept_knowledge_candidate` and `decline_knowledge_candidate`, all of
+  which already record every call. The same gap #1157 closed for
+  `generate_image`. No behaviour change to the reply text on success (the
+  near-duplicate nudge is unchanged) and no new tool, tier, or data access —
+  wraps the existing write in the same `audited()` closure its siblings use.
 
 ## 2026-08-27
 
