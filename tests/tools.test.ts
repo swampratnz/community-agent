@@ -12258,6 +12258,212 @@ test(
   },
 );
 
+// remove_member's CONFIRM gate (issue #1214): SECURITY.md names remove_member
+// as one of the four canonical CONFIRM-gated destructive actions alongside
+// delete_knowledge/unlink_member/grant_admin, but its handler used to mutate
+// directly inside audited() with no requireConfirm wrapper. The five tests
+// below pin the fix, mirroring unlink_member/link_member's CONFIRM shape in
+// the same file: a below-admin caller is refused before any CONFIRM/repository
+// call; a super-admin target still short-circuits ahead of CONFIRM; a real
+// first call registers a pending action and mutates nothing; the CONFIRM
+// execute path is byte-identical to before on both the success and no-op
+// failure text; and the tool description now says so.
+test('SECURITY: remove_member rejects a member and a guest caller before any requireConfirm/pending-action registration or repository call (issue #1214 acceptance criterion 3)', async () => {
+  const adapter = stubAdapter(async () => {});
+  for (const role of ['member', 'guest'] as const) {
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${role}-remove-member-1`,
+      userName: 'Caller',
+      role,
+      conversationId: `convo-remove-member-${role}`,
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<string, { handler: (args: object) => Promise<unknown> }>;
+      }
+    )._registeredTools['remove_member'];
+    await assert.rejects(
+      () => registeredTool.handler({ userId: '12345678901234567', platform: 'discord' }),
+      /Permission denied/,
+      `${role} must never reach remove_member`,
+    );
+    assert.equal(
+      hasPendingAction('discord', `convo-remove-member-${role}`, `${role}-remove-member-1`),
+      false,
+      `${role} must never reach the CONFIRM gate, let alone a repository call`,
+    );
+  }
+});
+
+test(
+  'SECURITY: remove_member still short-circuits for a super-admin target via isSuperAdmin, ahead of requireConfirm — no pending action registered (issue #1214 acceptance criterion 4)',
+  { skip },
+  async () => {
+    const targetUserId = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    const conversationId = `convo-remove-member-super-target-${targetUserId}`;
+    const adminUserId = 'admin-remove-member-super-target';
+    const wasSupers = config.rbac.superAdminDiscordIds;
+    config.rbac.superAdminDiscordIds = [targetUserId];
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: adminUserId,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId,
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          {
+            handler: (
+              args: object,
+            ) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+          }
+        >;
+      }
+    )._registeredTools['remove_member'];
+
+    try {
+      const result = await registeredTool.handler({ userId: targetUserId, platform: 'discord' });
+      assert.match(result.content[0].text, /Refusing.*super admin/i);
+      assert.equal(result.isError, true);
+      assert.equal(
+        hasPendingAction('discord', conversationId, adminUserId),
+        false,
+        'the super-admin-target refusal must precede requireConfirm — no pending action, no CONFIRM prompt',
+      );
+    } finally {
+      config.rbac.superAdminDiscordIds = wasSupers;
+    }
+  },
+);
+
+test(
+  'SECURITY: remove_member registers a pending CONFIRM action and makes zero calls to removeMember on the first call, against a real member target (issue #1214 acceptance criterion 1)',
+  { skip },
+  async () => {
+    const targetUserId = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    const conversationId = `convo-remove-member-confirm-${targetUserId}`;
+    const adminUserId = 'admin-remove-member-confirm';
+    await upsertMember({ platform: 'discord', userId: targetUserId, role: 'member', addedBy: adminUserId });
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: adminUserId,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId,
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['remove_member'];
+
+    try {
+      const result = await registeredTool.handler({ userId: targetUserId, platform: 'discord' });
+      assert.match(result.content[0].text, /CONFIRM/, 'must ask for out-of-band confirmation');
+      assert.ok(
+        hasPendingAction('discord', conversationId, adminUserId),
+        'a destructive removal must be CONFIRM-gated like unlink_member/link_member',
+      );
+      assert.equal(
+        await getMemberRole('discord', targetUserId),
+        'member',
+        'the first call must not mutate the roster — removeMember must not run before CONFIRM',
+      );
+      cancelPendingAction('discord', conversationId, adminUserId);
+    } finally {
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        targetUserId,
+      ]);
+    }
+  },
+);
+
+test(
+  "remove_member's CONFIRM execute is byte-identical to today: the success text on an actual removal, and the " +
+    'existing Failed: <result> text on a no-op removal (issue #1214 acceptance criterion 2)',
+  { skip },
+  async () => {
+    const targetUserId = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    const conversationId = `convo-remove-member-execute-${targetUserId}`;
+    const adminUserId = 'admin-remove-member-execute';
+    await upsertMember({ platform: 'discord', userId: targetUserId, role: 'member', addedBy: adminUserId });
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: adminUserId,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId,
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['remove_member'];
+
+    try {
+      // 1. Success path: a real member is removed on CONFIRM.
+      await registeredTool.handler({ userId: targetUserId, platform: 'discord' });
+      const pending = takePendingAction('discord', conversationId, adminUserId);
+      assert.ok(pending, 'remove_member must register a pending action, not execute directly');
+      const successReply = await pending?.execute();
+      assert.equal(successReply, `Removed ${targetUserId} from discord members.`);
+      assert.equal(
+        await getMemberRole('discord', targetUserId),
+        null,
+        'the roster row must actually be gone after CONFIRM',
+      );
+
+      // 2. No-op path: removing an id that is not (or no longer) a member.
+      await registeredTool.handler({ userId: targetUserId, platform: 'discord' });
+      const pendingAgain = takePendingAction('discord', conversationId, adminUserId);
+      assert.ok(pendingAgain);
+      const failedReply = await pendingAgain?.execute();
+      assert.equal(
+        failedReply,
+        'Failed: No member row removed (not a member, or an admin — revoke admin first).',
+      );
+    } finally {
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        targetUserId,
+      ]);
+    }
+  },
+);
+
+test("remove_member's tool description states it requires confirmation (issue #1214 acceptance criterion 5)", async () => {
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId: 'admin-1',
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: 'convo-remove-member-description',
+    },
+    stubAdapter(async () => {}),
+  );
+  const description = (
+    server.instance as unknown as { _registeredTools: Record<string, { description?: string }> }
+  )._registeredTools['remove_member'].description;
+  assert.match(description ?? '', /requires confirmation/i);
+});
+
 test(
   "SECURITY: grant_admin routes the promotion DM through the target's cross-platform adapter, never the acting admin's own (issue #548)",
   { skip },
