@@ -771,6 +771,21 @@ fixed label plus three numbers, never a user id, display name, or message
 excerpt, matching `review_queue`/`question_digest`'s existing exposure
 envelope.
 
+Both #877 and #911 named the same deferred follow-up: fold this metric into
+the weekly admin digest push, not just leave it as an on-demand pull. Issue
+#1210 builds that fold-in — `buildAdminDigestForAdmin` adds one more entry to
+its existing `Promise.all` fan-out, `responseLatencyStats(scope,
+FRESHNESS_DAYS, 'all')`, reusing the identical `scope` every other
+conversation-scoped digest signal already uses. `buildAdminDigestMessage`
+renders one new line, `"⏱️ Response latency (last 7d): N replies, median Xs,
+p90 Ys"` — the exact wording the tool reply above already uses — only when
+the aggregate's `count > 0`; a `null`/zero-count result omits the line
+entirely rather than showing "0 replies". Blended (`scope: 'all'`) only in
+this version, and deliberately carries no week-over-week trend suffix: a new
+`currentCounts` key needs an upstream `ADMIN_DIGEST_SIGNAL_KEYS` allowlist
+entry, out of scope for this repo. The `auto_answer`/`mention` scope split and
+a trended version are both named as future growth, not built here.
+
 `feature_flags` (super-admin, no arguments, read-only, no CONFIRM; issue
 #559) answers a different, static question `admin_digest`/`community_info`
 don't: "which of this deployment's ~28 opt-in `*_ENABLED` config flags are

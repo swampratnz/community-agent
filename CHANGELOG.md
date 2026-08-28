@@ -25,6 +25,19 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #1122 #1123 #1132
 -->
 
+## 2026-08-29
+
+### Added
+- **The weekly admin digest now includes a response-latency line.** (#1210)
+  `response_latency` (#877) built the count/median/p90 time-to-first-answer
+  aggregate as an on-demand pull tool, and its own pairing/scope fix (#911)
+  named folding it into the recurring digest push as the next step — neither
+  follow-up was ever built until now. Admins who don't think to run
+  `response_latency` on demand every week now see it automatically: "⏱️
+  Response latency (last 7d): N replies, median Xs, p90 Ys", shown only when
+  there's data to report. No new tool, table, or data access — same
+  conversation-scoped aggregate the tool already used.
+
 ## 2026-08-28
 
 ### Added
