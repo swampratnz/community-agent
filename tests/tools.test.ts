@@ -72,6 +72,7 @@ const {
   notifyMemberApproved,
   notifyAdminApproved,
   notifyAccessRequestDeclined,
+  notifyProjectRemoved,
   notifySuggestionResolved,
   notifyReportResolved,
   notifyReportFiled,
@@ -1196,6 +1197,126 @@ test("SECURITY: notifyAccessRequestDeclined degrades to the English default, rat
   assert.match(calls[0], /was not approved/i);
 });
 
+test("notifyAccessRequestDeclined sends the plain-language variant for a caller with a stored 'plain' response style (issue #1212)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAccessRequestDeclined(
+    adapter,
+    'user-1',
+    'discord',
+    async () => 'auto',
+    undefined,
+    async () => 'plain',
+  );
+
+  assert.match(calls[0], /Your request to join NZ Claude Community was not approved this time\./);
+  assert.doesNotMatch(calls[0], /was reviewed and was not approved/);
+});
+
+test("notifyAccessRequestDeclined sends the English default for the default 'standard' response style, byte-identical to today (issue #1212)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAccessRequestDeclined(
+    adapter,
+    'user-1',
+    'discord',
+    async () => 'auto',
+    undefined,
+    async () => 'standard',
+  );
+
+  assert.equal(
+    calls[0],
+    'Your request for access to NZ Claude Community was reviewed and was not approved this time.',
+  );
+});
+
+test("SECURITY: a standing 'mi' language preference wins over a standing 'plain' response style — the te reo variant is sent, never the plain one (issue #1212, precedence: mi > plain > standard)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAccessRequestDeclined(
+    adapter,
+    'user-1',
+    'discord',
+    async () => 'mi',
+    undefined,
+    async () => 'plain',
+  );
+
+  assert.match(calls[0], /kāore i whakaaetia/);
+  assert.doesNotMatch(calls[0], /Your request to join/);
+});
+
+test("SECURITY: notifyAccessRequestDeclined degrades to the English default, rather than throwing or dropping the DM, when the response-style lookup fails (issue #52's invariant extended to issue #1212)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAccessRequestDeclined(
+    adapter,
+    'user-1',
+    'discord',
+    async () => 'auto',
+    undefined,
+    async () => {
+      throw new Error('DB unreachable');
+    },
+  );
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /was not approved/i);
+});
+
+test("SECURITY: notifyAccessRequestDeclined never consults the response-style lookup once language has resolved to 'mi' (issue #1212)", async () => {
+  let respStyleCalls = 0;
+  const adapter = stubAdapter(async () => {});
+
+  await notifyAccessRequestDeclined(
+    adapter,
+    'user-1',
+    'discord',
+    async () => 'mi',
+    undefined,
+    async () => {
+      respStyleCalls += 1;
+      throw new Error('must never be reached when lang is mi');
+    },
+  );
+
+  assert.equal(respStyleCalls, 0);
+});
+
+test("notifyAccessRequestDeclined's reason clause is unaffected by a 'plain' response style — only the base wording changes (issue #1212 acceptance criterion #4)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAccessRequestDeclined(
+    adapter,
+    'user-1',
+    'discord',
+    async () => 'auto',
+    'looked like a throwaway account',
+    async () => 'plain',
+  );
+
+  assert.match(
+    calls[0],
+    /^Your request to join NZ Claude Community was not approved this time\. Reason: "looked like a throwaway account"$/,
+  );
+});
+
 // notifyAccessRequestDeclined's optional reason (issue #1126 acceptance
 // criteria #2/#3, mirroring decline_knowledge_candidate's #1050 field): a
 // distinct, quoted, trailing clause, byte-identical to the reasonless
@@ -1261,6 +1382,190 @@ test("notifyAccessRequestDeclined's reason clause renders in te reo Māori for a
     calls[0],
     /Take: "he tauriterite tēnei"/,
     'the reason clause label is te reo, the text is not',
+  );
+});
+
+// notifyProjectRemoved holds all of remove_project's resolution DM (issue
+// #1185) — same shape as notifyAccessRequestDeclined above, and previously
+// untested directly; issue #1212 is the first change to add unit coverage
+// alongside the new 'plain' response-style support.
+test('notifyProjectRemoved sends a neutral removal DM', async () => {
+  const calls: Array<[string, string]> = [];
+  const adapter = stubAdapter(async (userId, text) => {
+    calls.push([userId, text]);
+  });
+
+  await notifyProjectRemoved(adapter, 'user-1', 'discord');
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'user-1');
+  assert.match(calls[0][1], /removed from the .* showcase/i);
+});
+
+test('notifyProjectRemoved swallows a DM failure rather than throwing (the removal stays the source of truth)', async () => {
+  const adapter = stubAdapter(async () => {
+    throw new Error('DMs closed');
+  });
+
+  await assert.doesNotReject(notifyProjectRemoved(adapter, 'user-1', 'discord'));
+});
+
+test("notifyProjectRemoved sends the te reo Māori variant for a caller with a stored 'mi' preference (issue #331)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyProjectRemoved(adapter, 'user-1', 'discord', async () => 'mi');
+
+  assert.match(calls[0], /I tangohia/);
+});
+
+test("notifyProjectRemoved sends the English default for the default 'auto' preference, byte-identical to today", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyProjectRemoved(adapter, 'user-1', 'discord', async () => 'auto');
+
+  assert.equal(
+    calls[0],
+    'One of your projects was removed from the NZ Claude Community project showcase by an admin.',
+  );
+});
+
+test("SECURITY: notifyProjectRemoved degrades to the English default, rather than throwing or dropping the DM, when the language-preference lookup fails (issue #52's invariant extended to issue #331)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyProjectRemoved(adapter, 'user-1', 'discord', async () => {
+    throw new Error('DB unreachable');
+  });
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /removed from the .* showcase/i);
+});
+
+test("notifyProjectRemoved sends the plain-language variant for a caller with a stored 'plain' response style (issue #1212)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyProjectRemoved(
+    adapter,
+    'user-1',
+    'discord',
+    async () => 'auto',
+    undefined,
+    async () => 'plain',
+  );
+
+  assert.match(calls[0], /^An admin removed one of your projects from the NZ Claude Community showcase\./);
+  assert.doesNotMatch(calls[0], /project showcase by an admin/);
+});
+
+test("notifyProjectRemoved sends the English default for the default 'standard' response style, byte-identical to today (issue #1212)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyProjectRemoved(
+    adapter,
+    'user-1',
+    'discord',
+    async () => 'auto',
+    undefined,
+    async () => 'standard',
+  );
+
+  assert.equal(
+    calls[0],
+    'One of your projects was removed from the NZ Claude Community project showcase by an admin.',
+  );
+});
+
+test("SECURITY: a standing 'mi' language preference wins over a standing 'plain' response style — the te reo variant is sent, never the plain one (issue #1212, precedence: mi > plain > standard)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyProjectRemoved(
+    adapter,
+    'user-1',
+    'discord',
+    async () => 'mi',
+    undefined,
+    async () => 'plain',
+  );
+
+  assert.match(calls[0], /I tangohia/);
+  assert.doesNotMatch(calls[0], /An admin removed one of your projects/);
+});
+
+test("SECURITY: notifyProjectRemoved degrades to the English default, rather than throwing or dropping the DM, when the response-style lookup fails (issue #52's invariant extended to issue #1212)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyProjectRemoved(
+    adapter,
+    'user-1',
+    'discord',
+    async () => 'auto',
+    undefined,
+    async () => {
+      throw new Error('DB unreachable');
+    },
+  );
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /removed from the .* showcase/i);
+});
+
+test("SECURITY: notifyProjectRemoved never consults the response-style lookup once language has resolved to 'mi' (issue #1212)", async () => {
+  let respStyleCalls = 0;
+  const adapter = stubAdapter(async () => {});
+
+  await notifyProjectRemoved(
+    adapter,
+    'user-1',
+    'discord',
+    async () => 'mi',
+    undefined,
+    async () => {
+      respStyleCalls += 1;
+      throw new Error('must never be reached when lang is mi');
+    },
+  );
+
+  assert.equal(respStyleCalls, 0);
+});
+
+test("notifyProjectRemoved's reason clause is unaffected by a 'plain' response style — only the base wording changes (issue #1212 acceptance criterion #4)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyProjectRemoved(
+    adapter,
+    'user-1',
+    'discord',
+    async () => 'auto',
+    'spam listing',
+    async () => 'plain',
+  );
+
+  assert.match(
+    calls[0],
+    /^An admin removed one of your projects from the NZ Claude Community showcase\. Reason: "spam listing"$/,
   );
 });
 
@@ -1347,6 +1652,158 @@ test("SECURITY: notifySuggestionResolved degrades to the English default, rather
 
   assert.equal(calls.length, 1);
   assert.match(calls[0], /marked \*\*done\*\*/);
+});
+
+test("notifySuggestionResolved sends the plain-language variant for each status for a caller with a stored 'plain' response style (issue #1212)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifySuggestionResolved(
+    adapter,
+    'user-1',
+    'reviewed',
+    'add dark mode',
+    'discord',
+    async () => 'auto',
+    undefined,
+    async () => 'plain',
+  );
+  await notifySuggestionResolved(
+    adapter,
+    'user-1',
+    'declined',
+    'add dark mode',
+    'discord',
+    async () => 'auto',
+    undefined,
+    async () => 'plain',
+  );
+  await notifySuggestionResolved(
+    adapter,
+    'user-1',
+    'done',
+    'add dark mode',
+    'discord',
+    async () => 'auto',
+    undefined,
+    async () => 'plain',
+  );
+
+  assert.match(calls[0], /^Your suggestion has been reviewed\. Thanks for the idea!/);
+  assert.match(calls[1], /^Thanks for the suggestion\. It won't be built for now:/);
+  assert.match(calls[2], /^Your suggestion is done\. Thanks for the idea!/);
+  assert.doesNotMatch(calls[0], /marked \*\*done\*\*|—/);
+  calls.forEach((c) => assert.match(c, /add dark mode/, 'the echoed suggestion stays untranslated'));
+});
+
+test("notifySuggestionResolved sends the English default for the default 'standard' response style, byte-identical to today (issue #1212)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifySuggestionResolved(
+    adapter,
+    'user-1',
+    'done',
+    'add dark mode',
+    'discord',
+    async () => 'auto',
+    undefined,
+    async () => 'standard',
+  );
+
+  assert.match(calls[0], /marked \*\*done\*\*/);
+});
+
+test("SECURITY: a standing 'mi' language preference wins over a standing 'plain' response style — the te reo variant is sent, never the plain one (issue #1212, precedence: mi > plain > standard)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifySuggestionResolved(
+    adapter,
+    'user-1',
+    'done',
+    'add dark mode',
+    'discord',
+    async () => 'mi',
+    undefined,
+    async () => 'plain',
+  );
+
+  assert.match(calls[0], /Kua oti/);
+  assert.doesNotMatch(calls[0], /Your suggestion is done/);
+});
+
+test("SECURITY: notifySuggestionResolved degrades to the English default, rather than throwing or dropping the DM, when the response-style lookup fails (issue #52's invariant extended to issue #1212)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifySuggestionResolved(
+    adapter,
+    'user-1',
+    'done',
+    'add dark mode',
+    'discord',
+    async () => 'auto',
+    undefined,
+    async () => {
+      throw new Error('DB unreachable');
+    },
+  );
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /marked \*\*done\*\*/);
+});
+
+test("SECURITY: notifySuggestionResolved never consults the response-style lookup once language has resolved to 'mi' (issue #1212)", async () => {
+  let respStyleCalls = 0;
+  const adapter = stubAdapter(async () => {});
+
+  await notifySuggestionResolved(
+    adapter,
+    'user-1',
+    'done',
+    'add dark mode',
+    'discord',
+    async () => 'mi',
+    undefined,
+    async () => {
+      respStyleCalls += 1;
+      throw new Error('must never be reached when lang is mi');
+    },
+  );
+
+  assert.equal(respStyleCalls, 0);
+});
+
+test("notifySuggestionResolved's adminReason clause is unaffected by a 'plain' response style — only the base wording changes (issue #1212 acceptance criterion #4)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifySuggestionResolved(
+    adapter,
+    'user-1',
+    'declined',
+    'add dark mode',
+    'discord',
+    async () => 'auto',
+    'duplicates an existing suggestion',
+    async () => 'plain',
+  );
+
+  assert.match(
+    calls[0],
+    /^Thanks for the suggestion\. It won't be built for now: "add dark mode" Reason: "duplicates an existing suggestion"$/,
+  );
 });
 
 // notifySuggestionResolved's optional adminReason (issue #1099, mirroring
@@ -1603,6 +2060,148 @@ test("SECURITY: notifyReportResolved degrades to the English default, rather tha
   assert.match(calls[0], /reviewed and resolved/);
 });
 
+test("notifyReportResolved sends the plain-language variant for each status for a caller with a stored 'plain' response style (issue #1212)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyReportResolved(
+    adapter,
+    'user-1',
+    'resolved',
+    'someone was spamming the general channel',
+    'discord',
+    async () => 'auto',
+    undefined,
+    async () => 'plain',
+  );
+  await notifyReportResolved(
+    adapter,
+    'user-1',
+    'dismissed',
+    'someone was spamming the general channel',
+    'discord',
+    async () => 'auto',
+    undefined,
+    async () => 'plain',
+  );
+
+  assert.match(calls[0], /^Your report was reviewed and resolved\. Thanks for telling us:/);
+  assert.match(calls[1], /^Your report was reviewed\. No further action was taken\. Thanks for telling us:/);
+  calls.forEach((c) =>
+    assert.match(c, /someone was spamming the general channel/, 'the echoed reason stays untranslated'),
+  );
+});
+
+test("notifyReportResolved sends the English default for the default 'standard' response style, byte-identical to today (issue #1212)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyReportResolved(
+    adapter,
+    'user-1',
+    'resolved',
+    'reason',
+    'discord',
+    async () => 'auto',
+    undefined,
+    async () => 'standard',
+  );
+
+  assert.match(calls[0], /reviewed and resolved/);
+});
+
+test("SECURITY: a standing 'mi' language preference wins over a standing 'plain' response style — the te reo variant is sent, never the plain one (issue #1212, precedence: mi > plain > standard)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyReportResolved(
+    adapter,
+    'user-1',
+    'resolved',
+    'reason',
+    'discord',
+    async () => 'mi',
+    undefined,
+    async () => 'plain',
+  );
+
+  assert.match(calls[0], /kua whakatauhia/);
+  assert.doesNotMatch(calls[0], /Your report was reviewed/);
+});
+
+test("SECURITY: notifyReportResolved degrades to the English default, rather than throwing or dropping the DM, when the response-style lookup fails (issue #52's invariant extended to issue #1212)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyReportResolved(
+    adapter,
+    'user-1',
+    'resolved',
+    'reason',
+    'discord',
+    async () => 'auto',
+    undefined,
+    async () => {
+      throw new Error('DB unreachable');
+    },
+  );
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /reviewed and resolved/);
+});
+
+test("SECURITY: notifyReportResolved never consults the response-style lookup once language has resolved to 'mi' (issue #1212)", async () => {
+  let respStyleCalls = 0;
+  const adapter = stubAdapter(async () => {});
+
+  await notifyReportResolved(
+    adapter,
+    'user-1',
+    'resolved',
+    'reason',
+    'discord',
+    async () => 'mi',
+    undefined,
+    async () => {
+      respStyleCalls += 1;
+      throw new Error('must never be reached when lang is mi');
+    },
+  );
+
+  assert.equal(respStyleCalls, 0);
+});
+
+test("notifyReportResolved's adminReason clause is unaffected by a 'plain' response style — only the base wording changes (issue #1212 acceptance criterion #4)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyReportResolved(
+    adapter,
+    'user-1',
+    'dismissed',
+    'someone was rude',
+    'discord',
+    async () => 'auto',
+    'insufficient evidence',
+    async () => 'plain',
+  );
+
+  assert.match(
+    calls[0],
+    /^Your report was reviewed\. No further action was taken\. Thanks for telling us: "someone was rude" Reason: "insufficient evidence"$/,
+  );
+});
+
 // notifyReportResolved's optional adminReason (issue #1099, mirroring
 // decline_knowledge_candidate's #1050 field): a distinct, quoted, trailing
 // clause on the dismissed branch only, byte-identical to pre-#1099 when
@@ -1840,6 +2439,149 @@ test("SECURITY: notifyAppealResolved degrades to the English default, rather tha
   assert.match(calls[0], /reviewed and resolved/);
 });
 
+test("notifyAppealResolved sends the plain-language variant for each status for a caller with a stored 'plain' response style (issue #1212)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAppealResolved(
+    adapter,
+    'user-1',
+    'resolved',
+    'my mute was a mistake',
+    'discord',
+    async () => 'auto',
+    undefined,
+    async () => 'plain',
+  );
+  await notifyAppealResolved(
+    adapter,
+    'user-1',
+    'dismissed',
+    'my mute was a mistake',
+    'discord',
+    async () => 'auto',
+    undefined,
+    async () => 'plain',
+  );
+
+  assert.match(calls[0], /^Your appeal was reviewed and resolved\. Thanks for reaching out\./);
+  assert.match(
+    calls[1],
+    /^Your appeal was reviewed\. No further action was taken\. Thanks for reaching out\./,
+  );
+  calls.forEach((c) => assert.match(c, /my mute was a mistake/, 'the echoed reason stays untranslated'));
+});
+
+test("notifyAppealResolved sends the English default for the default 'standard' response style, byte-identical to today (issue #1212)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAppealResolved(
+    adapter,
+    'user-1',
+    'resolved',
+    'reason',
+    'discord',
+    async () => 'auto',
+    undefined,
+    async () => 'standard',
+  );
+
+  assert.match(calls[0], /reviewed and resolved/);
+});
+
+test("SECURITY: a standing 'mi' language preference wins over a standing 'plain' response style — the te reo variant is sent, never the plain one (issue #1212, precedence: mi > plain > standard)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAppealResolved(
+    adapter,
+    'user-1',
+    'resolved',
+    'reason',
+    'discord',
+    async () => 'mi',
+    undefined,
+    async () => 'plain',
+  );
+
+  assert.match(calls[0], /kua whakatauhia/);
+  assert.doesNotMatch(calls[0], /Your appeal was reviewed/);
+});
+
+test("SECURITY: notifyAppealResolved degrades to the English default, rather than throwing or dropping the DM, when the response-style lookup fails (issue #52's invariant extended to issue #1212)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAppealResolved(
+    adapter,
+    'user-1',
+    'resolved',
+    'reason',
+    'discord',
+    async () => 'auto',
+    undefined,
+    async () => {
+      throw new Error('DB unreachable');
+    },
+  );
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /reviewed and resolved/);
+});
+
+test("SECURITY: notifyAppealResolved never consults the response-style lookup once language has resolved to 'mi' (issue #1212)", async () => {
+  let respStyleCalls = 0;
+  const adapter = stubAdapter(async () => {});
+
+  await notifyAppealResolved(
+    adapter,
+    'user-1',
+    'resolved',
+    'reason',
+    'discord',
+    async () => 'mi',
+    undefined,
+    async () => {
+      respStyleCalls += 1;
+      throw new Error('must never be reached when lang is mi');
+    },
+  );
+
+  assert.equal(respStyleCalls, 0);
+});
+
+test("notifyAppealResolved's adminReason clause is unaffected by a 'plain' response style — only the base wording changes (issue #1212 acceptance criterion #4)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAppealResolved(
+    adapter,
+    'user-1',
+    'dismissed',
+    'my mute was a mistake',
+    'discord',
+    async () => 'auto',
+    'strikes were correctly issued',
+    async () => 'plain',
+  );
+
+  assert.match(
+    calls[0],
+    /^Your appeal was reviewed\. No further action was taken\. Thanks for reaching out\. "my mute was a mistake" Reason: "strikes were correctly issued"$/,
+  );
+});
+
 // notifyAppealResolved's optional adminReason (issue #1099, mirroring
 // decline_knowledge_candidate's #1050 field): a distinct, quoted, trailing
 // clause on the dismissed branch only, byte-identical to pre-#1099 when
@@ -2071,6 +2813,110 @@ test("SECURITY: notifyWarningsCleared degrades to the English default, rather th
   assert.match(calls[0], /warnings have been cleared/i);
 });
 
+test("notifyWarningsCleared sends the plain-language variant for each muteLifted for a caller with a stored 'plain' response style (issue #1212)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyWarningsCleared(
+    adapter,
+    'user-1',
+    'discord',
+    true,
+    async () => 'auto',
+    async () => 'plain',
+  );
+  await notifyWarningsCleared(
+    adapter,
+    'user-1',
+    'discord',
+    false,
+    async () => 'auto',
+    async () => 'plain',
+  );
+
+  assert.equal(calls[0], 'Your warnings are cleared and your mute is lifted. You can post again.');
+  assert.equal(calls[1], 'Your warnings are cleared.');
+});
+
+test("notifyWarningsCleared sends the English default for the default 'standard' response style, byte-identical to today (issue #1212)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyWarningsCleared(
+    adapter,
+    'user-1',
+    'discord',
+    true,
+    async () => 'auto',
+    async () => 'standard',
+  );
+
+  assert.match(calls[0], /warnings have been cleared/i);
+});
+
+test("SECURITY: a standing 'mi' language preference wins over a standing 'plain' response style — the te reo variant is sent, never the plain one (issue #1212, precedence: mi > plain > standard)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyWarningsCleared(
+    adapter,
+    'user-1',
+    'discord',
+    true,
+    async () => 'mi',
+    async () => 'plain',
+  );
+
+  assert.match(calls[0], /whakawāteahia/);
+  assert.doesNotMatch(calls[0], /Your warnings are cleared/);
+});
+
+test("SECURITY: notifyWarningsCleared degrades to the English default, rather than throwing or dropping the DM, when the response-style lookup fails (issue #52's invariant extended to issue #1212)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyWarningsCleared(
+    adapter,
+    'user-1',
+    'discord',
+    true,
+    async () => 'auto',
+    async () => {
+      throw new Error('DB unreachable');
+    },
+  );
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /warnings have been cleared/i);
+});
+
+test("SECURITY: notifyWarningsCleared never consults the response-style lookup once language has resolved to 'mi' (issue #1212)", async () => {
+  let respStyleCalls = 0;
+  const adapter = stubAdapter(async () => {});
+
+  await notifyWarningsCleared(
+    adapter,
+    'user-1',
+    'discord',
+    true,
+    async () => 'mi',
+    async () => {
+      respStyleCalls += 1;
+      throw new Error('must never be reached when lang is mi');
+    },
+  );
+
+  assert.equal(respStyleCalls, 0);
+});
+
 // notifyKnowledgeEntryFixed (issue #1169) — the last member-initiated write
 // in feedback.ts (rate_answer's thumbs-down) to gain a resolution DM, sent by
 // update_knowledge/merge_knowledge when the fixed entry is one the recipient
@@ -2123,6 +2969,96 @@ test("SECURITY: notifyKnowledgeEntryFixed degrades to the English default, rathe
 
   assert.equal(calls.length, 1);
   assert.match(calls[0], /feel free to ask again/i);
+});
+
+test("notifyKnowledgeEntryFixed sends the plain-language variant for a caller with a stored 'plain' response style (issue #1212)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyKnowledgeEntryFixed(
+    adapter,
+    'user-1',
+    'discord',
+    async () => 'auto',
+    async () => 'plain',
+  );
+
+  assert.equal(calls[0], 'An answer you said was unhelpful has now been fixed. Feel free to ask again.');
+});
+
+test("notifyKnowledgeEntryFixed sends the English default for the default 'standard' response style, byte-identical to today (issue #1212)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyKnowledgeEntryFixed(
+    adapter,
+    'user-1',
+    'discord',
+    async () => 'auto',
+    async () => 'standard',
+  );
+
+  assert.match(calls[0], /feel free to ask again/i);
+});
+
+test("SECURITY: a standing 'mi' language preference wins over a standing 'plain' response style — the te reo variant is sent, never the plain one (issue #1212, precedence: mi > plain > standard)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyKnowledgeEntryFixed(
+    adapter,
+    'user-1',
+    'discord',
+    async () => 'mi',
+    async () => 'plain',
+  );
+
+  assert.match(calls[0], /whakatikaina/);
+  assert.doesNotMatch(calls[0], /An answer you said was unhelpful/);
+});
+
+test("SECURITY: notifyKnowledgeEntryFixed degrades to the English default, rather than throwing or dropping the DM, when the response-style lookup fails (issue #52's invariant extended to issue #1212)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyKnowledgeEntryFixed(
+    adapter,
+    'user-1',
+    'discord',
+    async () => 'auto',
+    async () => {
+      throw new Error('DB unreachable');
+    },
+  );
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /feel free to ask again/i);
+});
+
+test("SECURITY: notifyKnowledgeEntryFixed never consults the response-style lookup once language has resolved to 'mi' (issue #1212)", async () => {
+  let respStyleCalls = 0;
+  const adapter = stubAdapter(async () => {});
+
+  await notifyKnowledgeEntryFixed(
+    adapter,
+    'user-1',
+    'discord',
+    async () => 'mi',
+    async () => {
+      respStyleCalls += 1;
+      throw new Error('must never be reached when lang is mi');
+    },
+  );
+
+  assert.equal(respStyleCalls, 0);
 });
 
 test('SECURITY: notifyKnowledgeEntryFixed queues via queueForWindowReopen at "low" priority on a WindowClosedError, rather than dropping the DM (issue #644 recovery extended to issue #1169)', async () => {
@@ -2388,6 +3324,123 @@ test("SECURITY: notifyKnowledgeTipResolved degrades to the English default, rath
 
   assert.equal(calls.length, 1);
   assert.match(calls[0], /added to the knowledge base/i);
+});
+
+test("notifyKnowledgeTipResolved sends the plain-language variant for each status for a caller with a stored 'plain' response style (issue #1212)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyKnowledgeTipResolved(
+    adapter,
+    'user-1',
+    'accepted',
+    'how to reset your password',
+    'discord',
+    undefined,
+    async () => 'auto',
+    async () => 'plain',
+  );
+  await notifyKnowledgeTipResolved(
+    adapter,
+    'user-1',
+    'declined',
+    'how to reset your password',
+    'discord',
+    undefined,
+    async () => 'auto',
+    async () => 'plain',
+  );
+
+  assert.match(calls[0], /^Your knowledge tip was added to the knowledge base\. Thanks!/);
+  assert.match(calls[1], /^Thanks for the knowledge tip\. It wasn't added this time:/);
+  calls.forEach((c) => assert.match(c, /how to reset your password/, 'the echoed title stays untranslated'));
+});
+
+test("notifyKnowledgeTipResolved sends the English default for the default 'standard' response style, byte-identical to today (issue #1212)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyKnowledgeTipResolved(
+    adapter,
+    'user-1',
+    'accepted',
+    'title',
+    'discord',
+    undefined,
+    async () => 'auto',
+    async () => 'standard',
+  );
+
+  assert.match(calls[0], /added to the knowledge base/i);
+});
+
+test("SECURITY: a standing 'mi' language preference wins over a standing 'plain' response style — the te reo variant is sent, never the plain one (issue #1212, precedence: mi > plain > standard)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyKnowledgeTipResolved(
+    adapter,
+    'user-1',
+    'accepted',
+    'title',
+    'discord',
+    undefined,
+    async () => 'mi',
+    async () => 'plain',
+  );
+
+  assert.match(calls[0], /Kua tāpirihia/);
+  assert.doesNotMatch(calls[0], /Your knowledge tip was added/);
+});
+
+test("SECURITY: notifyKnowledgeTipResolved degrades to the English default, rather than throwing or dropping the DM, when the response-style lookup fails (issue #52's invariant extended to issue #1212)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyKnowledgeTipResolved(
+    adapter,
+    'user-1',
+    'accepted',
+    'title',
+    'discord',
+    undefined,
+    async () => 'auto',
+    async () => {
+      throw new Error('DB unreachable');
+    },
+  );
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /added to the knowledge base/i);
+});
+
+test("SECURITY: notifyKnowledgeTipResolved never consults the response-style lookup once language has resolved to 'mi' (issue #1212)", async () => {
+  let respStyleCalls = 0;
+  const adapter = stubAdapter(async () => {});
+
+  await notifyKnowledgeTipResolved(
+    adapter,
+    'user-1',
+    'accepted',
+    'title',
+    'discord',
+    undefined,
+    async () => 'mi',
+    async () => {
+      respStyleCalls += 1;
+      throw new Error('must never be reached when lang is mi');
+    },
+  );
+
+  assert.equal(respStyleCalls, 0);
 });
 
 // notifyReportFiled (issue #90): a report proactively alerts every configured

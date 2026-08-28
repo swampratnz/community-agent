@@ -375,6 +375,9 @@ const NOTICE_ENTRIES = {
     language: {
       mi: 'I arotakehia tō tono uru ki NZ Claude Community, ā, kāore i whakaaetia i tēnei wā.',
     },
+    style: {
+      plain: 'Your request to join NZ Claude Community was not approved this time.',
+    },
   },
   // --- remove_project resolution DM (agent/tools/notify.ts, issue #1185) ---
   /**
@@ -389,6 +392,9 @@ const NOTICE_ENTRIES = {
     base: 'One of your projects was removed from the NZ Claude Community project showcase by an admin.',
     language: {
       mi: 'I tangohia tētahi o āu kaupapa mai i te whakaaturanga kaupapa a NZ Claude Community e tētahi kaiwhakahaere.',
+    },
+    style: {
+      plain: 'An admin removed one of your projects from the NZ Claude Community showcase.',
     },
   },
   // --- community_info member capabilities rundown (agent/tools/info.ts) ---

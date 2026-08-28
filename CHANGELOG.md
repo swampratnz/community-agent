@@ -28,6 +28,13 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-08-29
 
 ### Added
+- **Eight more member-resolution DMs now honour your "keep it simple" plain-language preference.** (#1212)
+  `set_response_style('plain')` (#126) already simplified moderation warnings, approval DMs, and code-policy
+  notes (#430/#657), but the DMs telling you the outcome of something you submitted — a suggestion, report,
+  appeal, knowledge tip, an access request, a warnings-clear, a removed project, or a knowledge fix — still
+  came back in full English or te reo regardless of a standing plain preference. All eight now check it too,
+  with te reo still taking priority when both preferences are set. No new tool, table, or preference — same
+  `response_style_prefs` row every other plain-aware notice already reads.
 - **The weekly admin digest now includes a response-latency line.** (#1210)
   `response_latency` (#877) built the count/median/p90 time-to-first-answer
   aggregate as an on-demand pull tool, and its own pairing/scope fix (#911)
