@@ -44,6 +44,7 @@ import {
   recordAdminDigestSent,
   recordAdminDigestSnapshot,
   resolveLinkedIdentities,
+  responseLatencyStats,
   rosterCounts,
   wasAdminDigestSentRecently,
   type QuestionCluster,
@@ -893,6 +894,30 @@ export function buildAdminDigestMessage(
   // reaches the DM, same privacy convention as resolvedSuggestionsCount/
   // declinedSuggestionsCount.
   suggestionMedianResolutionHours: number | null = null,
+  // Blended time-to-first-answer aggregate over the trailing FRESHNESS_DAYS
+  // window (`responseLatencyStats(scope, FRESHNESS_DAYS, 'all')`, issue
+  // #1210) — VISION's own named "time-to-first-answer" north-star metric,
+  // built as the on-demand `response_latency` tool by issue #877 and
+  // explicitly deferred from this weekly push by both #877 and #911
+  // ("grows into: folding auto_answer/mention into the weekly admin
+  // digest"). Rendered as ONE line only when `responseLatencyCount > 0` — a
+  // `null` aggregate (zero qualifying pairs in the window) or a caller that
+  // hasn't wired these params through both leave the line omitted entirely,
+  // never a "0 replies" line, byte-identical to the pre-#1210 form.
+  // Deliberately carries no `trendSuffix` and writes no key into
+  // `currentCounts`: median/p90 aren't simple counts a `trendSuffix`
+  // comparison suits, and a new `currentCounts` key needs an upstream
+  // `ADMIN_DIGEST_SIGNAL_KEYS` allowlist entry, out of scope for this repo
+  // (same reasoning `resolvedReportsCount`'s own comment above gives — but
+  // unlike that signal, this one skips even the no-op trendSuffix call).
+  // Three append-only trailing params, default 0/null/null, so every
+  // existing call site is unaffected. Bare count and two rounded-seconds
+  // integers only — no user id, display name, conversation id, or message
+  // excerpt ever reaches the DM, matching response_latency's own tool-reply
+  // wording and privacy convention exactly.
+  responseLatencyCount: number = 0,
+  responseLatencyMedianSeconds: number | null = null,
+  responseLatencyP90Seconds: number | null = null,
 ): string | null {
   if (
     clusters.length === 0 &&
@@ -927,7 +952,8 @@ export function buildAdminDigestMessage(
     resolvedReportsCount === 0 &&
     dismissedReportsCount === 0 &&
     resolvedSuggestionsCount === 0 &&
-    declinedSuggestionsCount === 0
+    declinedSuggestionsCount === 0 &&
+    responseLatencyCount === 0
   )
     return null;
 
@@ -1029,6 +1055,17 @@ export function buildAdminDigestMessage(
         `${declinedSuggestionsCount} declined${suggestionMedianFragment}.` +
         trendSuffix('resolvedSuggestionsCount', resolvedSuggestionsCount, previousCounts) +
         trendSuffix('declinedSuggestionsCount', declinedSuggestionsCount, previousCounts),
+    );
+  }
+  if (responseLatencyCount > 0) {
+    // Bare count and two rounded-seconds integers only — no user id,
+    // display name, conversation id, or message excerpt ever reaches the
+    // DM, matching response_latency's own tool-reply wording exactly (issue
+    // #1210, folding in the deferred follow-up #877/#911 both named). No
+    // trend suffix — see this param's own doc comment above.
+    sections.push(
+      `⏱️ Response latency (last ${FRESHNESS_DAYS}d): ${responseLatencyCount} replies, ` +
+        `median ${Math.round(responseLatencyMedianSeconds ?? 0)}s, p90 ${Math.round(responseLatencyP90Seconds ?? 0)}s`,
     );
   }
   if (staleKnowledgeCount > 0) {
@@ -1369,6 +1406,7 @@ export async function buildAdminDigestForAdmin(
     appealMedianHours,
     candidateMedianHours,
     suggestionBreakdown,
+    latencyStats,
   ] = await Promise.all([
     recentQuestionClusters(scope, FRESHNESS_DAYS, CLUSTER_LIMIT),
     countAccessRequests(),
@@ -1523,6 +1561,12 @@ export async function buildAdminDigestForAdmin(
     // unscoped like pendingSuggestions above — suggestions has no
     // conversation/channel column.
     suggestionResolutionBreakdown(FRESHNESS_DAYS),
+    // Blended time-to-first-answer aggregate over the same FRESHNESS_DAYS
+    // window, reusing the identical `scope` every other conversation-scoped
+    // signal above already uses — the same scoping response_latency's own
+    // tool handler applies via callerScope() (issue #1210, folding in the
+    // deferred follow-up #877/#911 both named).
+    responseLatencyStats(scope, FRESHNESS_DAYS, 'all'),
   ]);
   // Onboarding-queue count only means anything in 'gated' mode — an
   // 'open'-mode not_members row already has full member-tool access
@@ -1595,6 +1639,12 @@ export async function buildAdminDigestForAdmin(
     // scope here. The trend suffixes on the rendered line below therefore
     // never fire in practice — the same "renders bare" first-ever-digest
     // behaviour every excluded signal above has.
+    // `responseLatencyCount`/`responseLatencyMedianSeconds`/
+    // `responseLatencyP90Seconds` (issue #1210) are excluded for the same
+    // upstream-allowlist reason as every signal directly above, PLUS the
+    // rendered line calls no `trendSuffix` at all (unlike those), so there
+    // is nothing here that would even render bare — see the param's own doc
+    // comment on `buildAdminDigestMessage`.
   };
   // Only added when there's at least one auto-answer rating this week (issue
   // #629) — mirrors the render block's own `autoAnswerHelpful +
@@ -1662,6 +1712,9 @@ export async function buildAdminDigestForAdmin(
     suggestionBreakdown.resolved,
     suggestionBreakdown.declined,
     suggestionBreakdown.medianResolutionHours,
+    latencyStats?.count ?? 0,
+    latencyStats?.medianSeconds ?? null,
+    latencyStats?.p90Seconds ?? null,
   );
   return { message, currentCounts };
 }
