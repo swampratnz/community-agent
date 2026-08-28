@@ -29,6 +29,7 @@ import {
   oldestOpenAppealAgeDays,
   oldestPendingCandidateAgeDays,
   oldestPendingSuggestionAgeDays,
+  rosterCounts,
 } from '@swampratnz/agent-base/storage/repository.js';
 import {
   formatBlockedMembersList,
@@ -414,7 +415,10 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
     // matching, so no message-supplied text ever reaches a repository read.
     // Renders review_queue's own guild-wide/caller.platform-scoped lines via
     // the SAME repository functions with the SAME arguments that tool's
-    // handler uses — see formatReviewQueueSummary (tools/helpers.ts) for why
+    // handler uses, including the sixth onboarding-queue line (issue #1216,
+    // gated on config.rbac.accessMode[msg.platform] === 'gated' verbatim,
+    // never on the notMembers count) — see formatReviewQueueSummary
+    // (tools/helpers.ts) for why
     // the reports line is omitted rather than fabricated or approximated.
     name: 'reviewqueue',
     platforms: ['discord', 'whatsapp'],
@@ -430,6 +434,7 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
         candidateAgeDays,
         appealCount,
         appealAgeDays,
+        roster,
       ] = await Promise.all([
         countAccessRequests(),
         oldestAccessRequestAgeDays(),
@@ -439,6 +444,7 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
         oldestPendingCandidateAgeDays(),
         countOpenAppeals(msg.platform),
         oldestOpenAppealAgeDays(msg.platform),
+        rosterCounts(msg.platform),
       ]);
       return formatReviewQueueSummary({
         accessRequestCount,
@@ -449,6 +455,7 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
         candidateAgeDays,
         appealCount,
         appealAgeDays,
+        onboardingQueueCount: config.rbac.accessMode[msg.platform] === 'gated' ? roster.notMembers : null,
       });
     },
   },
