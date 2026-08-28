@@ -45,6 +45,15 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   weekly digest DM itself. A pull can never suppress or reset the next
   scheduled weekly push. Admin-tier only on both platforms; no new tool,
   table, or data access.
+- **`!featureflags` is now discoverable on WhatsApp for super admins.**
+  (#1204) `!featureflags` (#1183) was the first WhatsApp `!`-shortcut gated
+  at `super_admin` rather than `admin`, and it shipped with no discovery line
+  anywhere — the shared admin-tier block `!reviewqueue`/`!mutedlist`/
+  `!blockedlist`/`!topknowledge`/`!admindigest` use is shown to plain admins
+  too, so adding it there would have advertised a command a plain admin gets
+  silently refused for. `community_info`/`!help` now appends one extra bullet
+  for `!featureflags` after the super-admin capability rundown, WhatsApp only
+  and super-admin only — a plain admin's output is unchanged.
 - **`share_project` now nudges you when a fresh share looks like an existing
   member's project, instead of publishing two near-identical showcase
   entries silently.** (#1190) `save_knowledge` has always flagged a

@@ -5000,17 +5000,16 @@ test(
     // reasoning as `reviewqueue` — its discovery line lives in the
     // `whatsappAdminTextCommands` notice instead, asserted separately below.
     // `blockedlist` (issue #1145) is the third, same reasoning. `topknowledge`
-    // (issue #1165) is the fourth, same reasoning. `featureflags` (issue
-    // #1183) is exempted for a stronger reason still: it is gated at
-    // `super_admin`, not `admin`, so even the admin-tier discovery notice
-    // that the exempted commands above use (`whatsappAdminTextCommands`)
-    // would over-advertise it to a plain admin — adding a super_admin-only
-    // discovery line is explicitly out of scope for #1183's approved
-    // acceptance criteria (the shortcut itself, not its discoverability).
-    // `admindigest` (issue #1194) is the fifth admin-tier exception, same
-    // reasoning as `reviewqueue`/`mutedlist`/`blockedlist`/`topknowledge` —
-    // its discovery line lives in the `whatsappAdminTextCommands` notice
-    // instead, asserted separately below.
+    // (issue #1165) is the fourth, same reasoning. `admindigest` (issue
+    // #1194) is the fifth admin-tier exception, same reasoning as
+    // `reviewqueue`/`mutedlist`/`blockedlist`/`topknowledge` — its discovery
+    // line lives in the `whatsappAdminTextCommands` notice instead, asserted
+    // separately below. `featureflags` (issue #1183) is gated at
+    // `super_admin`, not `admin`, so it cannot use `whatsappAdminTextCommands`
+    // either (that notice is shown to plain admins too, who'd be silently
+    // refused) — issue #1204 gave it its own `whatsappSuperAdminTextCommands`
+    // notice instead, same shape one tier up, exempted here for the same
+    // reason as its five siblings and asserted separately below.
     const WHATSAPP_DISCOVERY_EXEMPT_COMMANDS: readonly string[] = [
       'reviewqueue',
       'mutedlist',
@@ -5643,6 +5642,110 @@ test(
     } finally {
       config.behaviour.whatsappTextCommandsEnabled = original;
     }
+  },
+);
+
+// --- issue #1204: !featureflags discovery for super-admin-tier WhatsApp
+// callers, via the new whatsappSuperAdminTextCommands notice —
+// `!featureflags` (issue #1183) is the first shortcut gated at `super_admin`
+// rather than `admin`, so it cannot use whatsappAdminTextCommands (shown to
+// plain admins too, per the tests above) and needed its own notice,
+// appended only in formatCommunityInfoText's `super_admin` branch.
+
+test(
+  'community_info/formatCommunityInfoText mentions !featureflags for super_admin-tier WhatsApp callers with ' +
+    'whatsappTextCommandsEnabled on, in both the default/en and mi language variants (issue #1204 acceptance ' +
+    'criterion 3/4)',
+  { skip },
+  async () => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    try {
+      config.behaviour.whatsappTextCommandsEnabled = true;
+
+      const enSuperAdmin = `${RUN}-info-super-admin-featureflags-en`;
+      const enReply =
+        (await communityInfoHandler('super_admin', 'whatsapp', enSuperAdmin)).content[0]?.text ?? '';
+      assert.match(
+        enReply,
+        /!featureflags/,
+        'a super_admin-tier WhatsApp caller must be told about !featureflags',
+      );
+
+      const miSuperAdmin = `${RUN}-info-super-admin-featureflags-mi`;
+      await setLanguagePreferenceHandler({ platform: 'whatsapp', userId: miSuperAdmin }).handler({
+        language: 'mi',
+      });
+      const miReply =
+        (await communityInfoHandler('super_admin', 'whatsapp', miSuperAdmin)).content[0]?.text ?? '';
+      assert.match(
+        miReply,
+        /!featureflags/,
+        "a super_admin-tier WhatsApp caller with a 'mi' preference must also be told about !featureflags",
+      );
+
+      assert.equal(
+        await formatCommunityInfoText('super_admin', 'whatsapp', enSuperAdmin),
+        enReply,
+        "formatCommunityInfoText's own output must match the tool handler's (single source of truth)",
+      );
+    } finally {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    }
+  },
+);
+
+test(
+  'SECURITY: !featureflags is never mentioned in community_info/formatCommunityInfoText output for an admin, ' +
+    'member, or guest WhatsApp caller (whatsappTextCommandsEnabled on), nor for a Discord caller at any tier ' +
+    '(issue #1204 acceptance criterion 5/6 — the over-advertising regression guard: a plain admin would be ' +
+    'silently refused by the atLeast(role, "super_admin") gate the shortcut itself already enforces)',
+  async () => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    try {
+      config.behaviour.whatsappTextCommandsEnabled = true;
+
+      const adminReply = (await communityInfoHandler('admin', 'whatsapp')).content[0]?.text ?? '';
+      assert.doesNotMatch(
+        adminReply,
+        /!featureflags/,
+        'a plain admin-tier WhatsApp caller must never be told about the super_admin-only !featureflags shortcut',
+      );
+
+      const memberReply = (await communityInfoHandler('member', 'whatsapp')).content[0]?.text ?? '';
+      assert.doesNotMatch(
+        memberReply,
+        /!featureflags/,
+        'a member-tier WhatsApp caller must never be told about the super_admin-only !featureflags shortcut',
+      );
+
+      const guestReply = (await communityInfoHandler('guest', 'whatsapp')).content[0]?.text ?? '';
+      assert.doesNotMatch(
+        guestReply,
+        /!featureflags/,
+        'a guest-tier WhatsApp caller must never be told about the super_admin-only !featureflags shortcut',
+      );
+
+      const roles = ['guest', 'member', 'admin', 'super_admin'] as const;
+      for (const role of roles) {
+        const discordReply = (await communityInfoHandler(role, 'discord')).content[0]?.text ?? '';
+        assert.doesNotMatch(
+          discordReply,
+          /!featureflags/,
+          `a Discord caller (${role}) must never see the WhatsApp-only !featureflags shortcut block`,
+        );
+      }
+    } finally {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    }
+  },
+);
+
+test(
+  'whatsappSuperAdminTextCommands notice contains the literal !featureflags token, untranslated, in both en ' +
+    'and mi variants (issue #1204 acceptance criterion 4)',
+  () => {
+    assert.match(notice('whatsappSuperAdminTextCommands'), /!featureflags/);
+    assert.match(notice('whatsappSuperAdminTextCommands', { language: 'mi' }), /!featureflags/);
   },
 );
 
