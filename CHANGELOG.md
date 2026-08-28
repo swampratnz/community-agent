@@ -70,6 +70,19 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   never triggers the check. No new tool, table, or data access — it reuses
   the same embedding search `list_projects`'/`find_helper`'s suggestion path
   already run.
+- **`review_queue` now shows a sixth line for the onboarding queue.** (#1208)
+  `review_queue`'s own description said it rolled up "all five admin review
+  queues," but its neighbour `admin_digest` already treated the onboarding
+  queue (guests present who were never added as a member) as a sixth,
+  equally review-worthy signal — a gap issue #1136 named and deliberately
+  deferred when it added that queue's proactive stale-alert job. On a
+  `'gated'`-access-mode platform, `review_queue` now appends an onboarding-
+  queue count alongside the existing five, reusing the exact `rosterCounts`/
+  `config.rbac.accessMode` gating `admin_digest` already applies — on an
+  `'open'`-mode platform (where a not-yet-member guest already has full
+  member-tool access) the line is omitted entirely rather than shown as a
+  meaningless zero. The other five lines are unchanged. No new tool, tier,
+  table, or data access.
 
 ### Fixed
 - **`find_knowledge` now falls back to a lexical (substring) search when a
