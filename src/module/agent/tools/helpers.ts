@@ -985,12 +985,17 @@ export function formatAdminActivity(
  * (${platformUserId})${departed}`, where `name` falls back to "(no known
  * name)" and `departed` is " — LEFT THE SERVER/GROUP" iff `leftServer`,
  * followed by a trailing note that env-sourced super admins aren't listed
- * here.
+ * here. `displayName` is stored raw (`grant_admin`/`add_member` write
+ * `args.displayName` verbatim, only the CONFIRM-prompt label goes through
+ * `resolveSanitizedLabel`) and reaches model-visible tool text here plus the
+ * two zero-model shortcuts, so it is run through `sanitizeName()` before
+ * interpolation — same quarantine-escape class as `formatUsageStats`'s
+ * `topUsers` line, flagged unaddressed in PR review (issue #1218).
  */
 export function formatAdminRoster(roster: readonly AdminRosterEntry[]): string {
   if (roster.length === 0) return 'No admins are currently configured in community_users.';
   const lines = roster.map((a) => {
-    const name = a.displayName ?? '(no known name)';
+    const name = a.displayName != null ? sanitizeName(a.displayName) : '(no known name)';
     const departed = a.leftServer ? ' — LEFT THE SERVER/GROUP' : '';
     return `${a.platform}: ${name} (${a.platformUserId})${departed}`;
   });
