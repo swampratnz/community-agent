@@ -33,6 +33,7 @@ import {
   hasConflictAmongIds,
   type KnowledgeSearchHit,
   type LanguagePreference,
+  listAdminRoster,
   listBlockedUsers,
   listKnowledge,
   listKnowledgeTopics,
@@ -60,6 +61,7 @@ import {
   searchProjects,
 } from '@swampratnz/agent-base/storage/repository.js';
 import {
+  formatAdminRoster,
   formatBlockedMembersList,
   formatCommunityInfoText,
   formatFeatureFlags,
@@ -855,6 +857,33 @@ async function handleAdminDigest(
 }
 
 /**
+ * `list_admins` is the seventh shortcut in this file (issue #1218), and the
+ * second at the **super_admin** floor (after `feature_flags`) — mirrored here
+ * via `toolsForRole` + `atLeast(role, 'super_admin')`, same double-check
+ * shape as `handleFeatureFlags` above. Calls the exact same `listAdminRoster()`
+ * + `formatAdminRoster()` pair `list_admins`'s own tool handler now delegates
+ * to (helpers.ts), so the two can never drift.
+ */
+async function handleAdminList(
+  interaction: ChatInputCommandInteraction,
+  deps: SlashCommandDeps,
+): Promise<void> {
+  await deferEphemeral(interaction);
+  const role = await resolveRole('discord', interaction.user.id);
+  if (
+    !toolsForRole(role, 'discord').includes('mcp__community__list_admins') ||
+    !atLeast(role, 'super_admin')
+  ) {
+    await replyEphemeral(interaction, NOT_AUTHORIZED_TEXT, deps);
+    return;
+  }
+  const roster = await listAdminRoster();
+  const message = formatAdminRoster(roster);
+  recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
+  await replyEphemeral(interaction, message, deps);
+}
+
+/**
  * `list_events` is structurally in MEMBER_TOOLS with no extra runtime floor
  * beyond `toolsForRole` (unlike `/warnings`/`/whois`/`/projects`/`/digest`
  * above) — mirrored here exactly like `/kb`'s gate (issue #1004). Takes no
@@ -1096,6 +1125,14 @@ export function bindCommunitySlashCommands(adapter: PlatformAdapter): void {
         .setDescription('Admin: pull your own admin-digest snapshot on demand.')
         .toJSON(),
     handle: handleAdminDigest,
+  });
+  bindDiscordCommand('adminlist', {
+    build: () =>
+      new SlashCommandBuilder()
+        .setName('adminlist')
+        .setDescription('Super admin: list who currently holds bot-admin privilege.')
+        .toJSON(),
+    handle: handleAdminList,
   });
   bindDiscordCommand('events', {
     build: () =>

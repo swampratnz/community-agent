@@ -71,9 +71,16 @@ await import('./support/registerCommands.js');
 await import('./support/registerPolicyKeys.js');
 const { Router } = await import('@swampratnz/agent-base/router.js');
 const { makeRouterDeps } = await import('../src/module/routerWiring.js');
-const { countRepliesToUser, upsertMember, insertContextDigest, listKnowledge, setLanguagePreference } =
-  await import('@swampratnz/agent-base/storage/repository.js');
 const {
+  countRepliesToUser,
+  upsertMember,
+  insertContextDigest,
+  listAdminRoster,
+  listKnowledge,
+  setLanguagePreference,
+} = await import('@swampratnz/agent-base/storage/repository.js');
+const {
+  formatAdminRoster,
   formatBlockedMembersList,
   formatFeatureFlags,
   formatListProjectsEmptyText,
@@ -3928,6 +3935,229 @@ test(
     }
   },
 );
+
+// --- !adminlist (issue #1218) -------------------------------------------------
+//
+// The second `super_admin`-floor shortcut (after `featureflags`), so — like
+// `pushSuperAdminWhatsappNumber` above — super_admin is resolved from
+// `config.rbac.superAdminWhatsappNumbers`, never `community_users`. Unlike
+// `featureflags`, `list_admins` IS DB-backed (`listAdminRoster()`), so this
+// helper additionally stubs that single joined `community_users`/
+// `server_roster` read, mirroring `mockPoolRoleAndMutedList`'s
+// single-mock-per-test discipline above.
+
+/**
+ * Stubs `pool.query`'s role branch plus `listAdminRoster`'s single joined
+ * query — `rows` are raw snake_case DB rows (`platform`, `platform_user_id`,
+ * `display_name`, `left_server`), distinguished from the role branch by the
+ * `cu.platform_user_id`-qualified column list only `listAdminRoster`'s own
+ * query selects.
+ */
+function mockPoolRoleAndAdminRoster(
+  t: { mock: { method: typeof import('node:test').mock.method } },
+  role: 'admin' | 'member' | null,
+  rows: Array<{
+    platform: string;
+    platform_user_id: string;
+    display_name: string | null;
+    left_server: boolean;
+  }> = [],
+): void {
+  t.mock.method(pool, 'query', (async (sql: string) => {
+    if (sql.includes('SELECT role FROM community_users')) {
+      return { rows: role ? [{ role }] : [], rowCount: 0 };
+    }
+    if (sql.includes('cu.platform_user_id')) {
+      return { rows, rowCount: 0 };
+    }
+    return { rows: [], rowCount: 0 };
+  }) as typeof pool.query);
+}
+
+test(
+  "!adminlist renders formatAdminRoster's output for the same rows listAdminRoster returns, for a " +
+    'super_admin caller, with no agent turn invoked (issue #1218 acceptance criterion 4)',
+  async (t) => {
+    mockPoolRoleAndAdminRoster(t, null, [
+      { platform: 'discord', platform_user_id: 'present-1', display_name: 'Present One', left_server: false },
+      { platform: 'whatsapp', platform_user_id: 'departed-1', display_name: null, left_server: true },
+    ]);
+    pushSuperAdminWhatsappNumber(t, 'super-1');
+    const router = makeRouter({ runTurn: throwingRunTurn });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!adminlist', userId: 'super-1' }));
+
+    const expected = formatAdminRoster([
+      { platform: 'discord', platformUserId: 'present-1', displayName: 'Present One', leftServer: false },
+      { platform: 'whatsapp', platformUserId: 'departed-1', displayName: null, leftServer: true },
+    ]);
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].text, expected);
+  },
+);
+
+test(
+  '!adminlist reports "No admins are currently configured in community_users." when nothing qualifies (issue ' +
+    '#1218 acceptance criterion 2)',
+  async (t) => {
+    mockPoolRoleAndAdminRoster(t, null, []);
+    pushSuperAdminWhatsappNumber(t, 'super-1');
+    const router = makeRouter({ runTurn: throwingRunTurn });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!adminlist', userId: 'super-1' }));
+
+    assert.equal(sent[0].text, 'No admins are currently configured in community_users.');
+  },
+);
+
+test(
+  '"!adminlist extra text" is not matched as the !adminlist command — anchored, argument-rejecting matcher ' +
+    'falls through to the normal agent turn (issue #1218 acceptance criterion 5)',
+  async (t) => {
+    mockPoolRoleAndAdminRoster(t, null, []);
+    pushSuperAdminWhatsappNumber(t, 'super-1');
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!adminlist extra text', userId: 'super-1' }));
+
+    assert.equal(sent[0].text, REAL_TURN_REPLY);
+  },
+);
+
+test(
+  'SECURITY: "!adminlist <anything>" is never matched — the anchored matcher rejects any argument, so no ' +
+    'message-supplied text can ever reach an admin-roster repository read (issue #1218 acceptance criterion 5)',
+  async (t) => {
+    let queried = false;
+    pushSuperAdminWhatsappNumber(t, 'super-1');
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users')) return { rows: [], rowCount: 0 };
+      if (sql.includes('cu.platform_user_id')) queried = true;
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!adminlist; DROP TABLE community_users', userId: 'super-1' }));
+
+    assert.equal(sent[0].text, REAL_TURN_REPLY, 'an argument must fall through to a normal turn');
+    assert.equal(queried, false, 'no admin-roster repository read must run when an argument is present');
+  },
+);
+
+test(
+  'SECURITY: an admin-tier caller\'s "!adminlist" falls through to the normal turn — no admin-roster list is ' +
+    'ever rendered and no admin-roster repository read runs (issue #1218 acceptance criterion 7)',
+  async (t) => {
+    let queried = false;
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users')) return { rows: [{ role: 'admin' }], rowCount: 0 };
+      if (sql.includes('cu.platform_user_id')) queried = true;
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!adminlist', userId: 'admin-1' }));
+
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].text, REAL_TURN_REPLY);
+    assert.equal(queried, false, 'no admin-roster repository read must run for an admin-tier caller');
+  },
+);
+
+test(
+  'SECURITY: a member-tier caller\'s "!adminlist" falls through to the normal turn — no admin-roster list is ' +
+    'ever rendered and no admin-roster repository read runs (issue #1218 acceptance criterion 7)',
+  async (t) => {
+    let queried = false;
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users'))
+        return { rows: [{ role: 'member' }], rowCount: 0 };
+      if (sql.includes('cu.platform_user_id')) queried = true;
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!adminlist', userId: 'member-1' }));
+
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].text, REAL_TURN_REPLY);
+    assert.equal(queried, false, 'no admin-roster repository read must run for a member-tier caller');
+  },
+);
+
+test(
+  'SECURITY: a guest caller\'s "!adminlist" falls through to the normal turn — no admin-roster list is ever ' +
+    'rendered and no admin-roster repository read runs (issue #1218 acceptance criterion 7)',
+  async (t) => {
+    let queried = false;
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users')) return { rows: [], rowCount: 0 };
+      if (sql.includes('cu.platform_user_id')) queried = true;
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!adminlist', userId: 'guest-1' }));
+
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].text, REAL_TURN_REPLY);
+    assert.equal(queried, false, 'no admin-roster repository read must run for a guest caller');
+  },
+);
+
+test(
+  'config.behaviour.whatsappTextCommandsEnabled === false disables !adminlist exactly as it does every other ' +
+    'WhatsApp shortcut',
+  async (t) => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    config.behaviour.whatsappTextCommandsEnabled = false;
+    t.after(() => {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    });
+    mockPoolRoleAndAdminRoster(t, null, []);
+    pushSuperAdminWhatsappNumber(t, 'super-1');
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!adminlist', userId: 'super-1' }));
+
+    assert.equal(sent[0].text, REAL_TURN_REPLY);
+  },
+);
+
+test("a successful !adminlist invocation calls recordShortcutHit('whatsapp_text_command') exactly once (issue #1218)", async (t) => {
+  mockPoolRoleAndAdminRoster(t, null, []);
+  pushSuperAdminWhatsappNumber(t, 'super-1');
+  const hits: string[] = [];
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    recordShortcutHitFn: async (kind) => {
+      hits.push(kind);
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!adminlist', userId: 'super-1' }));
+
+  assert.equal(sent.length, 1);
+  assert.deepEqual(hits, ['whatsapp_text_command']);
+});
 
 // --- shortcut_hits tracking (issue #874, acceptance criterion 1) ------------
 

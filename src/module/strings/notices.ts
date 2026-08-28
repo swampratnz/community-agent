@@ -721,12 +721,19 @@ const NOTICE_ENTRIES = {
    * `mi` variant, matching the sibling blocks' convention. No `style`
    * variant, matching `whatsappAdminTextCommands`'s own scope. English text
    * mirrors `communityInfoSuperAdminCapabilities`'s own "See which optional
-   * feature flags are currently on or off" bullet.
+   * feature flags are currently on or off" bullet. `!adminlist` (issue
+   * #1218) is the second `super_admin`-floor shortcut, appended here in the
+   * SAME diff that shipped it, same reasoning as `!mutedlist`'s own
+   * same-diff addition to `whatsappAdminTextCommands` above.
    */
   whatsappSuperAdminTextCommands: {
-    base: '- `!featureflags` — which optional feature flags are currently on or off',
+    base:
+      '- `!featureflags` — which optional feature flags are currently on or off\n' +
+      '- `!adminlist` — who currently holds bot-admin privilege, by identity',
     language: {
-      mi: '- `!featureflags` — he aha ngā haki (feature flags) kōwhiringa e mahi ana, kāore rānei, i tēnei wā',
+      mi:
+        '- `!featureflags` — he aha ngā haki (feature flags) kōwhiringa e mahi ana, kāore rānei, i tēnei wā\n' +
+        '- `!adminlist` — ko wai kei a ia te mana whakahaere pi, mā te tuakiri',
     },
   },
   // --- member digest section labels (memberDigest.ts) ----------------------

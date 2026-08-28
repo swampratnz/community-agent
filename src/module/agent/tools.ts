@@ -50,6 +50,7 @@ export {
   formatMutedMembersList,
   formatBlockedMembersList,
   formatTopKnowledgeList,
+  formatAdminRoster,
 } from './tools/helpers.js';
 export {
   notifyAdmins,
