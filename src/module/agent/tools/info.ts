@@ -42,6 +42,11 @@ export const EVENTS_LIST_LIMIT = 10;
  * when true, byte-identical to before when false, the default) and the
  * caller's own stored language preference — never on message content, and
  * never on a language belonging to anyone but `(platform, userId)` itself.
+ * Issue #1204 appended `whatsappSuperAdminTextCommands` (the `!featureflags`
+ * shortcut) after `superAdminCapabilitiesText` in the `super_admin` branch
+ * only — never to `memberSegment`, the `admin` branch, or any Discord path,
+ * since `!featureflags` is gated `atLeast(role, 'super_admin')` and would be
+ * silently refused for a plain admin.
  */
 export async function formatCommunityInfoText(
   role: Tier,
@@ -65,7 +70,11 @@ export async function formatCommunityInfoText(
   if (role === 'super_admin') {
     const adminCapabilitiesText = notice('communityInfoAdminCapabilities', { language });
     const superAdminCapabilitiesText = notice('communityInfoSuperAdminCapabilities', { language });
-    return `${memberSegment}\n${adminCapabilitiesText}${adminWhatsappShortcuts}\n${superAdminCapabilitiesText}`;
+    const superAdminWhatsappShortcuts =
+      platform === 'whatsapp' && config.behaviour.whatsappTextCommandsEnabled
+        ? `\n${notice('whatsappSuperAdminTextCommands', { language })}`
+        : '';
+    return `${memberSegment}\n${adminCapabilitiesText}${adminWhatsappShortcuts}\n${superAdminCapabilitiesText}${superAdminWhatsappShortcuts}`;
   }
   if (role === 'admin') {
     return `${memberSegment}\n${notice('communityInfoAdminCapabilities', { language })}${adminWhatsappShortcuts}`;
