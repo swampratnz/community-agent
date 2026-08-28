@@ -56,6 +56,7 @@ export {
   notifyMemberApproved,
   notifyAdminApproved,
   notifyAccessRequestDeclined,
+  notifyProjectRemoved,
   notifySuggestionResolved,
   notifyReportResolved,
   notifyReportFiled,

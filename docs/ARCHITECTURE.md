@@ -1285,7 +1285,12 @@ moderation warn/block DMs (`moderator.ts`), the `code_answers` redact/
 truncate notes (`agent/outbound.ts`'s `applyCodePolicy`), and the
 member/admin approval confirmation DMs (`agent/tools.ts`'s
 `notifyMemberApproved`/`notifyAdminApproved`) — same `'mi'`-over-`'plain'`
-precedence, same fail-safe-to-`'standard'` lookup shape.
+precedence, same fail-safe-to-`'standard'` lookup shape. Issue #1212 closes
+the remaining member-resolution DM family in the same file
+(`notifyAccessRequestDeclined`, `notifyProjectRemoved`,
+`notifySuggestionResolved`, `notifyReportResolved`, `notifyAppealResolved`,
+`notifyKnowledgeTipResolved`, `notifyWarningsCleared`,
+`notifyKnowledgeEntryFixed`) — same precedence, same fail-safe shape.
 
 ## Onboarding (gated mode)
 
