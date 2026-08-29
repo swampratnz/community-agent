@@ -3913,6 +3913,40 @@ fire-and-forget. No new mechanism, no schema change, no new privileged data
 access — the same already-reviewed per-recipient queue, now fed by 5
 producers instead of 2.
 
+Issues #1171 and #1222 append admin-authored policy text to that same
+approval DM: the community guidelines, then (#1222) the configured welcome
+message, each `mi`-aware and each in its own `.catch(() => null)` so one
+failing lookup degrades only its own block and never drops the DM. Neither
+interpolates caller-supplied text, so no new injection surface.
+
+The welcome block — and only that block — is SUPPRESSED when
+`isKnownUser(platform, userId)` is true. Members the bot has already seen
+came through the join/first-contact path, which sends this identical
+configured text (Discord guild-join, WhatsApp-Cloud first-inbound, Baileys
+group), so without the gate an ordinary gated guest approved off
+`list_access_requests` would receive it twice. `isKnownUser` is the same
+durable, DB-backed backstop those adapters use to avoid re-welcoming a known
+contact — their in-process `welcomedThisRun` map is explicitly never
+persisted — so this reuses their notion of "already welcomed" rather than
+adding a second one, and needs no new column. Guidelines are deliberately
+NOT gated this way: #1171 shipped that redundancy knowingly.
+
+Two properties of the gate are worth stating because they are decisions, not
+accidents. A failed lookup degrades to "no welcome block" — toward
+suppression, keeping the duplicate it exists to prevent off the DM, while the
+approval DM itself still sends. And it is consulted only when a welcome is
+actually configured, so deployments that never set one acquire no DB read
+here at all.
+
+One narrow gap is accepted rather than closed: `isKnownUser` reads
+`interactions`, populated by MESSAGES, while Discord's join welcome fires
+from the `GuildMemberAdd` EVENT, which writes none. A Discord member who
+joins, never messages, and is then proactively `add_member`-ed without
+filing an access request will still see the welcome twice. The population is
+small, it is not a regression (before #1222 this path sent no welcome at
+all), and closing it would require a persisted welcome-sent marker that no
+table records today — precisely what reusing `isKnownUser` avoids adding.
+
 Issue #888 extended the same recovery to six standalone periodic-job alert
 senders that each implement their own near-identical
 `alertSuperAdmins(adapters, message)` helper and, until now, only logged and

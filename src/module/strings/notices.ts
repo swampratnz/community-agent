@@ -143,6 +143,18 @@ const NOTICE_ENTRIES = {
   guidelinesHeading: {
     base: 'Community guidelines:',
   },
+  /**
+   * The heading that joins the admin-configured welcome message onto
+   * `notifyMemberApproved`'s approval DM (issue #1222 — the welcome-message
+   * sibling of `guidelinesHeading` above, for the same pre-registered/
+   * `team_setup`-batched population #1171 fixed guidelines for). No `mi`
+   * variant, same rationale as `guidelinesHeading`: this heading is new, not
+   * a byte-for-byte move of an existing literal, but keeping it English-only
+   * matches every other heading in this pack today.
+   */
+  welcomeHeading: {
+    base: 'Welcome message:',
+  },
   gatedWaitClause: {
     base: (notice: string, waitDays?: number) => {
       if (!waitDays || waitDays < 1) return notice;
