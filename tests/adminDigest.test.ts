@@ -5809,6 +5809,532 @@ test(
   },
 );
 
+// --- issue #1210: fold responseLatencyStats (issue #877, scope fix #911)
+// into the weekly admin digest push, as both #877 and #911 named and
+// deferred. ---
+
+const RESPONSE_LATENCY_ZERO_PREFIX = [...SUGGESTION_BREAKDOWN_ZERO_PREFIX, 0, 0, null] as const;
+
+test('buildAdminDigestMessage: the response-latency line renders only when responseLatencyCount > 0, with the exact response_latency tool wording and no trend suffix, and omitting the three new params is byte-identical to the pre-#1210 form (issue #1210 acceptance criteria 1, 2, 3)', () => {
+  const withoutNewParams = buildAdminDigestMessage(...RESPONSE_LATENCY_ZERO_PREFIX);
+  const withExplicitZeros = buildAdminDigestMessage(...RESPONSE_LATENCY_ZERO_PREFIX, 0, null, null);
+  assert.equal(
+    withoutNewParams,
+    withExplicitZeros,
+    'a caller that has not wired the new trailing params through renders byte-identical output',
+  );
+  assert.equal(
+    withExplicitZeros,
+    null,
+    'still a quiet week — responseLatencyCount === 0 never fabricates a line',
+  );
+
+  const withData = buildAdminDigestMessage(...RESPONSE_LATENCY_ZERO_PREFIX, 42, 12.4, 58.9);
+  assert.ok(withData, 'a nonzero responseLatencyCount alone still produces a DM');
+  const line = withData.split('\n').find((l) => l.includes('⏱️'));
+  assert.equal(
+    line,
+    '⏱️ Response latency (last 7d): 42 replies, median 12s, p90 59s',
+    'exact response_latency tool wording, rounded seconds, and no trend suffix appended',
+  );
+});
+
+test('SECURITY: buildAdminDigestMessage: the response-latency line is a deterministic function of (responseLatencyCount, responseLatencyMedianSeconds, responseLatencyP90Seconds) only, and never carries a user id, display name, conversation id, or message excerpt (issue #1210 acceptance criterion 6)', () => {
+  const secretUserId = 'user-id-192837465';
+  const secretDisplayName = 'a very identifiable display name that must never leak';
+  const secretConversationId = 'conversation-id-564738291';
+  const secretExcerpt = 'a very identifiable message excerpt that must never leak';
+
+  const message = buildAdminDigestMessage(...RESPONSE_LATENCY_ZERO_PREFIX, 42, 12.4, 58.9);
+  assert.ok(message);
+  const line = message.split('\n').find((l) => l.includes('⏱️'));
+  assert.ok(line);
+  for (const secret of [secretUserId, secretDisplayName, secretConversationId, secretExcerpt]) {
+    assert.ok(
+      !line.includes(secret),
+      `SECURITY: the response-latency line must never carry "${secret}" — it takes no such input, only the three numeric aggregates`,
+    );
+  }
+  assert.equal(
+    line,
+    '⏱️ Response latency (last 7d): 42 replies, median 12s, p90 59s',
+    'the line is a pure function of the three numeric aggregates — bare numbers and fixed template text only',
+  );
+});
+
+test(
+  'buildAdminDigestForAdmin: responseLatencyCount/responseLatencyMedianSeconds/responseLatencyP90Seconds are never written into currentCounts — this signal carries no persisted trend, unlike every other signal added to the fan-out above (issue #1210 acceptance criterion 4)',
+  { skip },
+  async () => {
+    const adminId = `${RUN}-latency-nosnapshot-admin`;
+    const conversationId = `${RUN}-c-latency-nosnapshot`;
+    const memberId = `${RUN}-latency-nosnapshot-member`;
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    const now = new Date();
+    await pool.query(
+      `INSERT INTO interactions
+         (platform, conversation_id, user_id, role, direction, content, addressed_to_bot, created_at)
+       VALUES ('discord',$1,$2,'member','inbound','question',true,$3)`,
+      [conversationId, memberId, new Date(now.getTime() - 12_000)],
+    );
+    await pool.query(
+      `INSERT INTO interactions
+         (platform, conversation_id, user_id, role, direction, content, meta, created_at)
+       VALUES ('discord',$1,'bot','member','outbound','reply',$2,$3)`,
+      [conversationId, JSON.stringify({ replyToUserId: memberId }), now],
+    );
+
+    try {
+      const adapter = fakeAdapter({ platform: 'discord', conversationIds: [conversationId], sent: [] });
+      const { message, currentCounts } = await buildAdminDigestForAdmin('discord', adminId, adapter);
+
+      assert.ok(message, 'the seeded reply alone still produces a DM');
+      assert.ok(
+        message.includes('⏱️ Response latency'),
+        'sanity check: the response-latency line actually rendered',
+      );
+      for (const key of Object.keys(currentCounts)) {
+        assert.ok(
+          !key.toLowerCase().includes('latency'),
+          `currentCounts must never carry a responseLatency* key (found "${key}") — this signal is deliberately ` +
+            "excluded from the sanitizeDigestCounts snapshot, see buildAdminDigestMessage's own doc comment",
+        );
+      }
+    } finally {
+      await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        adminId,
+      ]);
+    }
+  },
+);
+
+test(
+  'SECURITY: buildAdminDigestForAdmin: responseLatencyStats is wired over the same FRESHNESS_DAYS window and rendered on the digest, and never leaks a user id, display name, or message excerpt (issue #1210 acceptance criteria 1, 6)',
+  { skip },
+  async () => {
+    const adminId = `${RUN}-latency-wiring-admin`;
+    const conversationId = `${RUN}-c-latency-wiring`;
+    const secretUserId = `${RUN}-latency-wiring-SECRET-USER-ID`;
+    const secretContent = 'SECRET-QUESTION-CONTENT-NEVER-SHOWN-latency-wiring';
+    const now = new Date();
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    await pool.query(
+      `INSERT INTO interactions
+         (platform, conversation_id, user_id, role, direction, content, addressed_to_bot, created_at)
+       VALUES ('discord',$1,$2,'member','inbound',$3,true,$4)`,
+      [conversationId, secretUserId, secretContent, new Date(now.getTime() - 12_000)],
+    );
+    await pool.query(
+      `INSERT INTO interactions
+         (platform, conversation_id, user_id, role, direction, content, meta, created_at)
+       VALUES ('discord',$1,'bot','member','outbound','the reply text itself',$2,$3)`,
+      [conversationId, JSON.stringify({ replyToUserId: secretUserId }), now],
+    );
+
+    try {
+      const adapter = fakeAdapter({ platform: 'discord', conversationIds: [conversationId], sent: [] });
+      const result = await buildAdminDigestForAdmin('discord', adminId, adapter);
+
+      assert.ok(result.message, 'the single seeded reply alone still produces a DM');
+      const line = result.message.split('\n').find((l) => l.includes('⏱️'));
+      assert.match(
+        line ?? '',
+        /^⏱️ Response latency \(last 7d\): \d+ replies, median \d+s, p90 \d+s$/,
+        'the line renders exactly the fixed label plus three aggregate numbers',
+      );
+      for (const secret of [secretUserId, secretContent, 'the reply text itself']) {
+        assert.ok(
+          !result.message.includes(secret),
+          `SECURITY: "${secret}" must never reach the rendered digest — only the three aggregate numbers do (issue #1210 acceptance criterion 6)`,
+        );
+      }
+    } finally {
+      await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        adminId,
+      ]);
+    }
+  },
+);
+
+test(
+  "SECURITY: buildAdminDigestForAdmin's responseLatencyStats scoping matches every sibling conversation-scoped signal — an admin's rendered response-latency line reflects only replies in their own conversationsForUser scope, never a second admin's separate conversation (issue #1210 acceptance criterion 5)",
+  { skip },
+  async () => {
+    const adminA = `${RUN}-latency-scope-admin-a`;
+    const adminB = `${RUN}-latency-scope-admin-b`;
+    const convoA = `${RUN}-c-latency-scope-a`;
+    const convoB = `${RUN}-c-latency-scope-b`;
+    const memberA = `${RUN}-latency-scope-member-a`;
+    const memberB = `${RUN}-latency-scope-member-b`;
+    await upsertMember({ platform: 'discord', userId: adminA, role: 'admin', addedBy: `${RUN}-actor` });
+    await upsertMember({ platform: 'discord', userId: adminB, role: 'admin', addedBy: `${RUN}-actor` });
+
+    const now = new Date();
+    // Admin A's own conversation: one reply pair, a 12s delta.
+    await pool.query(
+      `INSERT INTO interactions
+         (platform, conversation_id, user_id, role, direction, content, addressed_to_bot, created_at)
+       VALUES ('discord',$1,$2,'member','inbound','question A',true,$3)`,
+      [convoA, memberA, new Date(now.getTime() - 12_000)],
+    );
+    await pool.query(
+      `INSERT INTO interactions
+         (platform, conversation_id, user_id, role, direction, content, meta, created_at)
+       VALUES ('discord',$1,'bot','member','outbound','reply A',$2,$3)`,
+      [convoA, JSON.stringify({ replyToUserId: memberA }), now],
+    );
+    // Admin B's SEPARATE conversation: a very different reply pair (a 500s
+    // delta) — if scope ever leaked into admin A's aggregate, the count
+    // would double to 2 and the median would shift far above 12s.
+    await pool.query(
+      `INSERT INTO interactions
+         (platform, conversation_id, user_id, role, direction, content, addressed_to_bot, created_at)
+       VALUES ('discord',$1,$2,'member','inbound','question B',true,$3)`,
+      [convoB, memberB, new Date(now.getTime() - 500_000)],
+    );
+    await pool.query(
+      `INSERT INTO interactions
+         (platform, conversation_id, user_id, role, direction, content, meta, created_at)
+       VALUES ('discord',$1,'bot','member','outbound','reply B',$2,$3)`,
+      [convoB, JSON.stringify({ replyToUserId: memberB }), now],
+    );
+
+    try {
+      const adapterA = fakeAdapter({ platform: 'discord', conversationIds: [convoA], sent: [] });
+      const resultA = await buildAdminDigestForAdmin('discord', adminA, adapterA);
+
+      assert.ok(resultA.message, "admin A's in-scope reply alone still produces a DM");
+      const lineA = resultA.message.split('\n').find((l) => l.includes('⏱️'));
+      assert.match(
+        lineA ?? '',
+        /^⏱️ Response latency \(last 7d\): 1 replies, median 12s, p90 12s$/,
+        "admin A's line reflects only their own convoA reply — never convoB's 500s-delta pair, which would " +
+          'change the count to 2 and shift the median far above 12s if scope leaked',
+      );
+    } finally {
+      await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [[convoA, convoB]]);
+      await pool.query(
+        `DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = ANY($1)`,
+        [[adminA, adminB]],
+      );
+    }
+  },
+);
+
+// --- issue #1220: split the blended response-latency aggregate above into
+// auto_answer/mention buckets — the follow-up both #1210's own
+// ARCHITECTURE.md note and VISION named as future growth. Additive only: six
+// more append-only trailing params on buildAdminDigestMessage, two more
+// responseLatencyStats(scope, FRESHNESS_DAYS, ...) calls in the fan-out. ---
+
+test("buildAdminDigestMessage: given non-zero blended, auto-answer, and mention response-latency aggregates, all three lines render in order, each with its own bucket's own numbers (issue #1220 acceptance criterion 1)", () => {
+  const message = buildAdminDigestMessage(
+    ...RESPONSE_LATENCY_ZERO_PREFIX,
+    100,
+    20,
+    80, // blended
+    40,
+    5,
+    15, // auto-answer
+    60,
+    30,
+    90, // mention
+  );
+  assert.ok(message);
+  const latencyLines = message.split('\n').filter((l) => l.startsWith('⏱️'));
+  assert.deepEqual(
+    latencyLines,
+    [
+      '⏱️ Response latency (last 7d): 100 replies, median 20s, p90 80s',
+      '⏱️ Auto-answer latency (last 7d): 40 replies, median 5s, p90 15s',
+      '⏱️ Mention/DM latency (last 7d): 60 replies, median 30s, p90 90s',
+    ],
+    'blended line first, then auto-answer, then mention — each rendering its own bucket, not the blended values',
+  );
+});
+
+test('buildAdminDigestMessage: an empty auto-answer or mention bucket renders exactly the one non-empty split line alongside the blended line, never a fabricated line for the empty bucket (issue #1220 acceptance criterion 2)', () => {
+  const mentionEmpty = buildAdminDigestMessage(
+    ...RESPONSE_LATENCY_ZERO_PREFIX,
+    100,
+    20,
+    80,
+    40,
+    5,
+    15,
+    0,
+    null,
+    null,
+  );
+  assert.ok(mentionEmpty);
+  assert.ok(mentionEmpty.includes('⏱️ Response latency (last 7d): 100 replies, median 20s, p90 80s'));
+  assert.ok(mentionEmpty.includes('⏱️ Auto-answer latency (last 7d): 40 replies, median 5s, p90 15s'));
+  assert.ok(!mentionEmpty.includes('Mention/DM latency'), 'the empty mention bucket renders no line at all');
+
+  const autoAnswerEmpty = buildAdminDigestMessage(
+    ...RESPONSE_LATENCY_ZERO_PREFIX,
+    100,
+    20,
+    80,
+    0,
+    null,
+    null,
+    60,
+    30,
+    90,
+  );
+  assert.ok(autoAnswerEmpty);
+  assert.ok(autoAnswerEmpty.includes('⏱️ Response latency (last 7d): 100 replies, median 20s, p90 80s'));
+  assert.ok(autoAnswerEmpty.includes('⏱️ Mention/DM latency (last 7d): 60 replies, median 30s, p90 90s'));
+  assert.ok(
+    !autoAnswerEmpty.includes('Auto-answer latency'),
+    'the empty auto-answer bucket renders no line at all',
+  );
+});
+
+test('buildAdminDigestMessage: blended, auto-answer, and mention counts all zero renders no latency line at all, byte-identical to the pre-#1220 quiet case (issue #1220 acceptance criterion 3)', () => {
+  const preExisting = buildAdminDigestMessage(...RESPONSE_LATENCY_ZERO_PREFIX, 0, null, null);
+  const withNewParamsAlsoZero = buildAdminDigestMessage(
+    ...RESPONSE_LATENCY_ZERO_PREFIX,
+    0,
+    null,
+    null,
+    0,
+    null,
+    null,
+    0,
+    null,
+    null,
+  );
+  assert.equal(
+    withNewParamsAlsoZero,
+    preExisting,
+    'explicit zeros for the six new params match the pre-#1220 quiet form exactly',
+  );
+  assert.equal(withNewParamsAlsoZero, null, 'still a quiet week overall');
+});
+
+test('buildAdminDigestMessage: omitting the six new auto-answer/mention params defaults to 0/null/null and is byte-identical to explicitly passing those defaults, both on a quiet week and a week with other signals firing (issue #1220 acceptance criterion 4)', () => {
+  const withoutNewParams = buildAdminDigestMessage(...RESPONSE_LATENCY_ZERO_PREFIX, 42, 12.4, 58.9);
+  const withExplicitDefaults = buildAdminDigestMessage(
+    ...RESPONSE_LATENCY_ZERO_PREFIX,
+    42,
+    12.4,
+    58.9,
+    0,
+    null,
+    null,
+    0,
+    null,
+    null,
+  );
+  assert.equal(
+    withoutNewParams,
+    withExplicitDefaults,
+    'a caller that has not wired the six new trailing params through renders byte-identical output',
+  );
+  assert.ok(
+    withoutNewParams?.includes('⏱️ Response latency (last 7d): 42 replies, median 12s, p90 59s'),
+    'the pre-existing blended line is unaffected by the new trailing params being appended or omitted',
+  );
+});
+
+test('SECURITY: buildAdminDigestMessage never fabricates a "0 replies"/null-seconds line for an empty auto-answer or mention bucket — only the non-empty bucket\'s own line ever renders (issue #1220 acceptance criterion 7)', () => {
+  const autoAnswerOnly = buildAdminDigestMessage(
+    ...RESPONSE_LATENCY_ZERO_PREFIX,
+    0,
+    null,
+    null,
+    40,
+    5,
+    15,
+    0,
+    null,
+    null,
+  );
+  assert.ok(autoAnswerOnly);
+  assert.ok(
+    !/Mention\/DM latency/.test(autoAnswerOnly),
+    'SECURITY: an empty mention bucket must never render a "0 replies" line',
+  );
+
+  const mentionOnly = buildAdminDigestMessage(
+    ...RESPONSE_LATENCY_ZERO_PREFIX,
+    0,
+    null,
+    null,
+    0,
+    null,
+    null,
+    60,
+    30,
+    90,
+  );
+  assert.ok(mentionOnly);
+  assert.ok(
+    !/Auto-answer latency/.test(mentionOnly),
+    'SECURITY: an empty auto-answer bucket must never render a "0 replies" line',
+  );
+});
+
+test("SECURITY: buildAdminDigestMessage's auto-answer and mention split lines are a deterministic function of their own six numeric aggregates only, and never carry a user id, display name, conversation id, or message excerpt (issue #1220 acceptance criterion 8)", () => {
+  const secretUserId = 'user-id-192837465-1220';
+  const secretDisplayName = 'a very identifiable display name that must never leak (1220)';
+  const secretConversationId = 'conversation-id-564738291-1220';
+  const secretExcerpt = 'a very identifiable message excerpt that must never leak (1220)';
+
+  const message = buildAdminDigestMessage(
+    ...RESPONSE_LATENCY_ZERO_PREFIX,
+    100,
+    20,
+    80,
+    40,
+    5,
+    15,
+    60,
+    30,
+    90,
+  );
+  assert.ok(message);
+  const autoLine = message.split('\n').find((l) => l.includes('Auto-answer latency'));
+  const mentionLine = message.split('\n').find((l) => l.includes('Mention/DM latency'));
+  assert.ok(autoLine);
+  assert.ok(mentionLine);
+  for (const secret of [secretUserId, secretDisplayName, secretConversationId, secretExcerpt]) {
+    assert.ok(
+      !autoLine.includes(secret) && !mentionLine.includes(secret),
+      `SECURITY: the auto-answer/mention split lines must never carry "${secret}" — they take no such input, ` +
+        'only their own three numeric aggregates each',
+    );
+  }
+  assert.equal(autoLine, '⏱️ Auto-answer latency (last 7d): 40 replies, median 5s, p90 15s');
+  assert.equal(mentionLine, '⏱️ Mention/DM latency (last 7d): 60 replies, median 30s, p90 90s');
+});
+
+// buildAdminDigestForAdmin's ~30-query gathering fan-out is impractical to
+// hand-mock branch-by-branch (see the rationale comment near the top of
+// tests/discordSlashCommands.test.ts and tests/whatsappTextCommandsRouter.test.ts,
+// which both point back at this file) — so, like every other signal's own
+// buildAdminDigestForAdmin-level wiring/scoping test above (e.g. the blended
+// response-latency wiring/scoping tests just above), this exercises the real
+// repository function against real Postgres rather than a stubbed
+// responseLatencyStats: the auto_answer/mention scope split is proven by
+// seeding one auto-answer-flagged reply pair and one addressed (mention)
+// reply pair in the SAME admin's scope and asserting each bucket's line
+// reflects only its own pair's delta — if either new
+// responseLatencyStats(scope, FRESHNESS_DAYS, 'auto_answer'/'mention') call
+// used the wrong scope, window, or third argument, the counts/medians below
+// would not match.
+test(
+  "SECURITY: buildAdminDigestForAdmin wires responseLatencyStats(scope, FRESHNESS_DAYS, 'auto_answer') and " +
+    "(scope, FRESHNESS_DAYS, 'mention') alongside the existing 'all' call — each split line reflects only its " +
+    'own bucket, and none leaks a user id, display name, or message excerpt (issue #1220 acceptance criteria 1, 5, 6)',
+  { skip },
+  async () => {
+    const adminId = `${RUN}-latency-split-wiring-admin`;
+    const conversationId = `${RUN}-c-latency-split-wiring`;
+    const autoAnswerMemberId = `${RUN}-latency-split-auto-member`;
+    const mentionMemberId = `${RUN}-latency-split-mention-member`;
+    const secretAutoAnswerContent = 'SECRET-AUTO-ANSWER-QUESTION-latency-split';
+    const secretMentionContent = 'SECRET-MENTION-QUESTION-latency-split';
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    const now = new Date();
+    // Auto-answer pair: ambient (not addressed_to_bot), 10s delta, outbound
+    // reply carries meta.autoAnswer — matches router.ts's
+    // isAutoAnswerCandidate contract responseLatencyStats's own doc comment
+    // describes.
+    await pool.query(
+      `INSERT INTO interactions
+         (platform, conversation_id, user_id, role, direction, content, addressed_to_bot, created_at)
+       VALUES ('discord',$1,$2,'member','inbound',$3,false,$4)`,
+      [conversationId, autoAnswerMemberId, secretAutoAnswerContent, new Date(now.getTime() - 10_000)],
+    );
+    await pool.query(
+      `INSERT INTO interactions
+         (platform, conversation_id, user_id, role, direction, content, meta, created_at)
+       VALUES ('discord',$1,'bot','member','outbound','auto-answer reply',$2,$3)`,
+      [
+        conversationId,
+        JSON.stringify({ replyToUserId: autoAnswerMemberId, autoAnswer: true }),
+        new Date(now.getTime() - 10_000 + 10_000),
+      ],
+    );
+    // Mention pair: addressed_to_bot, 20s delta, no autoAnswer meta key.
+    await pool.query(
+      `INSERT INTO interactions
+         (platform, conversation_id, user_id, role, direction, content, addressed_to_bot, created_at)
+       VALUES ('discord',$1,$2,'member','inbound',$3,true,$4)`,
+      [conversationId, mentionMemberId, secretMentionContent, new Date(now.getTime() - 20_000)],
+    );
+    await pool.query(
+      `INSERT INTO interactions
+         (platform, conversation_id, user_id, role, direction, content, meta, created_at)
+       VALUES ('discord',$1,'bot','member','outbound','mention reply',$2,$3)`,
+      [conversationId, JSON.stringify({ replyToUserId: mentionMemberId }), now],
+    );
+
+    try {
+      const adapter = fakeAdapter({ platform: 'discord', conversationIds: [conversationId], sent: [] });
+      const result = await buildAdminDigestForAdmin('discord', adminId, adapter);
+
+      assert.ok(result.message, 'the two seeded reply pairs alone still produce a DM');
+      const blendedLine = result.message.split('\n').find((l) => l.includes('⏱️ Response latency'));
+      const autoAnswerLine = result.message.split('\n').find((l) => l.includes('Auto-answer latency'));
+      const mentionLine = result.message.split('\n').find((l) => l.includes('Mention/DM latency'));
+      assert.match(
+        blendedLine ?? '',
+        /^⏱️ Response latency \(last 7d\): 2 replies, /,
+        'blended combines both pairs',
+      );
+      assert.match(
+        autoAnswerLine ?? '',
+        /^⏱️ Auto-answer latency \(last 7d\): 1 replies, median 10s, p90 10s$/,
+        'auto-answer bucket reflects only its own 10s-delta pair',
+      );
+      assert.match(
+        mentionLine ?? '',
+        /^⏱️ Mention\/DM latency \(last 7d\): 1 replies, median 20s, p90 20s$/,
+        'mention bucket reflects only its own 20s-delta pair',
+      );
+
+      for (const secret of [
+        autoAnswerMemberId,
+        mentionMemberId,
+        secretAutoAnswerContent,
+        secretMentionContent,
+        'auto-answer reply',
+        'mention reply',
+      ]) {
+        assert.ok(
+          !result.message.includes(secret),
+          `SECURITY: "${secret}" must never reach the rendered digest — only the aggregate numbers do (issue #1220 acceptance criterion 6)`,
+        );
+      }
+    } finally {
+      await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        adminId,
+      ]);
+    }
+  },
+);
+
+// Shortcut parity (issue #1220 acceptance criterion 6): !admindigest
+// (commands.ts), /admindigest (slashCommands.ts) and the admin_digest tool
+// (digestsAdmin.ts) all call buildAdminDigestForAdmin/buildAdminDigestMessage
+// directly with no extra shaping of their own (grep confirms none of the
+// three post-processes the returned message before sending/quarantining it),
+// so the shared-builder tests above already cover every surface — see the
+// identical "renders text identical to buildAdminDigestForAdmin(...)'s own
+// return" tests in tests/discordSlashCommands.test.ts and
+// tests/whatsappTextCommandsRouter.test.ts (issue #1194), which this change
+// does not need to duplicate.
+
 // --- issue #385: runAdminDigestOnce now signals total failure to
 // startTrackedJob (previously listAdmins() failures were caught-and-returned,
 // and the per-admin loop swallowed every error and continued — so the

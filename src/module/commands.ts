@@ -16,6 +16,7 @@ import {
   getMyDataSummary,
   getPublishedInterestsForOwners,
   hasConflictAmongIds,
+  listAdminRoster,
   listBlockedUsers,
   listKnowledge,
   listKnowledgeTopics,
@@ -32,8 +33,10 @@ import {
   oldestPendingCandidateAgeDays,
   oldestPendingSuggestionAgeDays,
   resolveLinkedIdentities,
+  rosterCounts,
 } from '@swampratnz/agent-base/storage/repository.js';
 import {
+  formatAdminRoster,
   formatBlockedMembersList,
   formatCommunityInfoText,
   formatFeatureFlags,
@@ -76,10 +79,12 @@ import { notice } from './strings/notices.js';
  * (issue #1018), `help` (issue #993), `kbtopics` (issue #1036),
  * `kbhelpful` (issue #1087), `reviewqueue` (issue #1095, the first
  * admin-tier entry), `mutedlist` (issue #1114, the second), `blockedlist`
- * (issue #1145, the third), `topknowledge` (issue #1165, the fourth), and
+ * (issue #1145, the third), `topknowledge` (issue #1165, the fourth),
  * `featureflags` (issue #1183, the fifth — and the first at the
- * `super_admin` floor rather than `admin`) appended — also safe for the
- * WhatsApp side because every `!` matcher is anchored and mutually exclusive.
+ * `super_admin` floor rather than `admin`), `admindigest` (issue #1194, the
+ * sixth), and `adminlist` (issue #1218, the seventh, and the second at the
+ * `super_admin` floor) appended — also safe for the WhatsApp side because
+ * every `!` matcher is anchored and mutually exclusive.
  *
  * The Discord halves are BOUND by `bindCommunitySlashCommands()`
  * (slashCommands.ts), which `createConfiguredAdapters()` calls — never at
@@ -412,16 +417,21 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
   },
   {
     // First admin-tier entry in this registry (issue #1095; reports line
-    // added #1207). Anchored, argument-rejecting matcher, same discipline as
-    // `warnings`/`mysubmissions`/`mydata`/`kbtopics`/`kbhelpful` above:
-    // `!reviewqueue anything` falls through to TEXT_COMMAND_UNMATCHED rather
-    // than matching, so no message-supplied text ever reaches a repository
-    // read. Renders review_queue's own guild-wide/caller.platform-scoped
-    // lines via the SAME repository functions with the SAME arguments that
-    // tool's handler uses. The reports line needs a live adapter
-    // (`callerScope()`'s own membership lookup) unavailable to the fixed,
-    // zero-opts `WhatsAppTextCommandDeps` shape, so it's computed inline
-    // against the module-scope `whatsappAdapter` binding below, replicating
+    // added #1207, onboarding line #1216). Anchored, argument-rejecting
+    // matcher, same discipline as `warnings`/`mysubmissions`/`mydata`/
+    // `kbtopics`/`kbhelpful` above: `!reviewqueue anything` falls through to
+    // TEXT_COMMAND_UNMATCHED rather than matching, so no message-supplied
+    // text ever reaches a repository read. Renders review_queue's own
+    // guild-wide/caller.platform-scoped lines via the SAME repository
+    // functions with the SAME arguments that tool's handler uses, including
+    // the onboarding-queue line (#1216, gated on
+    // config.rbac.accessMode[msg.platform] === 'gated' verbatim, never on
+    // the notMembers count).
+    //
+    // The reports line needs a live adapter (`callerScope()`'s own
+    // membership lookup) unavailable to the fixed, zero-opts
+    // `WhatsAppTextCommandDeps` shape, so it's computed inline against the
+    // module-scope `whatsappAdapter` binding below, replicating
     // `callerScope()`'s exact arithmetic (context.ts) plus
     // `resolveLinkedIdentities`'s accused-admin exclusion — the same pair
     // `review_queue`'s own handler calls (digestsAdmin.ts) — so the rendered
@@ -441,6 +451,7 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
         candidateAgeDays,
         appealCount,
         appealAgeDays,
+        roster,
       ] = await Promise.all([
         countAccessRequests(),
         oldestAccessRequestAgeDays(),
@@ -450,6 +461,7 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
         oldestPendingCandidateAgeDays(),
         countOpenAppeals(msg.platform),
         oldestOpenAppealAgeDays(msg.platform),
+        rosterCounts(msg.platform),
       ]);
       // Unreachable in practice — createConfiguredAdapters() binds the
       // WhatsApp adapter before any message can be routed, same as
@@ -465,6 +477,7 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
           candidateAgeDays,
           appealCount,
           appealAgeDays,
+          onboardingQueueCount: config.rbac.accessMode[msg.platform] === 'gated' ? roster.notMembers : null,
         });
       }
       const scope =
@@ -487,6 +500,7 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
         reportAgeDays,
         appealCount,
         appealAgeDays,
+        onboardingQueueCount: config.rbac.accessMode[msg.platform] === 'gated' ? roster.notMembers : null,
       });
     },
   },
@@ -614,6 +628,24 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
       // its newlines and destroy the multi-section formatting for no added
       // protection (issue #1194 review).
       return message ?? 'Nothing to report right now.';
+    },
+  },
+  {
+    // Seventh entry (issue #1218), and the second at the `super_admin` floor
+    // (after `featureflags`) — same shape as `reviewqueue`/`mutedlist`/
+    // `blockedlist`/`topknowledge`/`featureflags` above. Anchored,
+    // argument-rejecting matcher: `!adminlist anything` falls through to
+    // TEXT_COMMAND_UNMATCHED rather than matching, so no message-supplied
+    // text ever reaches a repository read. Calls the exact same
+    // `listAdminRoster()` + `formatAdminRoster()` pair `list_admins`'s own
+    // tool handler now delegates to (helpers.ts), so the two can never drift.
+    name: 'adminlist',
+    platforms: ['discord', 'whatsapp'],
+    whatsapp: async (text, _msg, role) => {
+      if (!/^!adminlist$/i.test(text)) return TEXT_COMMAND_UNMATCHED;
+      if (!atLeast(role, 'super_admin')) return null;
+      const roster = await listAdminRoster();
+      return formatAdminRoster(roster);
     },
   },
 ];

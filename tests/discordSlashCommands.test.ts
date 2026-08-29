@@ -67,6 +67,7 @@ await import('./support/registerPolicyKeys.js');
 // `createAgent`, after imports). Same catalogue entries, same selection — the
 // assertions below pin exactly what they did before.
 const {
+  formatAdminRoster,
   formatBlockedMembersList,
   formatFeatureFlags,
   formatKnowledgeTopics,
@@ -209,10 +210,14 @@ function mockPool(
     reportAgeDays?: number | null;
     /** `resolveLinkedIdentities`' rows for `/reviewqueue` (issue #1207), raw snake_case DB shape — empty means the caller falls back to their own single identity. */
     linkedIdentityRows?: PoolRow[];
+    /** `rosterCounts(...).notMembers` for `/reviewqueue`'s onboarding-queue line (issue #1216). */
+    notMembers?: number;
     /** `listMutedMembers`' rows for `/mutedlist` (issue #1114), raw snake_case DB shape. */
     mutedMemberRows?: PoolRow[];
     /** `listBlockedUsers`' rows for `/blockedlist` (issue #1145), raw snake_case DB shape. */
     blockedUserRows?: PoolRow[];
+    /** `listAdminRoster`'s rows for `/adminlist` (issue #1218), raw snake_case DB shape. */
+    adminRosterRows?: PoolRow[];
   } = {},
 ): Array<{ sql: string; params: unknown[] }> {
   const calls: Array<{ sql: string; params: unknown[] }> = [];
@@ -327,6 +332,16 @@ function mockPool(
     if (sql.includes('FROM moderation_appeals')) {
       return { rows: opts.appealRows ?? [], rowCount: 0 };
     }
+    // rosterCounts (issue #1216's /reviewqueue sixth line) — the only query
+    // against this table in this file, so no specific-first disambiguation
+    // is needed, matching countAccessRequests'/listBlockedUsers' single-table
+    // simplicity above.
+    if (sql.includes('FROM server_roster')) {
+      return {
+        rows: [{ total: 0, joined_week: 0, left_week: 0, not_members: opts.notMembers ?? 0 }],
+        rowCount: 0,
+      };
+    }
     if (sql.includes('FROM project_connection_requests')) {
       return { rows: opts.connectionRequestRows ?? [], rowCount: 0 };
     }
@@ -386,6 +401,14 @@ function mockPool(
     // needed, matching countAccessRequests' single-table simplicity above.
     if (sql.includes('FROM blocked_users')) {
       return { rows: opts.blockedUserRows ?? [], rowCount: 0 };
+    }
+    // listAdminRoster's joined read (issue #1218's /adminlist), distinguished
+    // from the role-lookup branch above by its `cu.`-qualified column list
+    // (the role branch selects the bare, unqualified `SELECT role FROM
+    // community_users`) — the only other query against this table in this
+    // file, so no further disambiguation is needed.
+    if (sql.includes('cu.platform_user_id')) {
+      return { rows: opts.adminRosterRows ?? [], rowCount: 0 };
     }
     if (sql.includes('FROM member_warnings')) {
       const windowDays = params[2];
@@ -605,6 +628,7 @@ test('with DISCORD_SLASH_COMMANDS_ENABLED=true, all commands are registered guil
   const names = (commands as Array<{ name: string }>).map((c) => c.name).sort();
   assert.deepEqual(names, [
     'admindigest',
+    'adminlist',
     'blockedlist',
     'digest',
     'events',
@@ -641,11 +665,12 @@ test("a slash-command registration failure is caught and logged, never thrown, m
   assert.ok(warnLog.mock.calls.length >= 1, 'a registration failure must be logged, not swallowed silently');
 });
 
-test('buildSlashCommands defines exactly the nineteen approved read-only commands, each with its expected required-ness', () => {
+test('buildSlashCommands defines exactly the twenty approved read-only commands, each with its expected required-ness', () => {
   const commands = buildSlashCommands();
   const byName = new Map(commands.map((c) => [c.name, c]));
   assert.deepEqual([...byName.keys()].sort(), [
     'admindigest',
+    'adminlist',
     'blockedlist',
     'digest',
     'events',
@@ -747,7 +772,7 @@ test('buildSlashCommands defines exactly the nineteen approved read-only command
   assert.deepEqual(
     (byName.get('reviewqueue') as { options?: unknown[] }).options ?? [],
     [],
-    '/reviewqueue takes no options — a fixed roll-up of four review-queue counts, admin-tier only (issue #1095)',
+    '/reviewqueue takes no options — a fixed roll-up of review-queue counts, admin-tier only (issue #1095)',
   );
   assert.deepEqual(
     (byName.get('mutedlist') as { options?: unknown[] }).options ?? [],
@@ -778,6 +803,11 @@ test('buildSlashCommands defines exactly the nineteen approved read-only command
     [],
     "/admindigest takes no options — always buildAdminDigestForAdmin() for the caller's own identity, " +
       'admin-tier only (issue #1194)',
+  );
+  assert.deepEqual(
+    (byName.get('adminlist') as { options?: unknown[] }).options ?? [],
+    [],
+    '/adminlist takes no options — always listAdminRoster() with no filter, super_admin-tier only (issue #1218)',
   );
 });
 
@@ -2396,7 +2426,9 @@ test('SECURITY: /kbhelpful still replies successfully with the entries and no co
 
 test(
   "/reviewqueue renders formatReviewQueueSummary's output for the same counts/ages the repository returns, " +
-    'including the reports line (issue #1095 acceptance criteria 1, 3; issue #1207 acceptance criteria 1, 2)',
+    "including the reports line and the onboarding-queue line under this file's default " +
+    "'gated'-access-mode discord config (issue #1095 acceptance criteria 1, 3; issue #1207 " +
+    'acceptance criteria 1, 2; issue #1216)',
   async (t) => {
     mockPool(t, {
       memberRole: 'admin',
@@ -2410,6 +2442,7 @@ test(
       reportAgeDays: 7,
       appealCount: 1,
       appealAgeDays: 10,
+      notMembers: 0,
     });
     const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     bindCommunitySlashCommands(adapter);
@@ -2429,6 +2462,7 @@ test(
       reportAgeDays: 7,
       appealCount: 1,
       appealAgeDays: 10,
+      onboardingQueueCount: 0,
     });
     assert.equal(replies[0].content, stripEmDashes(expected));
     assert.match(replies[0].content, /Access requests: 3 pending \(oldest 5d\)/);
@@ -2473,7 +2507,8 @@ test(
             (c.sql.includes('AS n') || c.sql.includes('age_days'))) ||
           c.sql.includes('platform_user_id FROM community_users') ||
           (c.sql.includes('FROM moderation_appeals') &&
-            (c.sql.includes('AS n') || c.sql.includes('age_days'))),
+            (c.sql.includes('AS n') || c.sql.includes('age_days'))) ||
+          c.sql.includes('FROM server_roster'),
       ),
       'no review-queue repository read must run for a rejected caller',
     );
@@ -2515,7 +2550,8 @@ test(
             (c.sql.includes('AS n') || c.sql.includes('age_days'))) ||
           c.sql.includes('platform_user_id FROM community_users') ||
           (c.sql.includes('FROM moderation_appeals') &&
-            (c.sql.includes('AS n') || c.sql.includes('age_days'))),
+            (c.sql.includes('AS n') || c.sql.includes('age_days'))) ||
+          c.sql.includes('FROM server_roster'),
       ),
       'no review-queue repository read must run for a member-tier caller',
     );
@@ -2538,6 +2574,7 @@ test(
       reportAgeDays: 1,
       appealCount: 6,
       appealAgeDays: 1,
+      notMembers: 8,
     });
     const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     bindCommunitySlashCommands(adapter);
@@ -2558,10 +2595,12 @@ test(
       (c) =>
         c.sql.includes('FROM moderation_appeals') && (c.sql.includes('AS n') || c.sql.includes('age_days')),
     );
+    const rosterCalls = calls.filter((c) => c.sql.includes('FROM server_roster'));
     assert.equal(accessCalls.length, 2, 'access requests must use the count+age pair, no arguments');
     assert.equal(suggestionCalls.length, 2, 'suggestions must use the count+age pair, no arguments');
     assert.equal(candidateCalls.length, 2, 'knowledge candidates must use the count+age pair, no arguments');
     assert.equal(appealCalls.length, 2, 'appeals must use the count+age pair, scoped by platform');
+    assert.equal(rosterCalls.length, 1, 'rosterCounts must be called exactly once for the onboarding line');
     for (const c of [...accessCalls, ...suggestionCalls, ...candidateCalls]) {
       assert.deepEqual(c.params, [], 'guild-wide reads must take no arguments, matching review_queue');
     }
@@ -2572,11 +2611,26 @@ test(
         "appeals must be scoped to the Discord command's own platform only",
       );
     }
+    for (const c of rosterCalls) {
+      assert.deepEqual(
+        c.params,
+        ['discord'],
+        "rosterCounts must be scoped to the command's own platform only",
+      );
+    }
     assert.match(replies[0].content, /Access requests: 7 pending \(oldest 4d\)/);
     assert.match(replies[0].content, /Suggestions: 5 pending \(oldest 2d\)/);
     assert.match(replies[0].content, /Knowledge candidates: 3 pending \(oldest 9d\)/);
     assert.match(replies[0].content, /Reports \(your conversations\): 2 open \(oldest 1d\)/);
     assert.match(replies[0].content, /Appeals: 6 open \(oldest 1d\)/);
+    assert.ok(
+      replies[0].content.includes(
+        stripEmDashes(
+          '- Onboarding queue: 8 guest(s) waiting to be added — run `list_roster` (filter: not_members) to review.',
+        ),
+      ),
+      'the onboarding-queue line must be present with the rosterCounts-derived count',
+    );
   },
 );
 
@@ -2725,6 +2779,29 @@ test(
       );
     }
     assert.match(replies[0].content, /Reports \(your conversations\): 1 open \(oldest 3d\)/);
+  },
+);
+
+test(
+  "SECURITY: /reviewqueue never renders an onboarding-queue line when 'discord' access mode is 'open', even " +
+    'with a nonzero not_members count (issue #1216 acceptance criteria 5, 6)',
+  async (t) => {
+    mockPool(t, { memberRole: 'admin', notMembers: 4 });
+    const wasAccessMode = config.rbac.accessMode.discord;
+    config.rbac.accessMode.discord = 'open';
+    try {
+      const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+      const { interaction, replies } = fakeInteraction({ commandName: 'reviewqueue', userId: 'admin-1' });
+
+      await handleInteraction(interaction as never, adapterDeps(adapter));
+
+      assert.ok(
+        !replies[0].content.includes('Onboarding queue'),
+        "SECURITY: no onboarding-queue line for an 'open'-access-mode platform, even with a nonzero not_members count",
+      );
+    } finally {
+      config.rbac.accessMode.discord = wasAccessMode;
+    }
   },
 );
 
@@ -3429,6 +3506,128 @@ test(
     }
   },
 );
+
+// --- Issue #1218: /adminlist (the seventh slash command, and the second at --
+// --- the super_admin floor, after /featureflags) -----------------------------
+
+test(
+  '/adminlist renders text equal to formatAdminRoster(...) for the same rows listAdminRoster returns, for a ' +
+    "super_admin caller, and calls recordShortcutHit('slash_command') exactly once (issue #1218 acceptance " +
+    'criterion 6)',
+  async (t) => {
+    const originalSuperAdmins = [...config.rbac.superAdminDiscordIds];
+    config.rbac.superAdminDiscordIds.push('super-1');
+    t.after(() => {
+      config.rbac.superAdminDiscordIds.length = 0;
+      config.rbac.superAdminDiscordIds.push(...originalSuperAdmins);
+    });
+    const calls = mockPool(t, {
+      memberRole: null,
+      adminRosterRows: [
+        {
+          platform: 'discord',
+          platform_user_id: 'present-1',
+          display_name: 'Present One',
+          left_server: false,
+        },
+        { platform: 'whatsapp', platform_user_id: 'departed-1', display_name: null, left_server: true },
+      ],
+    });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const result = fakeInteraction({ commandName: 'adminlist', userId: 'super-1' });
+
+    await handleInteraction(result.interaction as never, adapterDeps(adapter));
+
+    const expected = formatAdminRoster([
+      { platform: 'discord', platformUserId: 'present-1', displayName: 'Present One', leftServer: false },
+      { platform: 'whatsapp', platformUserId: 'departed-1', displayName: null, leftServer: true },
+    ]);
+    assert.equal(fullReplyText(result), stripEmDashes(expected));
+    assert.equal(shortcutHitCalls(calls).length, 1, '/adminlist must record exactly one slash_command hit');
+  },
+);
+
+test(
+  "SECURITY: an admin-tier caller is rejected on /adminlist — the same atLeast(role, 'super_admin') gate " +
+    'renders no admin-roster content and records no shortcut hit, and no admin-roster repository read runs ' +
+    '(issue #1218 acceptance criterion 8)',
+  async (t) => {
+    const calls = mockPool(t, { memberRole: 'admin' });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'adminlist', userId: 'admin-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].ephemeral, true);
+    assert.match(
+      replies[0].content,
+      /don't have access/i,
+      'an admin-tier caller must be denied — list_admins is super_admin only',
+    );
+    assert.ok(
+      !calls.some((c) => c.sql.includes('cu.platform_user_id')),
+      'no admin-roster repository read must run for a rejected caller',
+    );
+    assert.equal(shortcutHitCalls(calls).length, 0, 'an auth-denied reply must never record a shortcut hit');
+  },
+);
+
+test(
+  'SECURITY: a member-tier caller is rejected on /adminlist without any admin-roster content ever being ' +
+    'rendered (issue #1218 acceptance criterion 8)',
+  async (t) => {
+    const calls = mockPool(t, { memberRole: 'member' });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'adminlist', userId: 'member-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].ephemeral, true);
+    assert.match(replies[0].content, /don't have access/i);
+    assert.ok(!calls.some((c) => c.sql.includes('cu.platform_user_id')));
+    assert.equal(shortcutHitCalls(calls).length, 0, 'an auth-denied reply must never record a shortcut hit');
+  },
+);
+
+test(
+  'SECURITY: a guest caller is rejected on /adminlist without any admin-roster content ever being rendered ' +
+    '(issue #1218 acceptance criterion 8)',
+  async (t) => {
+    const calls = mockPool(t, { memberRole: null });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'adminlist', userId: 'guest-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].ephemeral, true);
+    assert.match(replies[0].content, /don't have access/i);
+    assert.ok(!calls.some((c) => c.sql.includes('cu.platform_user_id')));
+    assert.equal(shortcutHitCalls(calls).length, 0, 'an auth-denied reply must never record a shortcut hit');
+  },
+);
+
+test('/adminlist replies ephemerally, deferring before its DB round trip', async (t) => {
+  const originalSuperAdmins = [...config.rbac.superAdminDiscordIds];
+  config.rbac.superAdminDiscordIds.push('super-1');
+  t.after(() => {
+    config.rbac.superAdminDiscordIds.length = 0;
+    config.rbac.superAdminDiscordIds.push(...originalSuperAdmins);
+  });
+  mockPool(t, { memberRole: null, adminRosterRows: [] });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies, order } = fakeInteraction({
+    commandName: 'adminlist',
+    userId: 'super-1',
+  });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies[0].ephemeral, true);
+  assert.deepEqual(order, ['deferReply', 'editReply']);
+});
 
 // --- Criterion 7 / SECURITY criterion 14: /kb excludes auto-provenance -------
 

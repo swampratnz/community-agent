@@ -34,6 +34,7 @@ import {
   hasConflictAmongIds,
   type KnowledgeSearchHit,
   type LanguagePreference,
+  listAdminRoster,
   listBlockedUsers,
   listKnowledge,
   listKnowledgeTopics,
@@ -55,6 +56,7 @@ import {
   recordKnowledgeRetrieval,
   recordShortcutHit,
   resolveLinkedIdentities,
+  rosterCounts,
   searchKnowledge,
   searchKnowledgeLexical,
   searchMemberInterests,
@@ -62,6 +64,7 @@ import {
   searchProjects,
 } from '@swampratnz/agent-base/storage/repository.js';
 import {
+  formatAdminRoster,
   formatBlockedMembersList,
   formatCommunityInfoText,
   formatFeatureFlags,
@@ -639,17 +642,20 @@ async function handleKbHelpful(
 
 /**
  * `review_queue` is structurally in ADMIN_TOOLS — the first admin-tier
- * shortcut in this file (issue #1095; reports line added #1207) — mirrored
- * here via `toolsForRole` + `atLeast(role, 'admin')`, same double-check shape
- * as every member-tier handler above. No options: renders
- * `formatReviewQueueSummary`'s guild-wide/`discord`-platform-scoped lines,
- * the SAME repository functions with the SAME arguments `review_queue`'s own
- * handler uses. The reports line replicates `callerScope()`'s exact
- * arithmetic (context.ts) — using the already-bound `discordAdapter` module
- * var `/admindigest` below reuses — plus `resolveLinkedIdentities`'s
- * accused-admin exclusion, the same pair `review_queue`'s own handler calls
- * (digestsAdmin.ts), so the rendered count can never diverge from what that
- * tool/`list_reports` would show the same caller in the same turn.
+ * shortcut in this file (issue #1095; reports line added #1207, onboarding
+ * line #1216) — mirrored here via `toolsForRole` + `atLeast(role, 'admin')`,
+ * same double-check shape as every member-tier handler above. No options:
+ * renders `formatReviewQueueSummary`'s guild-wide/`discord`-platform-scoped
+ * lines, the SAME repository functions with the SAME arguments
+ * `review_queue`'s own handler uses. The reports line replicates
+ * `callerScope()`'s exact arithmetic (context.ts) — using the already-bound
+ * `discordAdapter` module var `/admindigest` below reuses — plus
+ * `resolveLinkedIdentities`'s accused-admin exclusion, the same pair
+ * `review_queue`'s own handler calls (digestsAdmin.ts), so the rendered
+ * count can never diverge from what that tool/`list_reports` would show the
+ * same caller in the same turn. The onboarding-queue line is gated on
+ * `config.rbac.accessMode.discord === 'gated'` verbatim, never on the
+ * `notMembers` count, mirroring `review_queue`'s own gating.
  */
 async function handleReviewQueue(
   interaction: ChatInputCommandInteraction,
@@ -670,6 +676,7 @@ async function handleReviewQueue(
     candidateAgeDays,
     appealCount,
     appealAgeDays,
+    roster,
   ] = await Promise.all([
     countAccessRequests(),
     oldestAccessRequestAgeDays(),
@@ -679,7 +686,9 @@ async function handleReviewQueue(
     oldestPendingCandidateAgeDays(),
     countOpenAppeals('discord'),
     oldestOpenAppealAgeDays('discord'),
+    rosterCounts('discord'),
   ]);
+  const onboardingQueueCount = config.rbac.accessMode.discord === 'gated' ? roster.notMembers : null;
   let message: string;
   // Unreachable in practice — `bindCommunitySlashCommands` binds the
   // adapter before any interaction can be dispatched, same as
@@ -695,6 +704,7 @@ async function handleReviewQueue(
       candidateAgeDays,
       appealCount,
       appealAgeDays,
+      onboardingQueueCount,
     });
   } else {
     const scope =
@@ -722,6 +732,7 @@ async function handleReviewQueue(
       reportAgeDays,
       appealCount,
       appealAgeDays,
+      onboardingQueueCount,
     });
   }
   recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
@@ -888,6 +899,33 @@ async function handleAdminDigest(
   const { message } = await buildAdminDigestForAdmin('discord', interaction.user.id, discordAdapter);
   recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
   await replyEphemeral(interaction, message ?? 'Nothing to report right now.', deps);
+}
+
+/**
+ * `list_admins` is the seventh shortcut in this file (issue #1218), and the
+ * second at the **super_admin** floor (after `feature_flags`) — mirrored here
+ * via `toolsForRole` + `atLeast(role, 'super_admin')`, same double-check
+ * shape as `handleFeatureFlags` above. Calls the exact same `listAdminRoster()`
+ * + `formatAdminRoster()` pair `list_admins`'s own tool handler now delegates
+ * to (helpers.ts), so the two can never drift.
+ */
+async function handleAdminList(
+  interaction: ChatInputCommandInteraction,
+  deps: SlashCommandDeps,
+): Promise<void> {
+  await deferEphemeral(interaction);
+  const role = await resolveRole('discord', interaction.user.id);
+  if (
+    !toolsForRole(role, 'discord').includes('mcp__community__list_admins') ||
+    !atLeast(role, 'super_admin')
+  ) {
+    await replyEphemeral(interaction, NOT_AUTHORIZED_TEXT, deps);
+    return;
+  }
+  const roster = await listAdminRoster();
+  const message = formatAdminRoster(roster);
+  recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
+  await replyEphemeral(interaction, message, deps);
 }
 
 /**
@@ -1132,6 +1170,14 @@ export function bindCommunitySlashCommands(adapter: PlatformAdapter): void {
         .setDescription('Admin: pull your own admin-digest snapshot on demand.')
         .toJSON(),
     handle: handleAdminDigest,
+  });
+  bindDiscordCommand('adminlist', {
+    build: () =>
+      new SlashCommandBuilder()
+        .setName('adminlist')
+        .setDescription('Super admin: list who currently holds bot-admin privilege.')
+        .toJSON(),
+    handle: handleAdminList,
   });
   bindDiscordCommand('events', {
     build: () =>

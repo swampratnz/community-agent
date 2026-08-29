@@ -375,6 +375,9 @@ const NOTICE_ENTRIES = {
     language: {
       mi: 'I arotakehia tō tono uru ki NZ Claude Community, ā, kāore i whakaaetia i tēnei wā.',
     },
+    style: {
+      plain: 'Your request to join NZ Claude Community was not approved this time.',
+    },
   },
   // --- remove_project resolution DM (agent/tools/notify.ts, issue #1185) ---
   /**
@@ -389,6 +392,9 @@ const NOTICE_ENTRIES = {
     base: 'One of your projects was removed from the NZ Claude Community project showcase by an admin.',
     language: {
       mi: 'I tangohia tētahi o āu kaupapa mai i te whakaaturanga kaupapa a NZ Claude Community e tētahi kaiwhakahaere.',
+    },
+    style: {
+      plain: 'An admin removed one of your projects from the NZ Claude Community showcase.',
     },
   },
   // --- community_info member capabilities rundown (agent/tools/info.ts) ---
@@ -715,12 +721,19 @@ const NOTICE_ENTRIES = {
    * `mi` variant, matching the sibling blocks' convention. No `style`
    * variant, matching `whatsappAdminTextCommands`'s own scope. English text
    * mirrors `communityInfoSuperAdminCapabilities`'s own "See which optional
-   * feature flags are currently on or off" bullet.
+   * feature flags are currently on or off" bullet. `!adminlist` (issue
+   * #1218) is the second `super_admin`-floor shortcut, appended here in the
+   * SAME diff that shipped it, same reasoning as `!mutedlist`'s own
+   * same-diff addition to `whatsappAdminTextCommands` above.
    */
   whatsappSuperAdminTextCommands: {
-    base: '- `!featureflags` — which optional feature flags are currently on or off',
+    base:
+      '- `!featureflags` — which optional feature flags are currently on or off\n' +
+      '- `!adminlist` — who currently holds bot-admin privilege, by identity',
     language: {
-      mi: '- `!featureflags` — he aha ngā haki (feature flags) kōwhiringa e mahi ana, kāore rānei, i tēnei wā',
+      mi:
+        '- `!featureflags` — he aha ngā haki (feature flags) kōwhiringa e mahi ana, kāore rānei, i tēnei wā\n' +
+        '- `!adminlist` — ko wai kei a ia te mana whakahaere pi, mā te tuakiri',
     },
   },
   // --- member digest section labels (memberDigest.ts) ----------------------

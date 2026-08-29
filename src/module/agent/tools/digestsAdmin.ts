@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
+import { config } from '@swampratnz/agent-base/config.js';
 import { buildAdminDigestForAdmin } from '../../adminDigest.js';
 import {
   countAccessRequests,
@@ -15,6 +16,7 @@ import {
   recentQuestionClusters,
   resolveLinkedIdentities,
   responseLatencyStats,
+  rosterCounts,
 } from '@swampratnz/agent-base/storage/repository.js';
 import { text, untrusted } from './helpers.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
@@ -74,20 +76,27 @@ export const digestsAdminTools = [
     },
   }),
 
-  // Argument-less roll-up of the five review-queue tools' own counts (issue
-  // #743) — access requests/suggestions/knowledge candidates are guild-wide
-  // like their list_* tools; reports uses callerScope()+linked-identity
-  // exclusion like list_reports; appeals uses caller.platform like
-  // list_appeals. No new scoping decision, no new data exposure.
+  // Argument-less roll-up of the six review-queue tools' own counts (issue
+  // #743, extended to a sixth queue by issue #1208) — access
+  // requests/suggestions/knowledge candidates are guild-wide like their
+  // list_* tools; reports uses callerScope()+linked-identity exclusion like
+  // list_reports; appeals uses caller.platform like list_appeals; the
+  // onboarding queue reuses rosterCounts/config.rbac.accessMode verbatim
+  // from adminDigest.ts, the same gating that decides its own digest line.
+  // No new scoping decision, no new data exposure.
   defineTool({
     name: 'review_queue',
     description:
-      'Single roll-up of all five admin review queues — access requests, suggestions, knowledge candidates, ' +
-      'reports, and appeals — each with its current pending/open count, so triage starts with one glance ' +
-      "instead of polling five separate list_* tools in turn. Every line also shows the oldest item's age in " +
-      'whole days once that queue is non-empty. Reports reflect only your own conversation scope, same as ' +
-      'list_reports (never a guild-wide total); appeals reflect only your own platform, same as list_appeals. ' +
-      'Read-only, takes no arguments. Admin only.',
+      'Single roll-up of all six admin review queues — access requests, suggestions, knowledge candidates, ' +
+      'reports, appeals, and the onboarding queue (guests present who were never added as a member) — each ' +
+      'with its current pending/open count, so triage starts with one glance instead of polling five separate ' +
+      "list_* tools plus list_roster in turn. Every line also shows the oldest item's age in whole days once " +
+      'that queue is non-empty (the onboarding-queue line never does). Reports reflect only your own ' +
+      'conversation scope, same as list_reports (never a guild-wide total); appeals reflect only your own ' +
+      "platform, same as list_appeals; the onboarding-queue line only appears when your platform's access mode " +
+      "is 'gated' (an 'open'-mode not_members row already has full member-tool access, so the count is " +
+      'structurally meaningless there and is omitted rather than shown as a nag). Read-only, takes no ' +
+      'arguments. Admin only.',
     minTier: 'admin',
     readOnlyHint: true,
     schema: {},
@@ -109,6 +118,7 @@ export const digestsAdminTools = [
         reportAgeDays,
         appealCount,
         appealAgeDays,
+        roster,
       ] = await Promise.all([
         countAccessRequests(),
         oldestAccessRequestAgeDays(),
@@ -120,6 +130,7 @@ export const digestsAdminTools = [
         oldestOpenReportAgeDays(allowed, viewerIds),
         countOpenAppeals(caller.platform),
         oldestOpenAppealAgeDays(caller.platform),
+        rosterCounts(caller.platform),
       ]);
       // Each oldest*AgeDays resolves to null over an empty (or fully-scoped-
       // out) row set, never 0 — so gating the suffix on non-null is exactly
@@ -132,6 +143,17 @@ export const digestsAdminTools = [
         `- Reports (your conversations): ${reportCount} open${ageSuffix(reportAgeDays)}`,
         `- Appeals: ${appealCount} open${ageSuffix(appealAgeDays)}`,
       ];
+      // Onboarding queue is the sixth review queue (issue #1136's deferred
+      // follow-up, built here as #1208). Matches adminDigest.ts's own
+      // 'gated'-only gating verbatim — an 'open'-mode not_members row
+      // already has full member-tool access, so the count is a structurally
+      // meaningless nag there and the line is omitted entirely, never shown
+      // as a zero.
+      if (config.rbac.accessMode[caller.platform] === 'gated') {
+        lines.push(
+          `- Onboarding queue: ${roster.notMembers} guest(s) waiting to be added — run \`list_roster\` (filter: not_members) to review.`,
+        );
+      }
       return text(`📋 Review queue\n${lines.join('\n')}`);
     },
   }),
