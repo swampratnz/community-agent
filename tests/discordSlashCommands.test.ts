@@ -204,7 +204,13 @@ function mockPool(
     appealCount?: number;
     /** `oldestOpenAppealAgeDays`'s age for `/reviewqueue` (issue #1095) — `null` means the queue is empty. */
     appealAgeDays?: number | null;
-    /** `rosterCounts(...).notMembers` for `/reviewqueue`'s sixth, onboarding-queue line (issue #1216). */
+    /** `countOpenReports`'s count for `/reviewqueue` (issue #1207) — distinct from `reportRows` (listOwnReports' per-user browse). */
+    reportCount?: number;
+    /** `oldestOpenReportAgeDays`'s age for `/reviewqueue` (issue #1207) — `null` means the queue is empty. */
+    reportAgeDays?: number | null;
+    /** `resolveLinkedIdentities`' rows for `/reviewqueue` (issue #1207), raw snake_case DB shape — empty means the caller falls back to their own single identity. */
+    linkedIdentityRows?: PoolRow[];
+    /** `rosterCounts(...).notMembers` for `/reviewqueue`'s onboarding-queue line (issue #1216). */
     notMembers?: number;
     /** `listMutedMembers`' rows for `/mutedlist` (issue #1114), raw snake_case DB shape. */
     mutedMemberRows?: PoolRow[];
@@ -219,6 +225,14 @@ function mockPool(
     calls.push({ sql, params });
     if (sql.includes('SELECT role FROM community_users')) {
       return { rows: opts.memberRole ? [{ role: opts.memberRole }] : [], rowCount: 0 };
+    }
+    // resolveLinkedIdentities (issue #1207's /reviewqueue) — its distinguishing
+    // `platform_user_id` select list, told apart from the plain role check
+    // above. Empty rows fall back, inside resolveLinkedIdentities itself, to
+    // the caller's own single identity, matching production behaviour for an
+    // unlinked admin.
+    if (sql.includes('platform_user_id FROM community_users')) {
+      return { rows: opts.linkedIdentityRows ?? [], rowCount: 0 };
     }
     // countAccessRequests/oldestAccessRequestAgeDays (issue #1095's
     // /reviewqueue) — the only two queries against this table in this file,
@@ -293,6 +307,16 @@ function mockPool(
     }
     if (sql.includes('FROM suggestions')) {
       return { rows: opts.suggestionRows ?? [], rowCount: 0 };
+    }
+    // countOpenReports/oldestOpenReportAgeDays (issue #1207's /reviewqueue)
+    // select a bare count/age aggregate, distinguished from listOwnReports'
+    // per-user browse below (which selects named columns, never
+    // 'n'/'age_days') — checked first, same specific-first discipline as
+    // every other multi-query table in this file.
+    if (sql.includes('FROM content_reports') && (sql.includes('AS n') || sql.includes('age_days'))) {
+      return sql.includes('age_days')
+        ? { rows: [{ age_days: opts.reportAgeDays ?? null }], rowCount: 0 }
+        : { rows: [{ n: opts.reportCount ?? 0 }], rowCount: 0 };
     }
     if (sql.includes('FROM content_reports')) {
       return { rows: opts.reportRows ?? [], rowCount: 0 };
@@ -2398,12 +2422,13 @@ test('SECURITY: /kbhelpful still replies successfully with the entries and no co
   assert.ok(warnLog.mock.calls.length >= 1, 'the lookup failure must be logged, not silently swallowed');
 });
 
-// --- Issue #1095: /reviewqueue (the first admin-tier slash command) ---------
+// --- Issue #1095: /reviewqueue (the first admin-tier slash command); reports line added #1207 ---------
 
 test(
   "/reviewqueue renders formatReviewQueueSummary's output for the same counts/ages the repository returns, " +
-    "with no reports line anywhere and the sixth onboarding-queue line under this file's default " +
-    "'gated'-access-mode discord config (issue #1095 acceptance criteria 1, 3; issue #1216)",
+    "including the reports line and the onboarding-queue line under this file's default " +
+    "'gated'-access-mode discord config (issue #1095 acceptance criteria 1, 3; issue #1207 " +
+    'acceptance criteria 1, 2; issue #1216)',
   async (t) => {
     mockPool(t, {
       memberRole: 'admin',
@@ -2413,11 +2438,15 @@ test(
       suggestionAgeDays: null,
       candidateCount: 2,
       candidateAgeDays: 1,
+      reportCount: 4,
+      reportAgeDays: 7,
       appealCount: 1,
       appealAgeDays: 10,
       notMembers: 0,
     });
     const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    bindCommunitySlashCommands(adapter);
+    t.after(() => bindCommunitySlashCommands(new DiscordAdapter(DISCORD_TEXT_PACK)));
     const { interaction, replies } = fakeInteraction({ commandName: 'reviewqueue', userId: 'admin-1' });
 
     await handleInteraction(interaction as never, adapterDeps(adapter));
@@ -2429,6 +2458,8 @@ test(
       suggestionAgeDays: null,
       candidateCount: 2,
       candidateAgeDays: 1,
+      reportCount: 4,
+      reportAgeDays: 7,
       appealCount: 1,
       appealAgeDays: 10,
       onboardingQueueCount: 0,
@@ -2441,8 +2472,8 @@ test(
       'an empty queue must render no age suffix',
     );
     assert.match(replies[0].content, /Knowledge candidates: 2 pending \(oldest 1d\)/);
+    assert.match(replies[0].content, /Reports \(your conversations\): 4 open \(oldest 7d\)/);
     assert.match(replies[0].content, /Appeals: 1 open \(oldest 10d\)/);
-    assert.doesNotMatch(replies[0].content, /Reports: \d+ open/, 'no fabricated/approximated reports count');
   },
 );
 
@@ -2472,6 +2503,9 @@ test(
           (c.sql.includes('FROM suggestions') && (c.sql.includes('AS n') || c.sql.includes('age_days'))) ||
           (c.sql.includes('FROM knowledge_candidates') &&
             (c.sql.includes('AS n') || c.sql.includes('age_days'))) ||
+          (c.sql.includes('FROM content_reports') &&
+            (c.sql.includes('AS n') || c.sql.includes('age_days'))) ||
+          c.sql.includes('platform_user_id FROM community_users') ||
           (c.sql.includes('FROM moderation_appeals') &&
             (c.sql.includes('AS n') || c.sql.includes('age_days'))) ||
           c.sql.includes('FROM server_roster'),
@@ -2512,6 +2546,9 @@ test(
           (c.sql.includes('FROM suggestions') && (c.sql.includes('AS n') || c.sql.includes('age_days'))) ||
           (c.sql.includes('FROM knowledge_candidates') &&
             (c.sql.includes('AS n') || c.sql.includes('age_days'))) ||
+          (c.sql.includes('FROM content_reports') &&
+            (c.sql.includes('AS n') || c.sql.includes('age_days'))) ||
+          c.sql.includes('platform_user_id FROM community_users') ||
           (c.sql.includes('FROM moderation_appeals') &&
             (c.sql.includes('AS n') || c.sql.includes('age_days'))) ||
           c.sql.includes('FROM server_roster'),
@@ -2533,11 +2570,15 @@ test(
       suggestionAgeDays: 2,
       candidateCount: 3,
       candidateAgeDays: 9,
+      reportCount: 2,
+      reportAgeDays: 1,
       appealCount: 6,
       appealAgeDays: 1,
       notMembers: 8,
     });
     const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    bindCommunitySlashCommands(adapter);
+    t.after(() => bindCommunitySlashCommands(new DiscordAdapter(DISCORD_TEXT_PACK)));
     const { interaction, replies } = fakeInteraction({ commandName: 'reviewqueue', userId: 'admin-1' });
 
     await handleInteraction(interaction as never, adapterDeps(adapter));
@@ -2580,6 +2621,7 @@ test(
     assert.match(replies[0].content, /Access requests: 7 pending \(oldest 4d\)/);
     assert.match(replies[0].content, /Suggestions: 5 pending \(oldest 2d\)/);
     assert.match(replies[0].content, /Knowledge candidates: 3 pending \(oldest 9d\)/);
+    assert.match(replies[0].content, /Reports \(your conversations\): 2 open \(oldest 1d\)/);
     assert.match(replies[0].content, /Appeals: 6 open \(oldest 1d\)/);
     assert.ok(
       replies[0].content.includes(
@@ -2589,11 +2631,154 @@ test(
       ),
       'the onboarding-queue line must be present with the rosterCounts-derived count',
     );
+  },
+);
+
+test(
+  "SECURITY: a non-super-admin caller's /reviewqueue reports count is scoped (never the guild-wide total) — " +
+    "asserted against a fixture where countOpenReports' scoped and guild-wide counts differ, so a wrong null " +
+    'scope argument would fail this test (issue #1207 acceptance criterion 5)',
+  async (t) => {
+    const GUILD_WIDE_REPORT_COUNT = 40;
+    const SCOPED_REPORT_COUNT = 2;
+    const calls: Array<{ sql: string; params: unknown[] }> = [];
+    t.mock.method(pool, 'query', (async (sql: string, params: unknown[] = []) => {
+      calls.push({ sql, params });
+      if (sql.includes('SELECT role FROM community_users')) return { rows: [{ role: 'admin' }], rowCount: 0 };
+      if (sql.includes('platform_user_id FROM community_users')) return { rows: [], rowCount: 0 };
+      if (sql.includes('FROM content_reports') && (sql.includes('AS n') || sql.includes('age_days'))) {
+        const scoped = params.length > 0;
+        if (sql.includes('age_days')) {
+          return { rows: [{ age_days: scoped ? 1 : 99 }], rowCount: 0 };
+        }
+        return { rows: [{ n: scoped ? SCOPED_REPORT_COUNT : GUILD_WIDE_REPORT_COUNT }], rowCount: 0 };
+      }
+      if (
+        sql.includes('FROM access_requests') ||
+        sql.includes('FROM suggestions') ||
+        sql.includes('FROM knowledge_candidates') ||
+        sql.includes('FROM moderation_appeals')
+      ) {
+        return sql.includes('age_days')
+          ? { rows: [{ age_days: null }], rowCount: 0 }
+          : { rows: [{ n: 0 }], rowCount: 0 };
+      }
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    bindCommunitySlashCommands(adapter);
+    t.after(() => bindCommunitySlashCommands(new DiscordAdapter(DISCORD_TEXT_PACK)));
+    const { interaction, replies } = fakeInteraction({ commandName: 'reviewqueue', userId: 'admin-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    const reportCalls = calls.filter(
+      (c) => c.sql.includes('FROM content_reports') && (c.sql.includes('AS n') || c.sql.includes('age_days')),
+    );
+    assert.equal(reportCalls.length, 2, 'reports must use the count+age pair');
+    for (const c of reportCalls) {
+      assert.ok(
+        c.params.length > 0,
+        'a non-super-admin caller must always pass a scope, never an empty params array',
+      );
+    }
+    assert.match(
+      replies[0].content,
+      new RegExp(`Reports \\(your conversations\\): ${SCOPED_REPORT_COUNT} open`),
+      'the scoped count must be rendered',
+    );
     assert.doesNotMatch(
       replies[0].content,
-      /Reports:.*\d+ open/,
-      'no reports count, guild-wide or otherwise',
+      new RegExp(`Reports \\(your conversations\\): ${GUILD_WIDE_REPORT_COUNT} open`),
+      'the guild-wide count must never be rendered for a non-super-admin caller',
     );
+  },
+);
+
+test(
+  "SECURITY: a super-admin caller's /reviewqueue reports count is the unrestricted (scope === null) total — " +
+    'the flip side of the non-super-admin scoping test above (issue #1207 acceptance criterion 6)',
+  async (t) => {
+    const originalSuperAdmins = [...config.rbac.superAdminDiscordIds];
+    config.rbac.superAdminDiscordIds.push('super-1');
+    t.after(() => {
+      config.rbac.superAdminDiscordIds.length = 0;
+      config.rbac.superAdminDiscordIds.push(...originalSuperAdmins);
+    });
+    const calls: Array<{ sql: string; params: unknown[] }> = [];
+    t.mock.method(pool, 'query', (async (sql: string, params: unknown[] = []) => {
+      calls.push({ sql, params });
+      if (sql.includes('SELECT role FROM community_users')) return { rows: [], rowCount: 0 };
+      if (sql.includes('platform_user_id FROM community_users')) return { rows: [], rowCount: 0 };
+      if (sql.includes('FROM content_reports') && (sql.includes('AS n') || sql.includes('age_days'))) {
+        return sql.includes('age_days')
+          ? { rows: [{ age_days: 3 }], rowCount: 0 }
+          : { rows: [{ n: 40 }], rowCount: 0 };
+      }
+      if (
+        sql.includes('FROM access_requests') ||
+        sql.includes('FROM suggestions') ||
+        sql.includes('FROM knowledge_candidates') ||
+        sql.includes('FROM moderation_appeals')
+      ) {
+        return sql.includes('age_days')
+          ? { rows: [{ age_days: null }], rowCount: 0 }
+          : { rows: [{ n: 0 }], rowCount: 0 };
+      }
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    bindCommunitySlashCommands(adapter);
+    t.after(() => bindCommunitySlashCommands(new DiscordAdapter(DISCORD_TEXT_PACK)));
+    const { interaction, replies } = fakeInteraction({ commandName: 'reviewqueue', userId: 'super-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    const reportCalls = calls.filter(
+      (c) => c.sql.includes('FROM content_reports') && (c.sql.includes('AS n') || c.sql.includes('age_days')),
+    );
+    assert.equal(reportCalls.length, 2, 'reports must use the count+age pair');
+    for (const c of reportCalls) {
+      assert.deepEqual(c.params, [], 'a super-admin caller must pass an unrestricted (null) scope');
+    }
+    assert.match(replies[0].content, /Reports \(your conversations\): 40 open \(oldest 3d\)/);
+  },
+);
+
+test(
+  "SECURITY: a report filed against the calling admin's own linked identities is excluded from their " +
+    "/reviewqueue reports count — the accused-admin exclusion, via resolveLinkedIdentities' viewerIds parity " +
+    'with list_reports/review_queue (issue #1207 acceptance criterion 7)',
+  async (t) => {
+    const calls = mockPool(t, {
+      memberRole: 'admin',
+      reportCount: 1,
+      reportAgeDays: 3,
+      linkedIdentityRows: [
+        { platform: 'discord', platform_user_id: 'admin-1' },
+        { platform: 'whatsapp', platform_user_id: 'admin-1-whatsapp' },
+      ],
+    });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    bindCommunitySlashCommands(adapter);
+    t.after(() => bindCommunitySlashCommands(new DiscordAdapter(DISCORD_TEXT_PACK)));
+    const { interaction, replies } = fakeInteraction({ commandName: 'reviewqueue', userId: 'admin-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    const linkedIdentityCalls = calls.filter((c) => c.sql.includes('platform_user_id FROM community_users'));
+    assert.equal(linkedIdentityCalls.length, 1, 'resolveLinkedIdentities must be called exactly once');
+    const reportCalls = calls.filter(
+      (c) => c.sql.includes('FROM content_reports') && (c.sql.includes('AS n') || c.sql.includes('age_days')),
+    );
+    for (const c of reportCalls) {
+      assert.deepEqual(
+        c.params[1],
+        ['admin-1', 'admin-1-whatsapp'],
+        'the accused-admin exclusion must cover every identity linked to this admin, not just the current one',
+      );
+    }
+    assert.match(replies[0].content, /Reports \(your conversations\): 1 open \(oldest 3d\)/);
   },
 );
 
