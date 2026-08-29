@@ -8,6 +8,7 @@ import { ENABLED_SKILLS } from '../enabledSkills.js';
 import { redactSecrets } from '@swampratnz/agent-base/agent/outbound.js';
 import { devTeamField, type JobListEntry, type JobResult, type JobStatus } from '../../devTeam/client.js';
 import {
+  type AdminRosterEntry,
   type BlockedUserRow,
   engagementStats,
   getActiveProjectNamesForOwners,
@@ -974,6 +975,35 @@ export function formatAdminActivity(
 }
 
 /**
+ * Pure renderer shared by the `list_admins` tool handler and the
+ * `!adminlist`/`/adminlist` super-admin shortcut (issue #1218), hoisted
+ * verbatim out of the tool handler's own inline rendering so the two call
+ * sites can never drift — same reasoning as `formatMutedMembersList`/
+ * `formatBlockedMembersList`/`formatTopKnowledgeList` above. Empty input
+ * renders the tool's own fixed "No admins are currently configured in
+ * community_users." string; each row renders as `${platform}: ${name}
+ * (${platformUserId})${departed}`, where `name` falls back to "(no known
+ * name)" and `departed` is " — LEFT THE SERVER/GROUP" iff `leftServer`,
+ * followed by a trailing note that env-sourced super admins aren't listed
+ * here. `displayName` is stored raw (`grant_admin`/`add_member` write
+ * `args.displayName` verbatim, only the CONFIRM-prompt label goes through
+ * `resolveSanitizedLabel`) and reaches model-visible tool text here plus the
+ * two zero-model shortcuts, so it is run through `sanitizeName()` before
+ * interpolation — same quarantine-escape class as `formatUsageStats`'s
+ * `topUsers` line, flagged unaddressed in PR review (issue #1218).
+ */
+export function formatAdminRoster(roster: readonly AdminRosterEntry[]): string {
+  if (roster.length === 0) return 'No admins are currently configured in community_users.';
+  const lines = roster.map((a) => {
+    const name = a.displayName != null ? sanitizeName(a.displayName) : '(no known name)';
+    const departed = a.leftServer ? ' — LEFT THE SERVER/GROUP' : '';
+    return `${a.platform}: ${name} (${a.platformUserId})${departed}`;
+  });
+  lines.push('Super admins are configured separately (env-sourced) and are not listed here.');
+  return lines.join('\n');
+}
+
+/**
  * Renders the shortcut-savings line (issue #440), the sibling of the
  * background-job cost line above: it appends nothing when no shortcut has
  * fired in the window (byte-identical to before this issue), so a deployment
@@ -1040,6 +1070,14 @@ export function formatEngagementStats(s: Awaited<ReturnType<typeof engagementSta
  * docs/SECURITY.md pins ("Admin data access is scoped in SQL to
  * conversations the admin is in"). The trailing note points at the full
  * tool instead.
+ *
+ * `onboardingQueueCount` is the sixth line (issue #1216, the shortcut-side
+ * follow-up to #1208's `review_queue` addition): `null`/absent omits the
+ * line entirely, mirroring `review_queue`'s own `'gated'`-mode-only gating
+ * rather than ever rendering a structurally meaningless "0 guests waiting"
+ * on an `'open'`-mode platform. Callers must decide gating themselves via
+ * `config.rbac.accessMode[platform] === 'gated'` and pass `null` otherwise —
+ * this function never inspects platform or config.
  */
 export function formatReviewQueueSummary(counts: {
   accessRequestCount: number;
@@ -1050,6 +1088,7 @@ export function formatReviewQueueSummary(counts: {
   candidateAgeDays: number | null;
   appealCount: number;
   appealAgeDays: number | null;
+  onboardingQueueCount?: number | null;
 }): string {
   const ageSuffix = (ageDays: number | null) => (ageDays !== null ? ` (oldest ${ageDays}d)` : '');
   const lines = [
@@ -1058,6 +1097,11 @@ export function formatReviewQueueSummary(counts: {
     `- Knowledge candidates: ${counts.candidateCount} pending${ageSuffix(counts.candidateAgeDays)}`,
     `- Appeals: ${counts.appealCount} open${ageSuffix(counts.appealAgeDays)}`,
   ];
+  if (counts.onboardingQueueCount != null) {
+    lines.push(
+      `- Onboarding queue: ${counts.onboardingQueueCount} guest(s) waiting to be added — run \`list_roster\` (filter: not_members) to review.`,
+    );
+  }
   return (
     `📋 Review queue\n${lines.join('\n')}\n\n` +
     'Reports: see list_reports or review_queue (scoped to your conversations)'

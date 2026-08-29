@@ -25,6 +25,7 @@ import { createIssue } from '../../github/issues.js';
 import { triggerRedeploy } from '@swampratnz/agent-base/agent/redeploy.js';
 import {
   formatAdminActivity,
+  formatAdminRoster,
   formatEngagementStats,
   formatFeatureFlags,
   formatOtherConfiguredKnobs,
@@ -284,14 +285,7 @@ export const superAdminTools = [
     handler: async (_args, { caller }) => {
       assertAtLeast(caller.role, 'super_admin', 'list_admins');
       const roster = await listAdminRoster();
-      if (roster.length === 0) return text('No admins are currently configured in community_users.');
-      const lines = roster.map((a) => {
-        const name = a.displayName ?? '(no known name)';
-        const departed = a.leftServer ? ' — LEFT THE SERVER/GROUP' : '';
-        return `${a.platform}: ${name} (${a.platformUserId})${departed}`;
-      });
-      lines.push('Super admins are configured separately (env-sourced) and are not listed here.');
-      return text(lines.join('\n'));
+      return text(formatAdminRoster(roster));
     },
   }),
 

@@ -375,6 +375,9 @@ const NOTICE_ENTRIES = {
     language: {
       mi: 'I arotakehia tō tono uru ki NZ Claude Community, ā, kāore i whakaaetia i tēnei wā.',
     },
+    style: {
+      plain: 'Your request to join NZ Claude Community was not approved this time.',
+    },
   },
   // --- remove_project resolution DM (agent/tools/notify.ts, issue #1185) ---
   /**
@@ -389,6 +392,9 @@ const NOTICE_ENTRIES = {
     base: 'One of your projects was removed from the NZ Claude Community project showcase by an admin.',
     language: {
       mi: 'I tangohia tētahi o āu kaupapa mai i te whakaaturanga kaupapa a NZ Claude Community e tētahi kaiwhakahaere.',
+    },
+    style: {
+      plain: 'An admin removed one of your projects from the NZ Claude Community showcase.',
     },
   },
   // --- community_info member capabilities rundown (agent/tools/info.ts) ---
@@ -697,6 +703,37 @@ const NOTICE_ENTRIES = {
         '- `!topknowledge` — ngā whiwhinga mōhiotanga kua raupapatia mā te tatauranga tikiake, ko te mea ' +
         'whakawhirinaki nuitia i mua\n' +
         '- `!admindigest` — tō ake whakarāpopototanga whakahaere, i te wā e hiahiatia ana',
+    },
+  },
+  /**
+   * The super-admin-tier sibling of `whatsappAdminTextCommands` above (issue
+   * #1204) — `!featureflags` (issue #1183) is the first `super_admin`-floor
+   * `!`-shortcut, and `whatsappAdminTextCommands` is shown to plain `admin`
+   * callers too, so it can never carry a super-admin-only entry without
+   * advertising a command a plain admin cannot use and gets silently refused
+   * for (`atLeast(role, 'super_admin')`, `commands.ts`). `formatCommunityInfoText`
+   * appends this only in the WhatsApp `super_admin` branch, directly after
+   * `communityInfoSuperAdminCapabilities` — never to `memberSegment` or the
+   * `admin` branch. No intro sentence, same reasoning as
+   * `whatsappAdminTextCommands`: the member block (already shown first to
+   * every super-admin caller on WhatsApp) carries the "zero-wait shortcuts"
+   * framing once. The `!`-prefixed token stays literal/untranslated in the
+   * `mi` variant, matching the sibling blocks' convention. No `style`
+   * variant, matching `whatsappAdminTextCommands`'s own scope. English text
+   * mirrors `communityInfoSuperAdminCapabilities`'s own "See which optional
+   * feature flags are currently on or off" bullet. `!adminlist` (issue
+   * #1218) is the second `super_admin`-floor shortcut, appended here in the
+   * SAME diff that shipped it, same reasoning as `!mutedlist`'s own
+   * same-diff addition to `whatsappAdminTextCommands` above.
+   */
+  whatsappSuperAdminTextCommands: {
+    base:
+      '- `!featureflags` — which optional feature flags are currently on or off\n' +
+      '- `!adminlist` — who currently holds bot-admin privilege, by identity',
+    language: {
+      mi:
+        '- `!featureflags` — he aha ngā haki (feature flags) kōwhiringa e mahi ana, kāore rānei, i tēnei wā\n' +
+        '- `!adminlist` — ko wai kei a ia te mana whakahaere pi, mā te tuakiri',
     },
   },
   // --- member digest section labels (memberDigest.ts) ----------------------

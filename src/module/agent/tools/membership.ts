@@ -76,11 +76,13 @@ export const membershipTools = [
 
   defineTool({
     name: 'remove_member',
-    description: 'Remove a member (revokes bot access in gated mode). Cannot remove admins. Admin only.',
+    description:
+      'Remove a member (revokes bot access in gated mode). Cannot remove admins. Admin only. ' +
+      'Requires confirmation.',
     minTier: 'admin',
     readOnlyHint: false,
     schema: { userId: z.string().min(1).describe('Platform user id to remove'), platform: platformArg },
-    handler: async (args, { caller, audited, resolveMemberTarget }) => {
+    handler: async (args, { caller, requireConfirm, audited, resolveMemberTarget }) => {
       assertAtLeast(caller.role, 'admin', 'remove_member');
       const { platform, userId } = await resolveMemberTarget(args.userId, args.platform);
       // Resolve the name before the row is deleted (roster still has it after).
@@ -88,21 +90,22 @@ export const membershipTools = [
       if (isSuperAdmin(platform, userId)) {
         return text('Refusing: that user is a super admin.', true);
       }
-      const { result } = await audited({
-        actionKind: 'remove_member',
-        targetUserId: userId,
-        params: { platform },
-        run: async () => {
-          const removed = await removeMember(platform, userId);
-          if (!removed)
-            throw new Error('No member row removed (not a member, or an admin — revoke admin first).');
-          return 'membership removed';
-        },
+      return requireConfirm(`remove ${label} from ${platform} members`, 'admin', async () => {
+        const { result } = await audited({
+          actionKind: 'remove_member',
+          targetUserId: userId,
+          params: { platform },
+          run: async () => {
+            const removed = await removeMember(platform, userId);
+            if (!removed)
+              throw new Error('No member row removed (not a member, or an admin — revoke admin first).');
+            return 'membership removed';
+          },
+        });
+        return result === 'membership removed'
+          ? `Removed ${label} from ${platform} members.`
+          : `Failed: ${result}`;
       });
-      return text(
-        result === 'membership removed' ? `Removed ${label} from ${platform} members.` : `Failed: ${result}`,
-        result !== 'membership removed',
-      );
     },
   }),
 
