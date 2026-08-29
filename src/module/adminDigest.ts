@@ -918,6 +918,29 @@ export function buildAdminDigestMessage(
   responseLatencyCount: number = 0,
   responseLatencyMedianSeconds: number | null = null,
   responseLatencyP90Seconds: number | null = null,
+  // Auto-answer/mention split of the same blended aggregate just above
+  // (issue #1220), the follow-up both #1210's own ARCHITECTURE.md note and
+  // this repo's VISION named as future growth: a blended figure can hide a
+  // regression in either bucket, and VISION's north-star names "time-to-
+  // first-answer in auto-answer channels" specifically, not a blended
+  // number. Same repository function, same `scope`/`FRESHNESS_DAYS` window,
+  // just `'auto_answer'`/`'mention'` as the third argument instead of
+  // `'all'` — see `responseLatencyStats`'s own `scope` semantics. Each
+  // bucket renders its own line only when its own count is `> 0`, so an
+  // empty bucket (or a caller that hasn't wired these six params through)
+  // never fabricates a "0 replies" line — same convention as the blended
+  // line above. Six append-only trailing params, default 0/null/null each,
+  // so every existing call site stays byte-identical. No `trendSuffix`/
+  // `currentCounts` entries, for the identical upstream-allowlist reason the
+  // blended aggregate's own doc comment above gives. Bare counts and
+  // rounded-seconds integers only — same privacy convention as the blended
+  // line.
+  autoAnswerLatencyCount: number = 0,
+  autoAnswerLatencyMedianSeconds: number | null = null,
+  autoAnswerLatencyP90Seconds: number | null = null,
+  mentionLatencyCount: number = 0,
+  mentionLatencyMedianSeconds: number | null = null,
+  mentionLatencyP90Seconds: number | null = null,
 ): string | null {
   if (
     clusters.length === 0 &&
@@ -953,7 +976,9 @@ export function buildAdminDigestMessage(
     dismissedReportsCount === 0 &&
     resolvedSuggestionsCount === 0 &&
     declinedSuggestionsCount === 0 &&
-    responseLatencyCount === 0
+    responseLatencyCount === 0 &&
+    autoAnswerLatencyCount === 0 &&
+    mentionLatencyCount === 0
   )
     return null;
 
@@ -1066,6 +1091,21 @@ export function buildAdminDigestMessage(
     sections.push(
       `⏱️ Response latency (last ${FRESHNESS_DAYS}d): ${responseLatencyCount} replies, ` +
         `median ${Math.round(responseLatencyMedianSeconds ?? 0)}s, p90 ${Math.round(responseLatencyP90Seconds ?? 0)}s`,
+    );
+  }
+  if (autoAnswerLatencyCount > 0) {
+    // Auto-answer/mention split of the blended line above (issue #1220) —
+    // same bare-numbers-only privacy convention, no trend suffix (see this
+    // param's own doc comment on the function signature above).
+    sections.push(
+      `⏱️ Auto-answer latency (last ${FRESHNESS_DAYS}d): ${autoAnswerLatencyCount} replies, ` +
+        `median ${Math.round(autoAnswerLatencyMedianSeconds ?? 0)}s, p90 ${Math.round(autoAnswerLatencyP90Seconds ?? 0)}s`,
+    );
+  }
+  if (mentionLatencyCount > 0) {
+    sections.push(
+      `⏱️ Mention/DM latency (last ${FRESHNESS_DAYS}d): ${mentionLatencyCount} replies, ` +
+        `median ${Math.round(mentionLatencyMedianSeconds ?? 0)}s, p90 ${Math.round(mentionLatencyP90Seconds ?? 0)}s`,
     );
   }
   if (staleKnowledgeCount > 0) {
@@ -1407,6 +1447,8 @@ export async function buildAdminDigestForAdmin(
     candidateMedianHours,
     suggestionBreakdown,
     latencyStats,
+    autoAnswerLatencyStats,
+    mentionLatencyStats,
   ] = await Promise.all([
     recentQuestionClusters(scope, FRESHNESS_DAYS, CLUSTER_LIMIT),
     countAccessRequests(),
@@ -1567,6 +1609,14 @@ export async function buildAdminDigestForAdmin(
     // tool handler applies via callerScope() (issue #1210, folding in the
     // deferred follow-up #877/#911 both named).
     responseLatencyStats(scope, FRESHNESS_DAYS, 'all'),
+    // Auto-answer/mention split of the same blended aggregate just above,
+    // over the identical `scope`/`FRESHNESS_DAYS` window — the follow-up
+    // both #1210's own ARCHITECTURE.md note and VISION named as future
+    // growth (issue #1220). No new tool, tier or table: the same repository
+    // function, called twice more with `'auto_answer'`/`'mention'` as the
+    // third argument instead of `'all'`.
+    responseLatencyStats(scope, FRESHNESS_DAYS, 'auto_answer'),
+    responseLatencyStats(scope, FRESHNESS_DAYS, 'mention'),
   ]);
   // Onboarding-queue count only means anything in 'gated' mode — an
   // 'open'-mode not_members row already has full member-tool access
@@ -1645,6 +1695,9 @@ export async function buildAdminDigestForAdmin(
     // rendered line calls no `trendSuffix` at all (unlike those), so there
     // is nothing here that would even render bare — see the param's own doc
     // comment on `buildAdminDigestMessage`.
+    // `autoAnswerLatency*`/`mentionLatency*` (issue #1220) are excluded for
+    // the identical reason as `responseLatency*` directly above — same
+    // upstream-allowlist gap, same no-`trendSuffix`-call rendering.
   };
   // Only added when there's at least one auto-answer rating this week (issue
   // #629) — mirrors the render block's own `autoAnswerHelpful +
@@ -1715,6 +1768,12 @@ export async function buildAdminDigestForAdmin(
     latencyStats?.count ?? 0,
     latencyStats?.medianSeconds ?? null,
     latencyStats?.p90Seconds ?? null,
+    autoAnswerLatencyStats?.count ?? 0,
+    autoAnswerLatencyStats?.medianSeconds ?? null,
+    autoAnswerLatencyStats?.p90Seconds ?? null,
+    mentionLatencyStats?.count ?? 0,
+    mentionLatencyStats?.medianSeconds ?? null,
+    mentionLatencyStats?.p90Seconds ?? null,
   );
   return { message, currentCounts };
 }

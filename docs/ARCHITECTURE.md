@@ -783,8 +783,23 @@ the aggregate's `count > 0`; a `null`/zero-count result omits the line
 entirely rather than showing "0 replies". Blended (`scope: 'all'`) only in
 this version, and deliberately carries no week-over-week trend suffix: a new
 `currentCounts` key needs an upstream `ADMIN_DIGEST_SIGNAL_KEYS` allowlist
-entry, out of scope for this repo. The `auto_answer`/`mention` scope split and
-a trended version are both named as future growth, not built here.
+entry, out of scope for this repo.
+
+Issue #1220 builds the `auto_answer`/`mention` scope-split half of that named
+follow-up: two more entries in the same `Promise.all` fan-out,
+`responseLatencyStats(scope, FRESHNESS_DAYS, 'auto_answer')` and
+`responseLatencyStats(scope, FRESHNESS_DAYS, 'mention')`, the identical
+`scope`/`FRESHNESS_DAYS` window the blended call already uses. Two more lines
+render immediately below the blended one, `"⏱️ Auto-answer latency (last 7d):
+N replies, median Xs, p90 Ys"` and `"⏱️ Mention/DM latency (last 7d): N
+replies, median Xs, p90 Ys"`, each only when its own bucket's `count > 0` —
+same "omit rather than show 0 replies" convention as the blended line, and
+each independent of the other (a channel-less deployment with no auto-answer
+data still gets the mention line, and vice versa). Additive only: the blended
+line and every existing caller/test are unaffected, and like the blended
+line these two carry no trend suffix or `currentCounts` entry, for the
+identical upstream-allowlist reason. The trended (week-over-week) version
+remains the one piece of the original follow-up still not built.
 
 `feature_flags` (super-admin, no arguments, read-only, no CONFIRM; issue
 #559) answers a different, static question `admin_digest`/`community_info`
