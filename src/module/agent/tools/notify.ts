@@ -286,6 +286,17 @@ export async function notifyAdmins(
  * The check runs only when a welcome is actually configured, so a deployment
  * that has never set one pays no read for it, and this function's existing
  * callers acquire no new DB dependency.
+ *
+ * Known narrow gap, accepted rather than fixed (#1222 review): `isKnownUser`
+ * reads `interactions`, which is populated by MESSAGES. Discord's join
+ * welcome fires from the `GuildMemberAdd` EVENT, which writes no interaction.
+ * So a Discord member who joins (and is welcomed), never messages the bot,
+ * and is then proactively `add_member`-ed without ever filing an access
+ * request is still `isKnownUser === false`, and will see the welcome a second
+ * time. That population is small, it is not a regression (before #1222 this
+ * path sent no welcome at all), and closing it would need a persisted
+ * welcome-sent marker that no table records today — the thing this gate was
+ * specifically designed to avoid adding.
  */
 export async function notifyMemberApproved(
   adapter: PlatformAdapter,
