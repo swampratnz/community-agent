@@ -920,12 +920,156 @@ test('notifyMemberApproved appends the admin-configured welcome message when set
     async () => null,
     async () => welcome,
     async () => null,
+    async () => false,
   );
 
   const expectedBase = notice('memberApprovedMessage', { language: 'auto', style: 'standard' });
   assert.ok(calls[0].startsWith(expectedBase), 'the original approval text must be unchanged/prefixed');
   assert.equal(calls[0], `${expectedBase}\n\n${notice('welcomeHeading')}\n${welcome}`);
 });
+
+test(
+  'notifyMemberApproved suppresses the welcome block for a member the bot has already seen, so an ' +
+    'organically-joined guest approved later off list_access_requests is not sent the same configured ' +
+    'welcome copy twice (issue #1222 review)',
+  async () => {
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (_userId, message) => {
+      calls.push(message);
+    });
+    const welcome = 'Welcome to the community!';
+    const guidelines = 'Be kind.';
+
+    await notifyMemberApproved(
+      adapter,
+      'user-1',
+      false,
+      'discord',
+      async () => 'auto',
+      async () => 'standard',
+      async () => guidelines,
+      async () => null,
+      async () => welcome,
+      async () => null,
+      // The bot has seen this user: they came through the join/first-contact
+      // path, which already sends this same configured welcome.
+      async () => true,
+    );
+
+    const expectedBase = notice('memberApprovedMessage', { language: 'auto', style: 'standard' });
+    assert.equal(
+      calls[0],
+      `${expectedBase}\n\n${notice('guidelinesHeading')}\n${guidelines}`,
+      'the welcome block must be omitted for an already-seen member',
+    );
+    assert.ok(!calls[0].includes(welcome), 'the configured welcome text must not be repeated');
+    assert.ok(
+      calls[0].includes(guidelines),
+      'guidelines are NOT gated this way — #1171 shipped that redundancy knowingly',
+    );
+  },
+);
+
+test(
+  'notifyMemberApproved still sends the welcome to a member the bot has never seen — the pre-registered/' +
+    'team_setup population issue #1222 exists for (issue #1222 review)',
+  async () => {
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (_userId, message) => {
+      calls.push(message);
+    });
+    const welcome = 'Welcome to the community!';
+    const seen: Array<[string, string]> = [];
+
+    await notifyMemberApproved(
+      adapter,
+      'user-1',
+      false,
+      'discord',
+      async () => 'auto',
+      async () => 'standard',
+      async () => null,
+      async () => null,
+      async () => welcome,
+      async () => null,
+      async (platform, userId) => {
+        seen.push([platform, userId]);
+        return false;
+      },
+    );
+
+    const expectedBase = notice('memberApprovedMessage', { language: 'auto', style: 'standard' });
+    assert.equal(calls[0], `${expectedBase}\n\n${notice('welcomeHeading')}\n${welcome}`);
+    assert.deepEqual(
+      seen,
+      [['discord', 'user-1']],
+      'the already-seen check is made for the approved member on their own platform, from resolved ' +
+        'identity rather than anything caller-supplied',
+    );
+  },
+);
+
+test(
+  'notifyMemberApproved never consults the already-seen check when no welcome is configured — a ' +
+    'deployment that has never set one pays no read, and existing callers gain no DB dependency ' +
+    '(issue #1222 review)',
+  async () => {
+    const adapter = stubAdapter(async () => {});
+    let checked = 0;
+
+    await notifyMemberApproved(
+      adapter,
+      'user-1',
+      false,
+      'discord',
+      async () => 'auto',
+      async () => 'standard',
+      async () => null,
+      async () => null,
+      async () => null,
+      async () => null,
+      async () => {
+        checked += 1;
+        return false;
+      },
+    );
+
+    assert.equal(checked, 0, 'no welcome to suppress means the check must not run at all');
+  },
+);
+
+test(
+  'SECURITY: notifyMemberApproved omits the welcome block, rather than throwing or dropping the DM, ' +
+    'when the already-seen lookup fails — degrading toward the duplicate it exists to prevent ' +
+    '(issue #1222 review)',
+  async () => {
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (_userId, message) => {
+      calls.push(message);
+    });
+
+    const delivered = await notifyMemberApproved(
+      adapter,
+      'user-1',
+      false,
+      'discord',
+      async () => 'auto',
+      async () => 'standard',
+      async () => null,
+      async () => null,
+      async () => 'Welcome to the community!',
+      async () => null,
+      async () => {
+        throw new Error('db down');
+      },
+    );
+
+    const expectedBase = notice('memberApprovedMessage', { language: 'auto', style: 'standard' });
+    assert.equal(delivered, true, 'the approval DM must still be delivered');
+    assert.equal(calls.length, 1, 'exactly one DM is still sent');
+    assert.equal(calls[0], expectedBase, 'the DM degrades to the base approval text');
+  },
+);
 
 test('notifyMemberApproved is byte-identical to the welcome-and-guidelines-free DM when both are unset (issue #1222)', async () => {
   const calls: string[] = [];
@@ -944,6 +1088,7 @@ test('notifyMemberApproved is byte-identical to the welcome-and-guidelines-free 
     async () => null,
     async () => null,
     async () => null,
+    async () => false,
   );
 
   assert.equal(calls[0], notice('memberApprovedMessage', { language: 'auto', style: 'standard' }));
@@ -971,6 +1116,7 @@ test(
       async () => null,
       async () => welcome,
       async () => welcomeMi,
+      async () => false,
     );
 
     assert.match(calls[0], /Nau mai, haere mai!/);
@@ -999,6 +1145,7 @@ test(
       async () => null,
       async () => welcome,
       async () => null,
+      async () => false,
     );
 
     assert.match(calls[0], /Welcome!/);
@@ -1024,6 +1171,7 @@ test('notifyMemberApproved renders the welcome block before the guidelines block
     async () => null,
     async () => welcome,
     async () => null,
+    async () => false,
   );
 
   const expectedBase = notice('memberApprovedMessage', { language: 'auto', style: 'standard' });
@@ -1056,6 +1204,7 @@ test('notifyMemberApproved gates the welcome and guidelines blocks independently
       async () => null,
       async () => welcome,
       async () => null,
+      async () => false,
     );
 
     const expectedBase = notice('memberApprovedMessage', { language: 'auto', style: 'standard' });
@@ -1090,6 +1239,7 @@ test(
         throw new Error('DB unreachable');
       },
       async () => null,
+      async () => false,
     );
 
     const expectedBase = notice('memberApprovedMessage', { language: 'auto', style: 'standard' });
@@ -1118,6 +1268,7 @@ test(
       async () => {
         throw new Error('DB unreachable');
       },
+      async () => false,
     );
 
     assert.equal(miCalls.length, 1);

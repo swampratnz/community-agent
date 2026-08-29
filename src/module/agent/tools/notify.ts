@@ -14,6 +14,7 @@ import {
   getLanguagePreference,
   getResponseStyle,
   isKnownMessage,
+  isKnownUser,
   listAdmins,
   type ResponseStyle,
 } from '@swampratnz/agent-base/storage/repository.js';
@@ -256,6 +257,35 @@ export async function notifyAdmins(
  * guidelines lookup's catch (so one failing degrades only its own block, not
  * both), and placed BEFORE the guidelines block per the approved acceptance
  * criteria (welcome context first, rules second).
+ *
+ * The welcome block is SUPPRESSED for a member the bot has already seen
+ * (`isKnownUser`), because those members have already been through the
+ * join/first-contact path that sends this same configured text — the Discord
+ * guild-join welcome, the WhatsApp-Cloud first-inbound welcome, and the
+ * Baileys group welcome all read `policyText.welcomeMessage`. Without this
+ * gate an ordinary gated guest who joined organically and is later approved
+ * off `list_access_requests` would receive the identical welcome copy twice.
+ * `isKnownUser` is the same durable, DB-backed backstop those adapters
+ * themselves use to avoid re-welcoming a known contact (their in-process
+ * `welcomedThisRun` map is explicitly not persisted), so this reuses their
+ * discipline rather than inventing a second notion of "already welcomed",
+ * and needs no new column to record one.
+ *
+ * That leaves exactly the population #1222 is about: a pre-registered or
+ * `team_setup`-batched member, whom the bot has never seen, and who
+ * therefore never generated the join event that would have welcomed them.
+ * Guidelines are deliberately NOT gated this way — #1171 shipped that
+ * redundancy knowingly, and narrowing it now would be an unrelated
+ * behaviour change to an already-merged decision.
+ *
+ * A failed `isKnownUser` lookup degrades to "no welcome block", the same
+ * direction every other lookup in this function degrades: it keeps the
+ * duplicate — the harm this gate exists to prevent — off the DM, and the
+ * approval DM itself still sends regardless.
+ *
+ * The check runs only when a welcome is actually configured, so a deployment
+ * that has never set one pays no read for it, and this function's existing
+ * callers acquire no new DB dependency.
  */
 export async function notifyMemberApproved(
   adapter: PlatformAdapter,
@@ -268,6 +298,7 @@ export async function notifyMemberApproved(
   getGuidelinesMi: typeof getCommunityGuidelinesMi = getCommunityGuidelinesMi,
   getWelcome: typeof getWelcomeMessage = getWelcomeMessage,
   getWelcomeMi: typeof getWelcomeMessageMi = getWelcomeMessageMi,
+  hasSeenUser: typeof isKnownUser = isKnownUser,
 ): Promise<boolean> {
   if (wasAlreadyMember) return true;
   const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
@@ -279,9 +310,16 @@ export async function notifyMemberApproved(
   const style: ResponseStyle | undefined =
     lang === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
   const baseMessage = notice('memberApprovedMessage', { language: lang, style });
-  const welcome = await (
+  const configuredWelcome = await (
     lang === 'mi' ? getWelcomeMi().then((mi) => mi ?? getWelcome()) : getWelcome()
   ).catch(() => null);
+  // Already-seen members were welcomed on the join path; skip so the same
+  // configured copy is not sent twice. `isKnownUser` is consulted ONLY when a
+  // welcome is actually configured: nothing to duplicate otherwise, and this
+  // function's existing callers should not acquire a DB dependency they did
+  // not have.
+  const welcome =
+    configuredWelcome && !(await hasSeenUser(platform, userId).catch(() => true)) ? configuredWelcome : null;
   const guidelines = await (
     lang === 'mi' ? getGuidelinesMi().then((mi) => mi ?? getGuidelines()) : getGuidelines()
   ).catch(() => null);
