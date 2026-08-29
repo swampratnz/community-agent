@@ -25,6 +25,20 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #1122 #1123 #1132
 -->
 
+## 2026-08-30
+
+### Added
+- **The six stale-backlog admin alerts (appeals, suggestions, knowledge
+  candidates, access requests, roster onboarding, departed admins) no longer
+  send a duplicate DM after a routine restart.** (#1198) Each of these push
+  alerts fires once when its backlog first goes stale, then stays quiet until
+  it clears — but that "already alerted" state lived only in memory, so a
+  redeploy mid-backlog (the normal case, not the edge case, given these
+  thresholds run 48–168h against a 6h check) reset it and re-fired the same
+  alert for a backlog that hadn't actually changed. That state now survives a
+  restart, so admins see one alert per real crossing, not one per crossing
+  plus one per redeploy in between.
+
 ## 2026-08-29
 
 ### Added
@@ -141,16 +155,6 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   Only triggers on a true zero-hit semantic result — a weak-but-present match
   (which `find_knowledge` already surfaces, unlike `knowledge_search`) never
   invokes it, so the common path is unchanged.
-- **The six stale-backlog admin alerts (appeals, suggestions, knowledge
-  candidates, access requests, roster onboarding, departed admins) no longer
-  send a duplicate DM after a routine restart.** (#1198) Each of these push
-  alerts fires once when its backlog first goes stale, then stays quiet until
-  it clears — but that "already alerted" state lived only in memory, so a
-  redeploy mid-backlog (the normal case, not the edge case, given these
-  thresholds run 48–168h against a 6h check) reset it and re-fired the same
-  alert for a backlog that hadn't actually changed. That state now survives a
-  restart, so admins see one alert per real crossing, not one per crossing
-  plus one per redeploy in between.
 - **A knowledge search with no results now also offers to loop in a human
   admin, not just a `suggest_knowledge` nudge.** (#1196) #1180 fixed the "you
   found the answer elsewhere" branch of `knowledge_search`'s (and `/kb`'s)
