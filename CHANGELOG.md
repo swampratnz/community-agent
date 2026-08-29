@@ -28,6 +28,12 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-08-29
 
 ### Added
+- **The weekly admin digest's response-latency line now splits into auto-answer vs. mention/DM.** (#1220)
+  The single blended time-to-first-answer line (#1210) could hide a regression in either bucket — replies in
+  `AUTO_ANSWER_CHANNEL_IDS` channels running slow while mention/DM replies stay fine, or vice versa. Two more
+  lines, `⏱️ Auto-answer latency` and `⏱️ Mention/DM latency`, now render right below the existing blended line
+  (each only when that bucket has data this week), reusing the same `response_latency` tool's `scope` split. The
+  blended line is unchanged, and a digest with no data in either new bucket looks exactly as it did before.
 - **`!adminlist`/`/adminlist`: a zero-model shortcut for `list_admins`.** (#1218)
   Super admins can now see who currently holds bot-admin privilege without a full agent turn — the same
   zero-wait-shortcut pattern already shipped for `reviewqueue`/`mutedlist`/`blockedlist`/`topknowledge`/
