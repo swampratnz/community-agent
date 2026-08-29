@@ -2659,19 +2659,24 @@ test('SECURITY: !kbhelpful still replies successfully with the entries and no co
   assert.ok(warnLog.mock.calls.length >= 1, 'the lookup failure must be logged, not silently swallowed');
 });
 
-// --- !reviewqueue (issue #1095) -----------------------------------------------
+// --- !reviewqueue (issue #1095; reports line added #1207) --------------------
 
 /**
  * Stubs `pool.query`'s role branch plus the `review_queue`-shortcut
  * repository reads (access requests, suggestions, knowledge candidates,
- * appeals, plus `rosterCounts`' `server_roster` scan for the onboarding
- * queue, issue #1216) — each table's count/age pair is distinguished by
- * whether the SQL selects an `age_days` column, mirroring
- * `mockPoolRoleAndWarnings`'s single-mock-per-test discipline above.
+ * reports, appeals, plus `rosterCounts`' `server_roster` scan for the
+ * onboarding queue, issue #1216) — each table's count/age pair is
+ * distinguished by whether the SQL selects an `age_days` column, mirroring
+ * `mockPoolRoleAndWarnings`'s single-mock-per-test discipline above. Also
+ * stubs `resolveLinkedIdentities`'s own `community_users` lookup (its
+ * distinguishing `platform_user_id` select list, told apart from the plain
+ * `SELECT role FROM community_users` role check above) — empty rows fall
+ * back, inside `resolveLinkedIdentities` itself, to the caller's own single
+ * identity, matching production behaviour for an unlinked admin.
  */
 function mockPoolRoleAndReviewQueue(
   t: { mock: { method: typeof import('node:test').mock.method } },
-  role: 'admin' | 'member' | null,
+  role: 'admin' | 'member' | 'super_admin' | null,
   counts: {
     accessRequestCount?: number;
     accessRequestAgeDays?: number | null;
@@ -2679,11 +2684,14 @@ function mockPoolRoleAndReviewQueue(
     suggestionAgeDays?: number | null;
     candidateCount?: number;
     candidateAgeDays?: number | null;
+    reportCount?: number;
+    reportAgeDays?: number | null;
     appealCount?: number;
     appealAgeDays?: number | null;
+    linkedIdentityRows?: Array<{ platform: string; platform_user_id: string }>;
     notMembers?: number;
   } = {},
-): void {
+): Array<{ sql: string; params: unknown[] }> {
   const {
     accessRequestCount = 0,
     accessRequestAgeDays = null,
@@ -2691,13 +2699,25 @@ function mockPoolRoleAndReviewQueue(
     suggestionAgeDays = null,
     candidateCount = 0,
     candidateAgeDays = null,
+    reportCount = 0,
+    reportAgeDays = null,
     appealCount = 0,
     appealAgeDays = null,
+    linkedIdentityRows = [],
     notMembers = 0,
   } = counts;
-  t.mock.method(pool, 'query', (async (sql: string) => {
+  const calls: Array<{ sql: string; params: unknown[] }> = [];
+  t.mock.method(pool, 'query', (async (sql: string, params: unknown[] = []) => {
+    calls.push({ sql, params });
+    // resolveRole's own lookup never selects a role for 'super_admin' — that
+    // tier is resolved from config.rbac.superAdminWhatsappNumbers instead
+    // (see the super-admin test below), so this branch only ever answers
+    // 'admin'/'member'/null.
     if (sql.includes('SELECT role FROM community_users')) {
-      return { rows: role ? [{ role }] : [], rowCount: 0 };
+      return { rows: role && role !== 'super_admin' ? [{ role }] : [], rowCount: 0 };
+    }
+    if (sql.includes('platform_user_id FROM community_users')) {
+      return { rows: linkedIdentityRows, rowCount: 0 };
     }
     if (sql.includes('FROM access_requests')) {
       return sql.includes('age_days')
@@ -2714,6 +2734,11 @@ function mockPoolRoleAndReviewQueue(
         ? { rows: [{ age_days: candidateAgeDays }], rowCount: 0 }
         : { rows: [{ n: candidateCount }], rowCount: 0 };
     }
+    if (sql.includes('FROM content_reports')) {
+      return sql.includes('age_days')
+        ? { rows: [{ age_days: reportAgeDays }], rowCount: 0 }
+        : { rows: [{ n: reportCount }], rowCount: 0 };
+    }
     if (sql.includes('FROM moderation_appeals')) {
       return sql.includes('age_days')
         ? { rows: [{ age_days: appealAgeDays }], rowCount: 0 }
@@ -2724,12 +2749,13 @@ function mockPoolRoleAndReviewQueue(
     }
     return { rows: [], rowCount: 0 };
   }) as typeof pool.query);
+  return calls;
 }
 
 test(
-  '!reviewqueue renders the same four lines formatReviewQueueSummary produces for the given counts/ages, with ' +
-    'an "oldest Nd" suffix only when non-empty and no reports count anywhere in the output (issue #1095 ' +
-    'acceptance criteria 1, 3)',
+  'SECURITY: when the WhatsApp adapter is unbound, !reviewqueue degrades to omitting the reports line ' +
+    '(formatReviewQueueSummaryWithoutReports) rather than throwing or fabricating a count — run FIRST in ' +
+    "this file's execution order, before any test binds whatsappAdapter (issue #1207 acceptance criterion 4)",
   async (t) => {
     mockPoolRoleAndReviewQueue(t, 'admin', {
       accessRequestCount: 3,
@@ -2747,6 +2773,63 @@ test(
 
     await trigger(makeMessage({ text: '!reviewqueue', userId: 'admin-1' }));
 
+    const { formatReviewQueueSummaryWithoutReports } = await import('../src/module/agent/tools.js');
+    assert.equal(
+      sent[0].text,
+      formatReviewQueueSummaryWithoutReports({
+        accessRequestCount: 3,
+        accessRequestAgeDays: 5,
+        suggestionCount: 0,
+        suggestionAgeDays: null,
+        candidateCount: 2,
+        candidateAgeDays: 1,
+        appealCount: 1,
+        appealAgeDays: 10,
+      }),
+    );
+    assert.match(sent[0].text, /Access requests: 3 pending \(oldest 5d\)/);
+    assert.match(sent[0].text, /Appeals: 1 open \(oldest 10d\)/);
+    // The invariant is that no COUNT is fabricated or approximated when the
+    // adapter is unbound — not that reports go unmentioned. The fallback
+    // keeps the pointer note (`main`'s shipped behaviour before #1207), which
+    // is more useful to an admin than silence about a queue we cannot count.
+    assert.doesNotMatch(
+      sent[0].text,
+      /Reports \(your conversations\):/,
+      'SECURITY: never render a scoped-looking reports count without the scope to compute it',
+    );
+    assert.doesNotMatch(
+      sent[0].text,
+      /Reports[^\n]*\b\d+\s+open/,
+      'SECURITY: never fabricate or approximate a report count on the degraded path',
+    );
+  },
+);
+
+test(
+  '!reviewqueue renders all five lines formatReviewQueueSummary produces for the given counts/ages, with ' +
+    'an "oldest Nd" suffix only when non-empty, once the WhatsApp adapter is bound (issue #1095 acceptance ' +
+    'criteria 1, 3; issue #1207 acceptance criteria 1, 2)',
+  async (t) => {
+    mockPoolRoleAndReviewQueue(t, 'admin', {
+      accessRequestCount: 3,
+      accessRequestAgeDays: 5,
+      suggestionCount: 0,
+      suggestionAgeDays: null,
+      candidateCount: 2,
+      candidateAgeDays: 1,
+      reportCount: 4,
+      reportAgeDays: 7,
+      appealCount: 1,
+      appealAgeDays: 10,
+    });
+    const router = makeRouter({ runTurn: throwingRunTurn });
+    const { adapter, sent, trigger } = makeAdapter();
+    bindCommunityWhatsAppAdapter(adapter);
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!reviewqueue', userId: 'admin-1' }));
+
     const expected = formatReviewQueueSummary({
       accessRequestCount: 3,
       accessRequestAgeDays: 5,
@@ -2754,6 +2837,8 @@ test(
       suggestionAgeDays: null,
       candidateCount: 2,
       candidateAgeDays: 1,
+      reportCount: 4,
+      reportAgeDays: 7,
       appealCount: 1,
       appealAgeDays: 10,
     });
@@ -2765,13 +2850,8 @@ test(
       'an empty queue must render no age suffix',
     );
     assert.match(sent[0].text, /Knowledge candidates: 2 pending \(oldest 1d\)/);
+    assert.match(sent[0].text, /Reports \(your conversations\): 4 open \(oldest 7d\)/);
     assert.match(sent[0].text, /Appeals: 1 open \(oldest 10d\)/);
-    assert.doesNotMatch(sent[0].text, /Reports: \d+ open/, 'no fabricated/approximated reports count');
-    assert.match(
-      sent[0].text,
-      /Reports: see list_reports or review_queue \(scoped to your conversations\)/,
-      'the reports signpost note must be present',
-    );
   },
 );
 
@@ -2779,6 +2859,7 @@ test('!reviewqueue with every queue empty renders no age suffixes (issue #1095 a
   mockPoolRoleAndReviewQueue(t, 'admin');
   const router = makeRouter({ runTurn: throwingRunTurn });
   const { adapter, sent, trigger } = makeAdapter();
+  bindCommunityWhatsAppAdapter(adapter);
   router.register(adapter);
 
   await trigger(makeMessage({ text: '!reviewqueue', userId: 'admin-1' }));
@@ -2792,6 +2873,8 @@ test('!reviewqueue with every queue empty renders no age suffixes (issue #1095 a
       suggestionAgeDays: null,
       candidateCount: 0,
       candidateAgeDays: null,
+      reportCount: 0,
+      reportAgeDays: null,
       appealCount: 0,
       appealAgeDays: null,
     }),
@@ -2816,7 +2899,8 @@ test(
 
 test(
   'SECURITY: "!reviewqueue <anything>" is never matched — the anchored matcher rejects any argument, so no ' +
-    'message-supplied text can ever reach a review-queue repository read (issue #1095 acceptance criterion 2)',
+    'message-supplied text can ever reach a review-queue repository read, including the reports read (issue ' +
+    '#1095 acceptance criterion 2; issue #1207 acceptance criterion 8)',
   async (t) => {
     let queried = false;
     t.mock.method(pool, 'query', (async (sql: string) => {
@@ -2825,6 +2909,8 @@ test(
         sql.includes('FROM access_requests') ||
         sql.includes('FROM suggestions') ||
         sql.includes('FROM knowledge_candidates') ||
+        sql.includes('FROM content_reports') ||
+        sql.includes('platform_user_id FROM community_users') ||
         sql.includes('FROM moderation_appeals')
       ) {
         queried = true;
@@ -2833,6 +2919,7 @@ test(
     }) as typeof pool.query);
     const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
     const { adapter, sent, trigger } = makeAdapter();
+    bindCommunityWhatsAppAdapter(adapter);
     router.register(adapter);
 
     await trigger(makeMessage({ text: '!reviewqueue; DROP TABLE access_requests', userId: 'admin-1' }));
@@ -2844,7 +2931,8 @@ test(
 
 test(
   'SECURITY: a member-tier caller\'s "!reviewqueue" falls through to the normal turn — no review-queue count ' +
-    'is ever rendered and no review-queue repository read runs (issue #1095 acceptance criterion 4)',
+    'is ever rendered and no review-queue repository read runs, including the reports read (issue #1095 ' +
+    'acceptance criterion 4; issue #1207 acceptance criterion 8)',
   async (t) => {
     let queried = false;
     t.mock.method(pool, 'query', (async (sql: string) => {
@@ -2854,6 +2942,8 @@ test(
         sql.includes('FROM access_requests') ||
         sql.includes('FROM suggestions') ||
         sql.includes('FROM knowledge_candidates') ||
+        sql.includes('FROM content_reports') ||
+        sql.includes('platform_user_id FROM community_users') ||
         sql.includes('FROM moderation_appeals')
       ) {
         queried = true;
@@ -2862,6 +2952,7 @@ test(
     }) as typeof pool.query);
     const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
     const { adapter, sent, trigger } = makeAdapter();
+    bindCommunityWhatsAppAdapter(adapter);
     router.register(adapter);
 
     await trigger(makeMessage({ text: '!reviewqueue', userId: 'member-1' }));
@@ -2878,7 +2969,8 @@ test(
 
 test(
   'SECURITY: a guest caller\'s "!reviewqueue" falls through to the normal turn — no review-queue count is ever ' +
-    'rendered and no review-queue repository read runs (issue #1095 acceptance criterion 4)',
+    'rendered and no review-queue repository read runs, including the reports read (issue #1095 acceptance ' +
+    'criterion 4; issue #1207 acceptance criterion 8)',
   async (t) => {
     let queried = false;
     t.mock.method(pool, 'query', (async (sql: string) => {
@@ -2887,6 +2979,8 @@ test(
         sql.includes('FROM access_requests') ||
         sql.includes('FROM suggestions') ||
         sql.includes('FROM knowledge_candidates') ||
+        sql.includes('FROM content_reports') ||
+        sql.includes('platform_user_id FROM community_users') ||
         sql.includes('FROM moderation_appeals')
       ) {
         queried = true;
@@ -2895,6 +2989,7 @@ test(
     }) as typeof pool.query);
     const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
     const { adapter, sent, trigger } = makeAdapter();
+    bindCommunityWhatsAppAdapter(adapter);
     router.register(adapter);
 
     await trigger(makeMessage({ text: '!reviewqueue', userId: 'guest-1' }));
@@ -2910,34 +3005,21 @@ test(
     'cross-platform aggregate — and the three guild-wide counts use the SAME repository functions with the SAME ' +
     "(no-argument) call review_queue's own handler uses (issue #1095 acceptance criterion 5)",
   async (t) => {
-    const calls: Array<{ sql: string; params: unknown[] }> = [];
-    t.mock.method(pool, 'query', (async (sql: string, params: unknown[] = []) => {
-      calls.push({ sql, params });
-      if (sql.includes('SELECT role FROM community_users')) return { rows: [{ role: 'admin' }], rowCount: 0 };
-      if (sql.includes('FROM access_requests')) {
-        return sql.includes('age_days')
-          ? { rows: [{ age_days: 4 }], rowCount: 0 }
-          : { rows: [{ n: 7 }], rowCount: 0 };
-      }
-      if (sql.includes('FROM suggestions')) {
-        return sql.includes('age_days')
-          ? { rows: [{ age_days: 2 }], rowCount: 0 }
-          : { rows: [{ n: 5 }], rowCount: 0 };
-      }
-      if (sql.includes('FROM knowledge_candidates')) {
-        return sql.includes('age_days')
-          ? { rows: [{ age_days: 9 }], rowCount: 0 }
-          : { rows: [{ n: 3 }], rowCount: 0 };
-      }
-      if (sql.includes('FROM moderation_appeals')) {
-        return sql.includes('age_days')
-          ? { rows: [{ age_days: 1 }], rowCount: 0 }
-          : { rows: [{ n: 6 }], rowCount: 0 };
-      }
-      return { rows: [], rowCount: 0 };
-    }) as typeof pool.query);
+    const calls = mockPoolRoleAndReviewQueue(t, 'admin', {
+      accessRequestCount: 7,
+      accessRequestAgeDays: 4,
+      suggestionCount: 5,
+      suggestionAgeDays: 2,
+      candidateCount: 3,
+      candidateAgeDays: 9,
+      reportCount: 2,
+      reportAgeDays: 1,
+      appealCount: 6,
+      appealAgeDays: 1,
+    });
     const router = makeRouter({ runTurn: throwingRunTurn });
     const { adapter, sent, trigger } = makeAdapter();
+    bindCommunityWhatsAppAdapter(adapter);
     router.register(adapter);
 
     await trigger(makeMessage({ text: '!reviewqueue', userId: 'admin-1' }));
@@ -2963,8 +3045,154 @@ test(
     assert.match(sent[0].text, /Access requests: 7 pending \(oldest 4d\)/);
     assert.match(sent[0].text, /Suggestions: 5 pending \(oldest 2d\)/);
     assert.match(sent[0].text, /Knowledge candidates: 3 pending \(oldest 9d\)/);
+    assert.match(sent[0].text, /Reports \(your conversations\): 2 open \(oldest 1d\)/);
     assert.match(sent[0].text, /Appeals: 6 open \(oldest 1d\)/);
-    assert.doesNotMatch(sent[0].text, /Reports:.*\d+ open/, 'no reports count, guild-wide or otherwise');
+  },
+);
+
+test(
+  "SECURITY: a non-super-admin caller's !reviewqueue reports count is scoped (never the guild-wide total) — " +
+    "asserted against a fixture where countOpenReports' scoped and guild-wide counts differ, so a wrong null " +
+    'scope argument would fail this test (issue #1207 acceptance criterion 5)',
+  async (t) => {
+    const GUILD_WIDE_REPORT_COUNT = 40;
+    const SCOPED_REPORT_COUNT = 2;
+    const calls: Array<{ sql: string; params: unknown[] }> = [];
+    t.mock.method(pool, 'query', (async (sql: string, params: unknown[] = []) => {
+      calls.push({ sql, params });
+      if (sql.includes('SELECT role FROM community_users')) return { rows: [{ role: 'admin' }], rowCount: 0 };
+      if (sql.includes('platform_user_id FROM community_users')) return { rows: [], rowCount: 0 };
+      if (sql.includes('FROM content_reports')) {
+        const scoped = params.length > 0;
+        if (sql.includes('age_days')) {
+          return { rows: [{ age_days: scoped ? 1 : 99 }], rowCount: 0 };
+        }
+        return { rows: [{ n: scoped ? SCOPED_REPORT_COUNT : GUILD_WIDE_REPORT_COUNT }], rowCount: 0 };
+      }
+      if (
+        sql.includes('FROM access_requests') ||
+        sql.includes('FROM suggestions') ||
+        sql.includes('FROM knowledge_candidates') ||
+        sql.includes('FROM moderation_appeals')
+      ) {
+        return sql.includes('age_days')
+          ? { rows: [{ age_days: null }], rowCount: 0 }
+          : { rows: [{ n: 0 }], rowCount: 0 };
+      }
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: throwingRunTurn });
+    const { adapter, sent, trigger } = makeAdapter({
+      async conversationsForUser() {
+        return ['wa-conv-mine'];
+      },
+    });
+    bindCommunityWhatsAppAdapter(adapter);
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!reviewqueue', userId: 'admin-1', conversationId: 'wa-conv-mine' }));
+
+    const reportCalls = calls.filter((c) => c.sql.includes('FROM content_reports'));
+    assert.equal(reportCalls.length, 2, 'reports must use the count+age pair');
+    for (const c of reportCalls) {
+      assert.ok(
+        c.params.length > 0,
+        'a non-super-admin caller must always pass a scope, never an empty params array',
+      );
+      assert.deepEqual(c.params[0], ['wa-conv-mine'], "scope must be the caller's own conversations");
+    }
+    assert.match(
+      sent[0].text,
+      new RegExp(`Reports \\(your conversations\\): ${SCOPED_REPORT_COUNT} open`),
+      'the scoped count must be rendered',
+    );
+    assert.doesNotMatch(
+      sent[0].text,
+      new RegExp(`Reports \\(your conversations\\): ${GUILD_WIDE_REPORT_COUNT} open`),
+      'the guild-wide count must never be rendered for a non-super-admin caller',
+    );
+  },
+);
+
+test(
+  "SECURITY: a super-admin caller's !reviewqueue reports count is the unrestricted (scope === null) total — " +
+    'the flip side of the non-super-admin scoping test above (issue #1207 acceptance criterion 6)',
+  async (t) => {
+    const originalSuperAdmins = [...config.rbac.superAdminWhatsappNumbers];
+    config.rbac.superAdminWhatsappNumbers.push('super-1');
+    t.after(() => {
+      config.rbac.superAdminWhatsappNumbers.length = 0;
+      config.rbac.superAdminWhatsappNumbers.push(...originalSuperAdmins);
+    });
+    const calls: Array<{ sql: string; params: unknown[] }> = [];
+    t.mock.method(pool, 'query', (async (sql: string, params: unknown[] = []) => {
+      calls.push({ sql, params });
+      if (sql.includes('SELECT role FROM community_users')) return { rows: [], rowCount: 0 };
+      if (sql.includes('platform_user_id FROM community_users')) return { rows: [], rowCount: 0 };
+      if (sql.includes('FROM content_reports')) {
+        return sql.includes('age_days')
+          ? { rows: [{ age_days: 3 }], rowCount: 0 }
+          : { rows: [{ n: 40 }], rowCount: 0 };
+      }
+      if (
+        sql.includes('FROM access_requests') ||
+        sql.includes('FROM suggestions') ||
+        sql.includes('FROM knowledge_candidates') ||
+        sql.includes('FROM moderation_appeals')
+      ) {
+        return sql.includes('age_days')
+          ? { rows: [{ age_days: null }], rowCount: 0 }
+          : { rows: [{ n: 0 }], rowCount: 0 };
+      }
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: throwingRunTurn });
+    const { adapter, sent, trigger } = makeAdapter();
+    bindCommunityWhatsAppAdapter(adapter);
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!reviewqueue', userId: 'super-1' }));
+
+    const reportCalls = calls.filter((c) => c.sql.includes('FROM content_reports'));
+    assert.equal(reportCalls.length, 2, 'reports must use the count+age pair');
+    for (const c of reportCalls) {
+      assert.deepEqual(c.params, [], 'a super-admin caller must pass an unrestricted (null) scope');
+    }
+    assert.match(sent[0].text, /Reports \(your conversations\): 40 open \(oldest 3d\)/);
+  },
+);
+
+test(
+  "SECURITY: a report filed against the calling admin's own linked identities is excluded from their " +
+    "!reviewqueue reports count — the accused-admin exclusion, via resolveLinkedIdentities' viewerIds " +
+    'parity with list_reports/review_queue (issue #1207 acceptance criterion 7)',
+  async (t) => {
+    const calls = mockPoolRoleAndReviewQueue(t, 'admin', {
+      reportCount: 1,
+      reportAgeDays: 3,
+      linkedIdentityRows: [
+        { platform: 'whatsapp', platform_user_id: 'admin-1' },
+        { platform: 'discord', platform_user_id: 'admin-1-discord' },
+      ],
+    });
+    const router = makeRouter({ runTurn: throwingRunTurn });
+    const { adapter, sent, trigger } = makeAdapter();
+    bindCommunityWhatsAppAdapter(adapter);
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!reviewqueue', userId: 'admin-1' }));
+
+    const linkedIdentityCalls = calls.filter((c) => c.sql.includes('platform_user_id FROM community_users'));
+    assert.equal(linkedIdentityCalls.length, 1, 'resolveLinkedIdentities must be called exactly once');
+    const reportCalls = calls.filter((c) => c.sql.includes('FROM content_reports'));
+    for (const c of reportCalls) {
+      assert.deepEqual(
+        c.params[1],
+        ['admin-1', 'admin-1-discord'],
+        'the accused-admin exclusion must cover every identity linked to this admin, not just the current one',
+      );
+    }
+    assert.match(sent[0].text, /Reports \(your conversations\): 1 open \(oldest 3d\)/);
   },
 );
 
@@ -2978,6 +3206,7 @@ test("a successful !reviewqueue invocation calls recordShortcutHit('whatsapp_tex
     },
   });
   const { adapter, sent, trigger } = makeAdapter();
+  bindCommunityWhatsAppAdapter(adapter);
   router.register(adapter);
 
   await trigger(makeMessage({ text: '!reviewqueue', userId: 'admin-1' }));
