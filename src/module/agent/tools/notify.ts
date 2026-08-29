@@ -14,10 +14,16 @@ import {
   getLanguagePreference,
   getResponseStyle,
   isKnownMessage,
+  isKnownUser,
   listAdmins,
   type ResponseStyle,
 } from '@swampratnz/agent-base/storage/repository.js';
-import { getCommunityGuidelines, getCommunityGuidelinesMi } from '../../storage/policies.js';
+import {
+  getCommunityGuidelines,
+  getCommunityGuidelinesMi,
+  getWelcomeMessage,
+  getWelcomeMessageMi,
+} from '../../storage/policies.js';
 import { truncateForEcho } from './helpers.js';
 
 // Every registered platform, derived from the platform registry (agent-base
@@ -240,6 +246,57 @@ export async function notifyAdmins(
  * DB hiccup degrades to "no guidelines appended" — same #52 invariant as the
  * language/style lookups above — rather than throwing out of this function
  * or blocking the DM.
+ *
+ * Issue #1222: the welcome-message sibling of #1171's fix, for the exact
+ * same affected population — `getWelcomeMessage`/`getWelcomeMessageMi` (the
+ * admin-configured `set_welcome_message` text) were never read on this path,
+ * so a pre-registered/`team_setup`-batched member saw the guidelines #1171
+ * added but never the admin's own welcome copy. Resolved the same `mi`-aware
+ * way as guidelines (`getWelcomeMi() ?? getWelcome()`), appended via its own
+ * `welcomeHeading`, in its own `.catch(() => null)` independent of the
+ * guidelines lookup's catch (so one failing degrades only its own block, not
+ * both), and placed BEFORE the guidelines block per the approved acceptance
+ * criteria (welcome context first, rules second).
+ *
+ * The welcome block is SUPPRESSED for a member the bot has already seen
+ * (`isKnownUser`), because those members have already been through the
+ * join/first-contact path that sends this same configured text — the Discord
+ * guild-join welcome, the WhatsApp-Cloud first-inbound welcome, and the
+ * Baileys group welcome all read `policyText.welcomeMessage`. Without this
+ * gate an ordinary gated guest who joined organically and is later approved
+ * off `list_access_requests` would receive the identical welcome copy twice.
+ * `isKnownUser` is the same durable, DB-backed backstop those adapters
+ * themselves use to avoid re-welcoming a known contact (their in-process
+ * `welcomedThisRun` map is explicitly not persisted), so this reuses their
+ * discipline rather than inventing a second notion of "already welcomed",
+ * and needs no new column to record one.
+ *
+ * That leaves exactly the population #1222 is about: a pre-registered or
+ * `team_setup`-batched member, whom the bot has never seen, and who
+ * therefore never generated the join event that would have welcomed them.
+ * Guidelines are deliberately NOT gated this way — #1171 shipped that
+ * redundancy knowingly, and narrowing it now would be an unrelated
+ * behaviour change to an already-merged decision.
+ *
+ * A failed `isKnownUser` lookup degrades to "no welcome block", the same
+ * direction every other lookup in this function degrades: it keeps the
+ * duplicate — the harm this gate exists to prevent — off the DM, and the
+ * approval DM itself still sends regardless.
+ *
+ * The check runs only when a welcome is actually configured, so a deployment
+ * that has never set one pays no read for it, and this function's existing
+ * callers acquire no new DB dependency.
+ *
+ * Known narrow gap, accepted rather than fixed (#1222 review): `isKnownUser`
+ * reads `interactions`, which is populated by MESSAGES. Discord's join
+ * welcome fires from the `GuildMemberAdd` EVENT, which writes no interaction.
+ * So a Discord member who joins (and is welcomed), never messages the bot,
+ * and is then proactively `add_member`-ed without ever filing an access
+ * request is still `isKnownUser === false`, and will see the welcome a second
+ * time. That population is small, it is not a regression (before #1222 this
+ * path sent no welcome at all), and closing it would need a persisted
+ * welcome-sent marker that no table records today — the thing this gate was
+ * specifically designed to avoid adding.
  */
 export async function notifyMemberApproved(
   adapter: PlatformAdapter,
@@ -250,6 +307,9 @@ export async function notifyMemberApproved(
   getRespStyle: typeof getResponseStyle = getResponseStyle,
   getGuidelines: typeof getCommunityGuidelines = getCommunityGuidelines,
   getGuidelinesMi: typeof getCommunityGuidelinesMi = getCommunityGuidelinesMi,
+  getWelcome: typeof getWelcomeMessage = getWelcomeMessage,
+  getWelcomeMi: typeof getWelcomeMessageMi = getWelcomeMessageMi,
+  hasSeenUser: typeof isKnownUser = isKnownUser,
 ): Promise<boolean> {
   if (wasAlreadyMember) return true;
   const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
@@ -261,12 +321,22 @@ export async function notifyMemberApproved(
   const style: ResponseStyle | undefined =
     lang === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
   const baseMessage = notice('memberApprovedMessage', { language: lang, style });
+  const configuredWelcome = await (
+    lang === 'mi' ? getWelcomeMi().then((mi) => mi ?? getWelcome()) : getWelcome()
+  ).catch(() => null);
+  // Already-seen members were welcomed on the join path; skip so the same
+  // configured copy is not sent twice. `isKnownUser` is consulted ONLY when a
+  // welcome is actually configured: nothing to duplicate otherwise, and this
+  // function's existing callers should not acquire a DB dependency they did
+  // not have.
+  const welcome =
+    configuredWelcome && !(await hasSeenUser(platform, userId).catch(() => true)) ? configuredWelcome : null;
   const guidelines = await (
     lang === 'mi' ? getGuidelinesMi().then((mi) => mi ?? getGuidelines()) : getGuidelines()
   ).catch(() => null);
-  const message = guidelines
-    ? `${baseMessage}\n\n${notice('guidelinesHeading')}\n${guidelines}`
-    : baseMessage;
+  let message = baseMessage;
+  if (welcome) message += `\n\n${notice('welcomeHeading')}\n${welcome}`;
+  if (guidelines) message += `\n\n${notice('guidelinesHeading')}\n${guidelines}`;
   return adapter
     .sendDirectMessage(userId, message)
     .then(() => true)
