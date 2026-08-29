@@ -3804,6 +3804,63 @@ to six more days with no admin lever at all.
   so it is a read/probe-and-record action, the same non-destructive shape as
   the job itself, not an in-place content overwrite like `update_knowledge`.
 
+### 31. `notifyMemberApproved` appends the admin-configured welcome message, gated on `isKnownUser` (issue #1222)
+
+`notifyMemberApproved` (`add_member`/`team_setup`, §"Standing language
+preference" above and issue #644/#548 discuss the same function's window-reopen
+recovery and adapter routing) already appended `community_guidelines` when set
+(#1171) but never `welcome_message`/`welcome_message_mi` — so a pre-registered
+or `team_setup`-batched member, who never generates a join/first-contact
+event, never saw welcome copy an admin had actually configured via
+`set_welcome_message`. #1222 adds it, resolved the identical `mi`-aware way as
+guidelines (`getWelcomeMi() ?? getWelcome()`), appended via its own
+`welcomeHeading`, in its own `.catch(() => null)` independent of the
+guidelines lookup's catch — so a welcome-lookup failure degrades to "no
+welcome block" only, never suppressing an independently-resolved guidelines
+block, throwing out of the function, or blocking the DM.
+
+- **Suppressed for a member the bot has already seen (`isKnownUser`).** The
+  Discord guild-join welcome, the WhatsApp-Cloud first-inbound welcome, and
+  the Baileys group welcome (§"Standing language preference" above) all
+  already send this same `policyText.welcomeMessage`/`_mi` text. Without a
+  gate, an ordinary gated guest who joined organically and was later approved
+  off `list_access_requests` — the common `add_member` path, not just the
+  pre-registered/batch edge case — would receive the identical configured
+  text twice. `isKnownUser` (the same `interactions`-backed check
+  `moderation.ts`/`reportsMember.ts` use for warning/mute targeting, and the
+  reachability check `block_user`/`unblock_user` above reason about) is the
+  durable, DB-backed signal those join-path adapters themselves rely on
+  in place of their own in-process, non-persisted `welcomedThisRun` map — reused
+  here rather than inventing a second notion of "already welcomed" and a new
+  column to record one.
+- **Checked only when a welcome is actually configured.** A deployment that
+  has never set `welcome_message` pays no `isKnownUser` read and this
+  function's existing callers acquire no new DB dependency.
+- **Fails toward suppression, not duplication.** A failed `isKnownUser`
+  lookup degrades to `true` (treated as already-seen) — the welcome block is
+  omitted rather than risking a second send, and the approval DM itself still
+  goes out regardless. Pinned by a `SECURITY:` test.
+- **Guidelines are deliberately NOT gated this way.** #1171 shipped that
+  redundancy (guidelines can already appear at join-welcome, the gated
+  notice, and the approval DM) knowingly; narrowing it now would be an
+  unrelated behaviour change to an already-merged decision.
+- **Known residual gap, accepted rather than closed:** `isKnownUser` reads
+  `interactions`, which is populated by messages, not by the Discord
+  `onGuildMemberAdd` join event itself. A Discord user who joins the guild
+  (receiving the join-path welcome immediately, unconditionally) but never
+  sends the bot a message, then is proactively `add_member`-ed without ever
+  filing an access request, is still `isKnownUser === false` and so receives
+  the configured welcome a second time via this path. This is not a
+  regression — before #1222, `add_member` never sent welcome text at all —
+  and the population (joined, never messaged, then proactively added) is
+  small.
+- **No new attack surface.** `welcomeHeading` is a static, non-interpolated
+  string; the appended text is the same admin-authored, already
+  member-readable `welcome_message`/`welcome_message_mi` policy text every
+  join-path adapter already sends. No caller-supplied text is interpolated,
+  and the `isKnownUser` lookup is keyed off the resolved target
+  `(platform, userId)`, never a caller- or message-supplied value.
+
 ## Platform-specific notes
 
 ### WhatsApp / Baileys ToS risk
