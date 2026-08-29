@@ -8,6 +8,7 @@ import {
   countAccessRequests,
   countActiveWarnings,
   countOpenAppeals,
+  countOpenReports,
   countPendingKnowledgeCandidates,
   countPendingSuggestions,
   countRepliesToUser,
@@ -28,8 +29,10 @@ import {
   listRecentProjects,
   oldestAccessRequestAgeDays,
   oldestOpenAppealAgeDays,
+  oldestOpenReportAgeDays,
   oldestPendingCandidateAgeDays,
   oldestPendingSuggestionAgeDays,
+  resolveLinkedIdentities,
   rosterCounts,
 } from '@swampratnz/agent-base/storage/repository.js';
 import {
@@ -45,6 +48,7 @@ import {
   formatOtherConfiguredKnobs,
   formatProjectResults,
   formatReviewQueueSummary,
+  formatReviewQueueSummaryWithoutReports,
   formatTopKnowledgeList,
   formatWhoIsIntoEmptyText,
   LIST_PROJECTS_DEFAULT_LIMIT,
@@ -412,18 +416,27 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
     },
   },
   {
-    // First admin-tier entry in this registry (issue #1095). Anchored,
-    // argument-rejecting matcher, same discipline as `warnings`/
-    // `mysubmissions`/`mydata`/`kbtopics`/`kbhelpful` above: `!reviewqueue
-    // anything` falls through to TEXT_COMMAND_UNMATCHED rather than
-    // matching, so no message-supplied text ever reaches a repository read.
-    // Renders review_queue's own guild-wide/caller.platform-scoped lines via
-    // the SAME repository functions with the SAME arguments that tool's
-    // handler uses, including the sixth onboarding-queue line (issue #1216,
-    // gated on config.rbac.accessMode[msg.platform] === 'gated' verbatim,
-    // never on the notMembers count) — see formatReviewQueueSummary
-    // (tools/helpers.ts) for why
-    // the reports line is omitted rather than fabricated or approximated.
+    // First admin-tier entry in this registry (issue #1095; reports line
+    // added #1207, onboarding line #1216). Anchored, argument-rejecting
+    // matcher, same discipline as `warnings`/`mysubmissions`/`mydata`/
+    // `kbtopics`/`kbhelpful` above: `!reviewqueue anything` falls through to
+    // TEXT_COMMAND_UNMATCHED rather than matching, so no message-supplied
+    // text ever reaches a repository read. Renders review_queue's own
+    // guild-wide/caller.platform-scoped lines via the SAME repository
+    // functions with the SAME arguments that tool's handler uses, including
+    // the onboarding-queue line (#1216, gated on
+    // config.rbac.accessMode[msg.platform] === 'gated' verbatim, never on
+    // the notMembers count).
+    //
+    // The reports line needs a live adapter (`callerScope()`'s own
+    // membership lookup) unavailable to the fixed, zero-opts
+    // `WhatsAppTextCommandDeps` shape, so it's computed inline against the
+    // module-scope `whatsappAdapter` binding below, replicating
+    // `callerScope()`'s exact arithmetic (context.ts) plus
+    // `resolveLinkedIdentities`'s accused-admin exclusion — the same pair
+    // `review_queue`'s own handler calls (digestsAdmin.ts) — so the rendered
+    // count can never diverge from what that tool/`list_reports` would show
+    // the same caller in the same turn.
     name: 'reviewqueue',
     platforms: ['discord', 'whatsapp'],
     whatsapp: async (text, msg, role) => {
@@ -450,6 +463,32 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
         oldestOpenAppealAgeDays(msg.platform),
         rosterCounts(msg.platform),
       ]);
+      // Unreachable in practice — createConfiguredAdapters() binds the
+      // WhatsApp adapter before any message can be routed, same as
+      // `!admindigest` below — but degrades to omitting the reports line
+      // rather than throwing or fabricating a count when it isn't.
+      if (!whatsappAdapter) {
+        return formatReviewQueueSummaryWithoutReports({
+          accessRequestCount,
+          accessRequestAgeDays,
+          suggestionCount,
+          suggestionAgeDays,
+          candidateCount,
+          candidateAgeDays,
+          appealCount,
+          appealAgeDays,
+          onboardingQueueCount: config.rbac.accessMode[msg.platform] === 'gated' ? roster.notMembers : null,
+        });
+      }
+      const scope =
+        role === 'super_admin'
+          ? null
+          : [...new Set([...(await whatsappAdapter.conversationsForUser(msg.userId)), msg.conversationId])];
+      const viewerIds = (await resolveLinkedIdentities(msg.platform, msg.userId)).map((i) => i.userId);
+      const [reportCount, reportAgeDays] = await Promise.all([
+        countOpenReports(scope, viewerIds),
+        oldestOpenReportAgeDays(scope, viewerIds),
+      ]);
       return formatReviewQueueSummary({
         accessRequestCount,
         accessRequestAgeDays,
@@ -457,6 +496,8 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
         suggestionAgeDays,
         candidateCount,
         candidateAgeDays,
+        reportCount,
+        reportAgeDays,
         appealCount,
         appealAgeDays,
         onboardingQueueCount: config.rbac.accessMode[msg.platform] === 'gated' ? roster.notMembers : null,
