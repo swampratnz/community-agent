@@ -25,6 +25,50 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #1122 #1123 #1132
 -->
 
+## 2026-08-29
+
+### Added
+- **The weekly admin digest's response-latency line now splits into auto-answer vs. mention/DM.** (#1220)
+  The single blended time-to-first-answer line (#1210) could hide a regression in either bucket — replies in
+  `AUTO_ANSWER_CHANNEL_IDS` channels running slow while mention/DM replies stay fine, or vice versa. Two more
+  lines, `⏱️ Auto-answer latency` and `⏱️ Mention/DM latency`, now render right below the existing blended line
+  (each only when that bucket has data this week), reusing the same `response_latency` tool's `scope` split. The
+  blended line is unchanged, and a digest with no data in either new bucket looks exactly as it did before.
+- **`!adminlist`/`/adminlist`: a zero-model shortcut for `list_admins`.** (#1218)
+  Super admins can now see who currently holds bot-admin privilege without a full agent turn — the same
+  zero-wait-shortcut pattern already shipped for `reviewqueue`/`mutedlist`/`blockedlist`/`topknowledge`/
+  `featureflags`/`admindigest`, and the one member of that family that didn't have it yet (#1183 named it as
+  the deferred follow-up). Renders the exact same roster text `list_admins` already returns.
+- **Eight more member-resolution DMs now honour your "keep it simple" plain-language preference.** (#1212)
+  `set_response_style('plain')` (#126) already simplified moderation warnings, approval DMs, and code-policy
+  notes (#430/#657), but the DMs telling you the outcome of something you submitted — a suggestion, report,
+  appeal, knowledge tip, an access request, a warnings-clear, a removed project, or a knowledge fix — still
+  came back in full English or te reo regardless of a standing plain preference. All eight now check it too,
+  with te reo still taking priority when both preferences are set. No new tool, table, or preference — same
+  `response_style_prefs` row every other plain-aware notice already reads.
+- **The weekly admin digest now includes a response-latency line.** (#1210)
+  `response_latency` (#877) built the count/median/p90 time-to-first-answer
+  aggregate as an on-demand pull tool, and its own pairing/scope fix (#911)
+  named folding it into the recurring digest push as the next step — neither
+  follow-up was ever built until now. Admins who don't think to run
+  `response_latency` on demand every week now see it automatically: "⏱️
+  Response latency (last 7d): N replies, median Xs, p90 Ys", shown only when
+  there's data to report. No new tool, table, or data access — same
+  conversation-scoped aggregate the tool already used.
+
+### Fixed
+- **`!reviewqueue`/`/reviewqueue` now show the onboarding-queue line on a
+  gated-access community, matching `review_queue`.** (#1216) #1208 added a
+  sixth line to `review_queue` — how many guests are present but never added
+  as a member — but the free, no-model-call `!reviewqueue`/`/reviewqueue`
+  shortcuts never got the same line, so an admin using the fast path saw a
+  stale five-line picture while the full tool right next to it showed six.
+  Both shortcuts now render the identical sixth line under the identical
+  condition: only on a `'gated'`-access-mode community, never as a
+  meaningless "0 guests waiting" on an `'open'` one. No new tool, table, or
+  data access — same `rosterCounts` read `review_queue`'s own handler
+  already made for the same caller.
+
 ## 2026-08-28
 
 ### Added
@@ -70,6 +114,19 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   never triggers the check. No new tool, table, or data access — it reuses
   the same embedding search `list_projects`'/`find_helper`'s suggestion path
   already run.
+- **`review_queue` now shows a sixth line for the onboarding queue.** (#1208)
+  `review_queue`'s own description said it rolled up "all five admin review
+  queues," but its neighbour `admin_digest` already treated the onboarding
+  queue (guests present who were never added as a member) as a sixth,
+  equally review-worthy signal — a gap issue #1136 named and deliberately
+  deferred when it added that queue's proactive stale-alert job. On a
+  `'gated'`-access-mode platform, `review_queue` now appends an onboarding-
+  queue count alongside the existing five, reusing the exact `rosterCounts`/
+  `config.rbac.accessMode` gating `admin_digest` already applies — on an
+  `'open'`-mode platform (where a not-yet-member guest already has full
+  member-tool access) the line is omitted entirely rather than shown as a
+  meaningless zero. The other five lines are unchanged. No new tool, tier,
+  table, or data access.
 
 ### Fixed
 - **`find_knowledge` now falls back to a lexical (substring) search when a
