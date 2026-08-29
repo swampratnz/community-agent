@@ -17,7 +17,12 @@ import {
   listAdmins,
   type ResponseStyle,
 } from '@swampratnz/agent-base/storage/repository.js';
-import { getCommunityGuidelines, getCommunityGuidelinesMi } from '../../storage/policies.js';
+import {
+  getCommunityGuidelines,
+  getCommunityGuidelinesMi,
+  getWelcomeMessage,
+  getWelcomeMessageMi,
+} from '../../storage/policies.js';
 import { truncateForEcho } from './helpers.js';
 
 // Every registered platform, derived from the platform registry (agent-base
@@ -240,6 +245,17 @@ export async function notifyAdmins(
  * DB hiccup degrades to "no guidelines appended" — same #52 invariant as the
  * language/style lookups above — rather than throwing out of this function
  * or blocking the DM.
+ *
+ * Issue #1222: the welcome-message sibling of #1171's fix, for the exact
+ * same affected population — `getWelcomeMessage`/`getWelcomeMessageMi` (the
+ * admin-configured `set_welcome_message` text) were never read on this path,
+ * so a pre-registered/`team_setup`-batched member saw the guidelines #1171
+ * added but never the admin's own welcome copy. Resolved the same `mi`-aware
+ * way as guidelines (`getWelcomeMi() ?? getWelcome()`), appended via its own
+ * `welcomeHeading`, in its own `.catch(() => null)` independent of the
+ * guidelines lookup's catch (so one failing degrades only its own block, not
+ * both), and placed BEFORE the guidelines block per the approved acceptance
+ * criteria (welcome context first, rules second).
  */
 export async function notifyMemberApproved(
   adapter: PlatformAdapter,
@@ -250,6 +266,8 @@ export async function notifyMemberApproved(
   getRespStyle: typeof getResponseStyle = getResponseStyle,
   getGuidelines: typeof getCommunityGuidelines = getCommunityGuidelines,
   getGuidelinesMi: typeof getCommunityGuidelinesMi = getCommunityGuidelinesMi,
+  getWelcome: typeof getWelcomeMessage = getWelcomeMessage,
+  getWelcomeMi: typeof getWelcomeMessageMi = getWelcomeMessageMi,
 ): Promise<boolean> {
   if (wasAlreadyMember) return true;
   const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
@@ -261,12 +279,15 @@ export async function notifyMemberApproved(
   const style: ResponseStyle | undefined =
     lang === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
   const baseMessage = notice('memberApprovedMessage', { language: lang, style });
+  const welcome = await (
+    lang === 'mi' ? getWelcomeMi().then((mi) => mi ?? getWelcome()) : getWelcome()
+  ).catch(() => null);
   const guidelines = await (
     lang === 'mi' ? getGuidelinesMi().then((mi) => mi ?? getGuidelines()) : getGuidelines()
   ).catch(() => null);
-  const message = guidelines
-    ? `${baseMessage}\n\n${notice('guidelinesHeading')}\n${guidelines}`
-    : baseMessage;
+  let message = baseMessage;
+  if (welcome) message += `\n\n${notice('welcomeHeading')}\n${welcome}`;
+  if (guidelines) message += `\n\n${notice('guidelinesHeading')}\n${guidelines}`;
   return adapter
     .sendDirectMessage(userId, message)
     .then(() => true)

@@ -898,6 +898,289 @@ test(
   },
 );
 
+// Issue #1222: the welcome-message sibling of #1171's guidelines fix, for the
+// exact same affected population. These tests use injected getWelcome/
+// getWelcomeMi stubs, the same shape as the getGuidelines/getGuidelinesMi
+// stubs above, so they exercise this function without a DB round trip.
+test('notifyMemberApproved appends the admin-configured welcome message when set, with no mi preference (issue #1222)', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+  const welcome = 'Welcome to the community! Check out #announcements to get started.';
+
+  await notifyMemberApproved(
+    adapter,
+    'user-1',
+    false,
+    'discord',
+    async () => 'auto',
+    async () => 'standard',
+    async () => null,
+    async () => null,
+    async () => welcome,
+    async () => null,
+  );
+
+  const expectedBase = notice('memberApprovedMessage', { language: 'auto', style: 'standard' });
+  assert.ok(calls[0].startsWith(expectedBase), 'the original approval text must be unchanged/prefixed');
+  assert.equal(calls[0], `${expectedBase}\n\n${notice('welcomeHeading')}\n${welcome}`);
+});
+
+test('notifyMemberApproved is byte-identical to the welcome-and-guidelines-free DM when both are unset (issue #1222)', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyMemberApproved(
+    adapter,
+    'user-1',
+    false,
+    'discord',
+    async () => 'auto',
+    async () => 'standard',
+    async () => null,
+    async () => null,
+    async () => null,
+    async () => null,
+  );
+
+  assert.equal(calls[0], notice('memberApprovedMessage', { language: 'auto', style: 'standard' }));
+});
+
+test(
+  "notifyMemberApproved appends the mi welcome variant for a caller with a standing 'mi' preference " +
+    'when both variants are set (issue #1222)',
+  async () => {
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (_userId, message) => {
+      calls.push(message);
+    });
+    const welcome = 'Welcome!';
+    const welcomeMi = 'Nau mai, haere mai!';
+
+    await notifyMemberApproved(
+      adapter,
+      'user-1',
+      false,
+      'discord',
+      async () => 'mi',
+      async () => 'standard',
+      async () => null,
+      async () => null,
+      async () => welcome,
+      async () => welcomeMi,
+    );
+
+    assert.match(calls[0], /Nau mai, haere mai!/);
+    assert.doesNotMatch(calls[0], /Welcome!/);
+  },
+);
+
+test(
+  "notifyMemberApproved falls back to the English welcome message for a 'mi'-preference caller when only the " +
+    'base variant is set (issue #1222)',
+  async () => {
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (_userId, message) => {
+      calls.push(message);
+    });
+    const welcome = 'Welcome!';
+
+    await notifyMemberApproved(
+      adapter,
+      'user-1',
+      false,
+      'discord',
+      async () => 'mi',
+      async () => 'standard',
+      async () => null,
+      async () => null,
+      async () => welcome,
+      async () => null,
+    );
+
+    assert.match(calls[0], /Welcome!/);
+  },
+);
+
+test('notifyMemberApproved renders the welcome block before the guidelines block when both are set (issue #1222)', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+  const welcome = 'Welcome!';
+  const guidelines = 'Be respectful.';
+
+  await notifyMemberApproved(
+    adapter,
+    'user-1',
+    false,
+    'discord',
+    async () => 'auto',
+    async () => 'standard',
+    async () => guidelines,
+    async () => null,
+    async () => welcome,
+    async () => null,
+  );
+
+  const expectedBase = notice('memberApprovedMessage', { language: 'auto', style: 'standard' });
+  assert.equal(
+    calls[0],
+    `${expectedBase}\n\n${notice('welcomeHeading')}\n${welcome}\n\n${notice('guidelinesHeading')}\n${guidelines}`,
+  );
+});
+
+test('notifyMemberApproved gates the welcome and guidelines blocks independently (issue #1222)', async () => {
+  const runs: Array<[string | null, string | null]> = [
+    ['Welcome!', null],
+    [null, 'Be respectful.'],
+    [null, null],
+  ];
+  for (const [welcome, guidelines] of runs) {
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (_userId, message) => {
+      calls.push(message);
+    });
+
+    await notifyMemberApproved(
+      adapter,
+      'user-1',
+      false,
+      'discord',
+      async () => 'auto',
+      async () => 'standard',
+      async () => guidelines,
+      async () => null,
+      async () => welcome,
+      async () => null,
+    );
+
+    const expectedBase = notice('memberApprovedMessage', { language: 'auto', style: 'standard' });
+    let expected = expectedBase;
+    if (welcome) expected += `\n\n${notice('welcomeHeading')}\n${welcome}`;
+    if (guidelines) expected += `\n\n${notice('guidelinesHeading')}\n${guidelines}`;
+    assert.equal(calls[0], expected);
+  }
+});
+
+test(
+  'SECURITY: notifyMemberApproved sends the base (welcome-free) DM, rather than throwing or dropping it, ' +
+    "when the welcome-message lookup rejects — both on the default-language and the 'mi' branch, and " +
+    'independently of the guidelines lookup (issue #1222)',
+  async () => {
+    const defaultLangCalls: string[] = [];
+    const defaultLangAdapter = stubAdapter(async (_userId, message) => {
+      defaultLangCalls.push(message);
+    });
+    const guidelines = 'Be respectful.';
+
+    await notifyMemberApproved(
+      defaultLangAdapter,
+      'user-1',
+      false,
+      'discord',
+      async () => 'auto',
+      async () => 'standard',
+      async () => guidelines,
+      async () => null,
+      async () => {
+        throw new Error('DB unreachable');
+      },
+      async () => null,
+    );
+
+    const expectedBase = notice('memberApprovedMessage', { language: 'auto', style: 'standard' });
+    assert.equal(defaultLangCalls.length, 1);
+    assert.equal(
+      defaultLangCalls[0],
+      `${expectedBase}\n\n${notice('guidelinesHeading')}\n${guidelines}`,
+      'welcome lookup failure must not suppress the guidelines block',
+    );
+
+    const miCalls: string[] = [];
+    const miAdapter = stubAdapter(async (_userId, message) => {
+      miCalls.push(message);
+    });
+
+    await notifyMemberApproved(
+      miAdapter,
+      'user-1',
+      false,
+      'discord',
+      async () => 'mi',
+      async () => 'standard',
+      async () => null,
+      async () => null,
+      async () => null,
+      async () => {
+        throw new Error('DB unreachable');
+      },
+    );
+
+    assert.equal(miCalls.length, 1);
+    assert.equal(miCalls[0], notice('memberApprovedMessage', { language: 'mi' }));
+  },
+);
+
+test(
+  'notifyMemberApproved reverts to the welcome-free DM once the welcome message is cleared to empty string, ' +
+    'distinct from having never been set (issue #1222)',
+  { skip },
+  async () => {
+    resetPolicyCacheForTests();
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (_userId, message) => {
+      calls.push(message);
+    });
+    const expectedBase = notice('memberApprovedMessage', { language: 'auto', style: 'standard' });
+
+    try {
+      await notifyMemberApproved(
+        adapter,
+        'user-1',
+        false,
+        'discord',
+        async () => 'auto',
+        async () => 'standard',
+      );
+      assert.equal(calls[0], expectedBase, 'never-set welcome message: DM is welcome-free');
+
+      const welcome = 'Welcome to the community!';
+      await updatePolicy('welcome_message', welcome, 'test');
+      await notifyMemberApproved(
+        adapter,
+        'user-1',
+        false,
+        'discord',
+        async () => 'auto',
+        async () => 'standard',
+      );
+      assert.equal(
+        calls[1],
+        `${expectedBase}\n\n${notice('welcomeHeading')}\n${welcome}`,
+        'welcome message set: DM carries it',
+      );
+
+      await updatePolicy('welcome_message', '', 'test');
+      await notifyMemberApproved(
+        adapter,
+        'user-1',
+        false,
+        'discord',
+        async () => 'auto',
+        async () => 'standard',
+      );
+      assert.equal(calls[2], expectedBase, 'cleared to empty string: DM reverts to welcome-free');
+    } finally {
+      await updatePolicy('welcome_message', '', 'test');
+      resetPolicyCacheForTests();
+    }
+  },
+);
+
 // notifyAdminApproved holds all of grant_admin's new (issue #201) notification
 // behaviour, tested directly here the same way notifyMemberApproved is above.
 test('notifyAdminApproved sends exactly one orientation DM on a fresh promotion, and resolves true (issue #556)', async () => {
