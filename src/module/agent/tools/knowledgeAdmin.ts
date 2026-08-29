@@ -157,20 +157,38 @@ export const knowledgeAdminTools = [
         ),
       sourceTitle: z.string().optional().describe('Optional human-readable label for sourceUrl'),
     },
-    handler: async (args, { caller }) => {
+    handler: async (args, { caller, audited }) => {
       assertAtLeast(caller.role, 'admin', 'save_knowledge');
-      const { id, similarEntry } = await saveKnowledge({
-        title: args.title,
-        content: args.content,
-        scope: args.scope,
-        sourceUserId: caller.userId,
-        createdByRole: caller.role,
-        sourceUrl: args.sourceUrl,
-        sourceTitle: args.sourceTitle,
-        callerPlatform: caller.platform,
+      const state: { id?: number; similarEntry?: KnowledgeDuplicateMatch } = {};
+      const { success, result } = await audited({
+        actionKind: 'save_knowledge',
+        params: {
+          title: args.title,
+          content: args.content,
+          scope: args.scope,
+          sourceUrl: args.sourceUrl,
+          sourceTitle: args.sourceTitle,
+        },
+        run: async () => {
+          const { id, similarEntry } = await saveKnowledge({
+            title: args.title,
+            content: args.content,
+            scope: args.scope,
+            sourceUserId: caller.userId,
+            createdByRole: caller.role,
+            sourceUrl: args.sourceUrl,
+            sourceTitle: args.sourceTitle,
+            callerPlatform: caller.platform,
+          });
+          state.id = id;
+          state.similarEntry = similarEntry;
+          return `saved as knowledge #${id}`;
+        },
       });
-      let reply = `Saved knowledge entry #${id}.`;
-      if (similarEntry) {
+      if (!success) return text(`Failed: ${result}`, true);
+      let reply = `Saved knowledge entry #${state.id}.`;
+      if (state.similarEntry) {
+        const { similarEntry } = state;
         const pct = (similarEntry.similarity * 100).toFixed(0);
         const label = similarEntry.title ? `"${similarEntry.title}"` : similarEntry.content.slice(0, 80);
         reply += ` Note: this looks similar (${pct}%) to existing entry #${similarEntry.id} (${label}) — consider update_knowledge on #${similarEntry.id} instead if this is the same topic.`;

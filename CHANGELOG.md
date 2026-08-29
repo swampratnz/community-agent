@@ -25,6 +25,50 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #1122 #1123 #1132
 -->
 
+## 2026-08-29
+
+### Added
+- **The weekly admin digest's response-latency line now splits into auto-answer vs. mention/DM.** (#1220)
+  The single blended time-to-first-answer line (#1210) could hide a regression in either bucket — replies in
+  `AUTO_ANSWER_CHANNEL_IDS` channels running slow while mention/DM replies stay fine, or vice versa. Two more
+  lines, `⏱️ Auto-answer latency` and `⏱️ Mention/DM latency`, now render right below the existing blended line
+  (each only when that bucket has data this week), reusing the same `response_latency` tool's `scope` split. The
+  blended line is unchanged, and a digest with no data in either new bucket looks exactly as it did before.
+- **`!adminlist`/`/adminlist`: a zero-model shortcut for `list_admins`.** (#1218)
+  Super admins can now see who currently holds bot-admin privilege without a full agent turn — the same
+  zero-wait-shortcut pattern already shipped for `reviewqueue`/`mutedlist`/`blockedlist`/`topknowledge`/
+  `featureflags`/`admindigest`, and the one member of that family that didn't have it yet (#1183 named it as
+  the deferred follow-up). Renders the exact same roster text `list_admins` already returns.
+- **Eight more member-resolution DMs now honour your "keep it simple" plain-language preference.** (#1212)
+  `set_response_style('plain')` (#126) already simplified moderation warnings, approval DMs, and code-policy
+  notes (#430/#657), but the DMs telling you the outcome of something you submitted — a suggestion, report,
+  appeal, knowledge tip, an access request, a warnings-clear, a removed project, or a knowledge fix — still
+  came back in full English or te reo regardless of a standing plain preference. All eight now check it too,
+  with te reo still taking priority when both preferences are set. No new tool, table, or preference — same
+  `response_style_prefs` row every other plain-aware notice already reads.
+- **The weekly admin digest now includes a response-latency line.** (#1210)
+  `response_latency` (#877) built the count/median/p90 time-to-first-answer
+  aggregate as an on-demand pull tool, and its own pairing/scope fix (#911)
+  named folding it into the recurring digest push as the next step — neither
+  follow-up was ever built until now. Admins who don't think to run
+  `response_latency` on demand every week now see it automatically: "⏱️
+  Response latency (last 7d): N replies, median Xs, p90 Ys", shown only when
+  there's data to report. No new tool, table, or data access — same
+  conversation-scoped aggregate the tool already used.
+
+### Fixed
+- **`!reviewqueue`/`/reviewqueue` now show the onboarding-queue line on a
+  gated-access community, matching `review_queue`.** (#1216) #1208 added a
+  sixth line to `review_queue` — how many guests are present but never added
+  as a member — but the free, no-model-call `!reviewqueue`/`/reviewqueue`
+  shortcuts never got the same line, so an admin using the fast path saw a
+  stale five-line picture while the full tool right next to it showed six.
+  Both shortcuts now render the identical sixth line under the identical
+  condition: only on a `'gated'`-access-mode community, never as a
+  meaningless "0 guests waiting" on an `'open'` one. No new tool, table, or
+  data access — same `rosterCounts` read `review_queue`'s own handler
+  already made for the same caller.
+
 ## 2026-08-28
 
 ### Added
@@ -64,6 +108,15 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   weekly digest DM itself. A pull can never suppress or reset the next
   scheduled weekly push. Admin-tier only on both platforms; no new tool,
   table, or data access.
+- **`!featureflags` is now discoverable on WhatsApp for super admins.**
+  (#1204) `!featureflags` (#1183) was the first WhatsApp `!`-shortcut gated
+  at `super_admin` rather than `admin`, and it shipped with no discovery line
+  anywhere — the shared admin-tier block `!reviewqueue`/`!mutedlist`/
+  `!blockedlist`/`!topknowledge`/`!admindigest` use is shown to plain admins
+  too, so adding it there would have advertised a command a plain admin gets
+  silently refused for. `community_info`/`!help` now appends one extra bullet
+  for `!featureflags` after the super-admin capability rundown, WhatsApp only
+  and super-admin only — a plain admin's output is unchanged.
 - **`share_project` now nudges you when a fresh share looks like an existing
   member's project, instead of publishing two near-identical showcase
   entries silently.** (#1190) `save_knowledge` has always flagged a
@@ -80,6 +133,19 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   never triggers the check. No new tool, table, or data access — it reuses
   the same embedding search `list_projects`'/`find_helper`'s suggestion path
   already run.
+- **`review_queue` now shows a sixth line for the onboarding queue.** (#1208)
+  `review_queue`'s own description said it rolled up "all five admin review
+  queues," but its neighbour `admin_digest` already treated the onboarding
+  queue (guests present who were never added as a member) as a sixth,
+  equally review-worthy signal — a gap issue #1136 named and deliberately
+  deferred when it added that queue's proactive stale-alert job. On a
+  `'gated'`-access-mode platform, `review_queue` now appends an onboarding-
+  queue count alongside the existing five, reusing the exact `rosterCounts`/
+  `config.rbac.accessMode` gating `admin_digest` already applies — on an
+  `'open'`-mode platform (where a not-yet-member guest already has full
+  member-tool access) the line is omitted entirely rather than shown as a
+  meaningless zero. The other five lines are unchanged. No new tool, tier,
+  table, or data access.
 
 ### Fixed
 - **`find_knowledge` now falls back to a lexical (substring) search when a
@@ -105,6 +171,18 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   moment it's most useful. Available in te reo Māori for members with that
   language preference set. No new tool, data access, or admin-visible signal
   — this only changes the wording of an existing reply.
+- **`save_knowledge` now writes an `admin_audit` row and fires the usual
+  real-time super-admin alert, like every other knowledge-mutating tool
+  already does.** (#1201) `save_knowledge` was the one write path into the
+  knowledge base — the content `knowledge_search` and the zero-token
+  knowledge shortcut serve back verbatim to every tier — that left no trace
+  in `admin_audit`/`audit_view`, unlike its siblings `update_knowledge`,
+  `delete_knowledge`, `merge_knowledge`, `check_knowledge_source`,
+  `accept_knowledge_candidate` and `decline_knowledge_candidate`, all of
+  which already record every call. The same gap #1157 closed for
+  `generate_image`. No behaviour change to the reply text on success (the
+  near-duplicate nudge is unchanged) and no new tool, tier, or data access —
+  wraps the existing write in the same `audited()` closure its siblings use.
 
 ## 2026-08-27
 

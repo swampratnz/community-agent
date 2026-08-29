@@ -366,6 +366,17 @@ export async function notifyAdminApproved(
  * sibling in this family); any other rejection is unaffected. Exported
  * separately so it's unit-testable without the MCP tool-call transport, same
  * convention as every sibling notify function in this file.
+ *
+ * `getRespStyle` (issue #1212) closes the `'plain'`-style gap #430/#657 left
+ * in this function: same nested lookup as `notifyMemberApproved` (consulted
+ * only once `'mi'` is ruled out, since `'mi'` wins), same
+ * `.catch(() => 'standard')` fail-safe, and `style` reaches only the base
+ * catalogue text via `notice()` — the reason-echo clause below is untouched.
+ * Deliberately appended as the LAST parameter (after `reason`) rather than
+ * inserted right after `getLangPref` the way `notifyMemberApproved` places
+ * it, so every existing positional call site outside this file keeps
+ * compiling unchanged — this proposal's frozen scope is `notices.ts` +
+ * `notify.ts` only.
  */
 export async function notifyAccessRequestDeclined(
   adapter: PlatformAdapter,
@@ -373,9 +384,12 @@ export async function notifyAccessRequestDeclined(
   platform: Platform,
   getLangPref: typeof getLanguagePreference = getLanguagePreference,
   reason?: string,
+  getRespStyle: typeof getResponseStyle = getResponseStyle,
 ): Promise<void> {
   const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
-  const base = notice('accessRequestDeclinedMessage', { language: lang });
+  const style: ResponseStyle | undefined =
+    lang === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
+  const base = notice('accessRequestDeclinedMessage', { language: lang, style });
   const echoedReason = reason ? truncateForEcho(reason) : null;
   const message = echoedReason ? `${base} ${lang === 'mi' ? 'Take' : 'Reason'}: "${echoedReason}"` : base;
   await adapter.sendDirectMessage(userId, message).catch((err) => {
@@ -413,6 +427,11 @@ export async function notifyAccessRequestDeclined(
  * of logged-and-dropped, same #644 recovery every sibling gets. Exported
  * separately so it's unit-testable without the MCP tool-call transport, same
  * convention as every sibling notify function in this file.
+ *
+ * `getRespStyle` (issue #1212), same shape/rationale as
+ * `notifyAccessRequestDeclined` above: appended as the LAST parameter (after
+ * `reason`) rather than right after `getLangPref`, so external positional
+ * call sites are unaffected by this change's frozen two-file scope.
  */
 export async function notifyProjectRemoved(
   adapter: PlatformAdapter,
@@ -420,9 +439,12 @@ export async function notifyProjectRemoved(
   platform: Platform,
   getLangPref: typeof getLanguagePreference = getLanguagePreference,
   reason?: string,
+  getRespStyle: typeof getResponseStyle = getResponseStyle,
 ): Promise<void> {
   const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
-  const base = notice('projectRemovedMessage', { language: lang });
+  const style: ResponseStyle | undefined =
+    lang === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
+  const base = notice('projectRemovedMessage', { language: lang, style });
   const echoedReason = reason ? truncateForEcho(reason) : null;
   const message = echoedReason ? `${base} ${lang === 'mi' ? 'Take' : 'Reason'}: "${echoedReason}"` : base;
   await adapter.sendDirectMessage(userId, message).catch((err) => {
@@ -459,6 +481,14 @@ export async function notifyProjectRemoved(
  * status it is ignored, and omitted entirely the message stays byte-
  * identical to before #1099. Never persisted: the caller keeps it out of
  * `audited()`'s params, same as #1050.
+ *
+ * `getRespStyle` (issue #1212) widens the existing `lang === 'mi' ? A : B`
+ * ternary to a three-way `lang === 'mi' ? A : style === 'plain' ? C : B` on
+ * each status branch, same nested-lookup/fail-safe shape as
+ * `notifyAccessRequestDeclined` above — `'mi'` still wins over `'plain'`, and
+ * a lookup failure still degrades to today's English (`B`). Appended as the
+ * LAST parameter (after `adminReason`) for the same reason: every existing
+ * positional call site outside this file keeps compiling unchanged.
  */
 export async function notifySuggestionResolved(
   adapter: PlatformAdapter,
@@ -468,9 +498,12 @@ export async function notifySuggestionResolved(
   platform: Platform,
   getLangPref: typeof getLanguagePreference = getLanguagePreference,
   adminReason?: string,
+  getRespStyle: typeof getResponseStyle = getResponseStyle,
 ): Promise<void> {
   const echoed = truncateForEcho(content);
   const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
+  const style: ResponseStyle | undefined =
+    lang === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
   const base =
     lang === 'mi'
       ? status === 'declined'
@@ -478,11 +511,17 @@ export async function notifySuggestionResolved(
         : status === 'done'
           ? `Kua oti tō whakaaro — ngā mihi mō tō koha! ("${echoed}")`
           : `Kua arotakehia tō whakaaro — ngā mihi mō tō koha! ("${echoed}")`
-      : status === 'declined'
-        ? `Thanks for the suggestion — after review it won't be built for now: "${echoed}"`
-        : status === 'done'
-          ? `Your suggestion has been marked **done** — thanks for the input! ("${echoed}")`
-          : `Your suggestion has been reviewed — thanks for the input! ("${echoed}")`;
+      : style === 'plain'
+        ? status === 'declined'
+          ? `Thanks for the suggestion. It won't be built for now: "${echoed}"`
+          : status === 'done'
+            ? `Your suggestion is done. Thanks for the idea! ("${echoed}")`
+            : `Your suggestion has been reviewed. Thanks for the idea! ("${echoed}")`
+        : status === 'declined'
+          ? `Thanks for the suggestion — after review it won't be built for now: "${echoed}"`
+          : status === 'done'
+            ? `Your suggestion has been marked **done** — thanks for the input! ("${echoed}")`
+            : `Your suggestion has been reviewed — thanks for the input! ("${echoed}")`;
   const echoedReason = status === 'declined' && adminReason ? truncateForEcho(adminReason) : null;
   const message = echoedReason ? `${base} ${lang === 'mi' ? 'Take' : 'Reason'}: "${echoedReason}"` : base;
   await adapter.sendDirectMessage(userId, message).catch((err) => {
@@ -526,6 +565,10 @@ export async function notifySuggestionResolved(
  * other status it is ignored, and omitted entirely the message stays
  * byte-identical to before #1099. Never persisted: the caller keeps it out
  * of `audited()`'s params, same as #1050.
+ *
+ * `getRespStyle` (issue #1212), same three-way-widened-ternary shape as
+ * `notifySuggestionResolved` above, appended as the LAST parameter for the
+ * same external-call-site-compatibility reason.
  */
 export async function notifyReportResolved(
   adapter: PlatformAdapter,
@@ -535,17 +578,24 @@ export async function notifyReportResolved(
   platform: Platform,
   getLangPref: typeof getLanguagePreference = getLanguagePreference,
   adminReason?: string,
+  getRespStyle: typeof getResponseStyle = getResponseStyle,
 ): Promise<void> {
   const echoed = truncateForEcho(reason);
   const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
+  const style: ResponseStyle | undefined =
+    lang === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
   const base =
     lang === 'mi'
       ? status === 'dismissed'
         ? `Kua arotakehia tō pūrongo. I muri i te wātea, kāore he mahi anō i mahia — ngā mihi mō te whakamōhio mai: "${echoed}"`
         : `Kua arotakehia, kua whakatauhia hoki tō pūrongo — ngā mihi mō te whakamōhio mai: "${echoed}"`
-      : status === 'dismissed'
-        ? `Your report has been reviewed. After triage, no further action was taken — thanks for flagging it: "${echoed}"`
-        : `Your report has been reviewed and resolved — thanks for flagging it: "${echoed}"`;
+      : style === 'plain'
+        ? status === 'dismissed'
+          ? `Your report was reviewed. No further action was taken. Thanks for telling us: "${echoed}"`
+          : `Your report was reviewed and resolved. Thanks for telling us: "${echoed}"`
+        : status === 'dismissed'
+          ? `Your report has been reviewed. After triage, no further action was taken — thanks for flagging it: "${echoed}"`
+          : `Your report has been reviewed and resolved — thanks for flagging it: "${echoed}"`;
   const echoedReason = status === 'dismissed' && adminReason ? truncateForEcho(adminReason) : null;
   const message = echoedReason ? `${base} ${lang === 'mi' ? 'Take' : 'Reason'}: "${echoedReason}"` : base;
   await adapter.sendDirectMessage(userId, message).catch((err) => {
@@ -704,6 +754,10 @@ export async function notifyAppealFiled(
  * any other status it is ignored, and omitted entirely the message stays
  * byte-identical to before #1099. Never persisted: the caller keeps it out of
  * `audited()`'s params, same as #1050.
+ *
+ * `getRespStyle` (issue #1212), same three-way-widened-ternary shape as
+ * `notifyReportResolved` above, appended as the LAST parameter for the same
+ * external-call-site-compatibility reason.
  */
 export async function notifyAppealResolved(
   adapter: PlatformAdapter,
@@ -713,17 +767,24 @@ export async function notifyAppealResolved(
   platform: Platform,
   getLangPref: typeof getLanguagePreference = getLanguagePreference,
   adminReason?: string,
+  getRespStyle: typeof getResponseStyle = getResponseStyle,
 ): Promise<void> {
   const echoed = reason ? truncateForEcho(reason) : null;
   const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
+  const style: ResponseStyle | undefined =
+    lang === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
   const base =
     lang === 'mi'
       ? status === 'dismissed'
         ? `Kua arotakehia tō pīra. I muri i te wātea, kāore he mahi anō i mahia — ngā mihi mō tō whakamōhio mai.${echoed ? ` "${echoed}"` : ''}`
         : `Kua arotakehia, kua whakatauhia hoki tō pīra — ngā mihi mō tō whakamōhio mai.${echoed ? ` "${echoed}"` : ''}`
-      : status === 'dismissed'
-        ? `Your appeal has been reviewed. After triage, no further action was taken — thanks for reaching out.${echoed ? ` "${echoed}"` : ''}`
-        : `Your appeal has been reviewed and resolved — thanks for reaching out.${echoed ? ` "${echoed}"` : ''}`;
+      : style === 'plain'
+        ? status === 'dismissed'
+          ? `Your appeal was reviewed. No further action was taken. Thanks for reaching out.${echoed ? ` "${echoed}"` : ''}`
+          : `Your appeal was reviewed and resolved. Thanks for reaching out.${echoed ? ` "${echoed}"` : ''}`
+        : status === 'dismissed'
+          ? `Your appeal has been reviewed. After triage, no further action was taken — thanks for reaching out.${echoed ? ` "${echoed}"` : ''}`
+          : `Your appeal has been reviewed and resolved — thanks for reaching out.${echoed ? ` "${echoed}"` : ''}`;
   const echoedReason = status === 'dismissed' && adminReason ? truncateForEcho(adminReason) : null;
   const message = echoedReason ? `${base} ${lang === 'mi' ? 'Take' : 'Reason'}: "${echoedReason}"` : base;
   await adapter.sendDirectMessage(userId, message).catch((err) => {
@@ -763,6 +824,11 @@ export async function notifyAppealResolved(
  * rejection is queued via `queueForWindowReopen` at `'low'` priority
  * instead of logged-and-dropped (issue #644, same #602 recovery extended to
  * this member-facing DM); any other rejection is unaffected.
+ *
+ * `getRespStyle` (issue #1212), same three-way-widened-ternary shape as
+ * `notifyAppealResolved` above, appended as the LAST parameter (after
+ * `getLangPref`, which was itself already last) for the same
+ * external-call-site-compatibility reason.
  */
 export async function notifyKnowledgeTipResolved(
   adapter: PlatformAdapter,
@@ -772,18 +838,25 @@ export async function notifyKnowledgeTipResolved(
   platform: Platform,
   reason?: string | null,
   getLangPref: typeof getLanguagePreference = getLanguagePreference,
+  getRespStyle: typeof getResponseStyle = getResponseStyle,
 ): Promise<void> {
   const echoed = truncateForEcho(title);
   const echoedReason = status === 'declined' && reason ? truncateForEcho(reason) : null;
   const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
+  const style: ResponseStyle | undefined =
+    lang === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
   const base =
     lang === 'mi'
       ? status === 'declined'
         ? `Ngā mihi mō tō koha mātauranga — i muri i te arotake, kāore i tāpirihia ā tōna wā: "${echoed}"`
         : `Kua tāpirihia tō koha ki te pātaka mātauranga — ngā mihi mō tō koha! ("${echoed}")`
-      : status === 'declined'
-        ? `Thanks for the knowledge tip — after review it wasn't added this time: "${echoed}"`
-        : `Your knowledge tip has been added to the knowledge base — thanks for the contribution! ("${echoed}")`;
+      : style === 'plain'
+        ? status === 'declined'
+          ? `Thanks for the knowledge tip. It wasn't added this time: "${echoed}"`
+          : `Your knowledge tip was added to the knowledge base. Thanks! ("${echoed}")`
+        : status === 'declined'
+          ? `Thanks for the knowledge tip — after review it wasn't added this time: "${echoed}"`
+          : `Your knowledge tip has been added to the knowledge base — thanks for the contribution! ("${echoed}")`;
   const message = echoedReason ? `${base}. ${lang === 'mi' ? 'Take' : 'Reason'}: "${echoedReason}"` : base;
   await adapter.sendDirectMessage(userId, message).catch((err) => {
     if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
@@ -822,6 +895,10 @@ export async function notifyKnowledgeTipResolved(
  * `queueForWindowReopen` at `'low'` priority instead of logged-and-dropped
  * (issue #644, same #602 recovery extended to this member-facing DM); any
  * other rejection is unaffected.
+ *
+ * `getRespStyle` (issue #1212), same three-way-widened-ternary shape as its
+ * siblings above, appended as the LAST parameter for the same
+ * external-call-site-compatibility reason.
  */
 export async function notifyWarningsCleared(
   adapter: PlatformAdapter,
@@ -829,16 +906,23 @@ export async function notifyWarningsCleared(
   platform: Platform,
   muteLifted: boolean,
   getLangPref: typeof getLanguagePreference = getLanguagePreference,
+  getRespStyle: typeof getResponseStyle = getResponseStyle,
 ): Promise<void> {
   const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
+  const style: ResponseStyle | undefined =
+    lang === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
   const message =
     lang === 'mi'
       ? muteLifted
         ? 'Kua whakawāteahia ō whakatūpato, kua tangohia hoki tō noho pōkai — ka taea anō e koe te tuku karere.'
         : 'Kua whakawāteahia ō whakatūpato.'
-      : muteLifted
-        ? 'Your warnings have been cleared and your mute has been lifted — you can post again.'
-        : 'Your warnings have been cleared.';
+      : style === 'plain'
+        ? muteLifted
+          ? 'Your warnings are cleared and your mute is lifted. You can post again.'
+          : 'Your warnings are cleared.'
+        : muteLifted
+          ? 'Your warnings have been cleared and your mute has been lifted — you can post again.'
+          : 'Your warnings have been cleared.';
   await adapter.sendDirectMessage(userId, message).catch((err) => {
     if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
       adapter.queueForWindowReopen(userId, message, 'low');
@@ -873,20 +957,29 @@ export async function notifyWarningsCleared(
  * `WindowClosedError` rejection is queued via `queueForWindowReopen` at
  * `'low'` priority instead of logged-and-dropped, the same #602/#644 recovery
  * extended to this member-facing DM.
+ *
+ * `getRespStyle` (issue #1212), same three-way-widened-ternary shape as its
+ * siblings above, appended as the LAST parameter for the same
+ * external-call-site-compatibility reason.
  */
 export async function notifyKnowledgeEntryFixed(
   adapter: PlatformAdapter,
   userId: string,
   platform: Platform,
   getLangPref: typeof getLanguagePreference = getLanguagePreference,
+  getRespStyle: typeof getResponseStyle = getResponseStyle,
 ): Promise<void> {
   const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
+  const style: ResponseStyle | undefined =
+    lang === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
   const message =
     lang === 'mi'
       ? 'Kua whakatikaina tētahi whakautu i kīia e koe he kore-āwhina i mua — nau mai ki te pātai anō mehemea ' +
         'kei te hiahia koe ki ngā mōhiohanga hōu.'
-      : "An answer you rated unhelpful earlier has since been corrected — feel free to ask again if you'd " +
-        'like the updated info.';
+      : style === 'plain'
+        ? 'An answer you said was unhelpful has now been fixed. Feel free to ask again.'
+        : "An answer you rated unhelpful earlier has since been corrected — feel free to ask again if you'd " +
+          'like the updated info.';
   await adapter.sendDirectMessage(userId, message).catch((err) => {
     if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
       adapter.queueForWindowReopen(userId, message, 'low');
