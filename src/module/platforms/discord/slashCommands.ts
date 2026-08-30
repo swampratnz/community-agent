@@ -607,22 +607,26 @@ async function handleKbHelpful(
     offset: 0,
     limit: MOST_HELPFUL_KNOWLEDGE_FETCH_CAP,
   });
-  const ranked = rankKnowledgeByRetrieval(entries, 10);
-  // Low-rated-answer caveat (issue #1143), same gating/fail-safe shape as
-  // /kb's identical lookup above and the tool handler's (knowledgeMember.ts)
-  // — kept in parity so this zero-model-call shortcut never diverges from
-  // the tool it mirrors (issue #1087's invariant).
-  const rankedIds = ranked.map((e) => e.id);
+  // Low-rated lookup (issue #1143, ranking widened by #1237) runs over the
+  // full fetched superset's ids — before ranking/slicing — feeding both the
+  // demotion inside rankKnowledgeByRetrieval and the caveat below, same
+  // gating/fail-safe shape as /kb's identical lookup above and the tool
+  // handler's (knowledgeMember.ts) — kept in parity so this zero-model-call
+  // shortcut never diverges from the tool it mirrors (issue #1087's
+  // invariant).
+  const entryIds = entries.map((e) => e.id);
   const lowRatedIds =
-    config.behaviour.knowledgeLowRatedCaveatMinUnhelpful > 0 && rankedIds.length > 0
+    config.behaviour.knowledgeLowRatedCaveatMinUnhelpful > 0 && entryIds.length > 0
       ? await areKnowledgeEntriesLowRated(
-          rankedIds,
+          entryIds,
           config.behaviour.knowledgeLowRatedCaveatMinUnhelpful,
         ).catch((err) => {
           logger.warn({ err }, 'Knowledge low-rated caveat lookup failed; omitting the caveat');
           return new Set<number>();
         })
       : new Set<number>();
+  const ranked = rankKnowledgeByRetrieval(entries, 10, lowRatedIds);
+  const rankedIds = ranked.map((e) => e.id);
   // Conflict caveat (issue #1167), same gating/fail-safe shape as /kb's
   // identical lookup and the tool handler's (knowledgeMember.ts) — kept in
   // parity so this zero-model-call shortcut never diverges from the tool it

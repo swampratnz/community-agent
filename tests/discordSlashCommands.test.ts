@@ -2218,9 +2218,11 @@ test('SECURITY: /kbhelpful reply includes KNOWLEDGE_LOW_RATED_CAVEAT_TEXT on exa
 
   await handleInteraction(interaction as never, adapterDeps(adapter));
 
-  const [lowRatedLine, fineLine] = replies[0].content
+  const kbhelpfulLines = replies[0].content
     .split('\n')
     .filter((line) => line.includes('LOW_RATED_KBHELPFUL_TEXT') || line.includes('FINE_KBHELPFUL_TEXT'));
+  const lowRatedLine = kbhelpfulLines.find((line) => line.includes('LOW_RATED_KBHELPFUL_TEXT'));
+  const fineLine = kbhelpfulLines.find((line) => line.includes('FINE_KBHELPFUL_TEXT'));
   assert.ok(
     lowRatedLine?.includes(stripEmDashes(KNOWLEDGE_LOW_RATED_CAVEAT_TEXT)),
     "the low-rated entry's own line must carry the caveat",
@@ -2228,6 +2230,15 @@ test('SECURITY: /kbhelpful reply includes KNOWLEDGE_LOW_RATED_CAVEAT_TEXT on exa
   assert.ok(
     !fineLine?.includes(stripEmDashes(KNOWLEDGE_LOW_RATED_CAVEAT_TEXT)),
     'a sibling entry outside the low-rated set must never carry the caveat',
+  );
+  // SECURITY (issue #1237 acceptance criterion 6): the low-rated entry (id 1,
+  // retrievalCount 9) must sort AFTER the non-low-rated entry (id 2,
+  // retrievalCount 4) despite its higher retrieval count — the core
+  // regression this issue exists to prevent.
+  assert.ok(
+    replies[0].content.indexOf('FINE_KBHELPFUL_TEXT') <
+      replies[0].content.indexOf('LOW_RATED_KBHELPFUL_TEXT'),
+    'the non-low-rated entry must be demoted ahead of the low-rated entry, regardless of retrieval count',
   );
 
   // Issue #1087's byte-identical invariant, extended (issue #1143 acceptance
@@ -2238,7 +2249,11 @@ test('SECURITY: /kbhelpful reply includes KNOWLEDGE_LOW_RATED_CAVEAT_TEXT on exa
     offset: 0,
     limit: MOST_HELPFUL_KNOWLEDGE_FETCH_CAP,
   });
-  const expected = formatMostHelpfulKnowledge(rankKnowledgeByRetrieval(entries, 10), 'auto', new Set([1]));
+  const expected = formatMostHelpfulKnowledge(
+    rankKnowledgeByRetrieval(entries, 10, new Set([1])),
+    'auto',
+    new Set([1]),
+  );
   assert.equal(replies[0].content, stripEmDashes(expected));
 });
 

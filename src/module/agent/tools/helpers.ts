@@ -450,12 +450,31 @@ export function formatFoundKnowledge(
  * superset of the full scope (e.g. via `TOP_KNOWLEDGE_FETCH_CAP`) — this
  * function does no fetching itself, so it can never silently rank only an
  * arbitrary first page.
+ *
+ * `lowRatedIds` (issue #1237) defaults to an empty set and is checked
+ * *before* the retrieval-count comparison: if exactly one of a pair is in
+ * `lowRatedIds`, the non-low-rated entry sorts first, regardless of relative
+ * `retrievalCount` — demoted, never excluded, so a low-rated entry can still
+ * appear (last) when nothing better exists on its topic. Two entries with
+ * the same low-rated status fall through to today's unchanged
+ * `retrievalCount` → `lastRetrievedAt` → `id` order. Unlike
+ * `formatKnowledgeSearchResults`'s continuous-similarity near-tie margin
+ * (`KNOWLEDGE_TIE_MARGIN`, issue #562), `retrievalCount` is a discrete
+ * integer with no natural "noise band" — two entries retrieved 40 vs. 41
+ * times mostly reflects how long each has existed, not answer quality — so
+ * this demotes unconditionally rather than only within a margin.
+ * `list_top_knowledge`'s call site deliberately never passes this
+ * parameter, so its raw-popularity output is unaffected. With an empty
+ * (default) `lowRatedIds`, output is byte-identical to pre-#1237 behaviour.
  */
 export function rankKnowledgeByRetrieval<
   T extends { id: number; retrievalCount: number; lastRetrievedAt?: Date | null },
->(entries: readonly T[], limit: number): T[] {
+>(entries: readonly T[], limit: number, lowRatedIds: ReadonlySet<number> = new Set()): T[] {
   return [...entries]
     .sort((a, b) => {
+      const aLowRated = lowRatedIds.has(a.id);
+      const bLowRated = lowRatedIds.has(b.id);
+      if (aLowRated !== bLowRated) return aLowRated ? 1 : -1;
       if (b.retrievalCount !== a.retrievalCount) return b.retrievalCount - a.retrievalCount;
       const aTime = a.lastRetrievedAt?.getTime() ?? 0;
       const bTime = b.lastRetrievedAt?.getTime() ?? 0;
