@@ -9,11 +9,34 @@ import { readPolicy } from '@swampratnz/agent-base/storage/policyStore.js';
  * here is loud rather than silent.
  */
 
+/**
+ * The six crossing-latch stale-alert jobs' "is the latch currently open"
+ * markers (issue #1198) — the first job-computed state this store holds,
+ * rather than admin-authored text. Each holds only
+ * `CROSSING_LATCH_ACTIVE_MARKER`/`CROSSING_LATCH_INACTIVE_MARKER`
+ * (`crossingLatch.ts`), never an appeal/suggestion/candidate/request/roster/
+ * admin id or any other identifying value. Exported so each owning job file
+ * imports the same literal rather than re-typing it — a typo'd duplicate
+ * would silently split one job's latch across two keys.
+ */
+export const APPEAL_STALE_ALERT_POLICY_KEY = 'appeal_stale_alert_active';
+export const SUGGESTION_STALE_ALERT_POLICY_KEY = 'suggestion_stale_alert_active';
+export const KNOWLEDGE_CANDIDATE_STALE_ALERT_POLICY_KEY = 'knowledge_candidate_stale_alert_active';
+export const ACCESS_REQUEST_STALE_ALERT_POLICY_KEY = 'access_request_stale_alert_active';
+export const ROSTER_STALE_ALERT_POLICY_KEY = 'roster_stale_alert_active';
+export const DEPARTED_ADMIN_ALERT_POLICY_KEY = 'departed_admin_alert_active';
+
 export const COMMUNITY_POLICY_KEYS = {
   community_guidelines: null,
   community_guidelines_mi: null,
   welcome_message: null,
   welcome_message_mi: null,
+  [APPEAL_STALE_ALERT_POLICY_KEY]: null,
+  [SUGGESTION_STALE_ALERT_POLICY_KEY]: null,
+  [KNOWLEDGE_CANDIDATE_STALE_ALERT_POLICY_KEY]: null,
+  [ACCESS_REQUEST_STALE_ALERT_POLICY_KEY]: null,
+  [ROSTER_STALE_ALERT_POLICY_KEY]: null,
+  [DEPARTED_ADMIN_ALERT_POLICY_KEY]: null,
 } as const;
 
 /**

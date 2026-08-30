@@ -1,6 +1,5 @@
 import { logger } from '@swampratnz/agent-base/logger.js';
 import { startTrackedJob } from '@swampratnz/agent-base/jobs/trackedJob.js';
-import { initialUsageAlertTracker, stepUsageAlertTracker } from '@swampratnz/agent-base/usageAlert.js';
 import {
   listAdmins,
   listKnowledgeCandidates,
@@ -8,6 +7,8 @@ import {
   type KnowledgeCandidate,
 } from '@swampratnz/agent-base/storage/repository.js';
 import { alertAdmins } from './appealStaleAlert.js';
+import { persistedCrossingLatch, type CrossingLatchDeps } from './crossingLatch.js';
+import { KNOWLEDGE_CANDIDATE_STALE_ALERT_POLICY_KEY } from './storage/policies.js';
 import type { JobSpec } from '@swampratnz/agent-base/jobs/types.js';
 import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
@@ -60,32 +61,32 @@ function staleKnowledgeCandidates(
 
 /**
  * Builds the default `runOnce` for `startKnowledgeCandidateStaleAlert`: a
- * guild-wide crossing latch (`stepUsageAlertTracker`, imported by reference
- * exactly like `appealStaleAlert.ts` does) over the COUNT of pending
- * knowledge candidates older than
- * `KNOWLEDGE_CANDIDATE_STALE_ALERT_THRESHOLD_HOURS`, computed fresh each tick
- * from a bounded, oldest-first `listKnowledgeCandidates` scan. Alerts once on
- * the tick the stale count first leaves 0, stays silent while it remains >=1
- * (including a partial decrease that never reaches 0), and re-arms once every
- * stale candidate is reviewed and the count returns to 0 — the identical
- * semantics `appealStaleAlert.ts` ships with, accepted here as the same
- * explicit tradeoff for needing zero persistence. `listOpenCandidates`/
- * `listAdminIdentities` are injectable so tests can drive the latch across
- * ticks with no real DB and no timers.
+ * guild-wide crossing latch (`persistedCrossingLatch`, shared verbatim by
+ * every sibling alert — issue #1198) over the COUNT of pending knowledge
+ * candidates older than `KNOWLEDGE_CANDIDATE_STALE_ALERT_THRESHOLD_HOURS`,
+ * computed fresh each tick from a bounded, oldest-first
+ * `listKnowledgeCandidates` scan. Alerts once on the tick the stale count
+ * first leaves 0, stays silent while it remains >=1 (including a partial
+ * decrease that never reaches 0), and re-arms once every stale candidate is
+ * reviewed and the count returns to 0. Unlike the pre-#1198 in-memory-only
+ * latch, this state now survives a process restart: see
+ * `persistedCrossingLatch`'s own doc comment. `listOpenCandidates`/
+ * `listAdminIdentities`/`latchDeps` are injectable so tests can drive the
+ * latch across ticks with no real DB and no timers.
  */
 export function makeDefaultKnowledgeCandidateStaleAlertRun(
   adapters: readonly PlatformAdapter[],
   listOpenCandidates: () => Promise<KnowledgeCandidate[]> = () =>
     listKnowledgeCandidates('pending', KNOWLEDGE_CANDIDATE_STALE_ALERT_SCAN_LIMIT, true),
   listAdminIdentities: () => Promise<AdminIdentity[]> = listAdmins,
+  latchDeps?: CrossingLatchDeps,
 ): () => Promise<void> {
-  let tracker = initialUsageAlertTracker();
+  const latch = persistedCrossingLatch(KNOWLEDGE_CANDIDATE_STALE_ALERT_POLICY_KEY, latchDeps);
   return async () => {
     const now = Date.now();
     const candidates = await listOpenCandidates();
     const stale = staleKnowledgeCandidates(candidates, now);
-    const step = stepUsageAlertTracker(tracker, stale.length, 1);
-    tracker = step.tracker;
+    const step = await latch.step(stale.length);
     if (!step.shouldAlert) return;
 
     const oldestAgeHours = Math.floor(
@@ -100,6 +101,7 @@ export function makeDefaultKnowledgeCandidateStaleAlertRun(
       formatKnowledgeCandidateStaleAlertMessage(stale.length, oldestAgeHours),
       listAdminIdentities,
     );
+    await step.commit();
   };
 }
 

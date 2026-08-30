@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
 import './support/registerNotices.js';
+import { fakePolicyStore } from './support/fakePolicyStore.js';
 import type { OutgoingMessage, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
@@ -38,6 +39,7 @@ const {
   PENDING_ALERT_QUEUE_CAP,
 } = await import('@swampratnz/agent-base/pendingAlertQueue.js');
 const { WindowClosedError } = await import('@swampratnz/agent-base/platforms/whatsapp/cloudAdapter.js');
+const { DEPARTED_ADMIN_ALERT_POLICY_KEY } = await import('../src/module/storage/policies.js');
 
 type AdminRosterEntry = {
   platform: 'discord' | 'whatsapp';
@@ -161,7 +163,7 @@ test('SECURITY: makeDefaultDepartedAdminAlertRun never leaks a display name, pla
   const secretId = 'secret-platform-user-id-9f3a';
   const listRoster = async () =>
     roster([{ leftServer: true, displayName: secretName, platformUserId: secretId, platform: 'discord' }]);
-  const runOnce = makeDefaultDepartedAdminAlertRun([adapter], listRoster);
+  const runOnce = makeDefaultDepartedAdminAlertRun([adapter], listRoster, fakePolicyStore());
 
   await runOnce();
   await flush();
@@ -182,7 +184,7 @@ test('makeDefaultDepartedAdminAlertRun: a roster with zero leftServer===true ent
   const { adapter, dms } = makeAdapter();
   const listRoster = async () =>
     roster([{ leftServer: false }, { leftServer: false }, { leftServer: false }]);
-  const runOnce = makeDefaultDepartedAdminAlertRun([adapter], listRoster);
+  const runOnce = makeDefaultDepartedAdminAlertRun([adapter], listRoster, fakePolicyStore());
 
   await runOnce();
   await flush();
@@ -194,7 +196,7 @@ test('makeDefaultDepartedAdminAlertRun: alerts exactly once on the tick the depa
   const { adapter, dms } = makeAdapter();
   let count = 0;
   const listRoster = async () => roster(Array.from({ length: count }, () => ({ leftServer: true })));
-  const runOnce = makeDefaultDepartedAdminAlertRun([adapter], listRoster);
+  const runOnce = makeDefaultDepartedAdminAlertRun([adapter], listRoster, fakePolicyStore());
 
   await runOnce(); // count 0 -> no alert
   await flush();
@@ -219,7 +221,7 @@ test('makeDefaultDepartedAdminAlertRun: the latch re-arms only once the count re
   const { adapter, dms } = makeAdapter();
   let count = 3;
   const listRoster = async () => roster(Array.from({ length: count }, () => ({ leftServer: true })));
-  const runOnce = makeDefaultDepartedAdminAlertRun([adapter], listRoster);
+  const runOnce = makeDefaultDepartedAdminAlertRun([adapter], listRoster, fakePolicyStore());
 
   await runOnce(); // 0 -> 3, crosses, alerts
   await flush();
@@ -239,6 +241,83 @@ test('makeDefaultDepartedAdminAlertRun: the latch re-arms only once the count re
   await runOnce(); // crosses again
   await flush();
   assert.equal(dms.length, 2, 'a fresh crossing after returning to 0 fires a second, distinct alert');
+});
+
+// --- persisted latch (issue #1198) ------------------------------------------
+
+test('makeDefaultDepartedAdminAlertRun: writes the active marker to the policy store only AFTER the alertSuperAdmins fan-out returns, on the tick that crosses', async () => {
+  const { adapter } = makeAdapter();
+  const store = fakePolicyStore();
+  const listRoster = async () => roster([{ leftServer: true }]);
+  const runOnce = makeDefaultDepartedAdminAlertRun([adapter], listRoster, store);
+
+  assert.equal(store.written.length, 0, 'no write before the tick runs');
+  await runOnce();
+  await flush();
+
+  assert.deepEqual(store.written, [
+    { key: DEPARTED_ADMIN_ALERT_POLICY_KEY, value: 'true', updatedBy: 'system' },
+  ]);
+});
+
+test('makeDefaultDepartedAdminAlertRun: restart-safety — a fresh factory seeded with the active marker AND a still-departed count on its first tick does not re-alert, and leaves the marker active', async () => {
+  const { adapter, dms } = makeAdapter();
+  const store = fakePolicyStore({ [DEPARTED_ADMIN_ALERT_POLICY_KEY]: 'true' });
+  const listRoster = async () => roster([{ leftServer: true }, { leftServer: true }]);
+  const runOnce = makeDefaultDepartedAdminAlertRun([adapter], listRoster, store);
+
+  await runOnce();
+  await flush();
+  assert.equal(dms.length, 0, 'a restart mid-backlog must not re-fire a duplicate DM');
+
+  await runOnce();
+  await flush();
+  assert.equal(dms.length, 0, 'a later tick with the same still-departed backlog must not fire either');
+  assert.equal(store.written.length, 0, 'the already-active marker is never rewritten while nothing crosses');
+});
+
+test('makeDefaultDepartedAdminAlertRun: re-arm survives a restart — the marker clears to "" when the count returns to 0, and a fresh factory alerts again on the next crossing', async () => {
+  const { adapter, dms } = makeAdapter();
+  const store = fakePolicyStore({ [DEPARTED_ADMIN_ALERT_POLICY_KEY]: 'true' });
+
+  const firstProcess = makeDefaultDepartedAdminAlertRun([adapter], async () => roster([]), store);
+  await firstProcess(); // count drops to 0 -> re-arm
+  await flush();
+  assert.equal(dms.length, 0);
+  assert.deepEqual(store.written, [{ key: DEPARTED_ADMIN_ALERT_POLICY_KEY, value: '', updatedBy: 'system' }]);
+
+  const secondProcess = makeDefaultDepartedAdminAlertRun(
+    [adapter],
+    async () => roster([{ leftServer: true }]),
+    store,
+  );
+  await secondProcess();
+  await flush();
+  assert.equal(dms.length, 1, 'a fresh crossing after the persisted re-arm alerts again');
+  assert.deepEqual(store.written, [
+    { key: DEPARTED_ADMIN_ALERT_POLICY_KEY, value: '', updatedBy: 'system' },
+    { key: DEPARTED_ADMIN_ALERT_POLICY_KEY, value: 'true', updatedBy: 'system' },
+  ]);
+});
+
+test('SECURITY: makeDefaultDepartedAdminAlertRun never threads a display name or platform user id into updatePolicy — the actor is always the fixed "system" string', async () => {
+  const { adapter } = makeAdapter();
+  const store = fakePolicyStore();
+  const secretName = 'secret-display-name-should-never-be-the-actor';
+  const secretId = 'secret-platform-user-id-should-never-be-the-actor';
+  const listRoster = async () =>
+    roster([{ leftServer: true, displayName: secretName, platformUserId: secretId }]);
+  const runOnce = makeDefaultDepartedAdminAlertRun([adapter], listRoster, store);
+
+  await runOnce();
+  await flush();
+
+  assert.ok(store.written.length > 0);
+  for (const write of store.written) {
+    assert.equal(write.updatedBy, 'system');
+    assert.notEqual(write.updatedBy, secretName);
+    assert.notEqual(write.updatedBy, secretId);
+  }
 });
 
 test('startDepartedAdminAlert: DEPARTED_ADMIN_ALERT_ENABLED unset (default) creates no timer', () => {

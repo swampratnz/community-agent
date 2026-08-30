@@ -1,6 +1,5 @@
 import { logger } from '@swampratnz/agent-base/logger.js';
 import { startTrackedJob } from '@swampratnz/agent-base/jobs/trackedJob.js';
-import { initialUsageAlertTracker, stepUsageAlertTracker } from '@swampratnz/agent-base/usageAlert.js';
 import { WindowClosedError } from '@swampratnz/agent-base/platforms/types.js';
 import {
   listAdmins,
@@ -8,6 +7,8 @@ import {
   type AdminIdentity,
   type ModerationAppeal,
 } from '@swampratnz/agent-base/storage/repository.js';
+import { persistedCrossingLatch, type CrossingLatchDeps } from './crossingLatch.js';
+import { APPEAL_STALE_ALERT_POLICY_KEY } from './storage/policies.js';
 import type { JobSpec } from '@swampratnz/agent-base/jobs/types.js';
 import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
@@ -91,19 +92,17 @@ export async function alertAdmins(
 
 /**
  * Builds the default `runOnce` for `startAppealStaleAlert`: a guild-wide
- * crossing latch (`stepUsageAlertTracker`, imported by reference exactly
- * like `departedAdminAlert.ts` does — not copied) over the COUNT of open
- * appeals older than `APPEAL_STALE_ALERT_THRESHOLD_HOURS`, computed fresh
- * each tick from a bounded `listAppeals` scan (see below). Alerts once on the
- * tick the stale
+ * crossing latch (`persistedCrossingLatch`, shared verbatim by every sibling
+ * alert — issue #1198) over the COUNT of open appeals older than
+ * `APPEAL_STALE_ALERT_THRESHOLD_HOURS`, computed fresh each tick from a
+ * bounded `listAppeals` scan (see below). Alerts once on the tick the stale
  * count first leaves 0, stays silent while it remains >=1 (including a
  * partial decrease that never reaches 0), and re-arms once every stale
- * appeal is resolved/dismissed and the count returns to 0 — the identical
- * semantics `departedAdminAlertJob` already ships with, accepted here as the
- * explicit tradeoff for needing zero persistence (see issue #1020's
- * "guild-wide count latch, not per-appeal dedup" scoping). `listOpenAppeals`/
- * `listAdminIdentities` are injectable so tests can drive the latch across
- * ticks with no real DB and no timers.
+ * appeal is resolved/dismissed and the count returns to 0. Unlike the
+ * pre-#1198 in-memory-only latch, this state now survives a process restart:
+ * see `persistedCrossingLatch`'s own doc comment. `listOpenAppeals`/
+ * `listAdminIdentities`/`latchDeps` are injectable so tests can drive the
+ * latch across ticks with no real DB and no timers.
  *
  * The explicit `APPEAL_STALE_ALERT_SCAN_LIMIT` is load-bearing, not decoration.
  * `listAppeals` is a LIMIT-bounded list read whose default is 50 AND whose
@@ -127,14 +126,14 @@ export function makeDefaultAppealStaleAlertRun(
   listOpenAppeals: () => Promise<ModerationAppeal[]> = () =>
     listAppeals('open', APPEAL_STALE_ALERT_SCAN_LIMIT),
   listAdminIdentities: () => Promise<AdminIdentity[]> = listAdmins,
+  latchDeps?: CrossingLatchDeps,
 ): () => Promise<void> {
-  let tracker = initialUsageAlertTracker();
+  const latch = persistedCrossingLatch(APPEAL_STALE_ALERT_POLICY_KEY, latchDeps);
   return async () => {
     const now = Date.now();
     const appeals = await listOpenAppeals();
     const stale = staleOpenAppeals(appeals, now);
-    const step = stepUsageAlertTracker(tracker, stale.length, 1);
-    tracker = step.tracker;
+    const step = await latch.step(stale.length);
     if (!step.shouldAlert) return;
 
     const oldestAgeHours = Math.floor(
@@ -149,6 +148,7 @@ export function makeDefaultAppealStaleAlertRun(
       formatAppealStaleAlertMessage(stale.length, oldestAgeHours),
       listAdminIdentities,
     );
+    await step.commit();
   };
 }
 

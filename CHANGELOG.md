@@ -28,6 +28,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-08-30
 
 ### Added
+- **The six stale-backlog admin alerts (appeals, suggestions, knowledge
+  candidates, access requests, roster onboarding, departed admins) no longer
+  send a duplicate DM after a routine restart.** (#1198) Each of these push
+  alerts fires once when its backlog first goes stale, then stays quiet until
+  it clears — but that "already alerted" state lived only in memory, so a
+  redeploy mid-backlog (the normal case, not the edge case, given these
+  thresholds run 48–168h against a 6h check) reset it and re-fired the same
+  alert for a backlog that hadn't actually changed. That state now survives a
+  restart, so admins see one alert per real crossing, not one per crossing
+  plus one per redeploy in between.
 - **Sharing a new project with "looking for collaborators" now proactively
   reaches out to a matching opted-in helper, instead of just sitting in the
   showcase until someone happens to browse it.** (#1200) `share_project`'s
@@ -164,6 +174,19 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   Only triggers on a true zero-hit semantic result — a weak-but-present match
   (which `find_knowledge` already surfaces, unlike `knowledge_search`) never
   invokes it, so the common path is unchanged.
+- **`find_knowledge` now shows the same dead-link/citation note every other
+  knowledge-serving surface already renders.** (#1206) `find_knowledge`'s
+  hits already carried the source/freshness fields (`sourceUrl`,
+  `sourceUnreachable`, `verifiedAt`, …) `knowledge_search`/`/kb` and
+  `most_helpful_knowledge` use to show a `⚠️ link appears dead` or
+  `source: … · last verified …` line, but its own renderer never called the
+  shared formatter — so an admin using `find_knowledge` specifically to
+  locate an entry flagged by the weekly link-rot checker got a worse result
+  than a plain member's `knowledge_search` reply for the same entry. Each
+  line now appends the identical note, in the identical wording, that
+  `knowledge_search` would show. An entry with no source, that is fresh and
+  has never been link-checked, renders unchanged. No new tool, query, or
+  data access — this only renders fields already fetched.
 - **A knowledge search with no results now also offers to loop in a human
   admin, not just a `suggest_knowledge` nudge.** (#1196) #1180 fixed the "you
   found the answer elsewhere" branch of `knowledge_search`'s (and `/kb`'s)

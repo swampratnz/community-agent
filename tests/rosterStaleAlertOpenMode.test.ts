@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
 import './support/registerNotices.js';
+import { fakePolicyStore } from './support/fakePolicyStore.js';
 import type { OutgoingMessage, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time, and config is a process-wide
@@ -76,7 +77,12 @@ test(
     const listAdminIdentities = async (): Promise<AdminIdentity[]> => [
       { platform: 'discord', platformUserId: 'admin-0' },
     ];
-    const runOnce = makeDefaultRosterStaleAlertRun([adapter], listNotMembers, listAdminIdentities);
+    const runOnce = makeDefaultRosterStaleAlertRun(
+      [adapter],
+      listNotMembers,
+      listAdminIdentities,
+      fakePolicyStore(),
+    );
 
     await runOnce();
     await runOnce();
