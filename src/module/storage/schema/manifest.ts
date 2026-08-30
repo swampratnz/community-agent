@@ -27,6 +27,7 @@ import type { ModuleMigrationFragment } from '@swampratnz/agent-base/storage/mig
 export const COMMUNITY_SCHEMA_FRAGMENTS = [
   '80-preference-values.sql',
   '81-access-request-resolutions.sql',
+  '82-suggestion-withdrawals.sql',
 ] as const;
 
 const schemaDir = dirname(fileURLToPath(import.meta.url));

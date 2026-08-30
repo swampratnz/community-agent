@@ -25,6 +25,18 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #1122 #1123 #1132
 -->
 
+## 2026-08-31
+
+### Added
+- **You can now withdraw a bot-improvement suggestion you filed.** (#1243)
+  `report_content` and `suggest_knowledge` already let you retract one filed
+  by mistake or as a joke — `suggest_improvement` was the one contribution
+  queue with no such lever. `withdraw_suggestion` retracts all of your own
+  still-open suggestions; once withdrawn, an admin's `resolve_suggestion`
+  refuses it cleanly instead of resolving something you already took back,
+  and `list_suggestions`/`my_submissions` both show it as withdrawn rather
+  than the stale "new" status.
+
 ## 2026-08-30
 
 ### Added

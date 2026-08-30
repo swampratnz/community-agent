@@ -11,6 +11,7 @@ import {
 } from '@swampratnz/agent-base/storage/repository.js';
 import { ACCESS_REQUEST_STALE_ALERT_SCAN_LIMIT } from '../../accessRequestStaleAlert.js';
 import { recordAccessRequestResolution } from '../../storage/accessRequestResolutions.js';
+import { getWithdrawnSuggestionIds } from '../../storage/suggestionWithdrawals.js';
 import { platformArg, SUGGESTION_RESOLUTION_ECHO_CHARS, text, untrusted } from './helpers.js';
 import { notifyAccessRequestDeclined, notifySuggestionResolved } from './notify.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
@@ -134,14 +135,22 @@ export const accessAndSuggestionsTools = [
       assertAtLeast(caller.role, 'admin', 'list_suggestions');
       const rows = await listSuggestions(args.status, args.limit ?? 50);
       if (rows.length === 0) return text('No suggestions found.');
+      // withdraw_suggestion (issue #1243) consult: a suggestion the member
+      // withdrew stays in `rows` (its own status is untouched — the
+      // withdrawal lives in the separate suggestion_withdrawals table) but
+      // must read distinctly from a live one, so an admin never triages a
+      // suggestion the member already retracted as if it were still open.
+      // With no suggestion ever withdrawn this Set is always empty, so the
+      // rendered line is byte-identical to before this issue.
+      const withdrawnIds = await getWithdrawnSuggestionIds(rows.map((s) => s.id));
       return text(
         untrusted(
           'Suggestions',
           rows
-            .map(
-              (s) =>
-                `#${s.id} [${s.status}] ${s.platform} ${s.displayName ? sanitizeName(s.displayName) : s.userId} (${s.createdAt.toISOString()}): ${s.content}`,
-            )
+            .map((s) => {
+              const statusTag = withdrawnIds.has(s.id) ? `${s.status}, withdrawn by member` : s.status;
+              return `#${s.id} [${statusTag}] ${s.platform} ${s.displayName ? sanitizeName(s.displayName) : s.userId} (${s.createdAt.toISOString()}): ${s.content}`;
+            })
             .join('\n'),
         ),
       );
@@ -175,6 +184,14 @@ export const accessAndSuggestionsTools = [
         actionKind: 'resolve_suggestion',
         params: { id: args.id, status: args.status },
         run: async () => {
+          // withdraw_suggestion consult (issue #1243), checked BEFORE
+          // resolveSuggestion so a withdrawn suggestion never gets a status
+          // change or a resolution DM — the member already retracted it,
+          // so there is nothing left to resolve.
+          const withdrawn = await getWithdrawnSuggestionIds([args.id]);
+          if (withdrawn.has(args.id)) {
+            throw new Error(`Suggestion #${args.id} was withdrawn by the member; nothing to resolve.`);
+          }
           const row = await resolveSuggestion(args.id, args.status, caller.userId);
           if (!row) throw new Error(`No suggestion with id ${args.id}.`);
           state.row = row;
