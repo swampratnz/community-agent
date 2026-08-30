@@ -17,6 +17,7 @@ import {
   unbindProjectSurface,
 } from '@swampratnz/agent-base/storage/repository.js';
 import { platformArg, text } from './helpers.js';
+import { notifyProjectMemberAdded, notifyProjectMemberRemoved } from './notify.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 /**
@@ -105,7 +106,7 @@ export const projectsAdminTools = [
       userId: z.string().min(1).describe('Platform user id of the member to add'),
       platform: platformArg,
     },
-    handler: async (args, { caller, audited, resolveMemberTarget }) => {
+    handler: async (args, { caller, audited, resolveMemberTarget, adapterFor }) => {
       assertAtLeast(caller.role, 'admin', 'project_add_member');
       const target = await resolveMemberTarget(args.userId, args.platform);
       // Deliberately NOT requireConfirm-gated, and the precedent is
@@ -120,6 +121,12 @@ export const projectsAdminTools = [
       // one project's notes — is likewise admin-tier + audited with no
       // confirm. Adding one here would make this stricter than the tool it
       // is a subset of.
+      //
+      // Captured here, mirroring `remove_project`'s `state.owner` pattern
+      // (social.ts), so the notify-on-grant DM below (issue #1241) only ever
+      // fires from a project actually resolved inside audited()'s run(),
+      // never from an unvalidated `args.project`.
+      const state: { projectName: string | null } = { projectName: null };
       const { result } = await audited({
         actionKind: 'project_add_member',
         targetUserId: target.userId,
@@ -138,11 +145,21 @@ export const projectsAdminTools = [
             return `${target.userId} is not a community member yet — run add_member first.`;
           }
           const added = await addProjectMember(project.id, target.platform, target.userId, caller.userId);
+          if (added) state.projectName = project.name;
           return added
             ? `Added to ${project.name}. Their tier is unchanged.${archivedSuffix(project)}`
             : `Already a member of ${project.name}.${archivedSuffix(project)}`;
         },
       });
+      // Best-effort orientation DM (issue #1241) — fires only on the actual
+      // "newly added" transition, never on "already a member", and never
+      // changes this tool's own reported outcome above.
+      if (state.projectName) {
+        const memberAdapter = adapterFor(target.platform);
+        if (memberAdapter) {
+          await notifyProjectMemberAdded(memberAdapter, target.userId, target.platform, state.projectName);
+        }
+      }
       return text(result);
     },
   }),
@@ -160,9 +177,13 @@ export const projectsAdminTools = [
       userId: z.string().min(1).describe('Platform user id of the member to remove'),
       platform: platformArg,
     },
-    handler: async (args, { caller, audited, resolveMemberTarget }) => {
+    handler: async (args, { caller, audited, resolveMemberTarget, adapterFor }) => {
       assertAtLeast(caller.role, 'admin', 'project_remove_member');
       const target = await resolveMemberTarget(args.userId, args.platform);
+      // Same `state` capture pattern as project_add_member above (issue
+      // #1241) — the notify-on-revoke DM below only ever fires from a
+      // project resolved inside audited()'s run().
+      const state: { projectName: string | null } = { projectName: null };
       const { result } = await audited({
         actionKind: 'project_remove_member',
         targetUserId: target.userId,
@@ -171,11 +192,23 @@ export const projectsAdminTools = [
           const project = await getProjectBySlug(args.project);
           if (!project) return `No project "${args.project}".`;
           const removed = await removeProjectMember(project.id, target.platform, target.userId);
+          if (removed) state.projectName = project.name;
           return removed
             ? `Removed from ${project.name}. Their notes remain with the project.${archivedSuffix(project)}`
             : `Not a member of ${project.name}.${archivedSuffix(project)}`;
         },
       });
+      // Best-effort resolution DM (issue #1241) — fires only on the actual
+      // "newly removed" transition, never on "not a member", and never
+      // changes this tool's own reported outcome above. Reaches only the
+      // removed member's own resolved identity — nobody else learns which
+      // project they were removed from.
+      if (state.projectName) {
+        const memberAdapter = adapterFor(target.platform);
+        if (memberAdapter) {
+          await notifyProjectMemberRemoved(memberAdapter, target.userId, target.platform, state.projectName);
+        }
+      }
       return text(result);
     },
   }),

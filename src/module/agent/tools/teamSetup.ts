@@ -12,7 +12,7 @@ import {
   upsertMember,
 } from '@swampratnz/agent-base/storage/repository.js';
 import { text } from './helpers.js';
-import { notifyMemberApproved } from './notify.js';
+import { notifyMemberApproved, notifyProjectMemberAdded } from './notify.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 /**
@@ -213,6 +213,29 @@ export const teamSetupTools = [
                     target.userId,
                     caller.userId,
                   );
+                  // Closes the gap notifyMemberApproved's call above doesn't
+                  // cover (issue #1241): the welcome DM above never names the
+                  // project, and a member who was ALREADY registered before
+                  // this call got no DM at all. Fires for every target on the
+                  // actual "newly added to project" transition — including a
+                  // brand-new registrant, who gets both the generic welcome
+                  // DM and this project-naming one — and never on "already a
+                  // project member", so re-running team_setup against the
+                  // same team doesn't re-notify every time. Gating on `added`
+                  // alone (not `wasMember && added`) is what does that
+                  // de-dup work: addProjectMember returns false on a repeat
+                  // call regardless of wasMember.
+                  if (added) {
+                    const memberTarget = adapterFor(target.platform);
+                    if (memberTarget) {
+                      await notifyProjectMemberAdded(
+                        memberTarget,
+                        target.userId,
+                        target.platform,
+                        project.name,
+                      );
+                    }
+                  }
                   steps.push(
                     `${target.platform}:${target.userId}: registration ${registerNote}; project ${
                       added ? 'added' : 'already existed'
