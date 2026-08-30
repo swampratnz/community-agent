@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { Platform } from '@swampratnz/agent-base/platforms/types.js';
 import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
+import { logger } from '@swampratnz/agent-base/logger.js';
 import { sanitizeName } from '@swampratnz/agent-base/util/sanitizeName.js';
 import {
   clearAccessRequest,
@@ -8,6 +9,8 @@ import {
   listSuggestions,
   resolveSuggestion,
 } from '@swampratnz/agent-base/storage/repository.js';
+import { ACCESS_REQUEST_STALE_ALERT_SCAN_LIMIT } from '../../accessRequestStaleAlert.js';
+import { recordAccessRequestResolution } from '../../storage/accessRequestResolutions.js';
 import { platformArg, SUGGESTION_RESOLUTION_ECHO_CHARS, text, untrusted } from './helpers.js';
 import { notifyAccessRequestDeclined, notifySuggestionResolved } from './notify.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
@@ -74,6 +77,11 @@ export const accessAndSuggestionsTools = [
     handler: async (args, { caller, audited, resolveMemberTarget, adapterFor }) => {
       assertAtLeast(caller.role, 'admin', 'decline_access_request');
       const { platform, userId } = await resolveMemberTarget(args.userId, args.platform);
+      // Looked up BEFORE clearAccessRequest — the row is gone after (issue
+      // #1239). No match means no resolution event to log below.
+      const pendingRequest = (await listAccessRequests(ACCESS_REQUEST_STALE_ALERT_SCAN_LIMIT)).find(
+        (r) => r.platform === platform && r.userId === userId,
+      );
       const { success, result } = await audited({
         actionKind: 'decline_access_request',
         targetUserId: userId,
@@ -84,6 +92,13 @@ export const accessAndSuggestionsTools = [
           return 'declined';
         },
       });
+      if (success && pendingRequest) {
+        // Best-effort — the metric write must never be able to fail or block
+        // this tool's own resolution.
+        await recordAccessRequestResolution(pendingRequest.firstRequestedAt, 'declined').catch((err) =>
+          logger.warn({ err, userId }, 'Failed to record access request resolution'),
+        );
+      }
       // args.reason is never persisted (not in the audited params above) — it
       // only ever reaches this one DM, same non-persistence convention as
       // resolve_suggestion's reason field (#1099) two tool definitions below.

@@ -28,6 +28,15 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-08-30
 
 ### Added
+- **The weekly admin digest now reports how quickly gated access requests get
+  resolved.** (#1239) Reports, appeals, knowledge candidates and suggestions
+  already showed admins an outcome-mix and median-resolution-time signal
+  alongside their backlog counts — access requests only ever had the backlog
+  count. It now gets the same "N approved, M declined this week (median Xh to
+  resolve)" line, without changing what's retained: access requests are still
+  deleted the moment they're resolved, and the new duration log carries no
+  identity at all — no platform, user id, or display name, only a resolution
+  time and outcome.
 - **The six stale-backlog admin alerts (appeals, suggestions, knowledge
   candidates, access requests, roster onboarding, departed admins) no longer
   send a duplicate DM after a routine restart.** (#1198) Each of these push

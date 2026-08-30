@@ -7,11 +7,14 @@ import {
   clearAccessRequest,
   getMemberRole,
   linkMembers,
+  listAccessRequests,
   removeMember,
   resolveLinkedIdentities,
   unlinkMember,
   upsertMember,
 } from '@swampratnz/agent-base/storage/repository.js';
+import { ACCESS_REQUEST_STALE_ALERT_SCAN_LIMIT } from '../../accessRequestStaleAlert.js';
+import { recordAccessRequestResolution } from '../../storage/accessRequestResolutions.js';
 import { platformArg, resolveSanitizedLabel, text } from './helpers.js';
 import { notifyMemberApproved } from './notify.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
@@ -55,9 +58,23 @@ export const membershipTools = [
         params: { platform, displayName: args.displayName },
         run: async () => `registered as ${finalRole} on ${platform}`,
       });
+      // Looked up BEFORE clearAccessRequest — the row is gone after (issue
+      // #1239). No match (e.g. an admin proactively add_members someone who
+      // never filed a request) means no resolution event to log.
+      const pendingRequest = (await listAccessRequests(ACCESS_REQUEST_STALE_ALERT_SCAN_LIMIT)).find(
+        (r) => r.platform === platform && r.userId === userId,
+      );
       await clearAccessRequest(platform, userId).catch((err) =>
         logger.warn({ err, userId }, 'Failed to clear access request'),
       );
+      if (pendingRequest) {
+        // Best-effort, same non-blocking guard as clearAccessRequest just
+        // above — the metric write must never be able to fail or block
+        // add_member itself.
+        await recordAccessRequestResolution(pendingRequest.firstRequestedAt, 'approved').catch((err) =>
+          logger.warn({ err, userId }, 'Failed to record access request resolution'),
+        );
+      }
       // Cross-platform approval DM (issue #157's pattern, extended by #548):
       // routes through the TARGET's platform adapter, not the acting admin's
       // current-turn one — degrades to a silent skip if that platform isn't
