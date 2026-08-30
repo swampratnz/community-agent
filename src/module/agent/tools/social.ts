@@ -13,7 +13,6 @@ import {
   getActiveProjectById,
   getLanguagePreference,
   getPublishedInterestsForOwners,
-  getResponseStyle,
   isFindHelperRequesterAtDailyCap,
   isProjectConnectionRequesterAtDailyCap,
   type LanguagePreference,
@@ -30,7 +29,6 @@ import {
   recordHelperNotificationIfUnderCap,
   recordProjectConnectionIfUnderCap,
   removeMemberProject,
-  type ResponseStyle,
   searchMemberInterests,
   searchMemberInterestsForSelf,
   searchProjects,
@@ -42,6 +40,7 @@ import {
 import {
   formatInterestResults,
   formatProjectResults,
+  resolveRecipientNoticeSelection,
   resolveSanitizedLabel,
   SUGGESTION_RESOLUTION_ECHO_CHARS,
   text,
@@ -615,18 +614,14 @@ export const socialTools = [
         );
         if (!claimed) continue;
         const requesterLabel = await resolveSanitizedLabel(caller.platform, caller.userId);
-        // Issue #1245: the DM recipient's OWN language/style preference —
+        // Issue #1245: the DM RECIPIENT's own language/style preference —
         // never the caller's, whose own preference is looked up separately
-        // below for their own reply — same fail-safe .catch() shape every
-        // notify.ts sibling uses (SECURITY: caller/recipient must never mix
-        // up which identity's preference is resolved here).
-        const recipientLanguage = await getLanguagePreference(candidate.platform, candidate.userId).catch(
-          () => 'auto' as const,
+        // below for their own reply (SECURITY: caller/recipient must never
+        // mix up which identity's preference is resolved here).
+        const { language: recipientLanguage, style: recipientStyle } = await resolveRecipientNoticeSelection(
+          candidate.platform,
+          candidate.userId,
         );
-        const recipientStyle: ResponseStyle | undefined =
-          recipientLanguage === 'mi'
-            ? undefined
-            : await getResponseStyle(candidate.platform, candidate.userId).catch(() => 'standard' as const);
         // untrusted() quarantines the requester's free-text topic before it
         // reaches a DIFFERENT member's DM (issue #729 SECURITY criterion) —
         // same discipline list_answer_feedback's comment field already uses.
@@ -804,19 +799,11 @@ export const socialTools = [
             );
             if (!claimed) continue;
             const requesterLabel = await resolveSanitizedLabel(caller.platform, caller.userId);
-            // Issue #1245: the DM recipient's OWN language/style preference —
-            // never the caller's — same fail-safe .catch() shape find_helper's
-            // own DM above uses (SECURITY: caller/recipient must never mix up
-            // which identity's preference is resolved here).
-            const recipientLanguage = await getLanguagePreference(candidate.platform, candidate.userId).catch(
-              () => 'auto' as const,
-            );
-            const recipientStyle: ResponseStyle | undefined =
-              recipientLanguage === 'mi'
-                ? undefined
-                : await getResponseStyle(candidate.platform, candidate.userId).catch(
-                    () => 'standard' as const,
-                  );
+            // Issue #1245: the DM RECIPIENT's own language/style preference —
+            // never the caller's (SECURITY: caller/recipient must never mix
+            // up which identity's preference is resolved here).
+            const { language: recipientLanguage, style: recipientStyle } =
+              await resolveRecipientNoticeSelection(candidate.platform, candidate.userId);
             // untrusted() quarantines the member-supplied project description
             // before it reaches a DIFFERENT member's DM (issue #1200
             // SECURITY criterion) — same discipline find_helper's topic field
@@ -1018,18 +1005,13 @@ export const socialTools = [
         return text(formatRequestProjectConnectionText('ownerCapped', language), true);
       }
       const requesterLabel = await resolveSanitizedLabel(caller.platform, caller.userId);
-      // Issue #1245: the DM recipient's (project owner's) OWN language/style
-      // preference — never the caller's — same fail-safe .catch() shape
-      // find_helper's/share_project's own DMs above use (SECURITY:
-      // caller/recipient must never mix up which identity's preference is
-      // resolved here).
-      const recipientLanguage = await getLanguagePreference(project.platform, project.userId).catch(
-        () => 'auto' as const,
+      // Issue #1245: the DM RECIPIENT's (project owner's) own language/style
+      // preference — never the caller's (SECURITY: caller/recipient must
+      // never mix up which identity's preference is resolved here).
+      const { language: recipientLanguage, style: recipientStyle } = await resolveRecipientNoticeSelection(
+        project.platform,
+        project.userId,
       );
-      const recipientStyle: ResponseStyle | undefined =
-        recipientLanguage === 'mi'
-          ? undefined
-          : await getResponseStyle(project.platform, project.userId).catch(() => 'standard' as const);
       // untrusted() quarantines the member-supplied project name before it
       // reaches a DIFFERENT member's DM (issue #840 SECURITY criterion) —
       // same discipline find_helper's topic field already uses. Interpolated

@@ -12,7 +12,9 @@ import {
   type BlockedUserRow,
   engagementStats,
   getActiveProjectNamesForOwners,
+  getLanguagePreference,
   getPublishedInterestsForOwners,
+  getResponseStyle,
   isKnowledgeStale,
   KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD,
   type KnowledgeEntry,
@@ -23,6 +25,7 @@ import {
   type MemberProjectSearchHit,
   type MutedMemberRow,
   resolveDisplayName,
+  type ResponseStyle,
   usageStats,
 } from '@swampratnz/agent-base/storage/repository.js';
 
@@ -72,6 +75,31 @@ export async function resolveSanitizedLabel(
 ): Promise<string> {
   const raw = displayNameArg ?? (await resolveDisplayName(platform, userId));
   return raw ? sanitizeName(raw) : userId;
+}
+
+/**
+ * Resolves a peer DM's RECIPIENT's own standing language/style preference —
+ * never the caller's — with the same fail-safe `.catch()` degrade every
+ * `notify.ts` sibling (`notifyProjectMemberAdded` et al.) uses: a `'mi'`
+ * language wins outright and skips the style lookup entirely; a rejected
+ * lookup degrades to English/`'standard'` rather than throwing or blocking
+ * the send. Shared by `social.ts`'s three peer-DM sites (`find_helper`'s
+ * match DM, `share_project`'s #1200 push, `request_project_connection`'s
+ * owner DM) — issue #1245, closing the carve-out #1163 explicitly deferred
+ * for those three sends. `getLangPref`/`getRespStyle` are overridable so
+ * tests can exercise the fail-safe degrade with an injected rejecting stub,
+ * without needing a live DB failure.
+ */
+export async function resolveRecipientNoticeSelection(
+  platform: Platform,
+  userId: string,
+  getLangPref: typeof getLanguagePreference = getLanguagePreference,
+  getRespStyle: typeof getResponseStyle = getResponseStyle,
+): Promise<{ language: LanguagePreference; style: ResponseStyle | undefined }> {
+  const language = await getLangPref(platform, userId).catch(() => 'auto' as const);
+  const style: ResponseStyle | undefined =
+    language === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
+  return { language, style };
 }
 
 /**
