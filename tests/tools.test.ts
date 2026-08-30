@@ -149,6 +149,7 @@ const {
   formatRateAnswerText,
   formatRequestHumanHelpText,
   formatSuggestImprovementText,
+  formatWithdrawSuggestionText,
   TOP_KNOWLEDGE_FETCH_CAP,
   KNOWLEDGE_FIX_NOTIFY_CAP,
   KNOWLEDGE_FIX_NOTIFY_FETCH_CAP,
@@ -162,6 +163,7 @@ const {
   createKnowledgeTip,
   createSuggestion,
   createContentReport,
+  listSuggestions,
   resolveSuggestion,
   KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY,
   resolveContentReport,
@@ -248,6 +250,8 @@ const { WhatsAppCloudAdapter, WindowClosedError } =
 const { buildAdminDigestForAdmin } = await import('../src/module/adminDigest.js');
 const { listAccessRequestResolutionsSince } =
   await import('../src/module/storage/accessRequestResolutions.js');
+const { recordSuggestionWithdrawal, getWithdrawnSuggestionIds } =
+  await import('../src/module/storage/suggestionWithdrawals.js');
 const { buildMemberDigestContent } = await import('../src/module/memberDigest.js');
 const { formatMyDataText, formatMySubmissionsText, formatMyWarningsText } =
   await import('../src/module/agent/tools/selfService.js');
@@ -271,6 +275,7 @@ const FIND_KNOWLEDGE_LEXICAL_FALLBACK_SCOPE = `${RUN}-find-knowledge-lexical-fal
 const FIND_KNOWLEDGE_LEXICAL_NOT_INVOKED_SCOPE = `${RUN}-find-knowledge-lexical-not-invoked`;
 const KNOWLEDGE_STALE_ALERT_HANDLER_SCOPE = `${RUN}-knowledge-stale-alert-handler`;
 const RESOLVE_SUGGESTION_HANDLER_USER = `${RUN}-resolve-suggestion-handler`;
+const WITHDRAW_SUGGESTION_HANDLER_USER = `${RUN}-withdraw-suggestion-handler`;
 const RESOLVE_REPORT_HANDLER_USER = `${RUN}-resolve-report-handler`;
 const RESOLVE_APPEAL_HANDLER_USER = `${RUN}-resolve-appeal-handler`;
 const REPORT_CONTENT_HANDLER_USER = `${RUN}-report-content-handler`;
@@ -317,8 +322,23 @@ after(async () => {
     // scope, resurfaced as a false-positive "already covered" match against
     // an unrelated test's fixture content (issue #872 build session).
     await pool.query(`DELETE FROM knowledge WHERE scope = $1`, [KNOWLEDGE_ENTRY_ID_SCOPE_LEAK_SCOPE_A]);
+    // suggestion_withdrawals has no FK to suggestions (issue #1243 — the
+    // module never takes a hard dependency on the base table's shape), so it
+    // is cleaned up explicitly here, BEFORE the owning suggestion rows are
+    // deleted below (the subquery needs them to still exist).
+    await pool.query(
+      `DELETE FROM suggestion_withdrawals WHERE suggestion_id IN (SELECT id FROM suggestions WHERE user_id LIKE $1)`,
+      [`${RESOLVE_SUGGESTION_HANDLER_USER}%`],
+    );
+    await pool.query(
+      `DELETE FROM suggestion_withdrawals WHERE suggestion_id IN (SELECT id FROM suggestions WHERE user_id LIKE $1)`,
+      [`${WITHDRAW_SUGGESTION_HANDLER_USER}%`],
+    );
     await pool.query(`DELETE FROM suggestions WHERE user_id LIKE $1`, [
       `${RESOLVE_SUGGESTION_HANDLER_USER}%`,
+    ]);
+    await pool.query(`DELETE FROM suggestions WHERE user_id LIKE $1`, [
+      `${WITHDRAW_SUGGESTION_HANDLER_USER}%`,
     ]);
     await pool.query(`DELETE FROM content_reports WHERE reporter_user_id LIKE $1`, [
       `${RESOLVE_REPORT_HANDLER_USER}%`,
@@ -358,6 +378,10 @@ after(async () => {
     await pool.query(`DELETE FROM interactions WHERE conversation_id LIKE $1`, [
       `${RATE_ANSWER_HANDLER_USER}%`,
     ]);
+    await pool.query(
+      `DELETE FROM suggestion_withdrawals WHERE suggestion_id IN (SELECT id FROM suggestions WHERE user_id LIKE $1)`,
+      [`${MY_SUBMISSIONS_HANDLER_USER}%`],
+    );
     await pool.query(`DELETE FROM suggestions WHERE user_id LIKE $1`, [`${MY_SUBMISSIONS_HANDLER_USER}%`]);
     await pool.query(`DELETE FROM content_reports WHERE reporter_user_id LIKE $1`, [
       `${MY_SUBMISSIONS_HANDLER_USER}%`,
@@ -6254,8 +6278,10 @@ test('community_info reply stays concise, not a wall of text (issue #92)', async
   // withdraw_knowledge_tip clause (folded into the existing suggest_knowledge
   // line, not a new one), and again for issue #927's project line (one line
   // covering all three project member tools, not three), and again for issue
-  // #1070's most_helpful_knowledge line.
-  assert.ok(replyText.length < 2230, `reply should stay short; was ${replyText.length} chars`);
+  // #1070's most_helpful_knowledge line, and again for issue #1243's
+  // withdraw_suggestion clause (folded into the existing suggest_improvement
+  // line, not a new one).
+  assert.ok(replyText.length < 2260, `reply should stay short; was ${replyText.length} chars`);
 });
 
 test('community_info appends the full ADMIN_CAPABILITIES_TEXT rundown for admin/super_admin callers, on top of the member content (issue #367)', async () => {
@@ -6360,6 +6386,7 @@ const MEMBER_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__forget_me', /forget/i],
   ['mcp__community__report_content', /report/i],
   ['mcp__community__withdraw_report', /withdraw/i],
+  ['mcp__community__withdraw_suggestion', /withdraw an improvement suggestion you filed/i],
   ['mcp__community__appeal_moderation', /appeal my warning/i],
   ['mcp__community__my_submissions', /filed suggestions\/reports/i],
   ['mcp__community__my_warnings', /active warnings/i],
@@ -6443,8 +6470,9 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
     '- Search back through your own past messages for something said earlier\n' +
     "- Check what I've stored about you, your active warnings, or your filed suggestions/reports\n" +
     '- Catch you up on recent activity in this conversation ("what did I miss?")\n' +
-    '- Suggest how the bot or community could be better, or suggest a knowledge-base tip for other members ' +
-    'to find later, or withdraw one before an admin reviews it\n' +
+    '- Suggest how the bot or community could be better, or withdraw an improvement suggestion you filed, ' +
+    'or suggest a knowledge-base tip for other members to find later, or withdraw one before an admin ' +
+    'reviews it\n' +
     '- Rate my last answer helpful or not\n' +
     '- Ask to talk to a human community admin, if I\'m not getting you anywhere ("can I talk to a ' +
     'human?")\n' +
@@ -6475,7 +6503,8 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
       'issue #808 added the request_human_help line, issue #840 added the request_project_connection line, ' +
       'issue #841 added the community_digest line, issue #895 added the withdraw_knowledge_tip clause to ' +
       'the suggest_knowledge line, issue #927 added the project_note/project_recall/project_list line, ' +
-      'issue #1070 added the most_helpful_knowledge line; otherwise unchanged since #367)',
+      'issue #1070 added the most_helpful_knowledge line, issue #1243 added the withdraw_suggestion clause ' +
+      'to the suggest_improvement line; otherwise unchanged since #367)',
   );
 });
 
@@ -6793,9 +6822,10 @@ test('community_info: super_admin reply stays under a hard char cap, not a wall 
   // Bumped once more alongside the admin cap for issue #1185's remove_project
   // clause, and once more alongside the admin cap for issue #1188's
   // check_knowledge_source clause; bumped once more alongside the admin cap
-  // for issue #1230's remove_interests clause.
+  // for issue #1230's remove_interests clause; bumped once more alongside
+  // the member cap for issue #1243's withdraw_suggestion clause.
   assert.ok(
-    superAdminReply.length < 5450,
+    superAdminReply.length < 5480,
     `super_admin reply should stay short; was ${superAdminReply.length} chars`,
   );
 });
@@ -19526,6 +19556,105 @@ test(
 );
 
 test(
+  'SECURITY: resolve_suggestion refuses cleanly for a suggestion the member has withdrawn — no status ' +
+    'change, no resolution DM, and a distinct failure message naming the withdrawal (issue #1243 ' +
+    'acceptance criterion 3, 6b)',
+  { skip },
+  async () => {
+    const created = await createSuggestion({
+      platform: 'discord',
+      userId: `${RESOLVE_SUGGESTION_HANDLER_USER}-withdrawn`,
+      content: 'withdrawn before an admin could resolve it',
+    });
+    assert.ok(created);
+    await recordSuggestionWithdrawal(created.id);
+
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (userId) => {
+      calls.push(userId);
+    });
+
+    const result = await resolveSuggestionHandler({ platform: 'discord', adapter }).handler({
+      id: created.id,
+      status: 'done',
+    });
+
+    assert.match(
+      result.content[0]?.text ?? '',
+      new RegExp(`Failed: Suggestion #${created.id} was withdrawn by the member; nothing to resolve\\.`),
+    );
+    assert.equal(calls.length, 0, 'a withdrawn suggestion must never receive a resolution DM');
+
+    const row = await pool.query(`SELECT status FROM suggestions WHERE id = $1`, [created.id]);
+    assert.equal(
+      row.rows[0]?.status,
+      'new',
+      'resolveSuggestion must never be called for a withdrawn id — status stays untouched',
+    );
+  },
+);
+
+// list_suggestions (issue #1243's withdraw_suggestion consult) — a fresh
+// admin-tier handler distinct from resolveSuggestionHandler above, since
+// that one only registers a type for 'resolve_suggestion'.
+function listSuggestionsHandler() {
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId: 'admin-1',
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: 'convo-1',
+    },
+    stubAdapter(async () => {}),
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: {
+            status?: 'new' | 'reviewed' | 'declined' | 'done';
+            limit?: number;
+          }) => Promise<{ content: Array<{ type: string; text: string }> }>;
+        }
+      >;
+    }
+  )._registeredTools['list_suggestions'];
+}
+
+test(
+  'list_suggestions renders a withdrawn suggestion distinctly from a live one, and stays byte-identical ' +
+    'for a never-withdrawn suggestion (issue #1243 acceptance criteria 4, 5)',
+  { skip },
+  async () => {
+    const liveUser = `${RESOLVE_SUGGESTION_HANDLER_USER}-list-live`;
+    const withdrawnUser = `${RESOLVE_SUGGESTION_HANDLER_USER}-list-withdrawn`;
+    const live = await createSuggestion({ platform: 'discord', userId: liveUser, content: 'still live' });
+    const toWithdraw = await createSuggestion({
+      platform: 'discord',
+      userId: withdrawnUser,
+      content: 'will be withdrawn',
+    });
+    assert.ok(live && toWithdraw);
+    await recordSuggestionWithdrawal(toWithdraw.id);
+
+    const result = await listSuggestionsHandler().handler({ status: 'new', limit: 200 });
+    const text = result.content[0]?.text ?? '';
+    assert.match(
+      text,
+      new RegExp(`#${live.id} \\[new\\] `),
+      'a never-withdrawn suggestion renders byte-identical to before this issue',
+    );
+    assert.match(
+      text,
+      new RegExp(`#${toWithdraw.id} \\[new, withdrawn by member\\] `),
+      'a withdrawn suggestion is annotated distinctly from a live one',
+    );
+  },
+);
+
+test(
   "resolve_suggestion's own reported outcome is unaffected by a DM delivery failure (issue #116)",
   { skip },
   async () => {
@@ -27081,6 +27210,157 @@ function withdrawReportHandler(userId: string) {
   )._registeredTools['withdraw_report'];
 }
 
+// withdraw_suggestion (issue #1243) — the full registered-tools map for a
+// member caller, so a test can chain suggest_improvement -> withdraw_suggestion
+// against the SAME caller identity, same shape as knowledgeToolsFor above.
+function feedbackToolsFor(userId: string) {
+  const adapter = stubAdapter(async () => {});
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId,
+      userName: 'Suggesting Member',
+      role: 'member' as const,
+      conversationId: 'convo-1',
+    },
+    adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (
+            args: Record<string, unknown>,
+          ) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+        }
+      >;
+    }
+  )._registeredTools;
+}
+
+test(
+  "formatWithdrawSuggestionText renders te reo Māori for both outcomes when language is 'mi', and the exact " +
+    "pre-existing English string for 'auto'/'en' otherwise — id interpolations are unchanged in both " +
+    'languages (issue #1243)',
+  () => {
+    for (const language of ['auto', 'en'] as const) {
+      assert.equal(
+        formatWithdrawSuggestionText([], language),
+        'You have no pending suggestions to withdraw.',
+      );
+      assert.equal(
+        formatWithdrawSuggestionText([42], language),
+        "Withdrew your suggestion #42. They won't be reviewed.",
+      );
+      assert.equal(
+        formatWithdrawSuggestionText([1, 2], language),
+        "Withdrew your suggestions #1, #2. They won't be reviewed.",
+      );
+    }
+    const miEmpty = formatWithdrawSuggestionText([], 'mi');
+    assert.notEqual(miEmpty, formatWithdrawSuggestionText([], 'en'));
+    const miOne = formatWithdrawSuggestionText([42], 'mi');
+    assert.notEqual(miOne, formatWithdrawSuggestionText([42], 'en'));
+    assert.match(miOne, /#42/);
+  },
+);
+
+test(
+  "withdraw_suggestion marks the caller's own still-'new' suggestion withdrawn and confirms it (two-outcome " +
+    'shape: none-to-withdraw, then withdrew); a second call finds nothing left pending (issue #1243 ' +
+    'acceptance criteria 1, 2)',
+  { skip },
+  async () => {
+    const userId = `${WITHDRAW_SUGGESTION_HANDLER_USER}-happy`;
+    const tools = feedbackToolsFor(userId);
+
+    const empty = await tools['withdraw_suggestion'].handler({});
+    assert.equal(empty.isError, true);
+    assert.equal(empty.content[0]?.text, 'You have no pending suggestions to withdraw.');
+
+    const created = await createSuggestion({ platform: 'discord', userId, content: 'to be withdrawn' });
+    assert.ok(created);
+
+    const withdrawn = await tools['withdraw_suggestion'].handler({});
+    assert.equal(withdrawn.isError, false);
+    assert.equal(
+      withdrawn.content[0]?.text,
+      `Withdrew your suggestion #${created.id}. They won't be reviewed.`,
+    );
+    const withdrawnIds = await getWithdrawnSuggestionIds([created.id]);
+    assert.ok(withdrawnIds.has(created.id), 'recordSuggestionWithdrawal must have written the row');
+
+    // Calling again is idempotent — the suggestion is already withdrawn, so
+    // there is nothing left pending, not a duplicate withdrawal.
+    const second = await tools['withdraw_suggestion'].handler({});
+    assert.equal(second.isError, true);
+    assert.equal(second.content[0]?.text, 'You have no pending suggestions to withdraw.');
+  },
+);
+
+test(
+  "SECURITY: withdraw_suggestion only ever withdraws the CALLER's own 'new' suggestions — it cannot touch " +
+    "another member's suggestion, and never touches one already reviewed/declined/done (issue #1243 " +
+    'acceptance criterion 6a)',
+  { skip },
+  async () => {
+    const callerA = `${WITHDRAW_SUGGESTION_HANDLER_USER}-caller-a`;
+    const callerB = `${WITHDRAW_SUGGESTION_HANDLER_USER}-caller-b`;
+    const suggestionA = await createSuggestion({ platform: 'discord', userId: callerA, content: "A's own" });
+    const suggestionB = await createSuggestion({ platform: 'discord', userId: callerB, content: "B's own" });
+    assert.ok(suggestionA && suggestionB);
+
+    // A non-'new' suggestion of the caller's own must also survive untouched.
+    const reviewed = await createSuggestion({
+      platform: 'discord',
+      userId: callerA,
+      content: 'already reviewed',
+    });
+    assert.ok(reviewed);
+    await resolveSuggestion(reviewed.id, 'done', 'admin-1');
+
+    const toolsA = feedbackToolsFor(callerA);
+    const result = await toolsA['withdraw_suggestion'].handler({});
+    assert.equal(result.isError, false);
+    assert.equal(
+      result.content[0]?.text,
+      `Withdrew your suggestion #${suggestionA.id}. They won't be reviewed.`,
+    );
+
+    const withdrawnIds = await getWithdrawnSuggestionIds([suggestionA.id, suggestionB.id, reviewed.id]);
+    assert.ok(withdrawnIds.has(suggestionA.id), "caller A's own new suggestion must be withdrawn");
+    assert.ok(!withdrawnIds.has(suggestionB.id), "SECURITY: caller B's suggestion must NOT be withdrawn");
+    assert.ok(!withdrawnIds.has(reviewed.id), "a non-'new' suggestion of caller A's own must be untouched");
+  },
+);
+
+test(
+  'SECURITY: withdraw_suggestion re-asserts member tier inside the handler itself, not merely via ' +
+    'MEMBER_TOOLS surface gating, matching every other privileged/self-service tool in feedback.ts (issue #1243)',
+  { skip },
+  async () => {
+    const guestUser = `${WITHDRAW_SUGGESTION_HANDLER_USER}-guest`;
+    const adapter = stubAdapter(async () => {});
+    const server = buildToolServer(
+      {
+        platform: 'discord' as const,
+        userId: guestUser,
+        userName: 'Guest',
+        role: 'guest' as const,
+        conversationId: 'convo-1',
+      },
+      adapter,
+    );
+    const tools = (
+      server.instance as unknown as {
+        _registeredTools: Record<string, { handler: () => Promise<unknown> }>;
+      }
+    )._registeredTools;
+    await assert.rejects(() => tools['withdraw_suggestion'].handler(), /Permission denied/);
+  },
+);
+
 test(
   "formatSuggestImprovementText renders te reo Māori for both outcomes when language is 'mi', and the exact " +
     "pre-existing English string for 'auto'/'en' otherwise — id/limit interpolations are unchanged in both " +
@@ -32179,6 +32459,31 @@ test(
       /Your suggestions:[\s\S]*\n\nYour reports:[\s\S]*\n\nYour appeals:/,
       'the appeals block is rendered alongside the suggestions/reports blocks, separated by a blank line',
     );
+  },
+);
+
+test(
+  "my_submissions renders a withdrawn suggestion as '[withdrawn]' rather than the stale '[new]' it would " +
+    'otherwise still show, while a never-withdrawn suggestion for the same caller stays byte-identical ' +
+    '(issue #1243 acceptance criteria 4, 5)',
+  { skip },
+  async () => {
+    const userId = `${MY_SUBMISSIONS_HANDLER_USER}-withdrawn`;
+    const live = await createSuggestion({ platform: 'whatsapp', userId, content: 'still pending review' });
+    const toWithdraw = await createSuggestion({
+      platform: 'whatsapp',
+      userId,
+      content: 'retracted by the member',
+    });
+    assert.ok(live && toWithdraw);
+    await recordSuggestionWithdrawal(toWithdraw.id);
+
+    const result = await mySubmissionsHandler(userId).handler();
+    const output = result.content[0]?.text ?? '';
+
+    assert.equal(result.isError, false);
+    assert.match(output, new RegExp(`#${live.id} \\[new\\] still pending review`));
+    assert.match(output, new RegExp(`#${toWithdraw.id} \\[withdrawn\\] retracted by the member`));
   },
 );
 

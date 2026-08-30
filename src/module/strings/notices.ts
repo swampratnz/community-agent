@@ -563,8 +563,9 @@ const NOTICE_ENTRIES = {
       '- Search back through your own past messages for something said earlier\n' +
       "- Check what I've stored about you, your active warnings, or your filed suggestions/reports\n" +
       '- Catch you up on recent activity in this conversation ("what did I miss?")\n' +
-      '- Suggest how the bot or community could be better, or suggest a knowledge-base tip for other members ' +
-      'to find later, or withdraw one before an admin reviews it\n' +
+      '- Suggest how the bot or community could be better, or withdraw an improvement suggestion you filed, ' +
+      'or suggest a knowledge-base tip for other members to find later, or withdraw one before an admin ' +
+      'reviews it\n' +
       '- Rate my last answer helpful or not\n' +
       '- Ask to talk to a human community admin, if I\'m not getting you anywhere ("can I talk to a ' +
       'human?")\n' +
@@ -602,9 +603,9 @@ const NOTICE_ENTRIES = {
         '- Tirohia he aha kua rongoātia e ahau mōu, ō whakatūpato e mahi tonu ana, ō tono/pūrongo rānei kua ' +
         'tukuna\n' +
         '- Whakahōtaka i a koe mō ngā mahi hōu i tēnei kōrerorero ("what did I miss?")\n' +
-        '- Tuku whakaaro mō te pai ake o te pouaka, o te hapori rānei, tuku whakaaro mō tētahi taunakitanga ' +
-        'mō te pātengi mōhiotanga hei kitenga mā ētahi atu mema, tango rānei i tētahi i mua i te arotakenga ' +
-        'a te kaiwhakahaere\n' +
+        '- Tuku whakaaro mō te pai ake o te pouaka, o te hapori rānei, tango rānei i tētahi taunakitanga kua ' +
+        'tukuna e koe, tuku whakaaro mō tētahi taunakitanga mō te pātengi mōhiotanga hei kitenga mā ētahi atu ' +
+        'mema, tango rānei i tētahi i mua i te arotakenga a te kaiwhakahaere\n' +
         '- Tohu i tāku whakautu whakamutunga he āwhina, kāore rānei\n' +
         '- Tono ki te kōrero ki tētahi kaiwhakahaere tangata, mehemea kāore au e āwhina ana i a koe ("can I ' +
         'talk to a human?")\n' +

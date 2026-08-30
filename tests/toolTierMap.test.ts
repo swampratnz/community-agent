@@ -71,6 +71,7 @@ const EXPECTED: Record<string, readonly string[]> = {
     'who_is_into',
     'withdraw_knowledge_tip',
     'withdraw_report',
+    'withdraw_suggestion',
   ],
   admin: [
     'accept_knowledge_candidate',

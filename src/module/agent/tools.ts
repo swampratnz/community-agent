@@ -90,6 +90,7 @@ export {
   formatRateAnswerText,
   formatRequestHumanHelpText,
   formatSuggestImprovementText,
+  formatWithdrawSuggestionText,
 } from './tools/feedback.js';
 export { ALLOWED_REACTION_EMOJI, REACTION_RATE_LIMIT_PER_DAY } from './tools/reactions.js';
 export {

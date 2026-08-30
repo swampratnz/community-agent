@@ -28,6 +28,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-08-31
 
 ### Added
+- **You can now withdraw a bot-improvement suggestion you filed.** (#1243)
+  `report_content` and `suggest_knowledge` already let you retract one filed
+  by mistake or as a joke — `suggest_improvement` was the one contribution
+  queue with no such lever. `withdraw_suggestion` retracts all of your own
+  still-open suggestions; once withdrawn, an admin's `resolve_suggestion`
+  refuses it cleanly instead of resolving something you already took back,
+  and `list_suggestions`/`my_submissions` both show it as withdrawn rather
+  than the stale "new" status.
 - **Adding or removing someone from a project's shared team memory now tells
   them.** (#1241) A member added to a project (e.g. an Impact Lab) via
   `project_add_member` or `team_setup` gets a short DM saying so and naming
