@@ -257,6 +257,12 @@ export const PROJECT_DUPLICATE_SEARCH_LIMIT = 3;
  * additional reply content. `matchOwner` arrives pre-sanitized (the caller
  * resolves it via `resolveSanitizedLabel` before constructing this outcome,
  * same convention as `find_helper`'s `requesterLabel`).
+ *
+ * `created`'s optional `notifiedHelper` (issue #1200) appends one line only
+ * when the same-call seekingCollaborators push (mirroring `find_helper`'s
+ * match-and-notify path) actually reached an opted-in helper — never who,
+ * same non-disclosure discipline as `find_helper`'s own `matched` outcome.
+ * Omitted/false renders byte-identical to the pre-#1200 `created` text.
  */
 export function formatShareProjectText(
   outcome:
@@ -265,7 +271,7 @@ export function formatShareProjectText(
     | { kind: 'rateLimit'; limit: number }
     | { kind: 'removed'; name: string }
     | { kind: 'notFound'; name: string }
-    | { kind: 'created'; name: string }
+    | { kind: 'created'; name: string; notifiedHelper?: boolean }
     | { kind: 'updated'; name: string }
     | { kind: 'similar'; name: string; matchId: number; matchName: string; matchOwner: string },
   language: LanguagePreference,
@@ -296,10 +302,18 @@ export function formatShareProjectText(
       return mi
         ? `Kāore āu kaupapa kua tohaina e kīia ana ko "${outcome.name}".`
         : `You don't have a shared project named "${outcome.name}".`;
-    case 'created':
-      return mi
+    case 'created': {
+      const base = mi
         ? `Kua tohaina a "${outcome.name}" — ka kitea e ētahi atu mema mā te list_projects.`
         : `Shared "${outcome.name}" — other members can find it with list_projects.`;
+      if (!outcome.notifiedHelper) return base;
+      return (
+        base +
+        (mi
+          ? ' Kua whakapā atu hoki ki tētahi mema e rite ana ōna hiahia — kia manawanui.'
+          : ' Also reached out to a member whose published interests match — hang tight.')
+      );
+    }
     case 'updated':
       return mi ? `Kua whakahoutia a "${outcome.name}".` : `Updated "${outcome.name}".`;
     case 'similar': {
@@ -706,7 +720,7 @@ export const socialTools = [
             'statement, e.g. "I\'m looking for help with this" — never inferred.',
         ),
     },
-    handler: async (args, { caller }) => {
+    handler: async (args, { caller, adapterFor }) => {
       // Guests can reach every other MEMBER_TOOLS write in open mode, but
       // publishing to a member-facing showcase is a step further than a
       // self-scoped, invisible-to-others action like set_response_style —
@@ -746,6 +760,58 @@ export const socialTools = [
       }
       const language = await getLanguagePreference(caller.platform, caller.userId);
       if (result.created) {
+        // Issue #1200: the push complement to seekingCollaborators (pull-only
+        // until now) — a brand-new seeking-collaborators share also runs
+        // find_helper's own match-and-notify path, using the project
+        // description as the match text and sending AT MOST ONE DM, to the
+        // single best-matching opted-in helper. Gated identically to
+        // find_helper (FIND_HELPER_ENABLED) and re-uses its exact
+        // notification cap so the two trigger paths share one weekly budget
+        // per helper rather than doubling it. Runs before the #1190
+        // duplicate-content check below — a genuinely new seeking-
+        // collaborators share is a real signal worth pushing on regardless of
+        // whether it also happens to look similar to an existing project.
+        let notifiedHelper = false;
+        if (args.seekingCollaborators && config.findHelper.enabled) {
+          const candidates = await findHelperCandidates(args.description, caller.platform, caller.userId);
+          for (const candidate of candidates) {
+            const target = adapterFor(candidate.platform);
+            if (!target) continue;
+            const claimed = await recordHelperNotificationIfUnderCap(
+              candidate.platform,
+              candidate.userId,
+              caller.platform,
+              caller.userId,
+              args.description,
+            );
+            if (!claimed) continue;
+            const requesterLabel = await resolveSanitizedLabel(caller.platform, caller.userId);
+            // untrusted() quarantines the member-supplied project description
+            // before it reaches a DIFFERENT member's DM (issue #1200
+            // SECURITY criterion) — same discipline find_helper's topic field
+            // already uses.
+            const message =
+              `${requesterLabel} just shared a project looking for collaborators that matches what ` +
+              `you're into.\n${untrusted('project', args.description)}`;
+            // Best-effort send, same fire-and-forget/WindowClosedError-queue
+            // shape as find_helper — a failed or queued send still counts as
+            // "the one DM this call sends" (the notification row above is
+            // already committed).
+            await target.sendDirectMessage(candidate.userId, message).catch((err) => {
+              if (err instanceof WindowClosedError && target.queueForWindowReopen) {
+                target.queueForWindowReopen(candidate.userId, message, 'low');
+                logger.warn(
+                  { userId: hashId(candidate.userId), platform: candidate.platform },
+                  "share_project DM: recipient's window is closed, queued for reopen",
+                );
+                return;
+              }
+              logger.warn({ err, userId: hashId(candidate.userId) }, 'share_project DM failed');
+            });
+            notifiedHelper = true;
+            break;
+          }
+        }
         // Issue #1190: write-time duplicate-content nudge, only on a
         // brand-new share (never `updated`/`removed`/a cap-or-rate-limit
         // refusal above, which return earlier) — mirroring save_knowledge's
@@ -768,13 +834,9 @@ export const socialTools = [
             ),
           );
         }
+        return text(formatShareProjectText({ kind: 'created', name: args.name, notifiedHelper }, language));
       }
-      return text(
-        formatShareProjectText(
-          result.created ? { kind: 'created', name: args.name } : { kind: 'updated', name: args.name },
-          language,
-        ),
-      );
+      return text(formatShareProjectText({ kind: 'updated', name: args.name }, language));
     },
   }),
 
