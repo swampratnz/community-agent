@@ -465,6 +465,79 @@ const NOTICE_ENTRIES = {
       plain: "An admin removed your access to a project's shared memory on NZ Claude Community.",
     },
   },
+  // --- find_helper / share_project / request_project_connection peer-DM
+  // recipient notifications (agent/tools/social.ts, issue #1245) ---
+  /**
+   * The neutral match DM `find_helper` sends to the matched HELPER (not the
+   * caller) — issue #1163's own doc comment named these two peer-DM sites as
+   * deliberately out of scope ("stay untranslated by design"); issue #1245
+   * closes that carve-out. `requesterLabel` is the caller's own
+   * `resolveSanitizedLabel` output — already sanitized, not raw untrusted
+   * content — so it is interpolated directly into the translated sentence,
+   * same convention `formatShareProjectText`'s `similar` branch already uses
+   * for a pre-sanitized owner label. The caller's free-text topic stays out
+   * of this template entirely: the call site appends
+   * `untrusted('topic', args.topic)` AFTER the rendered sentence, in the same
+   * position (a distinct line, joined by `\n`) as before this issue, in every
+   * language/style branch.
+   */
+  findHelperMatchMessage: {
+    base: (requesterLabel: string) =>
+      `${requesterLabel} could use some help with something you're into — reach out if you're able to.`,
+    language: {
+      mi: (requesterLabel: string) =>
+        `Kei te hiahia āwhina a ${requesterLabel} mō tētahi mea e pā ana ki ō hiahia — whakapā atu mehemea ka taea e koe.`,
+    },
+    style: {
+      plain: (requesterLabel: string) =>
+        `${requesterLabel} could use some help with something you're into. Reach out if you can.`,
+    },
+  },
+  /**
+   * The neutral match DM `share_project`'s #1200 seeking-collaborators push
+   * sends to the matched HELPER — the third site issue #1245 closes,
+   * inherited unchanged from `find_helper` by #1200. Same
+   * pre-sanitized-label-interpolated, quarantined-content-appended-after
+   * shape as `findHelperMatchMessage` above: the caller's free-text project
+   * description is appended by the call site as
+   * `untrusted('project', args.description)`, never part of this template.
+   */
+  shareProjectMatchMessage: {
+    base: (requesterLabel: string) =>
+      `${requesterLabel} just shared a project looking for collaborators that matches what you're into.`,
+    language: {
+      mi: (requesterLabel: string) =>
+        `Kua tohatoha a ${requesterLabel} i tētahi kaupapa e rapu hoa mahi ana e ōrite ana ki ō hiahia.`,
+    },
+    style: {
+      plain: (requesterLabel: string) =>
+        `${requesterLabel} shared a project looking for collaborators that matches what you're into.`,
+    },
+  },
+  /**
+   * The neutral DM `request_project_connection` sends to the project OWNER —
+   * the second site issue #1163 itself carved out ("same carve-out as
+   * find_helper's match notification"), closed here. Unlike the two entries
+   * above, the caller-supplied, `untrusted()`-quarantined project name was
+   * always interpolated MID-sentence (before the trailing "reach out"
+   * clause), never appended on its own line — `quarantinedProjectName` here
+   * is that same already-quarantined string (the call site still wraps it
+   * with `untrusted('project', project.name)` first), placed at the
+   * identical position in every language/style branch, preserving issue
+   * #1245's SECURITY acceptance criterion that this position never move.
+   */
+  requestProjectConnectionMessage: {
+    base: (requesterLabel: string, quarantinedProjectName: string) =>
+      `${requesterLabel} is interested in collaborating on ${quarantinedProjectName} — reach out if you're able to.`,
+    language: {
+      mi: (requesterLabel: string, quarantinedProjectName: string) =>
+        `Kei te hiahia a ${requesterLabel} ki te mahi tahi mō ${quarantinedProjectName} — whakapā atu mehemea ka taea e koe.`,
+    },
+    style: {
+      plain: (requesterLabel: string, quarantinedProjectName: string) =>
+        `${requesterLabel} wants to collaborate on ${quarantinedProjectName}. Reach out if you can.`,
+    },
+  },
   // --- community_info member capabilities rundown (agent/tools/info.ts) ---
   /**
    * The member-tier segment of `community_info`/`/help`/`!help`'s capability

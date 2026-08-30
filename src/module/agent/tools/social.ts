@@ -13,6 +13,7 @@ import {
   getActiveProjectById,
   getLanguagePreference,
   getPublishedInterestsForOwners,
+  getResponseStyle,
   isFindHelperRequesterAtDailyCap,
   isProjectConnectionRequesterAtDailyCap,
   type LanguagePreference,
@@ -29,6 +30,7 @@ import {
   recordHelperNotificationIfUnderCap,
   recordProjectConnectionIfUnderCap,
   removeMemberProject,
+  type ResponseStyle,
   searchMemberInterests,
   searchMemberInterestsForSelf,
   searchProjects,
@@ -46,6 +48,7 @@ import {
   untrusted,
 } from './helpers.js';
 import { notifyInterestsRemoved, notifyProjectRemoved } from './notify.js';
+import { notice } from '../../strings/notices.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 /** list_projects' row cap for both the no-query (recent) and query (similarity) paths. */
@@ -612,11 +615,26 @@ export const socialTools = [
         );
         if (!claimed) continue;
         const requesterLabel = await resolveSanitizedLabel(caller.platform, caller.userId);
+        // Issue #1245: the DM recipient's OWN language/style preference —
+        // never the caller's, whose own preference is looked up separately
+        // below for their own reply — same fail-safe .catch() shape every
+        // notify.ts sibling uses (SECURITY: caller/recipient must never mix
+        // up which identity's preference is resolved here).
+        const recipientLanguage = await getLanguagePreference(candidate.platform, candidate.userId).catch(
+          () => 'auto' as const,
+        );
+        const recipientStyle: ResponseStyle | undefined =
+          recipientLanguage === 'mi'
+            ? undefined
+            : await getResponseStyle(candidate.platform, candidate.userId).catch(() => 'standard' as const);
         // untrusted() quarantines the requester's free-text topic before it
         // reaches a DIFFERENT member's DM (issue #729 SECURITY criterion) —
         // same discipline list_answer_feedback's comment field already uses.
         const message =
-          `${requesterLabel} could use some help with something you're into — reach out if you're able to.\n` +
+          notice('findHelperMatchMessage', { language: recipientLanguage, style: recipientStyle })(
+            requesterLabel,
+          ) +
+          '\n' +
           untrusted('topic', args.topic);
         // Best-effort send, same fire-and-forget/WindowClosedError-queue
         // shape as notifySuggestionResolved/notifyReportResolved — a failed
@@ -786,13 +804,29 @@ export const socialTools = [
             );
             if (!claimed) continue;
             const requesterLabel = await resolveSanitizedLabel(caller.platform, caller.userId);
+            // Issue #1245: the DM recipient's OWN language/style preference —
+            // never the caller's — same fail-safe .catch() shape find_helper's
+            // own DM above uses (SECURITY: caller/recipient must never mix up
+            // which identity's preference is resolved here).
+            const recipientLanguage = await getLanguagePreference(candidate.platform, candidate.userId).catch(
+              () => 'auto' as const,
+            );
+            const recipientStyle: ResponseStyle | undefined =
+              recipientLanguage === 'mi'
+                ? undefined
+                : await getResponseStyle(candidate.platform, candidate.userId).catch(
+                    () => 'standard' as const,
+                  );
             // untrusted() quarantines the member-supplied project description
             // before it reaches a DIFFERENT member's DM (issue #1200
             // SECURITY criterion) — same discipline find_helper's topic field
             // already uses.
             const message =
-              `${requesterLabel} just shared a project looking for collaborators that matches what ` +
-              `you're into.\n${untrusted('project', args.description)}`;
+              notice('shareProjectMatchMessage', { language: recipientLanguage, style: recipientStyle })(
+                requesterLabel,
+              ) +
+              '\n' +
+              untrusted('project', args.description);
             // Best-effort send, same fire-and-forget/WindowClosedError-queue
             // shape as find_helper — a failed or queued send still counts as
             // "the one DM this call sends" (the notification row above is
@@ -984,12 +1018,27 @@ export const socialTools = [
         return text(formatRequestProjectConnectionText('ownerCapped', language), true);
       }
       const requesterLabel = await resolveSanitizedLabel(caller.platform, caller.userId);
+      // Issue #1245: the DM recipient's (project owner's) OWN language/style
+      // preference — never the caller's — same fail-safe .catch() shape
+      // find_helper's/share_project's own DMs above use (SECURITY:
+      // caller/recipient must never mix up which identity's preference is
+      // resolved here).
+      const recipientLanguage = await getLanguagePreference(project.platform, project.userId).catch(
+        () => 'auto' as const,
+      );
+      const recipientStyle: ResponseStyle | undefined =
+        recipientLanguage === 'mi'
+          ? undefined
+          : await getResponseStyle(project.platform, project.userId).catch(() => 'standard' as const);
       // untrusted() quarantines the member-supplied project name before it
       // reaches a DIFFERENT member's DM (issue #840 SECURITY criterion) —
-      // same discipline find_helper's topic field already uses.
-      const message =
-        `${requesterLabel} is interested in collaborating on ` +
-        `${untrusted('project', project.name)} — reach out if you're able to.`;
+      // same discipline find_helper's topic field already uses. Interpolated
+      // MID-sentence (not appended after) — same position as before issue
+      // #1245, in every language/style branch (see requestProjectConnectionMessage).
+      const message = notice('requestProjectConnectionMessage', {
+        language: recipientLanguage,
+        style: recipientStyle,
+      })(requesterLabel, untrusted('project', project.name));
       // Best-effort send, same fire-and-forget/WindowClosedError-queue shape
       // as find_helper/notifySuggestionResolved — a failed or queued send
       // still counts as "the one DM this call sends" (the connection-request
