@@ -22925,11 +22925,7 @@ test(
       // issue #1241 review: validMember is brand-new AND newly added to this
       // brand-new project, so it gets both the welcome DM and the
       // project-added DM — both to the same, valid, discord-shaped id.
-      assert.deepEqual(
-        dmCalls,
-        [validMember, validMember],
-        'only the valid discord-shaped id is ever DMed',
-      );
+      assert.deepEqual(dmCalls, [validMember, validMember], 'only the valid discord-shaped id is ever DMed');
       const { rows } = await pool.query(
         `SELECT platform, platform_user_id FROM community_users WHERE platform_user_id = $1`,
         [whatsappShapedId],
