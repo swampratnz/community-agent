@@ -213,16 +213,19 @@ export const teamSetupTools = [
                     target.userId,
                     caller.userId,
                   );
-                  // Closes the one gap notifyMemberApproved's call above
-                  // doesn't cover (issue #1241): an EXISTING member added to
-                  // the project via team_setup got no DM at all, unlike a
-                  // brand-new registration's welcome DM above. Fires only on
-                  // the actual "newly added to project" transition — never on
-                  // "already a project member" — same gating as
-                  // project_add_member's own call to this function, so
-                  // re-running team_setup against the same team doesn't
-                  // re-notify every time.
-                  if (wasMember && added) {
+                  // Closes the gap notifyMemberApproved's call above doesn't
+                  // cover (issue #1241): the welcome DM above never names the
+                  // project, and a member who was ALREADY registered before
+                  // this call got no DM at all. Fires for every target on the
+                  // actual "newly added to project" transition — including a
+                  // brand-new registrant, who gets both the generic welcome
+                  // DM and this project-naming one — and never on "already a
+                  // project member", so re-running team_setup against the
+                  // same team doesn't re-notify every time. Gating on `added`
+                  // alone (not `wasMember && added`) is what does that
+                  // de-dup work: addProjectMember returns false on a repeat
+                  // call regardless of wasMember.
+                  if (added) {
                     const memberTarget = adapterFor(target.platform);
                     if (memberTarget) {
                       await notifyProjectMemberAdded(

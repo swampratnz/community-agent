@@ -22552,7 +22552,7 @@ test(
 // add_member's single MEMBER_DM_FAILED_NOTE.
 
 test(
-  'team_setup sends exactly one welcome DM per newly-registered member, and exactly one project-added DM per already-existing member (issue #1065, extended by issue #1241)',
+  'team_setup sends exactly one welcome DM per newly-registered member, plus exactly one project-added DM per target — new or already-existing — added to the project (issue #1065, extended by issue #1241 review)',
   { skip },
   async () => {
     const conv = `${RUN}-team-setup-dm-count`;
@@ -22604,21 +22604,30 @@ test(
       assert.ok(pending);
       await pending?.execute();
 
-      // issue #1241: existingA/B/C were not yet members of this brand-new
-      // project, so each also gets exactly one notifyProjectMemberAdded DM
-      // now — closing the gap where an already-registered member added via
-      // team_setup got no DM at all. freshA/freshB still get exactly one
-      // welcome DM each (unchanged).
+      // issue #1241 review: none of these five were yet members of this
+      // brand-new project, so every one of them gets a notifyProjectMemberAdded
+      // DM naming the project — closing the gap where an already-registered
+      // member added via team_setup got no DM at all, AND the gap where a
+      // brand-new registrant's welcome DM never named the project. freshA/
+      // freshB additionally get their one welcome DM each (unchanged), so
+      // they receive two DMs total; existingA/B/C receive one each.
       assert.equal(
         dmCalls.length,
-        5,
-        'one welcome DM per newly-registered member plus one project-added DM per already-registered member',
+        7,
+        'one welcome DM per newly-registered member, plus one project-added DM per targeted member',
       );
-      assert.deepEqual(
-        new Set(dmCalls),
-        new Set([existingA, existingB, existingC, freshA, freshB]),
-        'every targeted member — new and existing — receives exactly one DM',
-      );
+      const dmCountByUser = new Map<string, number>();
+      for (const id of dmCalls) dmCountByUser.set(id, (dmCountByUser.get(id) ?? 0) + 1);
+      for (const id of [existingA, existingB, existingC]) {
+        assert.equal(dmCountByUser.get(id), 1, 'an already-registered target gets exactly one DM');
+      }
+      for (const id of [freshA, freshB]) {
+        assert.equal(
+          dmCountByUser.get(id),
+          2,
+          'a brand-new registrant gets both the welcome DM and the project-added DM',
+        );
+      }
     } finally {
       await pool.query(
         `DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = ANY($1::text[])`,
@@ -22679,8 +22688,14 @@ test(
       assert.ok(pending);
       await pending?.execute();
 
-      assert.equal(dmCalls.length, 1);
-      assert.match(dmCalls[0], /Be respectful\. No spam\. Keep discussion on-topic\./);
+      // issue #1241 review: freshMember is brand-new AND newly added to this
+      // brand-new project, so it gets both the welcome DM (guidelines-bearing)
+      // and the project-added DM.
+      assert.equal(dmCalls.length, 2);
+      assert.ok(
+        dmCalls.some((msg) => /Be respectful\. No spam\. Keep discussion on-topic\./.test(msg)),
+        'the welcome DM must carry the configured guidelines',
+      );
     } finally {
       await updatePolicy('community_guidelines', '', 'test');
       resetPolicyCacheForTests();
@@ -22813,7 +22828,14 @@ test(
       const firstPending = takePendingAction('discord', conv, adminId);
       assert.ok(firstPending);
       await firstPending?.execute();
-      assert.equal(dmCalls.length, 2, 'the first run DMs both newly-registered members');
+      // issue #1241 review: each newly-registered member is also newly added
+      // to this brand-new project, so each gets a welcome DM AND a
+      // project-added DM.
+      assert.equal(
+        dmCalls.length,
+        4,
+        'the first run DMs both newly-registered members twice each: welcome DM + project-added DM',
+      );
 
       dmCalls.length = 0;
       const second = await registeredTool.handler({
@@ -22900,7 +22922,14 @@ test(
       assert.ok(pending);
       await pending?.execute();
 
-      assert.deepEqual(dmCalls, [validMember], 'only the valid discord-shaped id is ever DMed');
+      // issue #1241 review: validMember is brand-new AND newly added to this
+      // brand-new project, so it gets both the welcome DM and the
+      // project-added DM — both to the same, valid, discord-shaped id.
+      assert.deepEqual(
+        dmCalls,
+        [validMember, validMember],
+        'only the valid discord-shaped id is ever DMed',
+      );
       const { rows } = await pool.query(
         `SELECT platform, platform_user_id FROM community_users WHERE platform_user_id = $1`,
         [whatsappShapedId],
