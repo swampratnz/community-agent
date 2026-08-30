@@ -12931,6 +12931,72 @@ test(
   },
 );
 
+test(
+  'SECURITY: add_member does not record an access-request-resolution when clearAccessRequest itself fails — gating on pendingRequest alone would phantom-record a still-pending request, and double-record it on a later successful retry (PR #1240 review)',
+  { skip },
+  async (t) => {
+    const targetUserId = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    const conversationId = `convo-add-member-clearfail-${targetUserId}`;
+    await clearAccessRequest('discord', targetUserId);
+    await recordAccessRequest({ platform: 'discord', userId: targetUserId, userName: 'tester' });
+
+    const since = new Date(Date.now() - 3_600_000);
+    const before = (await listAccessRequestResolutionsSince(since)).length;
+
+    // Simulate the DELETE FROM access_requests write itself failing, without
+    // touching real DB state: intercept only that statement and reject it,
+    // passing every other query (including the resolution INSERT, which must
+    // NOT run) through to the real pool.query untouched.
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && sql.includes('DELETE FROM access_requests WHERE')) {
+        return Promise.reject(new Error('clear write unavailable'));
+      }
+      return (realQuery as (...args: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+
+    try {
+      const adapter = stubAdapter(async () => {});
+      const caller = {
+        platform: 'discord' as const,
+        userId: 'admin-1',
+        userName: 'Admin',
+        role: 'admin' as const,
+        conversationId,
+      };
+      const server = buildToolServer(caller, adapter);
+      const registeredTool = (
+        server.instance as unknown as {
+          _registeredTools: Record<
+            string,
+            { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+          >;
+        }
+      )._registeredTools['add_member'];
+
+      const result = await registeredTool.handler({ userId: targetUserId, platform: 'discord' });
+      assert.match(
+        result.content[0]?.text ?? '',
+        /^Added/,
+        'add_member still reports success even though the underlying clear failed — that failure is already swallowed the same way as before this fix',
+      );
+
+      const after = (await listAccessRequestResolutionsSince(since)).length;
+      assert.equal(
+        after,
+        before,
+        'a failed clear must not record a resolution: the request row is still pending, so recording here would both misreport it as resolved and double-record it on a later successful retry',
+      );
+    } finally {
+      t.mock.restoreAll();
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        targetUserId,
+      ]);
+      await clearAccessRequest('discord', targetUserId);
+    }
+  },
+);
+
 // grant_admin's reply now reflects DM delivery too (issue #556), same shape
 // as add_member above but inside the CONFIRM-gated execute path.
 test(

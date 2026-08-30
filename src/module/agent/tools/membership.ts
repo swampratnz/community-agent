@@ -64,10 +64,18 @@ export const membershipTools = [
       const pendingRequest = (await listAccessRequests(ACCESS_REQUEST_STALE_ALERT_SCAN_LIMIT)).find(
         (r) => r.platform === platform && r.userId === userId,
       );
-      await clearAccessRequest(platform, userId).catch((err) =>
-        logger.warn({ err, userId }, 'Failed to clear access request'),
-      );
-      if (pendingRequest) {
+      // `cleared` is the actual outcome — a truthy row count on success, or
+      // `false` if the write threw (mirrors decline_access_request's
+      // `cleared` check on the same call, just non-blocking here). Gating
+      // the metric write on it (not merely on `pendingRequest` having been
+      // found beforehand) means a failed clear can't leave a phantom
+      // "resolved" row for a request that's still pending, and a later
+      // retry that succeeds can't end up double-recording it.
+      const cleared = await clearAccessRequest(platform, userId).catch((err) => {
+        logger.warn({ err, userId }, 'Failed to clear access request');
+        return false;
+      });
+      if (pendingRequest && cleared) {
         // Best-effort, same non-blocking guard as clearAccessRequest just
         // above — the metric write must never be able to fail or block
         // add_member itself.
