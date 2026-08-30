@@ -409,6 +409,24 @@ const NOTICE_ENTRIES = {
       plain: 'An admin removed one of your projects from the NZ Claude Community showcase.',
     },
   },
+  // --- remove_interests resolution DM (agent/tools/notify.ts, issue #1230) ---
+  /**
+   * The neutral removal DM for the admin-tier `remove_interests` — static,
+   * same shape as `projectRemovedMessage` above: the admin-authored `reason`
+   * field is never interpolated into this translated base string, only
+   * appended afterward as a distinct, quoted, `truncateForEcho`-capped clause
+   * (see `notifyInterestsRemoved` in notify.ts). Sent only when the admin
+   * supplies a reason — omitting one clears the interests silently.
+   */
+  interestsRemovedMessage: {
+    base: 'Your published interests were removed from member discovery (who_is_into) by an admin.',
+    language: {
+      mi: 'I tangohia ō hiahia kua whakaputaina mai i te rapunga mema (who_is_into) e tētahi kaiwhakahaere.',
+    },
+    style: {
+      plain: 'An admin removed your published interests from member discovery.',
+    },
+  },
   // --- community_info member capabilities rundown (agent/tools/info.ts) ---
   /**
    * The member-tier segment of `community_info`/`/help`/`!help`'s capability

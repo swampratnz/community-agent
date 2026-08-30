@@ -531,6 +531,62 @@ export async function notifyProjectRemoved(
 }
 
 /**
+ * Best-effort resolution DM to a member whose published interests an admin
+ * clears via `remove_interests` (issue #1230) — modeled line-for-line on
+ * `notifyProjectRemoved` above, the admin-moderation counterpart for the
+ * *other* member-authored, community-wide-visible content surface
+ * (`member_interests`, discoverable via `who_is_into`). Same shape:
+ * fire-and-forget, `.catch(logger.warn)`, never blocks or changes
+ * `remove_interests`'s own reported outcome. The base text is a static,
+ * translated catalogue entry (`strings/notices.ts`'s `interestsRemovedMessage`)
+ * rather than an inline ternary, since there is no per-row content to select
+ * wording by — only a fixed neutral removal notice. Only called when the
+ * admin supplies a `reason` (the tool handler skips this entirely when it's
+ * omitted, so removal stays silent by default). `reason` is an admin-authored,
+ * one-line explanation appended via `truncateForEcho`, as a distinct trailing
+ * clause, never interpolated into the translated base string — same
+ * non-interpolation convention as `notifyProjectRemoved`'s `reason`. Never
+ * persisted: the caller keeps it out of `audited()`'s params. Honours the
+ * target's standing `'mi'` language preference, same degrade-to-`'auto'`-on-
+ * failure shape as every sibling in this file. A `WindowClosedError` rejection
+ * is queued via `queueForWindowReopen` at `'low'` priority instead of
+ * logged-and-dropped, same #644 recovery every sibling gets. Exported
+ * separately so it's unit-testable without the MCP tool-call transport, same
+ * convention as every sibling notify function in this file.
+ *
+ * `getRespStyle` (issue #1230), same shape/rationale as `notifyProjectRemoved`
+ * above: appended as the LAST parameter (after `reason`) rather than right
+ * after `getLangPref`, so external positional call sites are unaffected by
+ * this change's frozen two-file scope.
+ */
+export async function notifyInterestsRemoved(
+  adapter: PlatformAdapter,
+  userId: string,
+  platform: Platform,
+  getLangPref: typeof getLanguagePreference = getLanguagePreference,
+  reason?: string,
+  getRespStyle: typeof getResponseStyle = getResponseStyle,
+): Promise<void> {
+  const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
+  const style: ResponseStyle | undefined =
+    lang === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
+  const base = notice('interestsRemovedMessage', { language: lang, style });
+  const echoedReason = reason ? truncateForEcho(reason) : null;
+  const message = echoedReason ? `${base} ${lang === 'mi' ? 'Take' : 'Reason'}: "${echoedReason}"` : base;
+  await adapter.sendDirectMessage(userId, message).catch((err) => {
+    if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+      adapter.queueForWindowReopen(userId, message, 'low');
+      logger.warn(
+        { userId: hashId(userId), platform },
+        "Interests removal DM: recipient's window is closed, queued for reopen",
+      );
+      return;
+    }
+    logger.warn({ err, userId: hashId(userId) }, 'Interests removal DM failed');
+  });
+}
+
+/**
  * Best-effort confirmation DM to a member when their suggest_improvement
  * submission is resolved — closes the "suggestion box into the void" gap
  * (issue #116), mirroring notifyMemberApproved's shape exactly: fire-and-
