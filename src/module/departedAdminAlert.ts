@@ -2,8 +2,9 @@ import { config } from '@swampratnz/agent-base/config.js';
 import { logger } from '@swampratnz/agent-base/logger.js';
 import { listAdminRoster, type AdminRosterEntry } from '@swampratnz/agent-base/storage/repository.js';
 import { startTrackedJob } from '@swampratnz/agent-base/jobs/trackedJob.js';
-import { initialUsageAlertTracker, stepUsageAlertTracker } from '@swampratnz/agent-base/usageAlert.js';
 import { alertSuperAdmins as sendSuperAdminAlert } from '@swampratnz/agent-base/notifications.js';
+import { persistedCrossingLatch, type CrossingLatchDeps } from './crossingLatch.js';
+import { DEPARTED_ADMIN_ALERT_POLICY_KEY } from './storage/policies.js';
 import type { JobSpec } from '@swampratnz/agent-base/jobs/types.js';
 import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
@@ -23,31 +24,45 @@ export function formatDepartedAdminAlertMessage(count: number): string {
 
 /**
  * Builds the default `runOnce` for `startDepartedAdminAlert`, closing a
- * threshold-1 latch (reusing `usageAlert.ts`'s own pure `stepUsageAlertTracker`
- * by import rather than copy, per the adversarial-review note on issue #472)
- * over one `listAdminRoster()` call per tick. `listRoster` is injectable so
- * tests can drive the latch across ticks without a real DB — production
- * always uses the default, already-exported `listAdminRoster`.
+ * threshold-1 latch (`persistedCrossingLatch`, shared verbatim by every
+ * sibling alert — issue #1198; the original in-memory shape here, per the
+ * adversarial-review note on issue #472, is what every later sibling copied)
+ * over one `listAdminRoster()` call per tick. `listRoster`/`latchDeps` are
+ * injectable so tests can drive the latch across ticks without a real DB —
+ * production always uses the defaults (the exported `listAdminRoster` and
+ * the real policy store).
  *
- * `stepUsageAlertTracker(tracker, count, 1)` gives exactly the latch this
- * signal needs: `count < 1` (i.e. `count === 0`) is "not crossed" (silently
- * re-arms), any `count >= 1` is "crossed" and alerts only on the tick that
- * first left the `count === 0` state — a partial decrease (e.g. 3 -> 1,
- * never reaching 0) never re-arms, since it never satisfies `count < 1`.
+ * The underlying `stepUsageAlertTracker(tracker, count, 1)` gives exactly the
+ * latch this signal needs: `count < 1` (i.e. `count === 0`) is "not crossed"
+ * (silently re-arms), any `count >= 1` is "crossed" and alerts only on the
+ * tick that first left the `count === 0` state — a partial decrease (e.g.
+ * 3 -> 1, never reaching 0) never re-arms, since it never satisfies
+ * `count < 1`. Unlike the pre-#1198 in-memory-only latch, this state now
+ * survives a process restart: see `persistedCrossingLatch`'s own doc
+ * comment.
+ *
+ * `alertSuperAdmins` is now awaited (previously `void alertSuperAdmins(...)`,
+ * fire-and-forget) so the persisted marker write can follow "the fan-out
+ * returned", the same ordering every sibling alert uses. This changes
+ * nothing about actual DM delivery timing: `alertSuperAdmins` fires each
+ * recipient's `sendDirectMessage` without awaiting it internally (per-
+ * recipient isolation, `notifications.ts`), so its own returned promise was
+ * already settling on the same tick whether or not a caller awaited it.
  */
 export function makeDefaultDepartedAdminAlertRun(
   adapters: readonly PlatformAdapter[],
   listRoster: () => Promise<AdminRosterEntry[]> = listAdminRoster,
+  latchDeps?: CrossingLatchDeps,
 ): () => Promise<void> {
-  let tracker = initialUsageAlertTracker();
+  const latch = persistedCrossingLatch(DEPARTED_ADMIN_ALERT_POLICY_KEY, latchDeps);
   return async () => {
     const roster = await listRoster();
     const count = roster.filter((entry) => entry.leftServer).length;
-    const step = stepUsageAlertTracker(tracker, count, 1);
-    tracker = step.tracker;
+    const step = await latch.step(count);
     if (step.shouldAlert) {
       logger.warn({ count }, 'Departed-admin alert: departed-but-still-admin count crossed zero');
-      void alertSuperAdmins(adapters, formatDepartedAdminAlertMessage(count));
+      await alertSuperAdmins(adapters, formatDepartedAdminAlertMessage(count));
+      await step.commit();
     }
   };
 }

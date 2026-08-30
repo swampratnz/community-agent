@@ -1,7 +1,6 @@
 import { config } from '@swampratnz/agent-base/config.js';
 import { logger } from '@swampratnz/agent-base/logger.js';
 import { startTrackedJob } from '@swampratnz/agent-base/jobs/trackedJob.js';
-import { initialUsageAlertTracker, stepUsageAlertTracker } from '@swampratnz/agent-base/usageAlert.js';
 import {
   listAdmins,
   listRoster,
@@ -9,6 +8,8 @@ import {
   type RosterEntry,
 } from '@swampratnz/agent-base/storage/repository.js';
 import { alertAdmins } from './appealStaleAlert.js';
+import { persistedCrossingLatch, type CrossingLatchDeps } from './crossingLatch.js';
+import { ROSTER_STALE_ALERT_POLICY_KEY } from './storage/policies.js';
 import type { JobSpec } from '@swampratnz/agent-base/jobs/types.js';
 import type { Platform, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
@@ -88,33 +89,33 @@ function gatedPlatforms(adapters: readonly PlatformAdapter[]): Platform[] {
 
 /**
  * Builds the default `runOnce` for `startRosterStaleAlert`: a guild-wide
- * crossing latch (`stepUsageAlertTracker`, imported by reference exactly
- * like every sibling alert) over the COMBINED count, across every
- * `'gated'`-mode platform, of `not_members` rows whose `joinedAt` age is at
- * least `ROSTER_STALE_ALERT_THRESHOLD_HOURS`, computed fresh each tick from
- * a bounded per-platform `listRoster` scan. Alerts once on the tick the
- * stale count first leaves 0, stays silent while it remains >=1 (including a
+ * crossing latch (`persistedCrossingLatch`, shared verbatim by every sibling
+ * alert — issue #1198) over the COMBINED count, across every `'gated'`-mode
+ * platform, of `not_members` rows whose `joinedAt` age is at least
+ * `ROSTER_STALE_ALERT_THRESHOLD_HOURS`, computed fresh each tick from a
+ * bounded per-platform `listRoster` scan. Alerts once on the tick the stale
+ * count first leaves 0, stays silent while it remains >=1 (including a
  * partial decrease that never reaches 0), and re-arms once every stale guest
- * is added as a member (or leaves) and the count returns to 0 — the
- * identical semantics every sibling alert ships with, accepted here as the
- * same explicit tradeoff for needing zero persistence. `listNotMembers`/
- * `listAdminIdentities` are injectable so tests can drive the latch across
- * ticks with no real DB and no timers.
+ * is added as a member (or leaves) and the count returns to 0. Unlike the
+ * pre-#1198 in-memory-only latch, this state now survives a process restart:
+ * see `persistedCrossingLatch`'s own doc comment. `listNotMembers`/
+ * `listAdminIdentities`/`latchDeps` are injectable so tests can drive the
+ * latch across ticks with no real DB and no timers.
  */
 export function makeDefaultRosterStaleAlertRun(
   adapters: readonly PlatformAdapter[],
   listNotMembers: (platform: Platform) => Promise<RosterEntry[]> = (platform) =>
     listRoster(platform, 'not_members', ROSTER_STALE_ALERT_SCAN_DAYS, ROSTER_STALE_ALERT_SCAN_LIMIT),
   listAdminIdentities: () => Promise<AdminIdentity[]> = listAdmins,
+  latchDeps?: CrossingLatchDeps,
 ): () => Promise<void> {
-  let tracker = initialUsageAlertTracker();
+  const latch = persistedCrossingLatch(ROSTER_STALE_ALERT_POLICY_KEY, latchDeps);
   return async () => {
     const now = Date.now();
     const platforms = gatedPlatforms(adapters);
     const rowsByPlatform = await Promise.all(platforms.map((platform) => listNotMembers(platform)));
     const stale = staleNotMembers(rowsByPlatform.flat(), now);
-    const step = stepUsageAlertTracker(tracker, stale.length, 1);
-    tracker = step.tracker;
+    const step = await latch.step(stale.length);
     if (!step.shouldAlert) return;
 
     const oldestAgeHours = Math.floor(
@@ -129,6 +130,7 @@ export function makeDefaultRosterStaleAlertRun(
       formatRosterStaleAlertMessage(stale.length, oldestAgeHours),
       listAdminIdentities,
     );
+    await step.commit();
   };
 }
 

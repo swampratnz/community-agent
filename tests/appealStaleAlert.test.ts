@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 // src/index.ts registers the pack in production, so a test whose import
 // graph evaluates a notice consumer registers it explicitly here, first.
 import './support/registerNotices.js';
+import { fakePolicyStore } from './support/fakePolicyStore.js';
 import type { OutgoingMessage, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
@@ -27,6 +28,7 @@ const {
   startAppealStaleAlert,
 } = await import('../src/module/appealStaleAlert.js');
 const { WindowClosedError } = await import('@swampratnz/agent-base/platforms/whatsapp/cloudAdapter.js');
+const { APPEAL_STALE_ALERT_POLICY_KEY } = await import('../src/module/storage/policies.js');
 
 type Platform = 'discord' | 'whatsapp';
 type ModerationAppeal = {
@@ -177,7 +179,12 @@ test('SECURITY: the crossing-tick alert DM contains no appeal id, user id/name, 
   ];
   const listOpenAppeals = async () => staleAppeals;
   const listAdminIdentities = async () => admins([{}]);
-  const runOnce = makeDefaultAppealStaleAlertRun([adapter], listOpenAppeals, listAdminIdentities);
+  const runOnce = makeDefaultAppealStaleAlertRun(
+    [adapter],
+    listOpenAppeals,
+    listAdminIdentities,
+    fakePolicyStore(),
+  );
 
   await runOnce();
 
@@ -202,7 +209,12 @@ test('makeDefaultAppealStaleAlertRun: an open-appeals set with no appeal older t
     appeal({ ageHours: APPEAL_STALE_ALERT_THRESHOLD_HOURS - 1 }),
   ];
   const listAdminIdentities = async () => admins([{}]);
-  const runOnce = makeDefaultAppealStaleAlertRun([adapter], listOpenAppeals, listAdminIdentities);
+  const runOnce = makeDefaultAppealStaleAlertRun(
+    [adapter],
+    listOpenAppeals,
+    listAdminIdentities,
+    fakePolicyStore(),
+  );
 
   await runOnce();
 
@@ -215,7 +227,12 @@ test('makeDefaultAppealStaleAlertRun: alerts exactly once on the tick the stale 
   const listOpenAppeals = async () =>
     Array.from({ length: staleCount }, (_, i) => appeal({ ageHours: 100, id: i }));
   const listAdminIdentities = async () => admins([{}]);
-  const runOnce = makeDefaultAppealStaleAlertRun([adapter], listOpenAppeals, listAdminIdentities);
+  const runOnce = makeDefaultAppealStaleAlertRun(
+    [adapter],
+    listOpenAppeals,
+    listAdminIdentities,
+    fakePolicyStore(),
+  );
 
   await runOnce(); // 0 -> no alert
   assert.equal(dms.length, 0);
@@ -239,7 +256,12 @@ test('makeDefaultAppealStaleAlertRun: the latch re-arms once the stale count ret
   const listOpenAppeals = async () =>
     Array.from({ length: staleCount }, (_, i) => appeal({ ageHours: 100, id: i }));
   const listAdminIdentities = async () => admins([{}]);
-  const runOnce = makeDefaultAppealStaleAlertRun([adapter], listOpenAppeals, listAdminIdentities);
+  const runOnce = makeDefaultAppealStaleAlertRun(
+    [adapter],
+    listOpenAppeals,
+    listAdminIdentities,
+    fakePolicyStore(),
+  );
 
   await runOnce(); // 0 -> 2, crosses
   assert.equal(dms.length, 1);
@@ -251,6 +273,81 @@ test('makeDefaultAppealStaleAlertRun: the latch re-arms once the stale count ret
   staleCount = 1;
   await runOnce(); // crosses again
   assert.equal(dms.length, 2, 'a fresh crossing after returning to 0 fires a second, distinct alert');
+});
+
+// --- persisted latch (issue #1198) ------------------------------------------
+
+test('makeDefaultAppealStaleAlertRun: writes the active marker to the policy store only AFTER the alertAdmins fan-out returns, on the tick that crosses', async () => {
+  const { adapter } = makeAdapter();
+  const store = fakePolicyStore();
+  const listOpenAppeals = async () => [appeal({ ageHours: 100 })];
+  const listAdminIdentities = async () => admins([{}]);
+  const runOnce = makeDefaultAppealStaleAlertRun([adapter], listOpenAppeals, listAdminIdentities, store);
+
+  assert.equal(store.written.length, 0, 'no write before the tick runs');
+  await runOnce();
+
+  assert.deepEqual(store.written, [
+    { key: APPEAL_STALE_ALERT_POLICY_KEY, value: 'true', updatedBy: 'system' },
+  ]);
+});
+
+test('makeDefaultAppealStaleAlertRun: restart-safety — a fresh factory seeded with the active marker AND a still-stale count on its first tick does not re-alert, and leaves the marker active', async () => {
+  const { adapter, dms } = makeAdapter();
+  const store = fakePolicyStore({ [APPEAL_STALE_ALERT_POLICY_KEY]: 'true' });
+  const listOpenAppeals = async () => [appeal({ ageHours: 100 }), appeal({ ageHours: 200, id: 2 })];
+  const listAdminIdentities = async () => admins([{}]);
+  const runOnce = makeDefaultAppealStaleAlertRun([adapter], listOpenAppeals, listAdminIdentities, store);
+
+  await runOnce();
+  assert.equal(dms.length, 0, 'a restart mid-backlog must not re-fire a duplicate DM');
+
+  await runOnce();
+  assert.equal(dms.length, 0, 'a later tick with the same still-stale backlog must not fire either');
+  assert.equal(store.written.length, 0, 'the already-active marker is never rewritten while nothing crosses');
+});
+
+test('makeDefaultAppealStaleAlertRun: re-arm survives a restart — the marker clears to "" when the count returns to 0, and a fresh factory alerts again on the next crossing', async () => {
+  const { adapter, dms } = makeAdapter();
+  const store = fakePolicyStore({ [APPEAL_STALE_ALERT_POLICY_KEY]: 'true' });
+  const listAdminIdentities = async () => admins([{}]);
+
+  const firstProcess = makeDefaultAppealStaleAlertRun([adapter], async () => [], listAdminIdentities, store);
+  await firstProcess(); // count drops to 0 -> re-arm
+  assert.equal(dms.length, 0);
+  assert.deepEqual(store.written, [{ key: APPEAL_STALE_ALERT_POLICY_KEY, value: '', updatedBy: 'system' }]);
+
+  // A brand-new process (fresh in-memory tracker), seeded from the SAME
+  // store the previous process just cleared.
+  const secondProcess = makeDefaultAppealStaleAlertRun(
+    [adapter],
+    async () => [appeal({ ageHours: 100 })],
+    listAdminIdentities,
+    store,
+  );
+  await secondProcess();
+  assert.equal(dms.length, 1, 'a fresh crossing after the persisted re-arm alerts again');
+  assert.deepEqual(store.written, [
+    { key: APPEAL_STALE_ALERT_POLICY_KEY, value: '', updatedBy: 'system' },
+    { key: APPEAL_STALE_ALERT_POLICY_KEY, value: 'true', updatedBy: 'system' },
+  ]);
+});
+
+test('SECURITY: makeDefaultAppealStaleAlertRun never threads a member/admin identifier into updatePolicy — the actor is always the fixed "system" string', async () => {
+  const { adapter } = makeAdapter();
+  const store = fakePolicyStore();
+  const secretAdminId = 'admin-should-never-be-the-actor';
+  const listOpenAppeals = async () => [appeal({ ageHours: 100 })];
+  const listAdminIdentities = async () => admins([{ platformUserId: secretAdminId }]);
+  const runOnce = makeDefaultAppealStaleAlertRun([adapter], listOpenAppeals, listAdminIdentities, store);
+
+  await runOnce();
+
+  assert.ok(store.written.length > 0);
+  for (const write of store.written) {
+    assert.equal(write.updatedBy, 'system');
+    assert.notEqual(write.updatedBy, secretAdminId);
+  }
 });
 
 test('alertAdmins: every admin returned by listAdminIdentities with a connected adapter receives exactly one DM', async () => {
