@@ -265,10 +265,15 @@ test('makeDefaultRosterStaleAlertRun: a guest added as a member before crossing 
 test('makeDefaultRosterStaleAlertRun: combines the stale count across every gated platform into one crossing latch, and reports the oldest age across all of them', async () => {
   const { adapter: discordAdapter } = makeAdapter('discord');
   const { adapter: whatsappAdapter, dms: whatsappDms } = makeAdapter('whatsapp');
-  const listNotMembers = async (platform: Platform) =>
-    platform === 'discord'
-      ? [rosterRow({ ageHours: 200, userId: 'discord-guest' })]
-      : [rosterRow({ ageHours: 300, userId: 'whatsapp-guest' })];
+  // Built EAGERLY, before runOnce() captures its clock — same reason as the
+  // fixture above and in tests/appealStaleAlert.test.ts (PR #1071's flake).
+  // Dating these inside the awaited callback stamps them LATER than the job's
+  // own `now`, so the measured age lands just under 300h and Math.floor
+  // renders "299h". Sub-millisecond on an idle machine; a loaded CI runner
+  // deschedules between the two often enough to fail (it did, on this PR).
+  const discordRows = [rosterRow({ ageHours: 200, userId: 'discord-guest' })];
+  const whatsappRows = [rosterRow({ ageHours: 300, userId: 'whatsapp-guest' })];
+  const listNotMembers = async (platform: Platform) => (platform === 'discord' ? discordRows : whatsappRows);
   const listAdminIdentities = async () => admins([{ platform: 'whatsapp', platformUserId: 'admin-0' }]);
   const runOnce = makeDefaultRosterStaleAlertRun(
     [discordAdapter, whatsappAdapter],
