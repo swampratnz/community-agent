@@ -1047,12 +1047,12 @@ export const socialTools = [
     name: 'remove_interests',
     description:
       "Clear a member's published interests (set via set_my_interests), regardless of who published them — " +
-      'the admin-moderation counterpart to set_my_interests\' self-service \'clear\' (which only the member ' +
+      "the admin-moderation counterpart to set_my_interests' self-service 'clear' (which only the member " +
       "themselves can do), for a scam link, harassment, or spam string in someone's who_is_into-discoverable " +
-      'interests text. Scoped to a single platform user id on the caller\'s own platform — no separate ' +
+      "interests text. Scoped to a single platform user id on the caller's own platform — no separate " +
       'platform argument, same shape as clear_warnings/block_user. Reports plainly (not an error) if the ' +
       `target has no published interests to clear. Optional reason (max ${SUGGESTION_RESOLUTION_ECHO_CHARS} ` +
-      "characters) sends the target a one-line resolution DM; omit it to clear silently (e.g. for spam/abuse " +
+      'characters) sends the target a one-line resolution DM; omit it to clear silently (e.g. for spam/abuse ' +
       'where alerting the actor is undesirable). Never echoes the removed interests text back — not in the ' +
       'confirmation, not in the audit log. Requires confirmation. Admin only.',
     minTier: 'admin',
@@ -1077,22 +1077,33 @@ export const socialTools = [
       assertAtLeast(caller.role, 'admin', 'remove_interests');
       return requireConfirm(`clear published interests for ${args.targetUserId}`, 'admin', async () => {
         // Resolved inside run() so a no-op clear never produces a
-        // notification, and so `cleared` is never trusted from anything but
-        // this admin-tier repository write's own return value.
-        const state = { cleared: false };
+        // notification, and so `hadInterests` is never trusted from anything
+        // but this admin-tier repository read's own return value.
+        // setMemberInterests('clear') unconditionally DELETEs and always
+        // reports { cleared: true } regardless of whether a row existed
+        // (the same behaviour set_my_interests('clear') already relies on),
+        // so whether there was anything to remove is checked FIRST via
+        // getPublishedInterestsForOwners — only its Map membership is read,
+        // never the interests text value it carries (SECURITY: the removed
+        // text must never re-enter this flow).
+        const state = { hadInterests: false };
         const { success, result } = await audited({
           actionKind: 'remove_interests',
           targetUserId: args.targetUserId,
           // reason is deliberately excluded — it only ever reaches the one DM
           // below, same non-persistence convention as remove_project's. The
           // removed interests text itself is never captured anywhere in this
-          // flow: setMemberInterests('clear') returns only { cleared }, never
-          // the prior text, so there is nothing to accidentally include here.
+          // flow — only checked for existence, never read — so there is
+          // nothing to accidentally include here.
           params: { targetUserId: args.targetUserId },
           run: async () => {
-            const { cleared } = await setMemberInterests(caller.platform, args.targetUserId, 'clear');
-            state.cleared = cleared;
-            return cleared
+            const before = await getPublishedInterestsForOwners([
+              { platform: caller.platform, userId: args.targetUserId },
+            ]);
+            const hadInterests = before.has(`${caller.platform}:${args.targetUserId}`);
+            await setMemberInterests(caller.platform, args.targetUserId, 'clear');
+            state.hadInterests = hadInterests;
+            return hadInterests
               ? `cleared published interests for ${args.targetUserId}`
               : `${args.targetUserId} has no published interests to remove`;
           },
@@ -1102,14 +1113,14 @@ export const socialTools = [
         // AND something was actually cleared; omitting a reason keeps the
         // removal silent (useful for spam/abuse), and a no-op clear has
         // nothing to notify about.
-        if (success && state.cleared && args.reason) {
+        if (success && state.hadInterests && args.reason) {
           const target = adapterFor(caller.platform);
           if (target) {
             await notifyInterestsRemoved(target, args.targetUserId, caller.platform, undefined, args.reason);
           }
         }
         if (!success) return `Failed: ${result}`;
-        return state.cleared
+        return state.hadInterests
           ? `Cleared published interests for ${args.targetUserId}.`
           : `${args.targetUserId} has no published interests to remove.`;
       });
