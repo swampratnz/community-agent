@@ -155,6 +155,19 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   Only triggers on a true zero-hit semantic result — a weak-but-present match
   (which `find_knowledge` already surfaces, unlike `knowledge_search`) never
   invokes it, so the common path is unchanged.
+- **`find_knowledge` now shows the same dead-link/citation note every other
+  knowledge-serving surface already renders.** (#1206) `find_knowledge`'s
+  hits already carried the source/freshness fields (`sourceUrl`,
+  `sourceUnreachable`, `verifiedAt`, …) `knowledge_search`/`/kb` and
+  `most_helpful_knowledge` use to show a `⚠️ link appears dead` or
+  `source: … · last verified …` line, but its own renderer never called the
+  shared formatter — so an admin using `find_knowledge` specifically to
+  locate an entry flagged by the weekly link-rot checker got a worse result
+  than a plain member's `knowledge_search` reply for the same entry. Each
+  line now appends the identical note, in the identical wording, that
+  `knowledge_search` would show. An entry with no source, that is fresh and
+  has never been link-checked, renders unchanged. No new tool, query, or
+  data access — this only renders fields already fetched.
 - **A knowledge search with no results now also offers to loop in a human
   admin, not just a `suggest_knowledge` nudge.** (#1196) #1180 fixed the "you
   found the answer elsewhere" branch of `knowledge_search`'s (and `/kb`'s)
