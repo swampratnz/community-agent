@@ -38,6 +38,25 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   alert for a backlog that hadn't actually changed. That state now survives a
   restart, so admins see one alert per real crossing, not one per crossing
   plus one per redeploy in between.
+- **Sharing a new project with "looking for collaborators" now proactively
+  reaches out to a matching opted-in helper, instead of just sitting in the
+  showcase until someone happens to browse it.** (#1200) `share_project`'s
+  `seekingCollaborators` flag and `find_helper` have both existed for a
+  while, but only in one direction each: `find_helper` pushes to a member
+  who's opted in via `set_helper_availability`, while a fresh
+  seeking-collaborators share was pull-only — visible in `list_projects`,
+  but nothing proactively told anyone. A brand-new share with
+  `seekingCollaborators: true` now also runs `find_helper`'s own
+  match-and-notify path against the project description, and sends AT MOST
+  ONE direct message to the single best-matching opted-in helper — never a
+  broadcast, and the reply to the sharer never says who (if anyone) was
+  reached, only that someone was. Shares the same weekly per-helper
+  notification budget `find_helper` already uses rather than doubling it.
+  Editing an existing project, removing one, sharing without
+  `seekingCollaborators`, or a server with member-to-member help turned off
+  are all unaffected. No new tool, config, or data access — it reuses
+  `find_helper`'s existing matching, capping, and DM-send machinery from a
+  second call site.
 
 ## 2026-08-29
 

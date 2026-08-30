@@ -1220,6 +1220,31 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   never appears on the `matched`/`dailyCap`/`disabled` outcomes, and a
   zero-suggestion result renders byte-identical to the pre-#1178 `noMatch`
   text.
+- **`share_project` seeking-collaborators push** (issue #1200): the mirror of
+  #1178 in the other direction. #1178 gave `find_helper`'s no-match branch a
+  fallback into the project showcase; this gives a brand-new
+  `seekingCollaborators: true` share the push half, so it no longer sits
+  pull-only in `list_projects` until someone happens to browse it. **A second
+  call site for `find_helper`'s machinery, not a second mechanism**: the same
+  `findHelperCandidates` match, the same `recordHelperNotificationIfUnderCap`
+  claim against the SAME `FIND_HELPER_WEEKLY_LIMIT_PER_HELPER` budget (shared
+  across both triggers, never doubled — pinned by a test that seeds the cap
+  and asserts this path is refused by it), the same `untrusted()` quarantine
+  on the description reaching a different member's DM, and the same
+  `WindowClosedError`/`queueForWindowReopen` fallback. **At most one DM per
+  share**, to the first candidate under their cap, loop stops there; a
+  candidate on a platform with no registered adapter is skipped WITHOUT
+  consuming a cap slot. **Consent basis is unchanged**: candidates come only
+  from explicitly opted-in `member_interests`/`helper_availability` rows —
+  the project text is used solely as the similarity-search string, never to
+  infer interest. **No disclosure to the sharer**: the reply carries a fixed,
+  content-free sentence derived from a boolean, never the matched helper's
+  platform, id or display name, mirroring `find_helper`'s own non-leak
+  discipline and pinned by a dedicated SECURITY test. **Create-only**: an
+  edit, a `remove: true`, a share without the flag, or the feature disabled
+  all run zero candidate query and zero DM, and return output byte-identical
+  to before — including #1190's duplicate-nudge `similar` reply, which never
+  carries the notified line.
 - **Project connection requests** (`request_project_connection`,
   `project_connection_requests`, issue #840): the action counterpart to
   `member_projects.seeking_collaborators` (#834) — a member who sees the 🤝
