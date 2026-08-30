@@ -758,6 +758,34 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   `list_knowledge_candidates` can still show an admin what was retracted; no
   CONFIRM gate, matching `decline_knowledge_candidate`'s own low-blast-radius
   status-flip precedent.
+- **Suggestion withdrawal** (`withdraw_suggestion`, issue #1243): the last of
+  the three member content-submission flows to get self-service retraction —
+  `report_content`/`withdraw_report` and `suggest_knowledge`/
+  `withdraw_knowledge_tip` already had it. Unlike those two,
+  `withdrawOwnReports`/`withdrawOwnKnowledgeTips` are base-owned functions
+  that flip a base table's own `status` column directly; the base
+  `suggestions.status` CHECK constraint has no `'withdrawn'` value and
+  widening it is an agent-base change, so this does not mirror them
+  byte-for-byte. Instead a module-owned table, `suggestion_withdrawals`
+  (`suggestion_id INTEGER PRIMARY KEY`, no FK to the base `suggestions` table
+  — same no-hard-dependency stance as `access_request_resolutions`, issue
+  #1239), sits BESIDE the base row and is only ever consulted, never
+  mutated into it. `MEMBER_TOOLS` (member+, guests refused), no arguments —
+  the only inputs are the caller's own resolved `platform`/`userId`, reaching
+  `listOwnSuggestions` unchanged, so there is no caller-supplied id and no
+  id-guessing surface, pinned by a `SECURITY:` test. Only the caller's own
+  still-`'new'` suggestions are ever recorded into the withdrawal table; an
+  already-`reviewed`/`declined`/`done` suggestion is untouched, matching
+  `withdraw_knowledge_tip`'s own "can't retroactively alter a completed
+  review" posture. Non-destructive and idempotent (`ON CONFLICT DO NOTHING`),
+  so `list_suggestions` can still show an admin what was retracted (tagged
+  `, withdrawn by member` alongside the untouched base `status`) rather than
+  losing the row; `resolve_suggestion` consults the same table BEFORE calling
+  the base `resolveSuggestion` and refuses cleanly (no status change, no
+  resolution DM) against a withdrawn id, pinned by a `SECURITY:` test, so an
+  admin can never resolve (and DM the submitter about) a suggestion the
+  member already retracted. No CONFIRM gate, matching
+  `decline_knowledge_candidate`'s own low-blast-radius status-flip precedent.
 - **Knowledge gaps** (`knowledge_gaps`, issue #208): the `knowledge_search`
   handler persists a below-floor miss — a call that came back with hits but
   none cleared `KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD` — so admins can see
