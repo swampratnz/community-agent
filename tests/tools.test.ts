@@ -12881,19 +12881,23 @@ test(
 test(
   'SECURITY: add_member still succeeds when the access-request-resolution metric write fails — the write must never be able to block the resolution action (issue #1239 acceptance criterion 3)',
   { skip },
-  async () => {
+  async (t) => {
     const targetUserId = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
     const conversationId = `convo-add-member-metricfail-${targetUserId}`;
     await clearAccessRequest('discord', targetUserId);
     await recordAccessRequest({ platform: 'discord', userId: targetUserId, userName: 'tester' });
 
-    // Simulate the metric write failing without touching add_member's real
-    // dependencies: temporarily rename the table it writes to, so
-    // recordAccessRequestResolution's INSERT throws exactly as it would on
-    // any other DB error, and restore it in `finally` regardless of outcome.
-    await pool.query(
-      'ALTER TABLE access_request_resolutions RENAME TO access_request_resolutions_test_hidden',
-    );
+    // Simulate the metric write failing without touching real DB state:
+    // intercept only recordAccessRequestResolution's INSERT and reject it,
+    // passing every other query through to the real pool.query untouched.
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && sql.includes('INSERT INTO access_request_resolutions')) {
+        return Promise.reject(new Error('metric write unavailable'));
+      }
+      return (realQuery as (...args: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+
     try {
       const adapter = stubAdapter(async () => {});
       const caller = {
@@ -12920,9 +12924,6 @@ test(
         'add_member still reports success even though the metric write behind it failed',
       );
     } finally {
-      await pool.query(
-        'ALTER TABLE access_request_resolutions_test_hidden RENAME TO access_request_resolutions',
-      );
       await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
         targetUserId,
       ]);
@@ -20239,31 +20240,33 @@ test(
 test(
   'SECURITY: decline_access_request still succeeds when the access-request-resolution metric write fails — the write must never be able to block the resolution action (issue #1239 acceptance criterion 3)',
   { skip },
-  async () => {
+  async (t) => {
     const admin = `${RUN}-decline-access-metricfail-admin`;
     const guest = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
     await clearAccessRequest('discord', guest);
     await recordAccessRequest({ platform: 'discord', userId: guest, userName: 'tester' });
 
-    await pool.query(
-      'ALTER TABLE access_request_resolutions RENAME TO access_request_resolutions_test_hidden',
+    // Simulate the metric write failing without touching real DB state:
+    // intercept only recordAccessRequestResolution's INSERT and reject it,
+    // passing every other query through to the real pool.query untouched.
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && sql.includes('INSERT INTO access_request_resolutions')) {
+        return Promise.reject(new Error('metric write unavailable'));
+      }
+      return (realQuery as (...args: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+
+    const result = await declineAccessRequestHandler('admin', admin).handler({
+      userId: guest,
+      platform: 'discord',
+    });
+    assert.equal(result.isError, false);
+    assert.match(
+      result.content[0]?.text ?? '',
+      /Declined/,
+      'decline_access_request still reports success even though the metric write behind it failed',
     );
-    try {
-      const result = await declineAccessRequestHandler('admin', admin).handler({
-        userId: guest,
-        platform: 'discord',
-      });
-      assert.equal(result.isError, false);
-      assert.match(
-        result.content[0]?.text ?? '',
-        /Declined/,
-        'decline_access_request still reports success even though the metric write behind it failed',
-      );
-    } finally {
-      await pool.query(
-        'ALTER TABLE access_request_resolutions_test_hidden RENAME TO access_request_resolutions',
-      );
-    }
   },
 );
 
