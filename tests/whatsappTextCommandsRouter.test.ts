@@ -2439,9 +2439,11 @@ test('SECURITY: !kbhelpful reply includes KNOWLEDGE_LOW_RATED_CAVEAT_TEXT on exa
 
   await trigger(makeMessage({ text: '!kbhelpful', userId: 'member-1' }));
 
-  const [lowRatedLine, fineLine] = sent[0].text
+  const lines = sent[0].text
     .split('\n')
     .filter((line) => line.includes('LOW_RATED_KBHELPFUL_TEXT') || line.includes('FINE_KBHELPFUL_TEXT'));
+  const lowRatedLine = lines.find((line) => line.includes('LOW_RATED_KBHELPFUL_TEXT'));
+  const fineLine = lines.find((line) => line.includes('FINE_KBHELPFUL_TEXT'));
   assert.ok(
     lowRatedLine?.includes(KNOWLEDGE_LOW_RATED_CAVEAT_TEXT),
     "the low-rated entry's own line must carry the caveat",
@@ -2449,6 +2451,14 @@ test('SECURITY: !kbhelpful reply includes KNOWLEDGE_LOW_RATED_CAVEAT_TEXT on exa
   assert.ok(
     !fineLine?.includes(KNOWLEDGE_LOW_RATED_CAVEAT_TEXT),
     'a sibling entry outside the low-rated set must never carry the caveat',
+  );
+  // SECURITY (issue #1237 acceptance criterion 6): the low-rated entry (id 1,
+  // retrievalCount 9) must sort AFTER the non-low-rated entry (id 2,
+  // retrievalCount 4) despite its higher retrieval count — the core
+  // regression this issue exists to prevent.
+  assert.ok(
+    sent[0].text.indexOf('FINE_KBHELPFUL_TEXT') < sent[0].text.indexOf('LOW_RATED_KBHELPFUL_TEXT'),
+    'the non-low-rated entry must be demoted ahead of the low-rated entry, regardless of retrieval count',
   );
 
   // Issue #1087's byte-identical invariant, extended (issue #1143 acceptance
@@ -2459,7 +2469,11 @@ test('SECURITY: !kbhelpful reply includes KNOWLEDGE_LOW_RATED_CAVEAT_TEXT on exa
     offset: 0,
     limit: MOST_HELPFUL_KNOWLEDGE_FETCH_CAP,
   });
-  const expected = formatMostHelpfulKnowledge(rankKnowledgeByRetrieval(entries, 10), 'auto', new Set([1]));
+  const expected = formatMostHelpfulKnowledge(
+    rankKnowledgeByRetrieval(entries, 10, new Set([1])),
+    'auto',
+    new Set([1]),
+  );
   assert.equal(sent[0].text, expected);
 });
 
@@ -3738,6 +3752,76 @@ test(
       sent[0].text,
       /ENTRY_HIGH/,
       'a non-global-scoped entry must appear — !topknowledge never narrows to scope: global',
+    );
+  },
+);
+
+test(
+  'SECURITY: !topknowledge output and query shape are unaffected by low-rated data — ' +
+    "rankKnowledgeByRetrieval's new lowRatedIds parameter stays optional and unused by this admin-facing " +
+    'raw-signal shortcut, even with the low-rated caveat feature enabled and a flagged entry present ' +
+    '(issue #1237 acceptance criteria 4, 8)',
+  async (t) => {
+    const was = config.behaviour.knowledgeLowRatedCaveatMinUnhelpful;
+    config.behaviour.knowledgeLowRatedCaveatMinUnhelpful = 2;
+    t.after(() => {
+      config.behaviour.knowledgeLowRatedCaveatMinUnhelpful = was;
+    });
+    const rows = [
+      {
+        id: 1,
+        scope: 'global',
+        title: 'Low-rated but heavily retrieved',
+        content: 'ENTRY_LOW_RATED_HIGH_COUNT',
+        created_by_role: 'admin',
+        updated_at: new Date(),
+        retrieval_count: 9,
+        last_retrieved_at: new Date(),
+      },
+      {
+        id: 2,
+        scope: 'global',
+        title: 'Fine but less retrieved',
+        content: 'ENTRY_FINE_LOW_COUNT',
+        created_by_role: 'admin',
+        updated_at: new Date(),
+        retrieval_count: 2,
+        last_retrieved_at: new Date(),
+      },
+    ];
+    let answerFeedbackQueried = false;
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users')) return { rows: [{ role: 'admin' }], rowCount: 0 };
+      if (sql.includes('FROM answer_feedback')) {
+        answerFeedbackQueried = true;
+        return { rows: [{ id: 1 }], rowCount: 0 };
+      }
+      if (sql.includes('retrieval_count') && sql.includes('FROM knowledge')) {
+        return { rows, rowCount: 0 };
+      }
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: throwingRunTurn });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!topknowledge', userId: 'admin-1' }));
+
+    const entries = await listKnowledge({ scope: undefined, offset: 0, limit: TOP_KNOWLEDGE_FETCH_CAP });
+    const expected = formatTopKnowledgeList(rankKnowledgeByRetrieval(entries, 10));
+    assert.equal(
+      sent[0].text,
+      expected,
+      'output must stay byte-identical to the raw-retrieval-count ranking',
+    );
+    assert.ok(
+      sent[0].text.indexOf('ENTRY_LOW_RATED_HIGH_COUNT') < sent[0].text.indexOf('ENTRY_FINE_LOW_COUNT'),
+      'the higher-retrieval-count entry must sort first regardless of low-rated status — no demotion here',
+    );
+    assert.equal(
+      answerFeedbackQueried,
+      false,
+      'list_top_knowledge/!topknowledge must never query low-rated data at all',
     );
   },
 );

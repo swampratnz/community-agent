@@ -77,6 +77,21 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   never echoed back — not in the tool's own reply, not in the audit log.
   Admin only.
 
+### Fixed
+- **`most_helpful_knowledge` (and its `!kbhelpful`/`/kbhelpful` shortcuts)
+  can no longer show a community-flagged-unhelpful answer as the community's
+  "most trusted" one.** (#1237) The ranking behind these surfaces sorted
+  purely by retrieval count, and only checked the low-rated flag afterwards
+  — purely to attach a caveat to whichever entries had already made the
+  top-10 cut. So a heavily-served but actively low-rated answer could sit at
+  #1 with a warning attached, while a healthier, less-retrieved entry never
+  appeared at all. A low-rated entry now sorts after every non-low-rated
+  entry regardless of retrieval count — demoted, never hidden, so it can
+  still appear (last) when nothing better exists on its topic. The
+  admin-only `list_top_knowledge`/`!topknowledge` raw-popularity view is
+  unaffected by design — it exists precisely to show the unfiltered signal
+  for cross-referencing against the separate low-rated audit list.
+
 ## 2026-08-29
 
 ### Added

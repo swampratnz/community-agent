@@ -276,22 +276,29 @@ export const knowledgeMemberTools = [
         offset: 0,
         limit: MOST_HELPFUL_KNOWLEDGE_FETCH_CAP,
       });
-      const ranked = rankKnowledgeByRetrieval(entries, limit);
-      // Member-facing low-rated-answer caveat (issue #1143) — the deferred
-      // remainder of #1127's own scope note: gating and fail-safe behaviour
-      // mirror knowledge_search's identical lookup a few lines above in this
-      // file exactly.
-      const rankedIds = ranked.map((e) => e.id);
+      // Low-rated lookup (issue #1143, ranking widened by #1237) runs over
+      // the FULL fetched superset's ids — before ranking/slicing — so a
+      // community-flagged-unhelpful entry can be demoted out of the top
+      // `limit` rather than the check running too late (on an already-sliced
+      // top-`limit`) to change what makes the cut. The same set then feeds
+      // both the demotion inside rankKnowledgeByRetrieval and
+      // formatMostHelpfulKnowledge's existing per-line caveat below — one
+      // lookup, two uses. Gating and fail-safe behaviour mirror
+      // knowledge_search's identical lookup a few lines above in this file
+      // exactly.
+      const entryIds = entries.map((e) => e.id);
       const lowRatedIds =
-        config.behaviour.knowledgeLowRatedCaveatMinUnhelpful > 0 && rankedIds.length > 0
+        config.behaviour.knowledgeLowRatedCaveatMinUnhelpful > 0 && entryIds.length > 0
           ? await areKnowledgeEntriesLowRated(
-              rankedIds,
+              entryIds,
               config.behaviour.knowledgeLowRatedCaveatMinUnhelpful,
             ).catch((err) => {
               logger.warn({ err }, 'Knowledge low-rated caveat lookup failed; omitting the caveat');
               return new Set<number>();
             })
           : new Set<number>();
+      const ranked = rankKnowledgeByRetrieval(entries, limit, lowRatedIds);
+      const rankedIds = ranked.map((e) => e.id);
       // Member-facing conflict caveat (issue #1167) — the sibling gap #1143
       // (above) and #1127 both left on this exact renderer: every other
       // knowledge-serving surface warns when two shown entries may disagree,

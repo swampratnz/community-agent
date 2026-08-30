@@ -5855,6 +5855,73 @@ test(
   },
 );
 
+test(
+  'SECURITY: list_top_knowledge output and query shape are unaffected by low-rated data — its call site ' +
+    "never passes rankKnowledgeByRetrieval's lowRatedIds parameter, so a flagged-unhelpful entry keeps its " +
+    'raw retrieval-count rank rather than being demoted (issue #1237 acceptance criteria 4, 8)',
+  { skip },
+  async (t) => {
+    const was = config.behaviour.knowledgeLowRatedCaveatMinUnhelpful;
+    config.behaviour.knowledgeLowRatedCaveatMinUnhelpful = 2;
+    t.after(() => {
+      config.behaviour.knowledgeLowRatedCaveatMinUnhelpful = was;
+    });
+    const scope = `${RUN}-top-knowledge-low-rated-unaffected`;
+    const lowRated = await saveKnowledge({
+      title: `top-knowledge-low-rated-${RUN}`,
+      content: 'LOW_RATED_TOP_KNOWLEDGE_TEXT',
+      scope,
+    });
+    const fine = await saveKnowledge({
+      title: `top-knowledge-fine-${RUN}`,
+      content: 'FINE_TOP_KNOWLEDGE_TEXT',
+      scope,
+    });
+    try {
+      await pool.query(`UPDATE knowledge SET retrieval_count = $1 WHERE id = $2`, [10, lowRated.id]);
+      await pool.query(`UPDATE knowledge SET retrieval_count = $1 WHERE id = $2`, [5, fine.id]);
+
+      let answerFeedbackQueried = false;
+      const realQuery = pool.query.bind(pool);
+      t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+        if (typeof sql === 'string' && sql.includes('FROM answer_feedback')) {
+          answerFeedbackQueried = true;
+          return Promise.resolve({ rows: [{ id: lowRated.id }], rowCount: 1 });
+        }
+        return (realQuery as (...args: unknown[]) => unknown)(sql, ...rest);
+      }) as typeof pool.query);
+
+      const adapter = stubAdapter(async () => {});
+      const caller = {
+        platform: 'discord' as const,
+        userId: 'admin-1',
+        userName: 'Admin',
+        role: 'admin' as const,
+        conversationId: 'convo-list-top-knowledge-low-rated-unaffected',
+      };
+      const server = buildToolServer(caller, adapter);
+      const registeredTool = (
+        server.instance as unknown as {
+          _registeredTools: Record<
+            string,
+            { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+          >;
+        }
+      )._registeredTools['list_top_knowledge'];
+
+      const result = await registeredTool.handler({ scope });
+      const text = result.content[0]?.text ?? '';
+      assert.ok(
+        text.indexOf('LOW_RATED_TOP_KNOWLEDGE_TEXT') < text.indexOf('FINE_TOP_KNOWLEDGE_TEXT'),
+        'the higher-retrieval-count entry must sort first regardless of low-rated status — never demoted here',
+      );
+      assert.equal(answerFeedbackQueried, false, 'list_top_knowledge must never query low-rated data at all');
+    } finally {
+      await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[lowRated.id, fine.id]]);
+    }
+  },
+);
+
 test('SECURITY: set_language_preference rejects any language outside {auto,en,mi} at the zod schema boundary (issue #189)', () => {
   const adapter = stubAdapter(async () => {});
   const caller = {
@@ -17727,6 +17794,77 @@ test(
   },
 );
 
+test(
+  'SECURITY: rankKnowledgeByRetrieval demotes a low-rated entry below every non-low-rated entry regardless ' +
+    'of relative retrievalCount, including at the limit boundary — the non-low-rated entry appears in the ' +
+    'final slice where the low-rated one would otherwise have consumed the slot (issue #1237 acceptance ' +
+    'criterion 6, the core regression this issue exists to prevent)',
+  () => {
+    const entries = [
+      { id: 1, retrievalCount: 100, lastRetrievedAt: null }, // low-rated, highest count
+      { id: 2, retrievalCount: 50, lastRetrievedAt: null }, // fine
+      { id: 3, retrievalCount: 1, lastRetrievedAt: null }, // fine, lowest count
+    ];
+    const lowRatedIds = new Set([1]);
+    assert.deepEqual(
+      rankKnowledgeByRetrieval(entries, 10, lowRatedIds).map((e) => e.id),
+      [2, 3, 1],
+      'both fine entries must sort before the low-rated one, which still appears last (demoted, not excluded)',
+    );
+    assert.deepEqual(
+      rankKnowledgeByRetrieval(entries, 2, lowRatedIds).map((e) => e.id),
+      [2, 3],
+      'at the limit boundary, the low-rated entry must be pushed OUT of the slice by the non-low-rated ' +
+        'entries it would otherwise have outranked on retrievalCount alone',
+    );
+  },
+);
+
+test(
+  'rankKnowledgeByRetrieval: two entries with the same low-rated status fall through to the unchanged ' +
+    'retrievalCount → lastRetrievedAt → id order (issue #1237 acceptance criterion 1)',
+  () => {
+    const entries = [
+      { id: 1, retrievalCount: 5, lastRetrievedAt: null },
+      { id: 2, retrievalCount: 9, lastRetrievedAt: null },
+    ];
+    assert.deepEqual(
+      rankKnowledgeByRetrieval(entries, 10, new Set([1, 2])).map((e) => e.id),
+      [2, 1],
+      'both low-rated: falls through to retrievalCount descending, unchanged',
+    );
+    assert.deepEqual(
+      rankKnowledgeByRetrieval(entries, 10, new Set()).map((e) => e.id),
+      [2, 1],
+      'neither low-rated: falls through to retrievalCount descending, unchanged',
+    );
+  },
+);
+
+test(
+  'SECURITY: rankKnowledgeByRetrieval with an empty (default) lowRatedIds set — whether passed explicitly or ' +
+    'omitted entirely — is byte-identical to calling with no low-rated parameter at all, the same ' +
+    'no-op-when-disabled convention #308/#432/#562 established for the sibling comparator (issue #1237 ' +
+    'acceptance criterion 7)',
+  () => {
+    const entries = [
+      { id: 3, retrievalCount: 9, lastRetrievedAt: new Date('2024-02-01T00:00:00Z') },
+      { id: 2, retrievalCount: 9, lastRetrievedAt: null },
+      { id: 1, retrievalCount: 5, lastRetrievedAt: new Date('2024-01-01T00:00:00Z') },
+      { id: 5, retrievalCount: 0, lastRetrievedAt: null },
+      { id: 4, retrievalCount: 0, lastRetrievedAt: null },
+    ];
+    const omitted = rankKnowledgeByRetrieval(entries, 10).map((e) => e.id);
+    const explicitEmpty = rankKnowledgeByRetrieval(entries, 10, new Set()).map((e) => e.id);
+    assert.deepEqual(
+      explicitEmpty,
+      omitted,
+      'an explicit empty set must render byte-identical to omitting it',
+    );
+    assert.deepEqual(omitted, [3, 2, 1, 4, 5], 'and both must match the pre-#1237 ordering exactly');
+  },
+);
+
 const MOST_HELPFUL_KNOWLEDGE_GLOBAL_SCOPE_PREFIX = `${RUN}-most-helpful-knowledge`;
 
 function getMostHelpfulKnowledgeHandler(caller: {
@@ -17963,6 +18101,15 @@ test(
       assert.ok(
         !fineLine?.includes(KNOWLEDGE_LOW_RATED_CAVEAT_TEXT),
         'a sibling entry outside the low-rated set must never carry the caveat',
+      );
+      // SECURITY (issue #1237 acceptance criterion 6): `lowRated` has the
+      // HIGHER retrievalCount (10_000_000 vs. 9_999_999) yet must sort AFTER
+      // `fine` — the demotion runs on the full fetched superset, before the
+      // top-`limit` slice, so a flagged-unhelpful entry can no longer occupy
+      // a top rank it would otherwise have earned on retrieval count alone.
+      assert.ok(
+        rows.indexOf(fineLine ?? '') < rows.indexOf(lowRatedLine ?? ''),
+        'the non-low-rated entry must be demoted ahead of the low-rated entry despite its lower retrieval count',
       );
     } finally {
       await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[lowRated.id, fine.id]]);
