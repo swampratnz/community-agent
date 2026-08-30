@@ -44,6 +44,7 @@ const {
   shareProject,
 } = await import('@swampratnz/agent-base/storage/repository.js');
 const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
+const { resolveRecipientNoticeSelection } = await import('../src/module/agent/tools/helpers.js');
 
 const RUN = `t${Date.now()}${Math.floor(Math.random() * 1e6)}`;
 
@@ -1155,4 +1156,55 @@ test('the findHelperMatchMessage notice actually differs between its base, mi, a
     new RegExp(requesterLabel),
     'the requester label is interpolated into the plain sentence',
   );
+});
+
+// resolveRecipientNoticeSelection's own doc comment (helpers.ts) says its
+// getLangPref/getRespStyle params are injectable "so tests can exercise the
+// fail-safe degrade with an injected rejecting stub, without needing a live
+// DB failure" — this is that test. No DATABASE_URL needed: the injected
+// stubs never touch Postgres, so it runs unconditionally (not gated on
+// `skip`), same as the notice-catalogue rendering test above.
+test("SECURITY: resolveRecipientNoticeSelection degrades to English/'standard' rather than throwing or dropping the send when the recipient's language AND response-style lookups both reject (issue #1245 acceptance criterion 5)", async () => {
+  const rejectingLangPref = async () => {
+    throw new Error('simulated getLanguagePreference failure');
+  };
+  const rejectingRespStyle = async () => {
+    throw new Error('simulated getResponseStyle failure');
+  };
+
+  const result = await resolveRecipientNoticeSelection(
+    'discord',
+    `${RUN}-fail-safe-degrade-recipient`,
+    rejectingLangPref,
+    rejectingRespStyle,
+  );
+
+  assert.deepEqual(
+    result,
+    { language: 'auto', style: 'standard' },
+    'a rejected recipient lookup degrades to English/standard rather than throwing or blocking the send',
+  );
+});
+
+test("resolveRecipientNoticeSelection skips the response-style lookup entirely once the language lookup resolves 'mi' — a rejecting style stub is never even called (issue #1245)", async () => {
+  let styleLookupCalled = false;
+  const miLangPref = async () => 'mi' as const;
+  const rejectingRespStyle = async () => {
+    styleLookupCalled = true;
+    throw new Error('must not be called once language is mi');
+  };
+
+  const result = await resolveRecipientNoticeSelection(
+    'discord',
+    `${RUN}-mi-skips-style-lookup-recipient`,
+    miLangPref,
+    rejectingRespStyle,
+  );
+
+  assert.deepEqual(
+    result,
+    { language: 'mi', style: undefined },
+    "a 'mi' language wins outright and short-circuits the style lookup",
+  );
+  assert.equal(styleLookupCalled, false, 'the style lookup must never run once language is mi');
 });

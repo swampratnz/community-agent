@@ -84,7 +84,7 @@
   "escalationRouter.test.ts": 9,
   "evalAnswersOffCi.test.ts": 2,
   "fetchPageTool.test.ts": 9,
-  "findHelperTools.test.ts": 11,
+  "findHelperTools.test.ts": 12,
   "gatedNotice.router.test.ts": 10,
   "gatedNotice.test.ts": 7,
   "gettingStartedSkill.test.ts": 1,
