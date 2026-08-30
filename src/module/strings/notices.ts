@@ -511,7 +511,7 @@ const NOTICE_ENTRIES = {
     },
     style: {
       plain: (requesterLabel: string) =>
-        `${requesterLabel} shared a project looking for collaborators that matches what you're into.`,
+        `${requesterLabel} shared a project looking for collaborators. It matches what you're into.`,
     },
   },
   /**

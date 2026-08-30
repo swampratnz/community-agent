@@ -38,6 +38,21 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   is the same best-effort DM pattern the bot already uses for approvals and
   other admin actions.
 
+### Fixed
+- **The three peer-to-peer DMs `find_helper`, `share_project`, and
+  `request_project_connection` send to someone else now honour that
+  person's own te reo Māori or plain-language preference.** (#1245) These
+  were the last DMs left hardcoded in English after #1163's own sweep of
+  this tool family — the sweep localized the caller's own reply but
+  explicitly carved out the notification sent to the *other* member
+  (the matched helper or the project owner), and #1200 later copied that
+  gap into a third call site. A member with a standing `'mi'` or `'plain'`
+  preference who is matched as a helper, whose project is flagged as
+  seeking collaborators, or who is approached about their project now
+  gets that one notification in their own preferred language/style, same
+  as every other DM the bot sends them. No new data is collected; the
+  requester's own free text stays exactly as quarantined as before.
+
 ## 2026-08-30
 
 ### Added
