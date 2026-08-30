@@ -210,9 +210,20 @@ test('makeDefaultAccessRequestStaleAlertRun: a pending-access-request set with n
 
 test('makeDefaultAccessRequestStaleAlertRun: an access request exactly at the threshold DOES trigger the alert', async () => {
   const { adapter, dms } = makeAdapter();
-  const listPendingAccessRequests = async () => [
-    accessRequest({ ageHours: ACCESS_REQUEST_STALE_ALERT_THRESHOLD_HOURS }),
-  ];
+  // Built EAGERLY, before runOnce() captures its clock — the same ordering fix
+  // as the stale set above, but load-bearing for a sharper reason: this
+  // fixture sits EXACTLY on the `>=` boundary, so it has no slack at all. The
+  // job reads `Date.now()` first and only then awaits
+  // listPendingAccessRequests(), so a fixture dated inside that lazy callback
+  // is stamped a hair LATER than `now`, making the measured age
+  // `THRESHOLD - delta` — just under the threshold, so the request is not
+  // stale and no DM is sent. The other alert tests carry 30h+ of margin and
+  // only misrender the hour count; this one inverts the very behaviour it
+  // asserts. Building first makes the age `THRESHOLD + delta`, which is
+  // >= threshold on every run. Padding the age instead would destroy the
+  // point of the test, which is the boundary itself.
+  const atThreshold = [accessRequest({ ageHours: ACCESS_REQUEST_STALE_ALERT_THRESHOLD_HOURS })];
+  const listPendingAccessRequests = async () => atThreshold;
   const listAdminIdentities = async () => admins([{}]);
   const runOnce = makeDefaultAccessRequestStaleAlertRun(
     [adapter],
