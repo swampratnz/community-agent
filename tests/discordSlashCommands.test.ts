@@ -170,6 +170,8 @@ function mockPool(
     windowedWarnings?: number;
     /** `listOwnSuggestions`' rows (issue #1018), raw snake_case DB shape. */
     suggestionRows?: PoolRow[];
+    /** `getWithdrawnSuggestionIds`' ids (issue #1243) — which of `suggestionRows`' ids have been withdrawn. */
+    withdrawnSuggestionIds?: number[];
     /** `listOwnReports`' rows (issue #1018), raw snake_case DB shape. */
     reportRows?: PoolRow[];
     /** `listOwnAppeals`' rows (issue #1018), raw snake_case DB shape. */
@@ -307,6 +309,12 @@ function mockPool(
     }
     if (sql.includes('FROM suggestions')) {
       return { rows: opts.suggestionRows ?? [], rowCount: 0 };
+    }
+    // getWithdrawnSuggestionIds (issue #1243) — distinct table name from the
+    // plain 'FROM suggestions' browse above ('FROM suggestion_withdrawals'
+    // never matches that substring, so branch order here doesn't matter).
+    if (sql.includes('FROM suggestion_withdrawals')) {
+      return { rows: (opts.withdrawnSuggestionIds ?? []).map((id) => ({ suggestion_id: id })), rowCount: 0 };
     }
     // countOpenReports/oldestOpenReportAgeDays (issue #1207's /reviewqueue)
     // select a bare count/age aggregate, distinguished from listOwnReports'
@@ -1708,6 +1716,53 @@ test('/mysubmissions returns the same content the shared formatter renders for a
     await adapterDeps(adapter).filtered(formatMySubmissionsText(expectedSuggestions, [], [], [], [], 'auto')),
   );
   assert.match(replies[0].content, /Your suggestions:/);
+});
+
+test('/mysubmissions renders a withdrawn suggestion as [withdrawn], matching the my_submissions tool handler for the same DB state (issue #1243 — the automated-review-requested fix threading getWithdrawnSuggestionIds through this shortcut too)', async (t) => {
+  const createdAt = new Date('2026-08-01T00:00:00Z');
+  mockPool(t, {
+    memberRole: 'member',
+    suggestionRows: [
+      {
+        id: 7,
+        platform: 'discord',
+        user_id: 'member-1',
+        display_name: 'Member One',
+        content: 'Add dark mode',
+        status: 'new',
+        created_at: createdAt,
+        reviewed_by: null,
+        reviewed_at: null,
+      },
+    ],
+    withdrawnSuggestionIds: [7],
+  });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({ commandName: 'mysubmissions', userId: 'member-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  const expectedSuggestions = [
+    {
+      id: 7,
+      platform: 'discord' as const,
+      userId: 'member-1',
+      displayName: 'Member One',
+      content: 'Add dark mode',
+      status: 'new' as const,
+      createdAt,
+      reviewedBy: null,
+      reviewedAt: null,
+    },
+  ];
+  assert.equal(
+    replies[0].content,
+    await adapterDeps(adapter).filtered(
+      formatMySubmissionsText(expectedSuggestions, [], [], [], [], 'auto', new Set([7])),
+    ),
+  );
+  assert.match(replies[0].content, /#7 \[withdrawn\] Add dark mode/);
+  assert.doesNotMatch(replies[0].content, /#7 \[new\]/);
 });
 
 test('SECURITY: a guest caller is rejected on /mysubmissions without any of the five self-scoped reads ever being invoked (issue #1018)', async (t) => {

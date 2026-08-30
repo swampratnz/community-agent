@@ -5,6 +5,7 @@ import { resolveRole } from '@swampratnz/agent-base/auth/roles.js';
 import { atLeast, toolsForRole } from '@swampratnz/agent-base/auth/rbac.js';
 import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 import { getCommunityGuidelines, getCommunityGuidelinesMi } from '../../storage/policies.js';
+import { getWithdrawnSuggestionIds } from '../../storage/suggestionWithdrawals.js';
 import { notice } from '../../strings/notices.js';
 import { buildMemberDigestContent } from '../../memberDigest.js';
 import { buildAdminDigestForAdmin } from '../../adminDigest.js';
@@ -515,6 +516,13 @@ async function handleMySubmissions(
     listOwnProjectConnectionRequests('discord', interaction.user.id, 10),
     getLanguagePreference('discord', interaction.user.id),
   ]);
+  // withdraw_suggestion consult (issue #1243) — matches the my_submissions
+  // tool handler's own empty-input short-circuit (selfService.ts) so a
+  // withdrawn suggestion never renders the stale "[new]" here either.
+  const withdrawnSuggestionIds =
+    suggestions.length > 0
+      ? await getWithdrawnSuggestionIds(suggestions.map((s) => s.id))
+      : new Set<number>();
   const message = formatMySubmissionsText(
     suggestions,
     reports,
@@ -522,6 +530,7 @@ async function handleMySubmissions(
     knowledgeTips,
     connectionRequests,
     language,
+    withdrawnSuggestionIds,
   );
   recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
   await replyEphemeral(interaction, message, deps);

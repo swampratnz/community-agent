@@ -1726,6 +1726,59 @@ test('!mysubmissions returns the same content the shared formatter renders for a
   assert.equal(sent[0].text, formatMySubmissionsText(expectedSuggestions, [], [], [], [], 'auto'));
 });
 
+test('!mysubmissions renders a withdrawn suggestion as [withdrawn], matching the my_submissions tool handler for the same DB state (issue #1243 — the automated-review-requested fix threading getWithdrawnSuggestionIds through this shortcut too)', async (t) => {
+  const createdAt = new Date('2026-08-01T00:00:00Z');
+  t.mock.method(pool, 'query', (async (sql: string) => {
+    if (sql.includes('SELECT role FROM community_users')) return { rows: [{ role: 'member' }], rowCount: 0 };
+    if (sql.includes('FROM knowledge_candidates')) return { rows: [], rowCount: 0 };
+    if (sql.includes('FROM suggestion_withdrawals')) return { rows: [{ suggestion_id: 7 }], rowCount: 0 };
+    if (sql.includes('FROM suggestions')) {
+      return {
+        rows: [
+          {
+            id: 7,
+            platform: 'whatsapp',
+            user_id: 'member-1',
+            display_name: 'Member One',
+            content: 'Add dark mode',
+            status: 'new',
+            created_at: createdAt,
+            reviewed_by: null,
+            reviewed_at: null,
+          },
+        ],
+        rowCount: 0,
+      };
+    }
+    return { rows: [], rowCount: 0 };
+  }) as typeof pool.query);
+  const router = makeRouter({ runTurn: throwingRunTurn });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!mysubmissions', userId: 'member-1' }));
+
+  const expectedSuggestions = [
+    {
+      id: 7,
+      platform: 'whatsapp' as const,
+      userId: 'member-1',
+      displayName: 'Member One',
+      content: 'Add dark mode',
+      status: 'new' as const,
+      createdAt,
+      reviewedBy: null,
+      reviewedAt: null,
+    },
+  ];
+  assert.equal(
+    sent[0].text,
+    formatMySubmissionsText(expectedSuggestions, [], [], [], [], 'auto', new Set([7])),
+  );
+  assert.match(sent[0].text, /#7 \[withdrawn\] Add dark mode/);
+  assert.doesNotMatch(sent[0].text, /#7 \[new\]/);
+});
+
 test('a bare "!mysubmissionsx" (no space, unrecognised) is not matched as the !mysubmissions command — anchored matcher (issue #1018 SECURITY criterion 5)', async (t) => {
   mockPoolRole(t, 'member');
   const router = makeRouter({});

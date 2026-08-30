@@ -12,12 +12,17 @@ import {
   findKnowledgeCoveringTopic,
   getLanguagePreference,
   KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY,
+  listOwnSuggestions,
   RATE_ANSWER_DAILY_LIMIT,
   SUGGESTION_MAX_CHARS,
   SUGGESTION_RATE_LIMIT_PER_DAY,
   type LanguagePreference,
 } from '@swampratnz/agent-base/storage/repository.js';
 import { makeSlidingWindowReserver } from '@swampratnz/agent-base/util/rateReservation.js';
+import {
+  getWithdrawnSuggestionIds,
+  recordSuggestionWithdrawal,
+} from '../../storage/suggestionWithdrawals.js';
 import { text } from './helpers.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
@@ -44,6 +49,27 @@ export function formatSuggestImprovementText(
         'mō te whakaaro, engari kāore he oati mō te mea ka hangaia, āhea rānei.'
     : `Suggestion #${outcome.id} recorded. A human maintainer reviews these — thanks for the idea, but no ` +
         'promises on if/when it gets built.';
+}
+
+/**
+ * Pure render for `withdraw_suggestion`'s outcomes — none-to-withdraw, and
+ * withdrew (singular/plural) — same shape as `formatWithdrawReportText`
+ * (reportsMember.ts) and `formatWithdrawKnowledgeTipConfirmText`
+ * (knowledgeMember.ts, via helpers.ts). `ids` is already scoped to the
+ * caller's own still-`'new'`, not-yet-withdrawn suggestions by the handler;
+ * this function does no scoping itself, only formatting.
+ */
+export function formatWithdrawSuggestionText(ids: number[], language: LanguagePreference): string {
+  const mi = language === 'mi';
+  if (ids.length === 0) {
+    return mi
+      ? 'Kāore he taunakitanga e tatari ana hei tango māu.'
+      : 'You have no pending suggestions to withdraw.';
+  }
+  const list = ids.map((id) => `#${id}`).join(', ');
+  return mi
+    ? `Kua tangohia ${ids.length > 1 ? 'ō taunakitanga' : 'tō taunakitanga'} ${list}. Kāore ēnei e arotakehia.`
+    : `Withdrew your suggestion${ids.length > 1 ? 's' : ''} ${list}. They won't be reviewed.`;
 }
 
 /**
@@ -119,6 +145,13 @@ export const HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER = 3;
  * last 24h.
  */
 const reserveHumanHelpRequestSlot = makeSlidingWindowReserver(24 * 60 * 60 * 1000);
+
+// withdraw_suggestion's candidate scan cap (issue #1243) — SUGGESTION_RATE_LIMIT_PER_DAY
+// caps a member at 3 new suggestions/day, so 500 is comfortably above any
+// real backlog of still-'new' suggestions one member could ever accumulate,
+// same "generous, bounded fetch" reasoning as MOST_HELPFUL_KNOWLEDGE_FETCH_CAP
+// (knowledgeMember.ts).
+const WITHDRAW_SUGGESTION_SCAN_LIMIT = 500;
 
 export const feedbackTools = [
   // Write-only into the member's own queue (rate-capped); the shared-queue
@@ -358,6 +391,50 @@ export const feedbackTools = [
       }
       const language = await getLanguagePreference(caller.platform, caller.userId);
       return text(formatRequestHumanHelpText('recorded', HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER, language));
+    },
+  }),
+
+  // Retract your OWN still-'new' suggest_improvement suggestion(s) (issue
+  // #1243, the follow-up #895 deferred) — scoped via listOwnSuggestions'
+  // own (platform, userId) predicate, so it can never touch another
+  // member's suggestion. Unlike withdraw_report/withdraw_knowledge_tip this
+  // never mutates the base suggestions row (its status CHECK constraint is
+  // base-owned, with no 'withdrawn' value): the withdrawal is recorded in
+  // the module-owned suggestion_withdrawals table instead, consulted by
+  // resolve_suggestion/list_suggestions/my_submissions rather than changing
+  // what those reads select.
+  defineTool({
+    name: 'withdraw_suggestion',
+    description:
+      'Withdraw your OWN still-new suggest_improvement suggestion(s) — use this if you filed one by mistake, ' +
+      'as a joke, or want to retract it before an admin reviews it. It only ever affects suggestions YOU ' +
+      "filed and only ones still in 'new' status; it cannot touch anyone else's suggestion or one already " +
+      'reviewed/declined/done. The suggestion is marked withdrawn and kept on record (not deleted); ' +
+      'resolve_suggestion will refuse a withdrawn one.',
+    minTier: 'member',
+    readOnlyHint: false,
+    schema: {},
+    handler: async (_args, { caller }) => {
+      // SECURITY: tier is re-asserted here, matching request_human_help's own
+      // defensive double-check just above in this file — not merely
+      // surface-gated by MEMBER_TOOLS.
+      assertAtLeast(caller.role, 'member', 'withdraw_suggestion');
+      const own = await listOwnSuggestions(caller.platform, caller.userId, WITHDRAW_SUGGESTION_SCAN_LIMIT);
+      const pending = own.filter((s) => s.status === 'new');
+      const alreadyWithdrawn =
+        pending.length > 0 ? await getWithdrawnSuggestionIds(pending.map((s) => s.id)) : new Set<number>();
+      const toWithdraw = pending.filter((s) => !alreadyWithdrawn.has(s.id));
+      const language = await getLanguagePreference(caller.platform, caller.userId);
+      if (toWithdraw.length === 0) {
+        return text(formatWithdrawSuggestionText([], language), true);
+      }
+      await Promise.all(toWithdraw.map((s) => recordSuggestionWithdrawal(s.id)));
+      return text(
+        formatWithdrawSuggestionText(
+          toWithdraw.map((s) => s.id),
+          language,
+        ),
+      );
     },
   }),
 ];

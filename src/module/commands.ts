@@ -3,6 +3,7 @@ import { config } from '@swampratnz/agent-base/config.js';
 import { logger } from '@swampratnz/agent-base/logger.js';
 import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 import { buildAdminDigestForAdmin } from './adminDigest.js';
+import { getWithdrawnSuggestionIds } from './storage/suggestionWithdrawals.js';
 import {
   areKnowledgeEntriesLowRated,
   countAccessRequests,
@@ -300,6 +301,14 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
         listOwnProjectConnectionRequests(msg.platform, msg.userId, 10),
         deps.getLangPref(msg.platform, msg.userId),
       ]);
+      // withdraw_suggestion consult (issue #1243) — matches the
+      // my_submissions tool handler's own empty-input short-circuit
+      // (selfService.ts) so a withdrawn suggestion never renders the stale
+      // "[new]" here either.
+      const withdrawnSuggestionIds =
+        suggestions.length > 0
+          ? await getWithdrawnSuggestionIds(suggestions.map((s) => s.id))
+          : new Set<number>();
       return formatMySubmissionsText(
         suggestions,
         reports,
@@ -307,6 +316,7 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
         knowledgeTips,
         connectionRequests,
         language,
+        withdrawnSuggestionIds,
       );
     },
   },

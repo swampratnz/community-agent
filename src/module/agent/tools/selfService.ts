@@ -13,6 +13,7 @@ import {
   purgeUserData,
   type LanguagePreference,
 } from '@swampratnz/agent-base/storage/repository.js';
+import { getWithdrawnSuggestionIds } from '../../storage/suggestionWithdrawals.js';
 import { formatRelativeAge, PROJECT_NOTE_RETENTION_NOTICE, text, truncateForEcho } from './helpers.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
@@ -69,6 +70,11 @@ export function formatMyWarningsText(
  * headers/labels — ids, statuses, truncated previews, relative-age strings
  * and retrieval counts are identical, unchanged interpolations in both
  * languages.
+ *
+ * `withdrawnSuggestionIds` (issue #1243) defaults to an empty Set, so every
+ * existing call site (the `/mysubmissions`/`!mysubmissions` commands, and
+ * every pre-#1243 test) renders byte-identically without passing it; only
+ * the `my_submissions` tool handler below passes a populated one.
  */
 export function formatMySubmissionsText(
   suggestions: Awaited<ReturnType<typeof listOwnSuggestions>>,
@@ -77,6 +83,7 @@ export function formatMySubmissionsText(
   knowledgeTips: Awaited<ReturnType<typeof listOwnKnowledgeCandidates>>,
   connectionRequests: Awaited<ReturnType<typeof listOwnProjectConnectionRequests>>,
   language: LanguagePreference,
+  withdrawnSuggestionIds: ReadonlySet<number> = new Set(),
 ): string {
   const mi = language === 'mi';
   if (
@@ -95,10 +102,15 @@ export function formatMySubmissionsText(
   if (suggestions.length > 0) {
     lines.push(mi ? 'Āu taunakitanga:' : 'Your suggestions:');
     for (const s of suggestions) {
+      // withdraw_suggestion consult (issue #1243): a withdrawn suggestion's
+      // own `status` column is untouched (the withdrawal lives in the
+      // separate suggestion_withdrawals table), so it renders `[withdrawn]`
+      // here rather than the stale `[new]` it would otherwise still show.
+      const statusTag = withdrawnSuggestionIds.has(s.id) ? 'withdrawn' : s.status;
       lines.push(
         mi
-          ? `- #${s.id} [${s.status}] ${truncateForEcho(s.content)} — i tukuna ${formatRelativeAge(s.createdAt)}`
-          : `- #${s.id} [${s.status}] ${truncateForEcho(s.content)} — filed ${formatRelativeAge(s.createdAt)}`,
+          ? `- #${s.id} [${statusTag}] ${truncateForEcho(s.content)} — i tukuna ${formatRelativeAge(s.createdAt)}`
+          : `- #${s.id} [${statusTag}] ${truncateForEcho(s.content)} — filed ${formatRelativeAge(s.createdAt)}`,
       );
     }
   }
@@ -278,8 +290,23 @@ export const selfServiceTools = [
         appeals.length === 0 &&
         knowledgeTips.length === 0 &&
         connectionRequests.length === 0;
+      // withdraw_suggestion consult (issue #1243) — skipped entirely when
+      // there are no suggestions to annotate, matching this function's own
+      // empty-input short-circuit.
+      const withdrawnSuggestionIds =
+        suggestions.length > 0
+          ? await getWithdrawnSuggestionIds(suggestions.map((s) => s.id))
+          : new Set<number>();
       return text(
-        formatMySubmissionsText(suggestions, reports, appeals, knowledgeTips, connectionRequests, language),
+        formatMySubmissionsText(
+          suggestions,
+          reports,
+          appeals,
+          knowledgeTips,
+          connectionRequests,
+          language,
+          withdrawnSuggestionIds,
+        ),
         isEmpty,
       );
     },
