@@ -45,7 +45,7 @@ import {
   text,
   untrusted,
 } from './helpers.js';
-import { notifyProjectRemoved } from './notify.js';
+import { notifyInterestsRemoved, notifyProjectRemoved } from './notify.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 /** list_projects' row cap for both the no-query (recent) and query (similarity) paths. */
@@ -1086,6 +1086,105 @@ export const socialTools = [
         return success
           ? `Removed project #${args.projectId} ("${state.owner?.name}") from the showcase.`
           : `Failed: ${result}`;
+      });
+    },
+  }),
+
+  // Admin-moderation counterpart to set_my_interests' self-service 'clear'
+  // (issue #1230) — member_interests was the OTHER member-authored,
+  // community-wide-visible content surface with no admin removal lever after
+  // remove_project closed the gap for member_projects. Unlike remove_project
+  // (which looks a row up by numeric id), member_interests is one row per
+  // (platform, user_id) with no id to reference, so this mirrors the
+  // moderation-tool family's shape instead (clear_warnings/block_user: a bare
+  // targetUserId scoped to caller.platform, no separate platform argument) —
+  // this is content moderation against an identity already in view (from a
+  // report, or from reading who_is_into), not a cross-platform account
+  // operation like the four membership tools. CONFIRM-gated + audited(),
+  // same shape as remove_project/delete_knowledge. Calls the exact same
+  // exported function set_my_interests('clear') already calls
+  // (setMemberInterests), just with an admin-resolved target instead of the
+  // caller — zero new repository export, zero schema change, zero migration.
+  defineTool({
+    name: 'remove_interests',
+    description:
+      "Clear a member's published interests (set via set_my_interests), regardless of who published them — " +
+      "the admin-moderation counterpart to set_my_interests' self-service 'clear' (which only the member " +
+      "themselves can do), for a scam link, harassment, or spam string in someone's who_is_into-discoverable " +
+      "interests text. Scoped to a single platform user id on the caller's own platform — no separate " +
+      'platform argument, same shape as clear_warnings/block_user. Reports plainly (not an error) if the ' +
+      `target has no published interests to clear. Optional reason (max ${SUGGESTION_RESOLUTION_ECHO_CHARS} ` +
+      'characters) sends the target a one-line resolution DM; omit it to clear silently (e.g. for spam/abuse ' +
+      'where alerting the actor is undesirable). Never echoes the removed interests text back — not in the ' +
+      'confirmation, not in the audit log. Requires confirmation. Admin only.',
+    minTier: 'admin',
+    readOnlyHint: false,
+    schema: {
+      targetUserId: z
+        .string()
+        .describe(
+          "Platform user id whose published interests to clear, on the caller's own platform (same identity " +
+            'shape as clear_warnings/block_user — no separate platform argument).',
+        ),
+      reason: z
+        .string()
+        .max(SUGGESTION_RESOLUTION_ECHO_CHARS)
+        .optional()
+        .describe(
+          'Optional, one-line, member-facing explanation sent to the target as a resolution DM — omit to ' +
+            'clear silently, with no notification. Never persisted.',
+        ),
+    },
+    handler: async (args, { caller, requireConfirm, audited, adapterFor }) => {
+      assertAtLeast(caller.role, 'admin', 'remove_interests');
+      return requireConfirm(`clear published interests for ${args.targetUserId}`, 'admin', async () => {
+        // Resolved inside run() so a no-op clear never produces a
+        // notification, and so `hadInterests` is never trusted from anything
+        // but this admin-tier repository read's own return value.
+        // setMemberInterests('clear') unconditionally DELETEs and always
+        // reports { cleared: true } regardless of whether a row existed
+        // (the same behaviour set_my_interests('clear') already relies on),
+        // so whether there was anything to remove is checked FIRST via
+        // getPublishedInterestsForOwners — only its Map membership is read,
+        // never the interests text value it carries (SECURITY: the removed
+        // text must never re-enter this flow).
+        const state = { hadInterests: false };
+        const { success, result } = await audited({
+          actionKind: 'remove_interests',
+          targetUserId: args.targetUserId,
+          // reason is deliberately excluded — it only ever reaches the one DM
+          // below, same non-persistence convention as remove_project's. The
+          // removed interests text itself is never captured anywhere in this
+          // flow — only checked for existence, never read — so there is
+          // nothing to accidentally include here.
+          params: { targetUserId: args.targetUserId },
+          run: async () => {
+            const before = await getPublishedInterestsForOwners([
+              { platform: caller.platform, userId: args.targetUserId },
+            ]);
+            const hadInterests = before.has(`${caller.platform}:${args.targetUserId}`);
+            await setMemberInterests(caller.platform, args.targetUserId, 'clear');
+            state.hadInterests = hadInterests;
+            return hadInterests
+              ? `cleared published interests for ${args.targetUserId}`
+              : `${args.targetUserId} has no published interests to remove`;
+          },
+        });
+        // Best-effort, same fire-and-forget/WindowClosedError-queue shape as
+        // notifyProjectRemoved — only sent when the admin supplied a reason
+        // AND something was actually cleared; omitting a reason keeps the
+        // removal silent (useful for spam/abuse), and a no-op clear has
+        // nothing to notify about.
+        if (success && state.hadInterests && args.reason) {
+          const target = adapterFor(caller.platform);
+          if (target) {
+            await notifyInterestsRemoved(target, args.targetUserId, caller.platform, undefined, args.reason);
+          }
+        }
+        if (!success) return `Failed: ${result}`;
+        return state.hadInterests
+          ? `Cleared published interests for ${args.targetUserId}.`
+          : `${args.targetUserId} has no published interests to remove.`;
       });
     },
   }),

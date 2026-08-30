@@ -6020,7 +6020,7 @@ test('community_info: admin-tier reply stays byte-identical, never gains SUPER_A
 
   const expectedAdminCapabilitiesText =
     'As an admin, you also have:\n' +
-    "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread, review the moderation history log, pull one member's full warning history, list everyone who's currently muted, list who's currently blocked on WhatsApp, review and resolve filed appeals, or remove a project from the community showcase\n" +
+    "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread, review the moderation history log, pull one member's full warning history, list everyone who's currently muted, list who's currently blocked on WhatsApp, review and resolve filed appeals, remove a project from the community showcase, or clear a member's published interests\n" +
     "- Manage membership: add a new member, remove a member, link a member's cross-platform identity, or unlink a member's cross-platform identity\n" +
     '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, check which knowledge entries are rated poorly, and review recurring unhelpful-answer themes across all answers\n' +
     '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
@@ -6043,8 +6043,8 @@ test('community_info: admin-tier reply stays byte-identical, never gains SUPER_A
     `${memberReply}\n${expectedAdminCapabilitiesText}`,
     "admin-tier reply must be byte-identical to today's deliberately-updated text (issue #1008 added the " +
       'find_knowledge clause; issue #1024 added the list_top_knowledge clause; issue #1185 added the ' +
-      'remove_project clause; issue #1188 added the check_knowledge_source clause) — this PR must not ' +
-      'change the admin branch beyond that documented addition',
+      'remove_project clause; issue #1188 added the check_knowledge_source clause; issue #1230 added the ' +
+      'remove_interests clause) — this PR must not change the admin branch beyond that documented addition',
   );
   assert.doesNotMatch(
     adminReply,
@@ -6269,6 +6269,7 @@ const ADMIN_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__resolve_suggestion', /resolve each suggestion/i],
   ['mcp__community__remove_project', /remove a project from the community showcase/i],
   ['mcp__community__check_knowledge_source', /reachability re-check of a knowledge entry's citation/i],
+  ['mcp__community__remove_interests', /clear a member's published interests/i],
 ]);
 // Every ADMIN_TOOLS entry gets its own line — no exemptions needed (unlike
 // MEMBER_CAPABILITY_EXEMPT, ADMIN_TOOLS has no self-referential tool like
@@ -6319,7 +6320,7 @@ test('community_info anti-drift pin fails loudly for an uncovered admin tool (is
 test('community_info: admin reply stays under a hard char cap, not a wall of text (issue #367)', async () => {
   const adminReply = (await communityInfoHandler('admin')).content[0]?.text ?? '';
 
-  // 47 ADMIN_TOOLS entries consolidated into behaviourally-related bullets
+  // 48 ADMIN_TOOLS entries consolidated into behaviourally-related bullets
   // (same discipline as the member cap at the ~1200-char member test above) —
   // a hard cap, not a soft heuristic: a future admin tool added without
   // consolidation should fail this rather than silently growing into a wall
@@ -6354,8 +6355,10 @@ test('community_info: admin reply stays under a hard char cap, not a wall of tex
   // Bumped once more for issue #1185's remove_project clause (consolidated
   // into the existing moderation bullet, not a new bullet), and once more
   // for issue #1188's check_knowledge_source clause (consolidated into the
-  // existing knowledge-base curation bullet, not a new bullet).
-  assert.ok(adminReply.length < 4780, `admin reply should stay short; was ${adminReply.length} chars`);
+  // existing knowledge-base curation bullet, not a new bullet); bumped once
+  // more for issue #1230's remove_interests clause (same moderation bullet
+  // again, not a new bullet).
+  assert.ok(adminReply.length < 4830, `admin reply should stay short; was ${adminReply.length} chars`);
 });
 
 test('SECURITY: community_info member-tier and guest-tier replies never name an admin/super_admin-only tool or contain any ADMIN_CAPABILITIES_TEXT-unique line (issue #367, issue #311)', async () => {
@@ -6501,9 +6504,10 @@ test('community_info: super_admin reply stays under a hard char cap, not a wall 
   // #1070's most_helpful_knowledge line.
   // Bumped once more alongside the admin cap for issue #1185's remove_project
   // clause, and once more alongside the admin cap for issue #1188's
-  // check_knowledge_source clause.
+  // check_knowledge_source clause; bumped once more alongside the admin cap
+  // for issue #1230's remove_interests clause.
   assert.ok(
-    superAdminReply.length < 5400,
+    superAdminReply.length < 5450,
     `super_admin reply should stay short; was ${superAdminReply.length} chars`,
   );
 });
@@ -25009,6 +25013,368 @@ test(
     await pool.query(`DELETE FROM admin_audit WHERE action_kind = 'remove_project' AND actor_user_id = $1`, [
       admin,
     ]);
+  },
+);
+
+// remove_interests (issue #1230): the admin-moderation counterpart to
+// set_my_interests' self-service 'clear' — member_interests was the OTHER
+// member-authored, community-wide-visible content surface with no admin
+// removal lever after remove_project (#1185) closed the gap for
+// member_projects. Unlike remove_project (numeric-id lookup), member_interests
+// has no per-row id, so this mirrors clear_warnings/block_user's shape
+// instead: a bare targetUserId scoped to caller.platform, no separate
+// platform argument. CONFIRM-gated + audited(), reusing setMemberInterests
+// with an ADMIN-resolved target instead of caller.
+function removeInterestsHandler(
+  caller: {
+    platform: 'discord' | 'whatsapp';
+    userId: string;
+    userName?: string;
+    role?: 'member' | 'guest' | 'admin' | 'super_admin';
+    conversationId?: string;
+  },
+  adapter: PlatformAdapter = stubAdapter(async () => {}),
+) {
+  const server = buildToolServer(
+    {
+      platform: caller.platform,
+      userId: caller.userId,
+      userName: caller.userName ?? 'Admin',
+      role: caller.role ?? 'admin',
+      conversationId: caller.conversationId ?? 'convo-remove-interests',
+    },
+    adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: {
+            targetUserId: string;
+            reason?: string;
+          }) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+        }
+      >;
+    }
+  )._registeredTools['remove_interests'];
+}
+
+test('SECURITY: remove_interests rejects member and guest callers before any repository call (issue #1230 acceptance criterion 5)', async () => {
+  for (const role of ['member', 'guest'] as const) {
+    const targetUserId = `${role}-remove-interests-target`;
+    const tool = removeInterestsHandler({
+      platform: 'discord',
+      userId: `${role}-remove-interests-1`,
+      role,
+      conversationId: `convo-remove-interests-${role}`,
+    });
+    await assert.rejects(
+      () => tool.handler({ targetUserId }),
+      /Permission denied/,
+      `${role} must never reach remove_interests`,
+    );
+    assert.equal(
+      hasPendingAction('discord', `convo-remove-interests-${role}`, `${role}-remove-interests-1`),
+      false,
+      `${role} must never reach the CONFIRM gate, let alone a repository call`,
+    );
+  }
+});
+
+test('SECURITY: remove_interests registers a pending CONFIRM action instead of clearing in place (issue #1230 acceptance criterion 1)', async () => {
+  const tool = removeInterestsHandler({
+    platform: 'discord',
+    userId: 'admin-remove-interests-1',
+    conversationId: 'convo-remove-interests-confirm',
+  });
+  const result = await tool.handler({ targetUserId: 'some-member' });
+  assert.match(result.content[0].text, /CONFIRM/, 'must ask for out-of-band confirmation');
+  assert.ok(
+    hasPendingAction('discord', 'convo-remove-interests-confirm', 'admin-remove-interests-1'),
+    'a destructive removal must be CONFIRM-gated like remove_project',
+  );
+  cancelPendingAction('discord', 'convo-remove-interests-confirm', 'admin-remove-interests-1');
+});
+
+test(
+  'remove_interests performs no clear until confirmed, then clears the target row via setMemberInterests ' +
+    'regardless of who requested removal, auditing targetUserId without ever persisting the optional reason ' +
+    '(issue #1230 acceptance criteria 1, 3)',
+  { skip },
+  async () => {
+    const target = `${RUN}-remove-interests-cross-target`;
+    await setMemberInterests('discord', target, 'building a RAG pipeline, scam text: click here');
+
+    const admin = `${RUN}-remove-interests-cross-admin`;
+    const convo = `convo-remove-interests-cross-${target}`;
+    const tool = removeInterestsHandler({ platform: 'discord', userId: admin, conversationId: convo });
+    const result = await tool.handler({ targetUserId: target, reason: 'contained a scam link' });
+    assert.equal(result.isError, false);
+    assert.match(result.content[0]?.text ?? '', /CONFIRM/);
+
+    const { rows: stillActive } = await pool.query(
+      `SELECT 1 FROM member_interests WHERE platform = 'discord' AND user_id = $1`,
+      [target],
+    );
+    assert.equal(stillActive.length, 1, 'an unconfirmed remove_interests must perform no clear');
+
+    const { rows: beforeConfirm } = await pool.query(
+      `SELECT count(*)::int AS n FROM admin_audit WHERE action_kind = 'remove_interests'`,
+    );
+
+    const pending = takePendingAction('discord', convo, admin);
+    assert.ok(pending, 'must register a pending action');
+    const execResult = await pending?.execute();
+    assert.match(execResult ?? '', new RegExp(`Cleared published interests for ${target}`));
+
+    const { rows: afterClear } = await pool.query(
+      `SELECT 1 FROM member_interests WHERE platform = 'discord' AND user_id = $1`,
+      [target],
+    );
+    assert.equal(
+      afterClear.length,
+      0,
+      "the target's row is cleared once confirmed, regardless of who requested it",
+    );
+
+    const { rows: afterConfirm } = await pool.query(
+      `SELECT count(*)::int AS n FROM admin_audit WHERE action_kind = 'remove_interests'`,
+    );
+    assert.equal(
+      afterConfirm[0].n,
+      beforeConfirm[0].n + 1,
+      'exactly one new admin_audit row for the confirmed clear',
+    );
+
+    const { rows: auditRows } = await pool.query(
+      `SELECT params FROM admin_audit WHERE action_kind = 'remove_interests' ORDER BY id DESC LIMIT 1`,
+    );
+    const params = auditRows[0].params as Record<string, unknown>;
+    assert.equal(params.targetUserId, target, 'audited params carry the targetUserId');
+    assert.equal(
+      'reason' in params,
+      false,
+      'SECURITY: the optional reason must never be persisted into admin_audit params',
+    );
+
+    await pool.query(
+      `DELETE FROM admin_audit WHERE action_kind = 'remove_interests' AND params->>'targetUserId' = $1`,
+      [target],
+    );
+  },
+);
+
+test(
+  'SECURITY: remove_interests never echoes the removed interests text back — not in the confirmation nor in ' +
+    'the audit params (issue #1230 acceptance criterion 4)',
+  { skip },
+  async () => {
+    const target = `${RUN}-remove-interests-no-echo`;
+    const distinctiveInterests = 'zzz-distinctive-secret-interests-blob-zzz';
+    await setMemberInterests('discord', target, distinctiveInterests);
+
+    const admin = `${RUN}-remove-interests-no-echo-admin`;
+    const convo = 'convo-remove-interests-no-echo';
+    const tool = removeInterestsHandler({ platform: 'discord', userId: admin, conversationId: convo });
+    await tool.handler({ targetUserId: target });
+    const execResult = (await takePendingAction('discord', convo, admin)?.execute()) ?? '';
+    assert.doesNotMatch(
+      execResult,
+      new RegExp(distinctiveInterests),
+      'the confirmation text must never echo the removed interests',
+    );
+
+    const { rows: auditRows } = await pool.query(
+      `SELECT params FROM admin_audit WHERE action_kind = 'remove_interests' ORDER BY id DESC LIMIT 1`,
+    );
+    const paramsText = JSON.stringify(auditRows[0].params);
+    assert.doesNotMatch(
+      paramsText,
+      new RegExp(distinctiveInterests),
+      'audited params must never contain the removed interests text',
+    );
+
+    await pool.query(
+      `DELETE FROM admin_audit WHERE action_kind = 'remove_interests' AND actor_user_id = $1`,
+      [admin],
+    );
+  },
+);
+
+test(
+  'remove_interests reports plainly (not an error) when the target has no published interests, with no ' +
+    'mutation and a successful admin_audit row (issue #1230 acceptance criterion 1)',
+  { skip },
+  async () => {
+    const target = `${RUN}-remove-interests-no-profile`;
+    const admin = `${RUN}-remove-interests-no-profile-admin`;
+    const convo = 'convo-remove-interests-no-profile';
+    const tool = removeInterestsHandler({ platform: 'discord', userId: admin, conversationId: convo });
+    const confirmResult = await tool.handler({ targetUserId: target });
+    assert.match(confirmResult.content[0]?.text ?? '', /CONFIRM/);
+    const execResult = (await takePendingAction('discord', convo, admin)?.execute()) ?? '';
+    assert.match(execResult, /no published interests to remove/i);
+    assert.equal(execResult.includes('Failed'), false, 'a no-op clear must not be reported as a failure');
+
+    const { rows } = await pool.query(
+      `SELECT success FROM admin_audit WHERE action_kind = 'remove_interests' AND actor_user_id = $1 ORDER BY id DESC LIMIT 1`,
+      [admin],
+    );
+    assert.equal(rows[0]?.success, true, 'a no-op clear is still a successful, non-error tool call');
+
+    await pool.query(
+      `DELETE FROM admin_audit WHERE action_kind = 'remove_interests' AND actor_user_id = $1`,
+      [admin],
+    );
+  },
+);
+
+test(
+  'remove_interests sends exactly one resolution DM to the target when a reason is supplied, and none when ' +
+    'omitted (issue #1230 acceptance criterion 2)',
+  { skip },
+  async () => {
+    const withReason = `${RUN}-remove-interests-notify-with`;
+    const withoutReason = `${RUN}-remove-interests-notify-without`;
+    await setMemberInterests('discord', withReason, 'x');
+    await setMemberInterests('discord', withoutReason, 'x');
+
+    const sends: Array<{ userId: string; text: string }> = [];
+    const adapter = stubAdapter(async (userId: string, text: string) => {
+      sends.push({ userId, text });
+    });
+    const admin = `${RUN}-remove-interests-notify-admin`;
+
+    const withConvo = 'convo-remove-interests-notify-with';
+    const toolWithReason = removeInterestsHandler(
+      { platform: 'discord', userId: admin, conversationId: withConvo },
+      adapter,
+    );
+    await toolWithReason.handler({ targetUserId: withReason, reason: 'contained a scam link' });
+    const withResult = await takePendingAction('discord', withConvo, admin)?.execute();
+    assert.match(withResult ?? '', new RegExp(`Cleared published interests for ${withReason}`));
+
+    assert.equal(sends.length, 1, 'exactly one DM when a reason is supplied');
+    assert.equal(sends[0]?.userId, withReason);
+    assert.match(sends[0]?.text ?? '', /removed/i);
+    assert.match(sends[0]?.text ?? '', /contained a scam link/);
+
+    const withoutConvo = 'convo-remove-interests-notify-without';
+    const toolWithoutReason = removeInterestsHandler(
+      { platform: 'discord', userId: admin, conversationId: withoutConvo },
+      adapter,
+    );
+    await toolWithoutReason.handler({ targetUserId: withoutReason });
+    const withoutResult = await takePendingAction('discord', withoutConvo, admin)?.execute();
+    assert.match(withoutResult ?? '', new RegExp(`Cleared published interests for ${withoutReason}`));
+
+    assert.equal(sends.length, 1, 'no DM sent when reason is omitted');
+
+    await pool.query(
+      `DELETE FROM admin_audit WHERE action_kind = 'remove_interests' AND actor_user_id = $1`,
+      [admin],
+    );
+  },
+);
+
+test(
+  "SECURITY: clearing one identity's member_interests row via remove_interests never touches any other " +
+    "member's member_interests row, member_projects, or any other table (issue #1230 acceptance criterion 6)",
+  { skip },
+  async () => {
+    const target = `${RUN}-remove-interests-isolation-target`;
+    const bystander1 = `${RUN}-remove-interests-isolation-bystander1`;
+    const bystander2 = `${RUN}-remove-interests-isolation-bystander2`;
+    await setMemberInterests('discord', target, 'to be cleared');
+    await setMemberInterests('discord', bystander1, 'must survive untouched');
+    await setMemberInterests('discord', bystander2, 'must also survive untouched');
+
+    const shareTool = shareProjectHandler({ platform: 'discord', userId: bystander1, userName: 'Bystander' });
+    await shareTool.handler({ name: 'Isolation Bystander Project', description: 'must survive untouched' });
+
+    const admin = `${RUN}-remove-interests-isolation-admin`;
+    const convo = 'convo-remove-interests-isolation';
+    const tool = removeInterestsHandler({ platform: 'discord', userId: admin, conversationId: convo });
+    await tool.handler({ targetUserId: target });
+    const execResult = await takePendingAction('discord', convo, admin)?.execute();
+    assert.match(execResult ?? '', new RegExp(`Cleared published interests for ${target}`));
+
+    const { rows: targetRows } = await pool.query(
+      `SELECT 1 FROM member_interests WHERE platform = 'discord' AND user_id = $1`,
+      [target],
+    );
+    assert.equal(targetRows.length, 0, "the target's own row is cleared");
+
+    const { rows: bystanderRows } = await pool.query(
+      `SELECT user_id FROM member_interests WHERE platform = 'discord' AND user_id = ANY($1)`,
+      [[bystander1, bystander2]],
+    );
+    assert.equal(bystanderRows.length, 2, 'both bystander member_interests rows are untouched');
+
+    const { rows: projectRows } = await pool.query(
+      `SELECT 1 FROM member_projects WHERE platform = 'discord' AND user_id = $1 AND name = $2`,
+      [bystander1, 'Isolation Bystander Project'],
+    );
+    assert.equal(projectRows.length, 1, "the bystander's member_projects row is untouched");
+
+    await pool.query(`DELETE FROM member_interests WHERE platform = 'discord' AND user_id = ANY($1)`, [
+      [bystander1, bystander2],
+    ]);
+    await pool.query(`DELETE FROM member_projects WHERE platform = 'discord' AND user_id = $1`, [bystander1]);
+    await pool.query(
+      `DELETE FROM admin_audit WHERE action_kind = 'remove_interests' AND actor_user_id = $1`,
+      [admin],
+    );
+  },
+);
+
+test(
+  'remove_interests queues the resolution DM via queueForWindowReopen on a WindowClosedError, rather than ' +
+    'dropping it (issue #1230 acceptance criterion 2)',
+  { skip },
+  async () => {
+    const target = `${RUN}-remove-interests-window-closed`;
+    await setMemberInterests('discord', target, 'x');
+
+    const queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }> = [];
+    const adapter: PlatformAdapter = {
+      platform: 'discord',
+      start: async () => {},
+      stop: async () => {},
+      isConnected: () => true,
+      onMessage: () => {},
+      sendMessage: async () => {},
+      sendDirectMessage: async () => {
+        throw new WindowClosedError(target);
+      },
+      queueForWindowReopen(userId: string, message: string, priority: 'system' | 'low') {
+        queued.push({ userId, message, priority });
+      },
+      conversationsForUser: async () => [],
+      adminCapabilities: new Set(),
+      performAdminAction: async () => {
+        throw new Error('not implemented in stub');
+      },
+    };
+    const admin = `${RUN}-remove-interests-window-closed-admin`;
+    const convo = 'convo-remove-interests-window-closed';
+    const tool = removeInterestsHandler(
+      { platform: 'discord', userId: admin, conversationId: convo },
+      adapter,
+    );
+    await tool.handler({ targetUserId: target, reason: 'spam' });
+    const execResult = await takePendingAction('discord', convo, admin)?.execute();
+    assert.match(execResult ?? '', new RegExp(`Cleared published interests for ${target}`));
+
+    assert.equal(queued.length, 1);
+    assert.equal(queued[0]?.userId, target);
+    assert.equal(queued[0]?.priority, 'low');
+
+    await pool.query(
+      `DELETE FROM admin_audit WHERE action_kind = 'remove_interests' AND actor_user_id = $1`,
+      [admin],
+    );
   },
 );
 

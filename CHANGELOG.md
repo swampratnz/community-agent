@@ -57,6 +57,25 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   are all unaffected. No new tool, config, or data access — it reuses
   `find_helper`'s existing matching, capping, and DM-send machinery from a
   second call site.
+- **New admin tool: `remove_interests`, giving admins a moderation lever over
+  published member interests.** (#1230) `set_my_interests`/`who_is_into`
+  (#634) made a member's self-declared interests discoverable by every other
+  member, but after `remove_project` (#1185) closed the same gap for the
+  project showcase, `member_interests` was the one community-wide-visible,
+  member-authored content surface still reachable only by the member's own
+  `set_my_interests('clear')` or by whole-identity erasure
+  (`forget_me`/`purge_user_data`) — no proportionate lever for a scam link,
+  harassment, or spam string in someone's published interests text.
+  `remove_interests(targetUserId, reason?)` clears a target's row
+  regardless of who published it, CONFIRM-gated and audited exactly like
+  `remove_project`; unlike that tool it takes a bare platform user id
+  (`member_interests` has no per-row id to look up), the same shape
+  `clear_warnings`/`block_user` already use. An optional one-line reason
+  sends the target a resolution DM; omitting it clears silently, useful for
+  spam/abuse where alerting the actor isn't wanted. The reason is never
+  persisted beyond that one DM, and the removed interests text itself is
+  never echoed back — not in the tool's own reply, not in the audit log.
+  Admin only.
 
 ## 2026-08-29
 

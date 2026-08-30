@@ -1104,7 +1104,41 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   another member's attribution. Rows are deleted by
   `forget_me`/`purge_user_data` and on roster leave (a departed member's
   published interests go with them, same reasoning as `member_projects`),
-  and counted in `my_data`. **Monitored risk, not a blocker (accepted at
+  and counted in `my_data`. Until issue #1230, the only way to clear a
+  member's row was self-service (`set_my_interests('clear')`) or whole-
+  identity erasure (`forget_me`/`purge_user_data`, super-admin-tier) — after
+  `remove_project` (#1185) closed the gap for `member_projects`,
+  `member_interests` was the OTHER community-wide-visible, member-authored
+  content surface with no proportionate admin removal lever, for a scam
+  link, harassment, or spam string in someone's published interests text.
+  The admin-tier `remove_interests(targetUserId, reason?)` tool closes that
+  gap: **CONFIRM-gated and `audited()`, identical shape to `remove_project`**,
+  re-asserting `admin` in the handler. Unlike `remove_project` (a numeric
+  `projectId` lookup), `member_interests` is one row per `(platform,
+  user_id)` with no id to reference, so this mirrors the moderation-tool
+  family's shape instead (`clear_warnings`/`block_user`: a bare
+  `targetUserId` scoped to the caller's own platform, no separate `platform`
+  argument) rather than the membership-management family's cross-platform
+  shape. It clears the row via the same `setMemberInterests(platform,
+  userId, 'clear')` `set_my_interests('clear')` already calls — no new
+  schema, no new repository export, just an admin-resolved target in place
+  of `caller`. Because that repository function unconditionally deletes and
+  always reports `{ cleared: true }` regardless of whether a row existed,
+  the handler checks existence FIRST via `getPublishedInterestsForOwners`
+  (reading only Map membership, never the interests text value) so it can
+  report "no published interests to remove" as a normal, non-error outcome
+  rather than a false "cleared" — the same tightening keeps the removed
+  interests text out of the tool's own returned text (SECURITY-pinned) and
+  out of `admin_audit` (`params` carries only `targetUserId`, tighter than
+  `remove_project`'s own precedent, which is not itself echoing project
+  *content* but sets the convention this follows). The optional `reason` is
+  echoed into exactly one best-effort resolution DM to the target (the same
+  cross-platform `notify.ts` + `WindowClosedError`→`queueForWindowReopen`
+  pattern every other resolution DM in this file uses) and is **never
+  persisted** — kept out of `audited()`'s `params`. Omitting `reason`
+  clears silently, the same discretion `remove_project`/`resolve_report`
+  already give admins for spam/abuse cases where alerting the actor is
+  undesirable. **Monitored risk, not a blocker (accepted at
   proposal review):** a member could sweep `who_is_into` with broad queries
   to enumerate the whole published directory — every byte returned is
   deliberately self-published free text, never inferred, never message
