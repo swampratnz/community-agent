@@ -12,7 +12,7 @@ import {
   upsertMember,
 } from '@swampratnz/agent-base/storage/repository.js';
 import { text } from './helpers.js';
-import { notifyMemberApproved } from './notify.js';
+import { notifyMemberApproved, notifyProjectMemberAdded } from './notify.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 /**
@@ -213,6 +213,26 @@ export const teamSetupTools = [
                     target.userId,
                     caller.userId,
                   );
+                  // Closes the one gap notifyMemberApproved's call above
+                  // doesn't cover (issue #1241): an EXISTING member added to
+                  // the project via team_setup got no DM at all, unlike a
+                  // brand-new registration's welcome DM above. Fires only on
+                  // the actual "newly added to project" transition — never on
+                  // "already a project member" — same gating as
+                  // project_add_member's own call to this function, so
+                  // re-running team_setup against the same team doesn't
+                  // re-notify every time.
+                  if (wasMember && added) {
+                    const memberTarget = adapterFor(target.platform);
+                    if (memberTarget) {
+                      await notifyProjectMemberAdded(
+                        memberTarget,
+                        target.userId,
+                        target.platform,
+                        project.name,
+                      );
+                    }
+                  }
                   steps.push(
                     `${target.platform}:${target.userId}: registration ${registerNote}; project ${
                       added ? 'added' : 'already existed'

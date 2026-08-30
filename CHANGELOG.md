@@ -25,6 +25,19 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #1122 #1123 #1132
 -->
 
+## 2026-08-31
+
+### Added
+- **Adding or removing someone from a project's shared team memory now tells
+  them.** (#1241) A member added to a project (e.g. an Impact Lab) via
+  `project_add_member` or `team_setup` gets a short DM saying so and naming
+  the project; a member removed via `project_remove_member` gets a DM saying
+  their access was removed. Previously the only way to find out was being
+  told separately by an admin, or a removed member noticing their project
+  notes had silently gone empty. No new data is collected or retained — this
+  is the same best-effort DM pattern the bot already uses for approvals and
+  other admin actions.
+
 ## 2026-08-30
 
 ### Added
