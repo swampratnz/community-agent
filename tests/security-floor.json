@@ -145,6 +145,7 @@
   "shareProjectHelperPush.test.ts": 7,
   "staleKnowledgeAlert.router.test.ts": 3,
   "statusCheckAlert.test.ts": 4,
+  "statusCheckMemberChannelAlert.test.ts": 3,
   "stringsCatalogue.test.ts": 5,
   "suggestIssue.test.ts": 3,
   "suggestionStaleAlert.test.ts": 4,

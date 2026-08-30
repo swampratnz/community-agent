@@ -47,6 +47,8 @@
     "tests/routerInterceptChain.test.ts",
     "tests/schemaConstraintIdempotency.test.ts",
     "tests/securityDocSections.test.ts",
+    "tests/statusCheckMemberChannelAlert.test.ts",
+    "tests/statusCheckMemberChannelAlertDisabled.test.ts",
     "tests/toolTierMap.test.ts",
     "tests/stringsCatalogue.test.ts",
     "tests/systemPromptByteStability.test.ts",

@@ -366,6 +366,32 @@ export function startStatusCheck(
         if (incidentStep.shouldAlertResolved) {
           void alertSuperAdmins(adapters, formatStatusResolvedAlert(state, Date.now()));
         }
+        // Best-effort proactive push to the member digest channel (issue
+        // #1251) — the same signal above, widened from super-admin-only DMs
+        // to the whole community, so a member asking "is Claude down?"
+        // mid-incident sees it without knowing to run check_status. Gated on
+        // BOTH config.memberDigest.enabled and .channelId (not channelId
+        // alone) — an admin who set the channel but turned digest posts off
+        // has opted OUT of unprompted posts to it, and this must not
+        // override that. Never instead of the super-admin DM above, and a
+        // send failure here must never affect it — hence the try/catch
+        // rather than letting a throw propagate into this shared run() tick.
+        if (
+          (incidentStep.shouldAlert || incidentStep.shouldAlertResolved) &&
+          config.memberDigest.enabled &&
+          config.memberDigest.channelId
+        ) {
+          const channelId = config.memberDigest.channelId;
+          const discordAdapter = adapters.find((a) => a.platform === 'discord' && a.isConnected());
+          if (discordAdapter) {
+            const msg = incidentStep.shouldAlert
+              ? formatStatusIncidentAlert(state, Date.now())
+              : formatStatusResolvedAlert(state, Date.now());
+            void discordAdapter
+              .sendMessage({ conversationId: channelId, text: msg })
+              .catch((err) => logger.warn({ err }, 'failed to post status alert to member digest channel'));
+          }
+        }
       }
     }
     const step = stepJobFailureTracker(tracker, !succeeded, threshold);
