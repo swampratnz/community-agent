@@ -75,7 +75,10 @@ const {
   runAdminDigestOnce,
   startAdminDigest,
   medianReportResolutionHours,
+  FRESHNESS_DAYS,
 } = await import('../src/module/adminDigest.js');
+const { recordAccessRequestResolution, listAccessRequestResolutionsSince } =
+  await import('../src/module/storage/accessRequestResolutions.js');
 const { readFileSync } = await import('node:fs');
 const pgvector = (await import('pgvector/pg')).default;
 const { config } = await import('@swampratnz/agent-base/config.js');
@@ -5059,11 +5062,12 @@ test('appealMedianResolutionHours reuses medianReportResolutionHours directly ra
   const medianHelperCallCount = (source.match(/medianReportResolutionHours\(/g) ?? []).length;
   assert.equal(
     medianHelperCallCount,
-    5,
-    'medianReportResolutionHours is referenced exactly five times — its own definition, ' +
+    6,
+    'medianReportResolutionHours is referenced exactly six times — its own definition, ' +
       "reportResolutionBreakdown's call, appealMedianResolutionHours's call, " +
-      "candidateMedianResolutionHours's call (issue #1149), and suggestionResolutionBreakdown's call " +
-      '(issue #1152) — a second, forked median helper is never introduced',
+      "candidateMedianResolutionHours's call (issue #1149), suggestionResolutionBreakdown's call " +
+      "(issue #1152), and accessRequestResolutionBreakdown's call (issue #1239) — a second, forked " +
+      'median helper is never introduced',
   );
 });
 
@@ -9649,5 +9653,183 @@ test(
       adminId,
     ]);
     await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
+
+// --- issue #1239: accessRequestResolutionBreakdown + its digest line -------
+// The fifth and last of review_queue's five queues to get an outcome-mix +
+// median-resolution-time signal (reports #1075/#1081, appeals #844/#1130,
+// candidates #1149, suggestions #1152). Unlike those four, this reads a
+// dedicated, anonymous `access_request_resolutions` table rather than
+// re-scanning `access_requests` itself, which deletes its row on resolution
+// by design (see accessRequestResolutionBreakdown's own doc comment).
+
+// Full 60-element positional prefix for buildAdminDigestMessage at its
+// quiet-week default — every signal through mentionLatencyP90Seconds
+// (position 60) zero/null. The three new trailing params under test
+// (approvedAccessRequestsCount/declinedAccessRequestsCount/
+// accessRequestMedianResolutionHours) are appended by each test below,
+// matching the REPORT_BREAKDOWN_ZERO_PREFIX + trailing-args convention used
+// throughout this file.
+const ACCESS_REQUEST_RESOLUTION_ZERO_PREFIX = [
+  ...RESPONSE_LATENCY_ZERO_PREFIX,
+  0,
+  null,
+  null,
+  0,
+  null,
+  null,
+  0,
+  null,
+  null,
+] as const;
+
+test('buildAdminDigestMessage: the access-request-resolution line renders only when approvedAccessRequestsCount + declinedAccessRequestsCount > 0, with an optional median-hours fragment, and omitting the three new params is byte-identical to the pre-#1239 quiet case (issue #1239 acceptance criteria 4, 5)', () => {
+  const withoutNewParams = buildAdminDigestMessage(...ACCESS_REQUEST_RESOLUTION_ZERO_PREFIX);
+  const withExplicitZeros = buildAdminDigestMessage(...ACCESS_REQUEST_RESOLUTION_ZERO_PREFIX, 0, 0, null);
+  assert.equal(
+    withoutNewParams,
+    withExplicitZeros,
+    'a caller that has not wired the new trailing params through renders byte-identical output',
+  );
+  assert.equal(
+    withExplicitZeros,
+    null,
+    'both counts zero, with every other signal already zero, is a quiet week',
+  );
+
+  const approvedOnly = buildAdminDigestMessage(...ACCESS_REQUEST_RESOLUTION_ZERO_PREFIX, 3, 0, null);
+  assert.ok(approvedOnly, 'approved access requests alone still produce a DM');
+  const approvedLine = approvedOnly.split('\n').find((l) => l.includes('✅'));
+  assert.equal(
+    approvedLine,
+    '✅ 3 approved, 0 declined access request(s) this week.',
+    'approved-only still renders both sub-counts in the fixed template, with no median fragment when null',
+  );
+
+  const declinedOnly = buildAdminDigestMessage(...ACCESS_REQUEST_RESOLUTION_ZERO_PREFIX, 0, 2, null);
+  assert.ok(declinedOnly, 'declined access requests alone still produce a DM');
+  const declinedLine = declinedOnly.split('\n').find((l) => l.includes('✅'));
+  assert.equal(
+    declinedLine,
+    '✅ 0 approved, 2 declined access request(s) this week.',
+    'declined-only still renders both sub-counts in the fixed template',
+  );
+
+  const both = buildAdminDigestMessage(...ACCESS_REQUEST_RESOLUTION_ZERO_PREFIX, 5, 2, 26.4);
+  assert.ok(both);
+  const bothLine = both.split('\n').find((l) => l.includes('✅'));
+  assert.equal(
+    bothLine,
+    '✅ 5 approved, 2 declined access request(s) this week (median 26h to resolve).',
+    'both counts nonzero renders the exact acceptance-criterion wording, with the median-hours fragment rounded',
+  );
+});
+
+test('buildAdminDigestMessage: the access-request-resolution line trends approvedAccessRequestsCount and declinedAccessRequestsCount independently via trendSuffix (issue #1239)', () => {
+  const prefixWithTrend = [
+    ...ACCESS_REQUEST_RESOLUTION_ZERO_PREFIX.slice(0, 21),
+    { approvedAccessRequestsCount: 1, declinedAccessRequestsCount: 5 },
+    ...ACCESS_REQUEST_RESOLUTION_ZERO_PREFIX.slice(22),
+  ] as const;
+  const message = buildAdminDigestMessage(...prefixWithTrend, 4, 2, null);
+  assert.ok(message);
+  const line = message.split('\n').find((l) => l.includes('✅'));
+  assert.equal(
+    line,
+    '✅ 4 approved, 2 declined access request(s) this week. (▲+3 since last week) (▼-3 since last week)',
+    'each sub-count carries its own independent trendSuffix, same one-call-per-signal convention as every sibling breakdown line',
+  );
+
+  const noTrend = buildAdminDigestMessage(...ACCESS_REQUEST_RESOLUTION_ZERO_PREFIX, 4, 2, null);
+  assert.ok(noTrend);
+  const noTrendLine = noTrend.split('\n').find((l) => l.includes('✅'));
+  assert.equal(
+    noTrendLine,
+    '✅ 4 approved, 2 declined access request(s) this week.',
+    'no previousCounts -> no suffix on either sub-count',
+  );
+});
+
+test('SECURITY: buildAdminDigestMessage: the access-request-resolution line is a deterministic function of (approvedAccessRequestsCount, declinedAccessRequestsCount, accessRequestMedianResolutionHours) only, and never carries a requester userId/userName/platform (issue #1239 acceptance criterion 5)', () => {
+  const message = buildAdminDigestMessage(...ACCESS_REQUEST_RESOLUTION_ZERO_PREFIX, 5, 2, 26.4);
+  assert.ok(message);
+  const line = message.split('\n').find((l) => l.includes('✅'));
+  assert.ok(line);
+  assert.equal(
+    line,
+    '✅ 5 approved, 2 declined access request(s) this week (median 26h to resolve).',
+    'the line is a pure function of the three params — bare numbers and fixed template text only, no requester identity to leak',
+  );
+});
+
+test(
+  'buildAdminDigestForAdmin: accessRequestResolutionBreakdown is wired over the same FRESHNESS_DAYS window and rendered on the digest (issue #1239 acceptance criteria 3, 4)',
+  { skip },
+  async () => {
+    const adminId = `${RUN}-accessrequestbreakdown-admin`;
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    // access_request_resolutions is guild-wide and carries no identifying
+    // column to scope by (issue #1239 design) — snapshot the baseline
+    // immediately beforehand, same convention as every other guild-wide
+    // unscoped signal in this file (see countPendingKnowledgeCandidates'
+    // own tests above), so this assertion holds even if another test file
+    // concurrently resolves an access request.
+    const since = new Date(Date.now() - FRESHNESS_DAYS * 24 * 3_600_000);
+    const before = await listAccessRequestResolutionsSince(since);
+    const approvedBefore = before.filter((r) => r.outcome === 'approved').length;
+    const declinedBefore = before.filter((r) => r.outcome === 'declined').length;
+
+    // Back-dated requestedAt so each row's resolution-duration delta is
+    // small and well inside the FRESHNESS_DAYS window, without pinning an
+    // exact rendered hours value — same accepted-risk shape every sibling
+    // median's own wired test already carries (issue #1149/#1152). Exact
+    // timestamps double as the cleanup key below, so this test's own rows
+    // can be deleted precisely regardless of what else resolved concurrently.
+    const approvedRequestedAt = new Date(Date.now() - 4 * 3_600_000);
+    const declinedRequestedAt = new Date(Date.now() - 6 * 3_600_000);
+    await recordAccessRequestResolution(approvedRequestedAt, 'approved');
+    await recordAccessRequestResolution(declinedRequestedAt, 'declined');
+
+    try {
+      const adapter = fakeAdapter({ platform: 'discord', conversationIds: [], sent: [] });
+      const result = await buildAdminDigestForAdmin('discord', adminId, adapter);
+
+      assert.ok(result.message, 'the two freshly closed access requests alone still produce a DM');
+      const breakdownLine = result.message.split('\n').find((l) => l.includes('✅'));
+      assert.ok(breakdownLine, 'the access-request-resolution line renders');
+      const match = breakdownLine?.match(
+        /^✅ (\d+) approved, (\d+) declined access request\(s\) this week(?: \(median (\d+)h to resolve\))?\.$/,
+      );
+      assert.ok(match, `line matches the expected template: ${breakdownLine}`);
+      assert.equal(
+        Number(match?.[1]),
+        approvedBefore + 1,
+        "approved count includes exactly this test's one fresh approved row",
+      );
+      assert.equal(
+        Number(match?.[2]),
+        declinedBefore + 1,
+        "declined count includes exactly this test's one fresh declined row",
+      );
+      assert.ok(
+        match?.[3],
+        'a median-hours fragment renders — this test alone guarantees at least two resolutions in the window',
+      );
+    } finally {
+      await pool.query(
+        `DELETE FROM access_request_resolutions WHERE requested_at = $1 AND outcome = 'approved'`,
+        [approvedRequestedAt],
+      );
+      await pool.query(
+        `DELETE FROM access_request_resolutions WHERE requested_at = $1 AND outcome = 'declined'`,
+        [declinedRequestedAt],
+      );
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        adminId,
+      ]);
+      await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+    }
   },
 );

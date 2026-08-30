@@ -49,6 +49,7 @@ import {
   wasAdminDigestSentRecently,
   type QuestionCluster,
 } from '@swampratnz/agent-base/storage/repository.js';
+import { listAccessRequestResolutionsSince } from './storage/accessRequestResolutions.js';
 import type { JobSpec } from '@swampratnz/agent-base/jobs/types.js';
 import type { Platform, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
@@ -394,6 +395,42 @@ async function suggestionResolutionBreakdown(
     declined: countRecentlyResolved(declinedRows),
     medianResolutionHours: medianReportResolutionHours(
       [...reviewedRows, ...doneRows, ...declinedRows].map(toMedianRow),
+      since,
+    ),
+  };
+}
+
+/**
+ * Outcome mix + median hours-to-resolve for gated access requests over the
+ * last `days` days — the fifth and last of `review_queue`'s five queues to
+ * get this treatment (reports #1075/#1081, appeals #844/#1130, candidates
+ * #797/#1149, suggestions #1152, issue #1239). Unlike every sibling above,
+ * this does NOT scan `access_requests` itself: that table deletes its row on
+ * resolution by design (docs/SECURITY.md's residual-risks section — the
+ * single most sensitive non-member record this bot keeps), so there is no
+ * resolved row left to scan. Instead it reads `access_request_resolutions`
+ * (schema/81-access-request-resolutions.sql), an anonymous
+ * `(requested_at, resolved_at, outcome)` log written alongside (never instead
+ * of) the delete, at the two existing resolution call sites (`add_member`,
+ * `decline_access_request`).
+ *
+ * Reuses `medianReportResolutionHours` unmodified, same technique every
+ * sibling above uses. Unlike those siblings, this needs no bounded-scan
+ * "known approximation" disclaimer: `access_request_resolutions` is
+ * insert-only (nothing is ever deleted from it) and already indexed on
+ * `resolved_at`, so `listAccessRequestResolutionsSince` reads the exact
+ * window with no row-count ceiling.
+ */
+async function accessRequestResolutionBreakdown(
+  days: number,
+): Promise<{ approved: number; declined: number; medianResolutionHours: number | null }> {
+  const since = Date.now() - days * 24 * 3_600_000;
+  const rows = await listAccessRequestResolutionsSince(new Date(since));
+  return {
+    approved: rows.filter((row) => row.outcome === 'approved').length,
+    declined: rows.filter((row) => row.outcome === 'declined').length,
+    medianResolutionHours: medianReportResolutionHours(
+      rows.map((row) => ({ createdAt: row.requestedAt, resolvedAt: row.resolvedAt })),
       since,
     ),
   };
@@ -941,6 +978,28 @@ export function buildAdminDigestMessage(
   mentionLatencyCount: number = 0,
   mentionLatencyMedianSeconds: number | null = null,
   mentionLatencyP90Seconds: number | null = null,
+  // Outcome mix of access requests resolved in the last FRESHNESS_DAYS days
+  // (`accessRequestResolutionBreakdown`, issue #1239) — the still-missing
+  // resolved-vs-declined complement to `pendingAccessRequests`/
+  // `oldestAccessRequestAgeDays`'s backlog-size/-age signals above, the fifth
+  // and last review queue to get this treatment (reports #1075, appeals
+  // #844, candidates via acceptedKnowledgeCandidatesCount, suggestions
+  // #1152). Counts CLOSED rows, disjoint from `pendingAccessRequests`'
+  // pending-only scope, so it gets its own entry in the all-signals-zero gate
+  // below rather than riding as a sub-count of an already-gated signal.
+  // Rendered as ONE line only when `approvedAccessRequestsCount +
+  // declinedAccessRequestsCount > 0`. Bare integers only — no requester
+  // userId/userName/platform ever reaches the DM, same privacy convention as
+  // resolvedReportsCount/dismissedReportsCount. Deliberately NOT written into
+  // `currentCounts` below, for the identical upstream-`ADMIN_DIGEST_SIGNAL_KEYS`-
+  // allowlist reason `resolvedReportsCount`'s own comment gives — the
+  // trendSuffix calls below still fire, but render bare with no persisted
+  // `previous` entry. Three append-only trailing params, default 0/0/null,
+  // so every existing call site is unaffected and the quiet case is
+  // byte-identical to the pre-#1239 form.
+  approvedAccessRequestsCount: number = 0,
+  declinedAccessRequestsCount: number = 0,
+  accessRequestMedianResolutionHours: number | null = null,
 ): string | null {
   if (
     clusters.length === 0 &&
@@ -978,7 +1037,9 @@ export function buildAdminDigestMessage(
     declinedSuggestionsCount === 0 &&
     responseLatencyCount === 0 &&
     autoAnswerLatencyCount === 0 &&
-    mentionLatencyCount === 0
+    mentionLatencyCount === 0 &&
+    approvedAccessRequestsCount === 0 &&
+    declinedAccessRequestsCount === 0
   )
     return null;
 
@@ -1020,6 +1081,21 @@ export function buildAdminDigestMessage(
     sections.push(
       `⏳ ${pendingAccessRequests} pending access request(s)${ageFragment} — run \`list_access_requests\`.` +
         trendSuffix('pendingAccessRequests', pendingAccessRequests, previousCounts),
+    );
+  }
+  if (approvedAccessRequestsCount + declinedAccessRequestsCount > 0) {
+    // Bare integers only — no requester userId/userName/platform ever
+    // reaches the DM (#1239, extended by its own median-hours fragment
+    // below, itself a bare rounded integer).
+    const medianFragment =
+      accessRequestMedianResolutionHours !== null
+        ? ` (median ${Math.round(accessRequestMedianResolutionHours)}h to resolve)`
+        : '';
+    sections.push(
+      `✅ ${approvedAccessRequestsCount} approved, ${declinedAccessRequestsCount} declined access ` +
+        `request(s) this week${medianFragment}.` +
+        trendSuffix('approvedAccessRequestsCount', approvedAccessRequestsCount, previousCounts) +
+        trendSuffix('declinedAccessRequestsCount', declinedAccessRequestsCount, previousCounts),
     );
   }
   if (openReports > 0) {
@@ -1449,6 +1525,7 @@ export async function buildAdminDigestForAdmin(
     latencyStats,
     autoAnswerLatencyStats,
     mentionLatencyStats,
+    accessRequestBreakdown,
   ] = await Promise.all([
     recentQuestionClusters(scope, FRESHNESS_DAYS, CLUSTER_LIMIT),
     countAccessRequests(),
@@ -1617,6 +1694,14 @@ export async function buildAdminDigestForAdmin(
     // third argument instead of `'all'`.
     responseLatencyStats(scope, FRESHNESS_DAYS, 'auto_answer'),
     responseLatencyStats(scope, FRESHNESS_DAYS, 'mention'),
+    // Outcome mix of access requests resolved over the same FRESHNESS_DAYS
+    // window as every other rolling-window trend line here — the still-
+    // missing resolved-vs-declined complement to pendingAccessRequests/
+    // oldestAccessRequestAge above, the fifth and last review queue to get
+    // this treatment (issue #1239). Guild-wide, unscoped like
+    // pendingAccessRequests above — access_request_resolutions carries no
+    // conversation/channel column.
+    accessRequestResolutionBreakdown(FRESHNESS_DAYS),
   ]);
   // Onboarding-queue count only means anything in 'gated' mode — an
   // 'open'-mode not_members row already has full member-tool access
@@ -1698,6 +1783,15 @@ export async function buildAdminDigestForAdmin(
     // `autoAnswerLatency*`/`mentionLatency*` (issue #1220) are excluded for
     // the identical reason as `responseLatency*` directly above — same
     // upstream-allowlist gap, same no-`trendSuffix`-call rendering.
+    // `approvedAccessRequestsCount`/`declinedAccessRequestsCount`/
+    // `accessRequestMedianResolutionHours` (issue #1239) are excluded for the
+    // identical reason `resolvedReportsCount`/`dismissedReportsCount`/
+    // `reportMedianResolutionHours` are — no upstream
+    // `ADMIN_DIGEST_SIGNAL_KEYS` allowlist entry, so adding one would be an
+    // agent-base change, out of scope here. The trendSuffix calls on the
+    // rendered line still fire, but render bare with no persisted `previous`
+    // entry — the same "renders bare" first-ever-digest behaviour every
+    // excluded signal above has.
   };
   // Only added when there's at least one auto-answer rating this week (issue
   // #629) — mirrors the render block's own `autoAnswerHelpful +
@@ -1774,6 +1868,9 @@ export async function buildAdminDigestForAdmin(
     mentionLatencyStats?.count ?? 0,
     mentionLatencyStats?.medianSeconds ?? null,
     mentionLatencyStats?.p90Seconds ?? null,
+    accessRequestBreakdown.approved,
+    accessRequestBreakdown.declined,
+    accessRequestBreakdown.medianResolutionHours,
   );
   return { message, currentCounts };
 }

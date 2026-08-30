@@ -244,6 +244,8 @@ const { superAdminIds } = await import('@swampratnz/agent-base/auth/roles.js');
 const { WhatsAppCloudAdapter, WindowClosedError } =
   await import('@swampratnz/agent-base/platforms/whatsapp/cloudAdapter.js');
 const { buildAdminDigestForAdmin } = await import('../src/module/adminDigest.js');
+const { listAccessRequestResolutionsSince } =
+  await import('../src/module/storage/accessRequestResolutions.js');
 const { buildMemberDigestContent } = await import('../src/module/memberDigest.js');
 const { formatMyDataText, formatMySubmissionsText, formatMyWarningsText } =
   await import('../src/module/agent/tools/selfService.js');
@@ -12775,6 +12777,226 @@ test(
   },
 );
 
+// add_member records an access-request-resolution row (issue #1239): the
+// missing resolution-speed signal for the fifth and last review queue to get
+// one, captured at the same call site that already clears the pending row.
+// The lookup happens BEFORE clearAccessRequest — the row is gone after.
+test(
+  "add_member records an 'approved' access_request_resolutions row with the pending request's firstRequestedAt when one exists (issue #1239 acceptance criteria 2, 3)",
+  { skip },
+  async () => {
+    const targetUserId = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    const conversationId = `convo-add-member-resolution-${targetUserId}`;
+    await clearAccessRequest('discord', targetUserId);
+    const { firstRequestedAt } = await recordAccessRequest({
+      platform: 'discord',
+      userId: targetUserId,
+      userName: 'tester',
+    });
+
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'admin-1',
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId,
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['add_member'];
+
+    try {
+      await registeredTool.handler({ userId: targetUserId, platform: 'discord' });
+
+      const since = new Date(Date.now() - 3_600_000);
+      const rows = await listAccessRequestResolutionsSince(since);
+      const row = rows.find(
+        (r) => r.outcome === 'approved' && r.requestedAt.getTime() === firstRequestedAt.getTime(),
+      );
+      assert.ok(
+        row,
+        "add_member writes exactly one approved resolution row keyed to the pending request's firstRequestedAt",
+      );
+    } finally {
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        targetUserId,
+      ]);
+      await pool.query(
+        `DELETE FROM access_request_resolutions WHERE requested_at = $1 AND outcome = 'approved'`,
+        [firstRequestedAt],
+      );
+    }
+  },
+);
+
+test(
+  'add_member writes no access_request_resolutions row when the target has no pending access request (issue #1239 acceptance criterion 2)',
+  { skip },
+  async () => {
+    const targetUserId = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    const conversationId = `convo-add-member-noresolution-${targetUserId}`;
+    await clearAccessRequest('discord', targetUserId);
+
+    const since = new Date(Date.now() - 3_600_000);
+    const before = (await listAccessRequestResolutionsSince(since)).length;
+
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'admin-1',
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId,
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['add_member'];
+
+    try {
+      await registeredTool.handler({ userId: targetUserId, platform: 'discord' });
+
+      const after = (await listAccessRequestResolutionsSince(since)).length;
+      assert.equal(after, before, 'no pending request means no resolution event to log');
+    } finally {
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        targetUserId,
+      ]);
+    }
+  },
+);
+
+test(
+  'SECURITY: add_member still succeeds when the access-request-resolution metric write fails — the write must never be able to block the resolution action (issue #1239 acceptance criterion 3)',
+  { skip },
+  async (t) => {
+    const targetUserId = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    const conversationId = `convo-add-member-metricfail-${targetUserId}`;
+    await clearAccessRequest('discord', targetUserId);
+    await recordAccessRequest({ platform: 'discord', userId: targetUserId, userName: 'tester' });
+
+    // Simulate the metric write failing without touching real DB state:
+    // intercept only recordAccessRequestResolution's INSERT and reject it,
+    // passing every other query through to the real pool.query untouched.
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && sql.includes('INSERT INTO access_request_resolutions')) {
+        return Promise.reject(new Error('metric write unavailable'));
+      }
+      return (realQuery as (...args: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+
+    try {
+      const adapter = stubAdapter(async () => {});
+      const caller = {
+        platform: 'discord' as const,
+        userId: 'admin-1',
+        userName: 'Admin',
+        role: 'admin' as const,
+        conversationId,
+      };
+      const server = buildToolServer(caller, adapter);
+      const registeredTool = (
+        server.instance as unknown as {
+          _registeredTools: Record<
+            string,
+            { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+          >;
+        }
+      )._registeredTools['add_member'];
+
+      const result = await registeredTool.handler({ userId: targetUserId, platform: 'discord' });
+      assert.match(
+        result.content[0]?.text ?? '',
+        /^Added/,
+        'add_member still reports success even though the metric write behind it failed',
+      );
+    } finally {
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        targetUserId,
+      ]);
+    }
+  },
+);
+
+test(
+  'SECURITY: add_member does not record an access-request-resolution when clearAccessRequest itself fails — gating on pendingRequest alone would phantom-record a still-pending request, and double-record it on a later successful retry (PR #1240 review)',
+  { skip },
+  async (t) => {
+    const targetUserId = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    const conversationId = `convo-add-member-clearfail-${targetUserId}`;
+    await clearAccessRequest('discord', targetUserId);
+    await recordAccessRequest({ platform: 'discord', userId: targetUserId, userName: 'tester' });
+
+    const since = new Date(Date.now() - 3_600_000);
+    const before = (await listAccessRequestResolutionsSince(since)).length;
+
+    // Simulate the DELETE FROM access_requests write itself failing, without
+    // touching real DB state: intercept only that statement and reject it,
+    // passing every other query (including the resolution INSERT, which must
+    // NOT run) through to the real pool.query untouched.
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && sql.includes('DELETE FROM access_requests WHERE')) {
+        return Promise.reject(new Error('clear write unavailable'));
+      }
+      return (realQuery as (...args: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+
+    try {
+      const adapter = stubAdapter(async () => {});
+      const caller = {
+        platform: 'discord' as const,
+        userId: 'admin-1',
+        userName: 'Admin',
+        role: 'admin' as const,
+        conversationId,
+      };
+      const server = buildToolServer(caller, adapter);
+      const registeredTool = (
+        server.instance as unknown as {
+          _registeredTools: Record<
+            string,
+            { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+          >;
+        }
+      )._registeredTools['add_member'];
+
+      const result = await registeredTool.handler({ userId: targetUserId, platform: 'discord' });
+      assert.match(
+        result.content[0]?.text ?? '',
+        /^Added/,
+        'add_member still reports success even though the underlying clear failed — that failure is already swallowed the same way as before this fix',
+      );
+
+      const after = (await listAccessRequestResolutionsSince(since)).length;
+      assert.equal(
+        after,
+        before,
+        'a failed clear must not record a resolution: the request row is still pending, so recording here would both misreport it as resolved and double-record it on a later successful retry',
+      );
+    } finally {
+      t.mock.restoreAll();
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        targetUserId,
+      ]);
+      await clearAccessRequest('discord', targetUserId);
+    }
+  },
+);
+
 // grant_admin's reply now reflects DM delivery too (issue #556), same shape
 // as add_member above but inside the CONFIRM-gated execute path.
 test(
@@ -20018,6 +20240,101 @@ test('decline_access_request reports failure for an identity with no pending req
   assert.equal(result.isError, true);
   assert.match(result.content[0]?.text ?? '', /^Failed/);
 });
+
+// decline_access_request records an access-request-resolution row (issue
+// #1239): the missing resolution-speed signal for the fifth and last review
+// queue to get one. The lookup happens BEFORE clearAccessRequest is called
+// inside audited's run() — the row is gone after.
+test(
+  "decline_access_request records a 'declined' access_request_resolutions row with the pending request's firstRequestedAt on a successful decline (issue #1239 acceptance criteria 2, 3)",
+  { skip },
+  async () => {
+    const admin = `${RUN}-decline-access-resolution-admin`;
+    const guest = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    await clearAccessRequest('discord', guest);
+    const { firstRequestedAt } = await recordAccessRequest({
+      platform: 'discord',
+      userId: guest,
+      userName: 'tester',
+    });
+
+    const result = await declineAccessRequestHandler('admin', admin).handler({
+      userId: guest,
+      platform: 'discord',
+    });
+    assert.equal(result.isError, false);
+
+    const since = new Date(Date.now() - 3_600_000);
+    const rows = await listAccessRequestResolutionsSince(since);
+    const row = rows.find(
+      (r) => r.outcome === 'declined' && r.requestedAt.getTime() === firstRequestedAt.getTime(),
+    );
+    assert.ok(
+      row,
+      "decline_access_request writes exactly one declined resolution row keyed to the pending request's firstRequestedAt",
+    );
+
+    await pool.query(
+      `DELETE FROM access_request_resolutions WHERE requested_at = $1 AND outcome = 'declined'`,
+      [firstRequestedAt],
+    );
+  },
+);
+
+test(
+  'decline_access_request writes no access_request_resolutions row when it fails (no pending request) (issue #1239 acceptance criterion 2)',
+  { skip },
+  async () => {
+    const admin = `${RUN}-decline-access-noresolution-admin`;
+    const guest = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    await clearAccessRequest('discord', guest);
+
+    const since = new Date(Date.now() - 3_600_000);
+    const before = (await listAccessRequestResolutionsSince(since)).length;
+
+    const result = await declineAccessRequestHandler('admin', admin).handler({
+      userId: guest,
+      platform: 'discord',
+    });
+    assert.equal(result.isError, true);
+
+    const after = (await listAccessRequestResolutionsSince(since)).length;
+    assert.equal(after, before, 'a failed decline (no pending request) must write no resolution event');
+  },
+);
+
+test(
+  'SECURITY: decline_access_request still succeeds when the access-request-resolution metric write fails — the write must never be able to block the resolution action (issue #1239 acceptance criterion 3)',
+  { skip },
+  async (t) => {
+    const admin = `${RUN}-decline-access-metricfail-admin`;
+    const guest = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    await clearAccessRequest('discord', guest);
+    await recordAccessRequest({ platform: 'discord', userId: guest, userName: 'tester' });
+
+    // Simulate the metric write failing without touching real DB state:
+    // intercept only recordAccessRequestResolution's INSERT and reject it,
+    // passing every other query through to the real pool.query untouched.
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && sql.includes('INSERT INTO access_request_resolutions')) {
+        return Promise.reject(new Error('metric write unavailable'));
+      }
+      return (realQuery as (...args: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+
+    const result = await declineAccessRequestHandler('admin', admin).handler({
+      userId: guest,
+      platform: 'discord',
+    });
+    assert.equal(result.isError, false);
+    assert.match(
+      result.content[0]?.text ?? '',
+      /Declined/,
+      'decline_access_request still reports success even though the metric write behind it failed',
+    );
+  },
+);
 
 test(
   'SECURITY: decline_access_request rejects a caller below admin tier before any DB read/write, and a successful admin decline confers no role (issue #1006 acceptance criterion #5)',

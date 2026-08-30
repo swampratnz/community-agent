@@ -7,11 +7,14 @@ import {
   clearAccessRequest,
   getMemberRole,
   linkMembers,
+  listAccessRequests,
   removeMember,
   resolveLinkedIdentities,
   unlinkMember,
   upsertMember,
 } from '@swampratnz/agent-base/storage/repository.js';
+import { ACCESS_REQUEST_STALE_ALERT_SCAN_LIMIT } from '../../accessRequestStaleAlert.js';
+import { recordAccessRequestResolution } from '../../storage/accessRequestResolutions.js';
 import { platformArg, resolveSanitizedLabel, text } from './helpers.js';
 import { notifyMemberApproved } from './notify.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
@@ -55,9 +58,31 @@ export const membershipTools = [
         params: { platform, displayName: args.displayName },
         run: async () => `registered as ${finalRole} on ${platform}`,
       });
-      await clearAccessRequest(platform, userId).catch((err) =>
-        logger.warn({ err, userId }, 'Failed to clear access request'),
+      // Looked up BEFORE clearAccessRequest — the row is gone after (issue
+      // #1239). No match (e.g. an admin proactively add_members someone who
+      // never filed a request) means no resolution event to log.
+      const pendingRequest = (await listAccessRequests(ACCESS_REQUEST_STALE_ALERT_SCAN_LIMIT)).find(
+        (r) => r.platform === platform && r.userId === userId,
       );
+      // `cleared` is the actual outcome — a truthy row count on success, or
+      // `false` if the write threw (mirrors decline_access_request's
+      // `cleared` check on the same call, just non-blocking here). Gating
+      // the metric write on it (not merely on `pendingRequest` having been
+      // found beforehand) means a failed clear can't leave a phantom
+      // "resolved" row for a request that's still pending, and a later
+      // retry that succeeds can't end up double-recording it.
+      const cleared = await clearAccessRequest(platform, userId).catch((err) => {
+        logger.warn({ err, userId }, 'Failed to clear access request');
+        return false;
+      });
+      if (pendingRequest && cleared) {
+        // Best-effort, same non-blocking guard as clearAccessRequest just
+        // above — the metric write must never be able to fail or block
+        // add_member itself.
+        await recordAccessRequestResolution(pendingRequest.firstRequestedAt, 'approved').catch((err) =>
+          logger.warn({ err, userId }, 'Failed to record access request resolution'),
+        );
+      }
       // Cross-platform approval DM (issue #157's pattern, extended by #548):
       // routes through the TARGET's platform adapter, not the acting admin's
       // current-turn one — degrades to a silent skip if that platform isn't

@@ -24,7 +24,10 @@ import type { ModuleMigrationFragment } from '@swampratnz/agent-base/storage/mig
  * build script copies them and scripts/check-dist-schema.mjs verifies the copy),
  * so resolve them relative to the module URL exactly as base's manifest does.
  */
-export const COMMUNITY_SCHEMA_FRAGMENTS = ['80-preference-values.sql'] as const;
+export const COMMUNITY_SCHEMA_FRAGMENTS = [
+  '80-preference-values.sql',
+  '81-access-request-resolutions.sql',
+] as const;
 
 const schemaDir = dirname(fileURLToPath(import.meta.url));
 
