@@ -73,6 +73,8 @@ const {
   notifyAdminApproved,
   notifyAccessRequestDeclined,
   notifyProjectRemoved,
+  notifyProjectMemberAdded,
+  notifyProjectMemberRemoved,
   notifySuggestionResolved,
   notifyReportResolved,
   notifyReportFiled,
@@ -2005,6 +2007,223 @@ test("notifyProjectRemoved's reason clause is unaffected by a 'plain' response s
     calls[0],
     /^An admin removed one of your projects from the NZ Claude Community showcase\. Reason: "spam listing"$/,
   );
+});
+
+// notifyProjectMemberAdded / notifyProjectMemberRemoved close the one
+// project_* grant/revoke pair with no notification path in either direction
+// (issue #1241) — modelled line-for-line on notifyProjectRemoved above, same
+// fail-safe suite, but unconditional (no reason-gated silence) and always
+// carrying the project name as a trailing clause.
+test('notifyProjectMemberAdded sends a neutral grant DM naming the project', async () => {
+  const calls: Array<[string, string]> = [];
+  const adapter = stubAdapter(async (userId, text) => {
+    calls.push([userId, text]);
+  });
+
+  await notifyProjectMemberAdded(adapter, 'user-1', 'discord', 'Impact Lab');
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'user-1');
+  assert.match(calls[0][1], /given access to a project's shared memory/i);
+  assert.match(calls[0][1], /Project: "Impact Lab"/);
+});
+
+test('notifyProjectMemberAdded swallows a DM failure rather than throwing (the grant stays the source of truth)', async () => {
+  const adapter = stubAdapter(async () => {
+    throw new Error('DMs closed');
+  });
+
+  await assert.doesNotReject(notifyProjectMemberAdded(adapter, 'user-1', 'discord', 'Impact Lab'));
+});
+
+test("notifyProjectMemberAdded sends the te reo Māori variant for a caller with a stored 'mi' preference", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyProjectMemberAdded(adapter, 'user-1', 'discord', 'Impact Lab', async () => 'mi');
+
+  assert.match(calls[0], /Kua whakawāteatia/);
+  assert.match(calls[0], /Kaupapa: "Impact Lab"/);
+});
+
+test("notifyProjectMemberAdded sends the plain-language variant for a caller with a stored 'plain' response style", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyProjectMemberAdded(
+    adapter,
+    'user-1',
+    'discord',
+    'Impact Lab',
+    async () => 'auto',
+    async () => 'plain',
+  );
+
+  assert.match(calls[0], /^You now have access to a project's shared memory/);
+});
+
+test("SECURITY: notifyProjectMemberAdded degrades to the English default, rather than throwing or dropping the DM, when the language-preference lookup fails (issue #52's invariant)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyProjectMemberAdded(adapter, 'user-1', 'discord', 'Impact Lab', async () => {
+    throw new Error('DB unreachable');
+  });
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /given access to a project's shared memory/i);
+});
+
+test("SECURITY: notifyProjectMemberAdded degrades to the English default, rather than throwing or dropping the DM, when the response-style lookup fails (issue #52's invariant)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyProjectMemberAdded(
+    adapter,
+    'user-1',
+    'discord',
+    'Impact Lab',
+    async () => 'auto',
+    async () => {
+      throw new Error('DB unreachable');
+    },
+  );
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /given access to a project's shared memory/i);
+});
+
+test("SECURITY: notifyProjectMemberAdded never consults the response-style lookup once language has resolved to 'mi'", async () => {
+  let respStyleCalls = 0;
+  const adapter = stubAdapter(async () => {});
+
+  await notifyProjectMemberAdded(
+    adapter,
+    'user-1',
+    'discord',
+    'Impact Lab',
+    async () => 'mi',
+    async () => {
+      respStyleCalls += 1;
+      throw new Error('must never be reached when lang is mi');
+    },
+  );
+
+  assert.equal(respStyleCalls, 0);
+});
+
+test('notifyProjectMemberRemoved sends a neutral revoke DM naming the project', async () => {
+  const calls: Array<[string, string]> = [];
+  const adapter = stubAdapter(async (userId, text) => {
+    calls.push([userId, text]);
+  });
+
+  await notifyProjectMemberRemoved(adapter, 'user-1', 'discord', 'Impact Lab');
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'user-1');
+  assert.match(calls[0][1], /access .* was removed by an admin/i);
+  assert.match(calls[0][1], /Project: "Impact Lab"/);
+});
+
+test('notifyProjectMemberRemoved swallows a DM failure rather than throwing (the revoke stays the source of truth)', async () => {
+  const adapter = stubAdapter(async () => {
+    throw new Error('DMs closed');
+  });
+
+  await assert.doesNotReject(notifyProjectMemberRemoved(adapter, 'user-1', 'discord', 'Impact Lab'));
+});
+
+test("notifyProjectMemberRemoved sends the te reo Māori variant for a caller with a stored 'mi' preference", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyProjectMemberRemoved(adapter, 'user-1', 'discord', 'Impact Lab', async () => 'mi');
+
+  assert.match(calls[0], /I tangohia tō urunga/);
+  assert.match(calls[0], /Kaupapa: "Impact Lab"/);
+});
+
+test("notifyProjectMemberRemoved sends the plain-language variant for a caller with a stored 'plain' response style", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyProjectMemberRemoved(
+    adapter,
+    'user-1',
+    'discord',
+    'Impact Lab',
+    async () => 'auto',
+    async () => 'plain',
+  );
+
+  assert.match(calls[0], /^An admin removed your access to a project's shared memory/);
+});
+
+test("SECURITY: notifyProjectMemberRemoved degrades to the English default, rather than throwing or dropping the DM, when the language-preference lookup fails (issue #52's invariant)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyProjectMemberRemoved(adapter, 'user-1', 'discord', 'Impact Lab', async () => {
+    throw new Error('DB unreachable');
+  });
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /access .* was removed by an admin/i);
+});
+
+test("SECURITY: notifyProjectMemberRemoved degrades to the English default, rather than throwing or dropping the DM, when the response-style lookup fails (issue #52's invariant)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyProjectMemberRemoved(
+    adapter,
+    'user-1',
+    'discord',
+    'Impact Lab',
+    async () => 'auto',
+    async () => {
+      throw new Error('DB unreachable');
+    },
+  );
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /access .* was removed by an admin/i);
+});
+
+test("SECURITY: notifyProjectMemberRemoved never consults the response-style lookup once language has resolved to 'mi'", async () => {
+  let respStyleCalls = 0;
+  const adapter = stubAdapter(async () => {});
+
+  await notifyProjectMemberRemoved(
+    adapter,
+    'user-1',
+    'discord',
+    'Impact Lab',
+    async () => 'mi',
+    async () => {
+      respStyleCalls += 1;
+      throw new Error('must never be reached when lang is mi');
+    },
+  );
+
+  assert.equal(respStyleCalls, 0);
 });
 
 // notifySuggestionResolved holds all of resolve_suggestion's new (issue #116)
@@ -21623,8 +21842,11 @@ function adminProjectToolHandler(
     | 'project_unarchive'
     | 'project_info',
   role: 'member' | 'guest' | 'admin' | 'super_admin',
+  dmCalls?: Array<[string, string]>,
 ) {
-  const adapter = stubAdapter(async () => {});
+  const adapter = stubAdapter(async (userId, message) => {
+    dmCalls?.push([userId, message]);
+  });
   const server = buildToolServer(
     {
       platform: 'discord' as const,
@@ -21786,6 +22008,88 @@ test(
       (await remove.handler({ project: slug, userId: member })).content[0].text,
       /Not a member of/i,
       'removing twice must not claim a second removal',
+    );
+  },
+);
+
+test(
+  "SECURITY: project_add_member/project_remove_member fire their notify DM only on the actual add/remove transition — never on 'Already a member' / 'Not a member' / 'No project' / 'not a community member yet' (issue #1241 acceptance criterion #3)",
+  { skip },
+  async () => {
+    const { createProject, upsertMember } = await import('@swampratnz/agent-base/storage/repository.js');
+    const slug = `${RUN}-notify-gating`;
+    await createProject({ slug, name: 'Gating Lab', createdBy: 'test' });
+    // A fixed-length base (rather than the `${RUN.slice(1)}NNN.slice(0, 19)`
+    // convention used elsewhere in this file) so the distinguishing suffix is
+    // never silently truncated away when RUN's own random component happens
+    // to be long — which would otherwise make `member` and `stranger` collide
+    // on the same snowflake and falsely pass this test's non-member branch.
+    const base = RUN.slice(1).slice(0, 14);
+    const member = `${base}5551`;
+    await upsertMember({ platform: 'discord', userId: member, role: 'member', addedBy: 'test' });
+    const stranger = `${base}5552`;
+
+    const dmCalls: Array<[string, string]> = [];
+    const add = adminProjectToolHandler('project_add_member', 'admin', dmCalls);
+    const remove = adminProjectToolHandler('project_remove_member', 'admin', dmCalls);
+
+    // No project: neither tool notifies.
+    await add.handler({ project: `${slug}-missing`, userId: member });
+    await remove.handler({ project: `${slug}-missing`, userId: member });
+    assert.equal(dmCalls.length, 0, 'a missing project must never fire a notify DM');
+
+    // Not a community member yet: project_add_member must not notify.
+    await add.handler({ project: slug, userId: stranger });
+    assert.equal(dmCalls.length, 0, 'a non-member target must never fire a notify DM');
+
+    // Not a member of the project: project_remove_member must not notify.
+    await remove.handler({ project: slug, userId: member });
+    assert.equal(dmCalls.length, 0, 'removing a non-member must never fire a notify DM');
+
+    // Newly added: exactly one DM.
+    await add.handler({ project: slug, userId: member });
+    assert.equal(dmCalls.length, 1, 'a newly-added member must get exactly one DM');
+
+    // Already a member: no additional DM.
+    await add.handler({ project: slug, userId: member });
+    assert.equal(dmCalls.length, 1, 'adding an existing member again must not fire a second DM');
+
+    // Newly removed: exactly one more DM.
+    await remove.handler({ project: slug, userId: member });
+    assert.equal(dmCalls.length, 2, 'a newly-removed member must get exactly one DM');
+
+    // Already removed: no additional DM.
+    await remove.handler({ project: slug, userId: member });
+    assert.equal(dmCalls.length, 2, 'removing an already-removed member again must not fire a second DM');
+  },
+);
+
+test(
+  "SECURITY: project_remove_member's DM reaches only the removed member's own resolved identity, and never leaks which project to anyone else (issue #1241 acceptance criterion #6)",
+  { skip },
+  async () => {
+    const { createProject, upsertMember } = await import('@swampratnz/agent-base/storage/repository.js');
+    const slug = `${RUN}-notify-no-leak`;
+    await createProject({ slug, name: 'No Leak Lab', createdBy: 'test' });
+    const member = `${RUN.slice(1).slice(0, 14)}5571`;
+    await upsertMember({ platform: 'discord', userId: member, role: 'member', addedBy: 'test' });
+
+    const dmCalls: Array<[string, string]> = [];
+    const add = adminProjectToolHandler('project_add_member', 'admin', dmCalls);
+    const remove = adminProjectToolHandler('project_remove_member', 'admin', dmCalls);
+
+    await add.handler({ project: slug, userId: member });
+    dmCalls.length = 0; // isolate the removal DM from the grant DM above
+
+    const removed = await remove.handler({ project: slug, userId: member });
+
+    assert.equal(dmCalls.length, 1, 'exactly one DM must be sent for the removal');
+    assert.equal(dmCalls[0][0], member, 'the DM must reach only the removed member, never the acting admin');
+    assert.match(dmCalls[0][1], /No Leak Lab/, 'the DM to the member may name the project');
+    assert.doesNotMatch(
+      removed.content[0].text,
+      /No Leak Lab was removed by an admin|access to a project's shared memory/i,
+      "the admin-facing reply must not itself carry the member's DM text",
     );
   },
 );
@@ -22248,7 +22552,7 @@ test(
 // add_member's single MEMBER_DM_FAILED_NOTE.
 
 test(
-  'team_setup sends exactly one welcome DM per newly-registered member, and none for an already-existing member (issue #1065)',
+  'team_setup sends exactly one welcome DM per newly-registered member, plus exactly one project-added DM per target — new or already-existing — added to the project (issue #1065, extended by issue #1241 review)',
   { skip },
   async () => {
     const conv = `${RUN}-team-setup-dm-count`;
@@ -22300,12 +22604,30 @@ test(
       assert.ok(pending);
       await pending?.execute();
 
-      assert.equal(dmCalls.length, 2, 'exactly one welcome DM per newly-registered member');
-      assert.deepEqual(
-        new Set(dmCalls),
-        new Set([freshA, freshB]),
-        'only the newly-registered members receive a welcome DM',
+      // issue #1241 review: none of these five were yet members of this
+      // brand-new project, so every one of them gets a notifyProjectMemberAdded
+      // DM naming the project — closing the gap where an already-registered
+      // member added via team_setup got no DM at all, AND the gap where a
+      // brand-new registrant's welcome DM never named the project. freshA/
+      // freshB additionally get their one welcome DM each (unchanged), so
+      // they receive two DMs total; existingA/B/C receive one each.
+      assert.equal(
+        dmCalls.length,
+        7,
+        'one welcome DM per newly-registered member, plus one project-added DM per targeted member',
       );
+      const dmCountByUser = new Map<string, number>();
+      for (const id of dmCalls) dmCountByUser.set(id, (dmCountByUser.get(id) ?? 0) + 1);
+      for (const id of [existingA, existingB, existingC]) {
+        assert.equal(dmCountByUser.get(id), 1, 'an already-registered target gets exactly one DM');
+      }
+      for (const id of [freshA, freshB]) {
+        assert.equal(
+          dmCountByUser.get(id),
+          2,
+          'a brand-new registrant gets both the welcome DM and the project-added DM',
+        );
+      }
     } finally {
       await pool.query(
         `DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = ANY($1::text[])`,
@@ -22366,8 +22688,14 @@ test(
       assert.ok(pending);
       await pending?.execute();
 
-      assert.equal(dmCalls.length, 1);
-      assert.match(dmCalls[0], /Be respectful\. No spam\. Keep discussion on-topic\./);
+      // issue #1241 review: freshMember is brand-new AND newly added to this
+      // brand-new project, so it gets both the welcome DM (guidelines-bearing)
+      // and the project-added DM.
+      assert.equal(dmCalls.length, 2);
+      assert.ok(
+        dmCalls.some((msg) => /Be respectful\. No spam\. Keep discussion on-topic\./.test(msg)),
+        'the welcome DM must carry the configured guidelines',
+      );
     } finally {
       await updatePolicy('community_guidelines', '', 'test');
       resetPolicyCacheForTests();
@@ -22500,7 +22828,14 @@ test(
       const firstPending = takePendingAction('discord', conv, adminId);
       assert.ok(firstPending);
       await firstPending?.execute();
-      assert.equal(dmCalls.length, 2, 'the first run DMs both newly-registered members');
+      // issue #1241 review: each newly-registered member is also newly added
+      // to this brand-new project, so each gets a welcome DM AND a
+      // project-added DM.
+      assert.equal(
+        dmCalls.length,
+        4,
+        'the first run DMs both newly-registered members twice each: welcome DM + project-added DM',
+      );
 
       dmCalls.length = 0;
       const second = await registeredTool.handler({
@@ -22587,7 +22922,10 @@ test(
       assert.ok(pending);
       await pending?.execute();
 
-      assert.deepEqual(dmCalls, [validMember], 'only the valid discord-shaped id is ever DMed');
+      // issue #1241 review: validMember is brand-new AND newly added to this
+      // brand-new project, so it gets both the welcome DM and the
+      // project-added DM — both to the same, valid, discord-shaped id.
+      assert.deepEqual(dmCalls, [validMember, validMember], 'only the valid discord-shaped id is ever DMed');
       const { rows } = await pool.query(
         `SELECT platform, platform_user_id FROM community_users WHERE platform_user_id = $1`,
         [whatsappShapedId],

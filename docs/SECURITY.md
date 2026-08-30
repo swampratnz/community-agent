@@ -3653,6 +3653,32 @@ give themselves the same visibility with one `project_add_member` call anyway,
 so the narrower scope would cost the audit trail without buying confidentiality.
 Same precedent as `list_roster` and `blocked_users` (PR #929 review).
 
+**Grants and revokes DM the affected member (issue #1241).** `project_add_member`
+and `project_remove_member` — and `team_setup`'s project-add step, which calls
+the same grant path for every target it touches — were the one `project_*`
+authorization change with no notification in either direction; every sibling
+grant/revoke elsewhere in this codebase (`notifyMemberApproved`,
+`notifyProjectRemoved`, `notifyInterestsRemoved`) already DMs the affected
+person. `notifyProjectMemberAdded` / `notifyProjectMemberRemoved`
+(`agent/tools/notify.ts`) close that gap: best-effort, fire only on the actual
+add/remove transition (never on "already a member" / "not a member"), and
+never change the admin-facing reply or get persisted into `audited()`'s
+params. Inside `team_setup`, the add-DM fires for every target on that actual
+transition regardless of whether they were already a registered community
+member — a brand-new registrant gets both the generic welcome DM and this
+project-naming one, since the welcome DM never names the project — gated only
+on the grant's own `added` outcome, which is already false on a repeat call,
+so re-running `team_setup` against an already-provisioned team doesn't
+re-notify anyone. Unlike `notifyProjectRemoved`/`notifyInterestsRemoved`, they
+are unconditional rather than reason-gated — there is no moderation-silence
+rationale for ordinary team-access housekeeping.
+The project name is appended to the (untranslated, catalogue) base message only
+as a `truncateForEcho`-capped quoted trailing clause, never interpolated into
+the translated sentence, same convention as `projectRemovedMessage`'s `reason`
+clause. The DM reaches only the affected member's own resolved identity via
+`adapterFor(target.platform)` — nobody else learns which project someone was
+added to or removed from.
+
 ### 26. `community_info` honours a standing `'mi'` language preference (issue #1028)
 
 `community_info`/`/help`/`!help` shared one gap the rest of the `'mi'` sweep

@@ -427,6 +427,44 @@ const NOTICE_ENTRIES = {
       plain: 'An admin removed your published interests from member discovery.',
     },
   },
+  // --- project_add_member / project_remove_member grant-and-revoke DMs
+  // (agent/tools/notify.ts, issue #1241) ---
+  /**
+   * The neutral grant DM for the admin-tier `project_add_member` (and
+   * `team_setup`'s existing-member branch) — static, same non-interpolation
+   * shape as `projectRemovedMessage` above: the project name is never
+   * interpolated into this translated base string, only appended afterward
+   * as a distinct, quoted, `truncateForEcho`-capped clause (see
+   * `notifyProjectMemberAdded` in notify.ts). Unlike `projectRemovedMessage`/
+   * `interestsRemovedMessage`, this fires unconditionally — there is no
+   * moderation-silence rationale for an ordinary access grant.
+   */
+  projectMemberAddedMessage: {
+    base: "You've been given access to a project's shared memory on NZ Claude Community.",
+    language: {
+      mi: 'Kua whakawāteatia koe ki ngā mahara tiritahi o tētahi kaupapa i NZ Claude Community.',
+    },
+    style: {
+      plain: "You now have access to a project's shared memory on NZ Claude Community.",
+    },
+  },
+  /**
+   * The neutral revoke DM for the admin-tier `project_remove_member` —
+   * static, same non-interpolation shape as `projectMemberAddedMessage`
+   * above: the project name is appended only as a distinct, quoted,
+   * `truncateForEcho`-capped clause (see `notifyProjectMemberRemoved` in
+   * notify.ts). Unconditional, same rationale as `projectMemberAddedMessage`
+   * — team-access revocation is ordinary housekeeping, not moderation.
+   */
+  projectMemberRemovedMessage: {
+    base: "Your access to a project's shared memory on NZ Claude Community was removed by an admin.",
+    language: {
+      mi: 'I tangohia tō urunga ki ngā mahara tiritahi o tētahi kaupapa i NZ Claude Community e tētahi kaiwhakahaere.',
+    },
+    style: {
+      plain: "An admin removed your access to a project's shared memory on NZ Claude Community.",
+    },
+  },
   // --- community_info member capabilities rundown (agent/tools/info.ts) ---
   /**
    * The member-tier segment of `community_info`/`/help`/`!help`'s capability

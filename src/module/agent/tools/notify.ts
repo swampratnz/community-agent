@@ -587,6 +587,104 @@ export async function notifyInterestsRemoved(
 }
 
 /**
+ * Best-effort orientation DM to a member granted access to a project's
+ * shared memory via `project_add_member` (and `team_setup`'s existing-member
+ * branch) — issue #1241, closing the one project_* grant/revoke pair that was
+ * invisible to the person it affects, unlike every sibling grant/revoke in
+ * this codebase (`notifyMemberApproved`, `notifyProjectRemoved`,
+ * `notifyInterestsRemoved`). Modelled line-for-line on `notifyProjectRemoved`
+ * below: fire-and-forget, `.catch(logger.warn)`, never blocks or changes the
+ * calling tool's own reported outcome. Unlike `notifyProjectRemoved`/
+ * `notifyInterestsRemoved`'s reason-gated silence — a moderation rationale
+ * for letting an admin remove content without alerting a bad actor — this
+ * fires unconditionally: `project_add_member` is ordinary team-access
+ * housekeeping with no such rationale. The base text
+ * (`strings/notices.ts`'s `projectMemberAddedMessage`) is never interpolated
+ * with the project name; the name is appended only as a distinct,
+ * `truncateForEcho`-capped, quoted trailing clause, same shape as
+ * `notifyProjectRemoved`'s `reason` clause. Honours the target's standing
+ * `'mi'` language preference, degrading to `'auto'`/English on a lookup
+ * failure (issue #52's invariant); `getRespStyle` is consulted only once
+ * `'mi'` is ruled out, degrading to `'standard'` on failure (issue #1212's
+ * shape) — `getLangPref`/`getRespStyle` are appended last, same convention
+ * every sibling in this file uses to keep positional call sites stable. A
+ * `WindowClosedError` rejection is queued via `queueForWindowReopen` at
+ * `'low'` priority instead of dropped (issue #644 recovery); any other
+ * rejection is logged and swallowed. Exported separately so it's
+ * unit-testable without the MCP tool-call transport, same convention as
+ * every sibling notify function in this file.
+ */
+export async function notifyProjectMemberAdded(
+  adapter: PlatformAdapter,
+  userId: string,
+  platform: Platform,
+  projectName: string,
+  getLangPref: typeof getLanguagePreference = getLanguagePreference,
+  getRespStyle: typeof getResponseStyle = getResponseStyle,
+): Promise<void> {
+  const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
+  const style: ResponseStyle | undefined =
+    lang === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
+  const base = notice('projectMemberAddedMessage', { language: lang, style });
+  const echoedName = truncateForEcho(projectName);
+  const message = `${base} ${lang === 'mi' ? 'Kaupapa' : 'Project'}: "${echoedName}"`;
+  await adapter.sendDirectMessage(userId, message).catch((err) => {
+    if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+      adapter.queueForWindowReopen(userId, message, 'low');
+      logger.warn(
+        { userId: hashId(userId), platform },
+        "Project member-added DM: recipient's window is closed, queued for reopen",
+      );
+      return;
+    }
+    logger.warn({ err, userId: hashId(userId) }, 'Project member-added DM failed');
+  });
+}
+
+/**
+ * Best-effort resolution DM to a member whose access to a project's shared
+ * memory an admin revokes via `project_remove_member` (issue #1241) — the
+ * revoke-side counterpart to `notifyProjectMemberAdded` above, same shape and
+ * same unconditional-fire rationale (ordinary team-access housekeeping, not
+ * moderation, so there is no reason-gated silent path here the way
+ * `notifyProjectRemoved`/`notifyInterestsRemoved` have). The base text
+ * (`strings/notices.ts`'s `projectMemberRemovedMessage`) is never
+ * interpolated with the project name; the name is appended only as a
+ * distinct, `truncateForEcho`-capped, quoted trailing clause, same shape as
+ * `notifyProjectMemberAdded`'s. Reaches only the removed member's own
+ * resolved identity via the caller's `adapterFor(target.platform)` — nobody
+ * else is ever notified of which project they were removed from. Same
+ * fail-safe language/style lookups, `WindowClosedError` recovery, and
+ * swallow-and-log-everything-else shape as `notifyProjectMemberAdded` above.
+ */
+export async function notifyProjectMemberRemoved(
+  adapter: PlatformAdapter,
+  userId: string,
+  platform: Platform,
+  projectName: string,
+  getLangPref: typeof getLanguagePreference = getLanguagePreference,
+  getRespStyle: typeof getResponseStyle = getResponseStyle,
+): Promise<void> {
+  const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
+  const style: ResponseStyle | undefined =
+    lang === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
+  const base = notice('projectMemberRemovedMessage', { language: lang, style });
+  const echoedName = truncateForEcho(projectName);
+  const message = `${base} ${lang === 'mi' ? 'Kaupapa' : 'Project'}: "${echoedName}"`;
+  await adapter.sendDirectMessage(userId, message).catch((err) => {
+    if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+      adapter.queueForWindowReopen(userId, message, 'low');
+      logger.warn(
+        { userId: hashId(userId), platform },
+        "Project member-removed DM: recipient's window is closed, queued for reopen",
+      );
+      return;
+    }
+    logger.warn({ err, userId: hashId(userId) }, 'Project member-removed DM failed');
+  });
+}
+
+/**
  * Best-effort confirmation DM to a member when their suggest_improvement
  * submission is resolved — closes the "suggestion box into the void" gap
  * (issue #116), mirroring notifyMemberApproved's shape exactly: fire-and-
