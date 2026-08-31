@@ -153,6 +153,7 @@ const {
   TOP_KNOWLEDGE_FETCH_CAP,
   KNOWLEDGE_FIX_NOTIFY_CAP,
   KNOWLEDGE_FIX_NOTIFY_FETCH_CAP,
+  KNOWLEDGE_FIX_NOTIFY_TRUNCATION_CAVEAT,
 } = await import('../src/module/agent/tools.js');
 const { reserveVoiceTranscriptionSlot } = await import('@swampratnz/agent-base/agent/rateReservers.js');
 const { filterOutbound } = await import('@swampratnz/agent-base/agent/outbound.js');
@@ -31791,9 +31792,11 @@ test(
 // the fetch window and gets silently dropped — zero DMs, no log line. This test
 // proves the gap exists rather than leaving it as an unverified claim; it is
 // expected to keep passing (i.e. the crowd-out keeps happening) until an
-// agent-base change adds a per-entry filter to listAnswerFeedback.
+// agent-base change adds a per-entry filter to listAnswerFeedback. Issue #1262
+// ends the SILENCE about it (not the crowd-out itself): the reply must now
+// carry the truncation caveat so the admin isn't told an unqualified success.
 test(
-  "known limitation: an entry's unhelpful rater is silently dropped when >= KNOWLEDGE_FIX_NOTIFY_FETCH_CAP more-recent unhelpful ratings exist elsewhere in the admin scope (issue #1169, PR #1170 review)",
+  "known limitation: an entry's unhelpful rater is silently dropped when >= KNOWLEDGE_FIX_NOTIFY_FETCH_CAP more-recent unhelpful ratings exist elsewhere in the admin scope (issue #1169, PR #1170 review; caveat added by issue #1262)",
   { skip },
   async () => {
     const admin = `${RUN}-kf-crowd-admin`;
@@ -31835,17 +31838,175 @@ test(
     const { tools, caller } = knowledgeFixAdminHandlers(admin, conversationId, adapter);
 
     await tools['update_knowledge'].handler({ id: targetEntryId, content: 'corrected, but crowded out' });
-    await takePendingAction('discord', caller.conversationId, caller.userId)?.execute();
+    const reply = await takePendingAction('discord', caller.conversationId, caller.userId)?.execute();
 
     assert.equal(
       dmCalls.length,
       0,
       'the target rater is silently crowded out by more-recent noise elsewhere in scope — the documented gap',
     );
+    assert.equal(
+      reply,
+      `Updated knowledge entry #${targetEntryId}.${KNOWLEDGE_FIX_NOTIFY_TRUNCATION_CAVEAT}`,
+      'issue #1262: the reply now carries the truncation caveat instead of an unqualified success',
+    );
 
     await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [[targetRater, ...noiseRaters]]);
     await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
     await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[targetEntryId, noiseEntryId]]);
+  },
+);
+
+test(
+  'update_knowledge omits the truncation caveat and still notifies the target rater one row short of KNOWLEDGE_FIX_NOTIFY_FETCH_CAP (issue #1262 acceptance criterion 1)',
+  { skip },
+  async () => {
+    const admin = `${RUN}-kf-notrunc-admin`;
+    const conversationId = `${RUN}-kf-notrunc-convo`;
+    const { id: targetEntryId } = await saveKnowledge({
+      content: `${RUN} kf-notrunc target entry content`,
+      title: `${RUN} kf-notrunc target entry`,
+    });
+    const { id: noiseEntryId } = await saveKnowledge({
+      content: `${RUN} kf-notrunc noise entry content`,
+      title: `${RUN} kf-notrunc noise entry`,
+    });
+
+    const targetRater = `${RUN}-kf-notrunc-target-rater`;
+    await rateKnowledgeAnswer(targetRater, conversationId, targetEntryId, false);
+
+    // One row short of the fetch cap, so the underlying listAnswerFeedback
+    // fetch returns KNOWLEDGE_FIX_NOTIFY_FETCH_CAP - 1 rows total (the target
+    // rating plus this noise) — under the cap, so truncated must be false.
+    const noiseRaters = Array.from(
+      { length: KNOWLEDGE_FIX_NOTIFY_FETCH_CAP - 2 },
+      (_, i) => `${RUN}-kf-notrunc-noise-rater-${i}`,
+    );
+    const batchSize = 20;
+    for (let i = 0; i < noiseRaters.length; i += batchSize) {
+      const batch = noiseRaters.slice(i, i + batchSize);
+      await Promise.all(
+        batch.map((rater) => rateKnowledgeAnswer(rater, conversationId, noiseEntryId, false)),
+      );
+    }
+
+    const dmCalls: string[] = [];
+    const adapter = stubAdapter(async (userId) => {
+      dmCalls.push(userId);
+    });
+    const { tools, caller } = knowledgeFixAdminHandlers(admin, conversationId, adapter);
+
+    await tools['update_knowledge'].handler({ id: targetEntryId, content: 'corrected, not crowded out' });
+    const reply = await takePendingAction('discord', caller.conversationId, caller.userId)?.execute();
+
+    assert.equal(dmCalls.length, 1, 'one row short of the cap, the target rater is still reached');
+    assert.equal(dmCalls[0], targetRater);
+    assert.equal(
+      reply,
+      `Updated knowledge entry #${targetEntryId}.`,
+      'issue #1262: below the cap, the reply stays byte-identical to before this change — no caveat appended',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [[targetRater, ...noiseRaters]]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[targetEntryId, noiseEntryId]]);
+  },
+);
+
+test(
+  'merge_knowledge sends no DM and its reply stays byte-identical to today when neither entry has in-scope unhelpful ratings (issue #1262 acceptance criterion 2)',
+  { skip },
+  async () => {
+    const admin = `${RUN}-kf-merge-notrunc-admin`;
+    const conversationId = `${RUN}-kf-merge-notrunc-convo`;
+    const { id: keepId } = await saveKnowledge({
+      content: `${RUN} kf-merge-notrunc keep content`,
+      title: `${RUN} kf-merge-notrunc keep`,
+    });
+    const { id: mergeId } = await saveKnowledge({
+      content: `${RUN} kf-merge-notrunc merge content`,
+      title: `${RUN} kf-merge-notrunc merge`,
+    });
+
+    const dmCalls: string[] = [];
+    const adapter = stubAdapter(async (userId) => {
+      dmCalls.push(userId);
+    });
+    const { tools, caller } = knowledgeFixAdminHandlers(admin, conversationId, adapter);
+
+    await tools['merge_knowledge'].handler({ keepId, mergeId });
+    const reply = await takePendingAction('discord', caller.conversationId, caller.userId)?.execute();
+
+    assert.equal(reply, `Merged knowledge entry #${mergeId} into #${keepId}.`);
+    assert.equal(dmCalls.length, 0);
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [keepId]);
+  },
+);
+
+test(
+  'SECURITY: the knowledge-fix truncation caveat is exactly the fixed template, carrying no rater identity, other-entry id/content, or count beyond the public fetch-cap constant (issue #1262 acceptance criterion 6)',
+  { skip },
+  async () => {
+    const admin = `${RUN}-kf-caveat-leak-admin`;
+    const conversationId = `${RUN}-kf-caveat-leak-convo`;
+    const { id: keepId } = await saveKnowledge({
+      content: `${RUN} kf-caveat-leak keep SECRET CONTENT`,
+      title: `${RUN} kf-caveat-leak keep SECRET TITLE`,
+    });
+    const { id: mergeId } = await saveKnowledge({
+      content: `${RUN} kf-caveat-leak merge content`,
+      title: `${RUN} kf-caveat-leak merge`,
+    });
+
+    const keepRater = `${RUN}-kf-caveat-leak-keep-rater`;
+    await rateKnowledgeAnswer(keepRater, conversationId, keepId, false);
+
+    // Flood the scope with KNOWLEDGE_FIX_NOTIFY_FETCH_CAP more-recent
+    // unhelpful ratings against an unrelated third entry, forcing the
+    // truncated path on this merge.
+    const { id: noiseEntryId } = await saveKnowledge({
+      content: `${RUN} kf-caveat-leak noise entry content`,
+      title: `${RUN} kf-caveat-leak noise entry`,
+    });
+    const noiseRaters = Array.from(
+      { length: KNOWLEDGE_FIX_NOTIFY_FETCH_CAP },
+      (_, i) => `${RUN}-kf-caveat-leak-noise-rater-${i}`,
+    );
+    const batchSize = 20;
+    for (let i = 0; i < noiseRaters.length; i += batchSize) {
+      const batch = noiseRaters.slice(i, i + batchSize);
+      await Promise.all(
+        batch.map((rater) => rateKnowledgeAnswer(rater, conversationId, noiseEntryId, false)),
+      );
+    }
+
+    const dmCalls: string[] = [];
+    const adapter = stubAdapter(async (userId) => {
+      dmCalls.push(userId);
+    });
+    const { tools, caller } = knowledgeFixAdminHandlers(admin, conversationId, adapter);
+
+    await tools['merge_knowledge'].handler({ keepId, mergeId });
+    const reply = await takePendingAction('discord', caller.conversationId, caller.userId)?.execute();
+
+    assert.equal(
+      reply,
+      `Merged knowledge entry #${mergeId} into #${keepId}.${KNOWLEDGE_FIX_NOTIFY_TRUNCATION_CAVEAT}`,
+      'the caveat is appended exactly once, as the exact exported constant',
+    );
+    assert.ok(
+      !reply?.includes(admin) &&
+        !reply?.includes(keepRater) &&
+        !reply?.includes('SECRET TITLE') &&
+        !reply?.includes('SECRET CONTENT') &&
+        !reply?.includes(String(noiseEntryId)),
+      'SECURITY: the caveat must carry no rater identity, other-entry id/content beyond the fixed template',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [[keepRater, ...noiseRaters]]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[keepId, noiseEntryId]]);
   },
 );
 

@@ -89,6 +89,17 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   gets that one notification in their own preferred language/style, same
   as every other DM the bot sends them. No new data is collected; the
   requester's own free text stays exactly as quarantined as before.
+- **`update_knowledge`/`merge_knowledge` now say so when a fix DM to past
+  unhelpful raters might not have reached everyone.** (#1262) These two
+  admin tools already DM whoever previously rated a fixed entry unhelpful
+  (#1169), but their lookup is one bounded scan across an admin's whole
+  scope — if 200+ more-recent unhelpful ratings had piled up on *other*
+  entries, this entry's own raters could silently fall outside that scan
+  and get zero DMs, with the reply reporting success either way. The reply
+  now appends a short note whenever that scan hit its limit, so an admin
+  who fixes a heavily-flagged entry in a busy scope knows to check rather
+  than assume everyone was told. The underlying gap itself (the scan is
+  still bounded) is unchanged; this only ends the silence about it.
 
 ## 2026-08-30
 
