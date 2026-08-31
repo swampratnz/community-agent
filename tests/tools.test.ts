@@ -20544,7 +20544,12 @@ function listReportsHandler(userId: string) {
       _registeredTools: Record<
         string,
         {
-          handler: (args: { status?: string; limit?: number; targetUserId?: string }) => Promise<{
+          handler: (args: {
+            status?: string;
+            limit?: number;
+            targetUserId?: string;
+            oldestFirst?: boolean;
+          }) => Promise<{
             content: Array<{ type: string; text: string }>;
           }>;
         }
@@ -20667,6 +20672,304 @@ test(
     );
 
     await pool.query(`DELETE FROM content_reports WHERE id = $1`, [report.id]);
+  },
+);
+
+// list_reports oldestFirst (issue #1259) — mirrors list_suggestions' oldestFirst
+// (accessAndSuggestions.ts, issue #1255): a single bounded fetch + JS sort/slice,
+// since agent-base's listReports has no ordering parameter to forward a sixth
+// argument to.
+test(
+  'list_reports: oldestFirst orders the queue by created_at ascending; omitted/false stays byte-identical ' +
+    'to the default newest-first order (issue #1259 acceptance criteria 1-2)',
+  { skip },
+  async () => {
+    const admin = `${RUN}-list-reports-oldestfirst-admin`;
+    const reporter = `${RUN}-list-reports-oldestfirst-reporter`;
+    const oldest = await createContentReport({
+      platform: 'discord',
+      reporterUserId: reporter,
+      conversationId: 'convo-1',
+      reason: `${RUN} oldest report fixture`,
+    });
+    const newest = await createContentReport({
+      platform: 'discord',
+      reporterUserId: reporter,
+      conversationId: 'convo-1',
+      reason: `${RUN} newest report fixture`,
+    });
+    assert.ok(oldest && newest);
+    try {
+      await pool.query(`UPDATE content_reports SET created_at = now() - interval '2 days' WHERE id = $1`, [
+        oldest.id,
+      ]);
+      await pool.query(`UPDATE content_reports SET created_at = now() - interval '1 days' WHERE id = $1`, [
+        newest.id,
+      ]);
+
+      const defaultOrder = await listReportsHandler(admin).handler({ limit: 200 });
+      const defaultText = defaultOrder.content[0]?.text ?? '';
+      assert.ok(
+        defaultText.indexOf(`${RUN} newest report fixture`) <
+          defaultText.indexOf(`${RUN} oldest report fixture`),
+        'default (no oldestFirst) lists the newest report before the oldest one, unchanged from before this issue',
+      );
+
+      const oldestFirstOrder = await listReportsHandler(admin).handler({ limit: 200, oldestFirst: true });
+      const oldestFirstText = oldestFirstOrder.content[0]?.text ?? '';
+      assert.ok(
+        oldestFirstText.indexOf(`${RUN} oldest report fixture`) <
+          oldestFirstText.indexOf(`${RUN} newest report fixture`),
+        'oldestFirst: true lists the oldest report before the newest one',
+      );
+      assert.doesNotMatch(
+        oldestFirstText,
+        /oldestFirst caveat/i,
+        'a scan well under REPORT_STALE_ALERT_SCAN_LIMIT must not carry the "may be incomplete" caveat',
+      );
+    } finally {
+      await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [[oldest.id, newest.id]]);
+    }
+  },
+);
+
+test(
+  'list_reports: oldestFirst appends an explicit caveat to its output when the scan hits ' +
+    'REPORT_STALE_ALERT_SCAN_LIMIT, since a backlog that large means the genuinely oldest row could sit ' +
+    'outside the single bounded scan and never surface — the tool must say so rather than silently ' +
+    'reporting a mid-recent row as "oldest" (issue #1259 acceptance criterion 3)',
+  { skip },
+  async (t) => {
+    const admin = `${RUN}-list-reports-oldestfirst-caveat-admin`;
+    const scanLimit = 200;
+    const now = Date.now();
+    const syntheticRows = Array.from({ length: scanLimit }, (_, i) => ({
+      id: 9_100_000 + i,
+      platform: 'discord',
+      reporter_user_id: `${RUN}-oldestfirst-scan-reporter-${i}`,
+      reporter_name: null,
+      conversation_id: 'convo-1',
+      target_user_id: null,
+      message_id: null,
+      reason: `${RUN} synthetic scan-limit fixture ${i}`,
+      status: 'open',
+      created_at: new Date(now - i * 1000),
+      resolved_by: null,
+      resolved_at: null,
+    }));
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && /FROM content_reports\b/.test(sql)) {
+        return Promise.resolve({ rows: syntheticRows, rowCount: syntheticRows.length });
+      }
+      return (realQuery as (...a: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+    try {
+      const result = await listReportsHandler(admin).handler({ status: 'open', limit: 5, oldestFirst: true });
+      const rendered = result.content[0]?.text ?? '';
+      assert.match(
+        rendered,
+        /oldestFirst caveat/i,
+        'hitting the scan limit must surface an explicit caveat that the true oldest row may not be shown',
+      );
+      assert.match(
+        rendered,
+        new RegExp(String(scanLimit)),
+        'the caveat should name the scan-limit constant so an admin understands the bound',
+      );
+    } finally {
+      t.mock.restoreAll();
+    }
+  },
+);
+
+test(
+  'SECURITY: list_reports queries the content_reports table exactly once regardless of (status, limit, ' +
+    'oldestFirst, targetUserId), and oldestFirst: true always bounds its fetch to the module-local ' +
+    'REPORT_STALE_ALERT_SCAN_LIMIT (200) rather than a caller-supplied limit — a crafted large limit can ' +
+    'never force an unbounded scan (issue #1259 acceptance criterion 5)',
+  { skip },
+  async (t) => {
+    const admin = `${RUN}-list-reports-oldestfirst-scanlimit-admin`;
+    const reporter = `${RUN}-list-reports-oldestfirst-scanlimit-reporter`;
+    const created = await createContentReport({
+      platform: 'discord',
+      reporterUserId: reporter,
+      conversationId: 'convo-1',
+      reason: `${RUN} scan limit fixture`,
+    });
+    assert.ok(created);
+
+    try {
+      for (const args of [
+        { limit: 5 },
+        { limit: 5, oldestFirst: false },
+        { limit: 500, oldestFirst: true },
+      ]) {
+        const calls: unknown[][] = [];
+        const realQuery = pool.query.bind(pool);
+        t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+          if (typeof sql === 'string' && /FROM content_reports\b/.test(sql)) calls.push(rest);
+          return (realQuery as (...a: unknown[]) => unknown)(sql, ...rest);
+        }) as typeof pool.query);
+        try {
+          const result = await listReportsHandler(admin).handler(args);
+          assert.equal(
+            calls.length,
+            1,
+            `list_reports must query the content_reports table exactly once for ${JSON.stringify(args)}`,
+          );
+          if (args.oldestFirst) {
+            const params = calls[0][0] as unknown[];
+            assert.equal(
+              params[params.length - 1],
+              200,
+              'oldestFirst: true must bind the module-local REPORT_STALE_ALERT_SCAN_LIMIT (200), never the ' +
+                "caller's own (possibly much larger) limit argument, to the SQL LIMIT parameter",
+            );
+          }
+          const rendered = result.content[0]?.text ?? '';
+          const idMatches = rendered.match(/#\d+ \[/g) ?? [];
+          assert.ok(
+            idMatches.length <= (args.limit ?? 50),
+            'rendered row count must never exceed the requested limit',
+          );
+        } finally {
+          t.mock.restoreAll();
+        }
+      }
+    } finally {
+      await pool.query(`DELETE FROM content_reports WHERE id = $1`, [created.id]);
+    }
+  },
+);
+
+test(
+  'SECURITY: list_reports enforces the same accused-admin exclusion and conversation scoping under ' +
+    'oldestFirst: true as under the default order — viewerIds/allowed filtering is not a second, ' +
+    'independently-maintained path that could drift out of sync with it (issue #1259 acceptance criterion 4)',
+  { skip },
+  async () => {
+    const admin = `${RUN}-list-reports-oldestfirst-scope-admin`;
+    const reporter = `${RUN}-list-reports-oldestfirst-scope-reporter`;
+    const convoIn = `${RUN}-list-reports-oldestfirst-scope-convo-in`;
+    const convoOut = `${RUN}-list-reports-oldestfirst-scope-convo-out`;
+    const reportIds: number[] = [];
+    try {
+      const inScope = await createContentReport({
+        platform: 'discord',
+        reporterUserId: reporter,
+        conversationId: convoIn,
+        reason: `${RUN} in scope oldestfirst fixture`,
+      });
+      const outOfScope = await createContentReport({
+        platform: 'discord',
+        reporterUserId: reporter,
+        conversationId: convoOut,
+        reason: `${RUN} out of scope oldestfirst fixture`,
+      });
+      const dmAgainstAdmin = await createContentReport({
+        platform: 'discord',
+        reporterUserId: reporter,
+        conversationId: `${RUN}-list-reports-oldestfirst-scope-dm`,
+        targetUserId: admin,
+        reason: `${RUN} DM report against the admin themselves`,
+        isDirect: true,
+      });
+      assert.ok(inScope && outOfScope && dmAgainstAdmin);
+      reportIds.push(inScope.id, outOfScope.id, dmAgainstAdmin.id);
+
+      const adapter: PlatformAdapter = {
+        platform: 'discord',
+        adminCapabilities: new Set(),
+        async start() {},
+        async stop() {},
+        isConnected: () => true,
+        onMessage() {},
+        async sendMessage() {},
+        async sendDirectMessage() {},
+        async conversationsForUser() {
+          return [convoIn];
+        },
+        async performAdminAction() {
+          return '';
+        },
+      };
+      const caller = {
+        platform: 'discord' as const,
+        userId: admin,
+        userName: 'Admin',
+        role: 'admin' as const,
+        conversationId: convoIn,
+      };
+      const server = buildToolServer(caller, adapter);
+      const registeredTool = (
+        server.instance as unknown as {
+          _registeredTools: Record<
+            string,
+            {
+              handler: (args: { oldestFirst?: boolean; limit?: number }) => Promise<{
+                content: Array<{ type: string; text: string }>;
+              }>;
+            }
+          >;
+        }
+      )._registeredTools['list_reports'];
+
+      const oldestFirstOut =
+        (await registeredTool.handler({ oldestFirst: true, limit: 200 })).content[0]?.text ?? '';
+      assert.match(
+        oldestFirstOut,
+        new RegExp(`#${inScope.id}\\b`),
+        'the in-scope report is visible under oldestFirst',
+      );
+      assert.ok(
+        !oldestFirstOut.includes(`#${outOfScope.id}`),
+        'SECURITY: a report outside the caller conversation scope must stay excluded under oldestFirst',
+      );
+      assert.ok(
+        !oldestFirstOut.includes(`#${dmAgainstAdmin.id}`),
+        'SECURITY: a DM report filed against the calling admin must stay excluded under oldestFirst',
+      );
+    } finally {
+      await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [reportIds]);
+    }
+  },
+);
+
+test(
+  'SECURITY: list_reports rejects a member (and guest) caller via the same assertAtLeast re-check ' +
+    'regardless of oldestFirst (issue #1259 acceptance criterion 4)',
+  async () => {
+    const adapter = stubAdapter(async () => {});
+    for (const role of ['member', 'guest'] as const) {
+      const caller = {
+        platform: 'discord' as const,
+        userId: `${role}-list-reports-oldestfirst`,
+        userName: 'Caller',
+        role,
+        conversationId: 'convo-list-reports-oldestfirst-reject',
+      };
+      const server = buildToolServer(caller, adapter);
+      const registeredTool = (
+        server.instance as unknown as {
+          _registeredTools: Record<
+            string,
+            {
+              handler: (args: {
+                oldestFirst?: boolean;
+              }) => Promise<{ content: Array<{ type: string; text: string }> }>;
+            }
+          >;
+        }
+      )._registeredTools['list_reports'];
+
+      await assert.rejects(
+        () => registeredTool.handler({ oldestFirst: true }),
+        /admin/i,
+        `a ${role} caller must be rejected by the assertAtLeast re-check even with oldestFirst: true`,
+      );
+    }
   },
 );
 
