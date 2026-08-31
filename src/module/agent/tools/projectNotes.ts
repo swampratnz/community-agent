@@ -3,7 +3,6 @@ import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
 import { logger } from '@swampratnz/agent-base/logger.js';
 import {
   getLanguagePreference,
-  getProjectBySlug,
   listProjectMembers,
   listVisibleProjects,
   PROJECT_NOTE_CONTENT_MAX_CHARS,
@@ -17,6 +16,7 @@ import {
 import { resolveSanitizedLabel, text, untrusted } from './helpers.js';
 import { notice } from '../../strings/notices.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
+import { untrustedEntryContent } from '@swampratnz/agent-base/agent/systemPrompt.js';
 
 // --- Project tools (issue #927) --------------------------------------------
 //
@@ -190,10 +190,12 @@ export const projectNotesTools = [
         // SECURITY (issue #1256): authorization for the roster view reuses
         // ONLY the listVisibleProjects result the no-arg path above already
         // trusts — never a second/weaker check. A slug only resolves to
-        // getProjectBySlug/listProjectMembers once it is PROVEN visible to
-        // this caller, in this conversation, by appearing in that result.
-        const match = projects.find((p) => p.slug === args.project);
-        const project = match ? await getProjectBySlug(args.project) : null;
+        // listProjectMembers once it is PROVEN visible to this caller, in
+        // this conversation, by appearing in that result. `listVisibleProjects`
+        // and `getProjectBySlug` return the same `Project` row shape, so the
+        // matched entry already carries everything needed below — no second
+        // lookup.
+        const project = projects.find((p) => p.slug === args.project);
         if (!project) {
           const language = await getLanguagePreference(caller.platform, caller.userId);
           // Deliberately the exact same reply project_note uses for "no such
@@ -209,8 +211,19 @@ export const projectNotesTools = [
         const roster = await Promise.all(
           members.map(async (m) => `- ${await resolveSanitizedLabel(m.platform, m.userId)} (${m.platform})`),
         );
+        // SECURITY: `project.name` is admin-set, unrestricted text (PR #1258
+        // review) — the ONLY call site in the codebase that put dynamic
+        // content into untrusted()'s label was this one, and untrusted()
+        // strips `<>\r\n` from the body but not the label, so a name
+        // containing a newline could otherwise escape the quarantine
+        // framing. Keep the label static and run the name through
+        // untrustedEntryContent (the same stripping formatProjectResults
+        // already applies to stored project names) inside the body instead.
         return text(
-          untrusted(`${project.name} members`, roster.length > 0 ? roster.join('\n') : 'No members yet.'),
+          untrusted(
+            'Project roster',
+            `${untrustedEntryContent(project.name)}:\n${roster.length > 0 ? roster.join('\n') : 'No members yet.'}`,
+          ),
         );
       }
       if (projects.length === 0) {
