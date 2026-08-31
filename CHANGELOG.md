@@ -46,6 +46,18 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   hygiene, can now ask for the longest-standing row first instead of only
   newest-first.
 
+### Fixed
+- **The content-report stale-backlog nudge now survives a restart.** (#1271)
+  Every admin gets a DM once their own open content-report backlog has been
+  waiting more than 48h — the tightest-SLA, most safety-sensitive of the six
+  stale-queue alerts, since it's the harassment/spam/abuse report queue. A
+  redeploy while an admin's backlog was still open used to re-send that DM
+  for a backlog that hadn't actually changed, because (unlike its five
+  sibling alerts, already fixed) this one's "already alerted" state was
+  per-admin and lived only in memory. It's now persisted the same
+  restart-safe way as the others, so a routine redeploy no longer re-fires a
+  duplicate nudge.
+
 ## 2026-08-31
 
 ### Added
