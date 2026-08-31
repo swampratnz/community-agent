@@ -23680,8 +23680,8 @@ test(
 // --- issue #1256: project_list gains an optional `project` roster view ---
 
 test(
-  "project_list({project: slug}) returns that project's member roster (sanitized label + platform, never a " +
-    'raw platform:userId string), and the no-arg summary listing stays exactly as before (issue #1256 ' +
+  "SECURITY: project_list({project: slug}) returns that project's member roster (sanitized label + platform, " +
+    'never a raw platform:userId string), and the no-arg summary listing stays exactly as before (issue #1256 ' +
     'acceptance criteria #1, #2, #4)',
   { skip },
   async () => {
