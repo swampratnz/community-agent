@@ -52,11 +52,11 @@ export const appealsAdminTools = [
       // agent-base's listAppeals has no ordering parameter to forward a
       // third argument to. False/omitted stays byte-identical to before
       // this field existed, using the identical single-call shape as before.
-      const scanned = args.oldestFirst
-        ? await listAppeals(args.status, APPEAL_STALE_ALERT_SCAN_LIMIT)
-        : null;
+      const scanned = args.oldestFirst ? await listAppeals(args.status, APPEAL_STALE_ALERT_SCAN_LIMIT) : null;
       const rows = scanned
-        ? [...scanned].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime()).slice(0, args.limit ?? 50)
+        ? [...scanned]
+            .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+            .slice(0, args.limit ?? 50)
         : await listAppeals(args.status, args.limit ?? 50);
       if (rows.length === 0) return text('No appeals found.');
       // Truncation caveat (mirrors list_reports'/list_suggestions', #1259/

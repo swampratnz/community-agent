@@ -35464,8 +35464,15 @@ test(
       );
 
       const defaultText = (await listAppealsHandler().handler({ status: 'open' })).content[0]?.text ?? '';
-      const oldestFirstRow = oldestFirstText.split('\n').find((line) => line.startsWith(`#${open.id} `));
-      const defaultRow = defaultText.split('\n').find((line) => line.startsWith(`#${open.id} `));
+      // untrusted() flattens every '\n' to a space (issue #227's
+      // prompt-injection guard), so rows are not newline-delimited in the
+      // rendered text — extract this appeal's own row by bracketing it
+      // between its own id and the next "#<id> [" (or end of string).
+      const rowFor = (rendered: string, id: number) =>
+        rendered.match(new RegExp(`#${id} \\[.*?\\)(?=\\s#\\d+\\s\\[|$)`))?.[0];
+      const oldestFirstRow = rowFor(oldestFirstText, open.id);
+      const defaultRow = rowFor(defaultText, open.id);
+      assert.ok(oldestFirstRow, 'the appeal row must be extractable from the oldestFirst: true rendering');
       assert.equal(
         oldestFirstRow,
         defaultRow,
