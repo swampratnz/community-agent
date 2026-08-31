@@ -16,6 +16,16 @@ import { platformArg, SUGGESTION_RESOLUTION_ECHO_CHARS, text, untrusted } from '
 import { notifyAccessRequestDeclined, notifySuggestionResolved } from './notify.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
+/**
+ * `listSuggestions` (agent-base) has no ordering parameter, unlike its
+ * sibling `listKnowledgeCandidates`'s `oldestFirst` — so `oldestFirst: true`
+ * below fetches a single bounded page of up to this many rows and sorts
+ * ascending in JS rather than passing a third argument. Same value/reasoning
+ * as `adminDigest.ts`'s `SUGGESTION_RESOLUTION_SCAN_LIMIT` and its sibling
+ * scan-limit constants (issue #1255): a bounded, not unbounded, approximation.
+ */
+const LIST_SUGGESTIONS_SCAN_LIMIT = 200;
+
 export const accessAndSuggestionsTools = [
   defineTool({
     name: 'list_access_requests',
@@ -130,10 +140,24 @@ export const accessAndSuggestionsTools = [
         .optional()
         .describe('Filter by status (default: all statuses)'),
       limit: z.number().optional().describe('Max entries (default 50, max 200)'),
+      oldestFirst: z
+        .boolean()
+        .optional()
+        .describe(
+          'Order by created_at ascending (oldest-submitted first) instead of the default newest-first — ' +
+            'use this to find suggestions that have sat unreviewed the longest.',
+        ),
     },
     handler: async (args, { caller }) => {
       assertAtLeast(caller.role, 'admin', 'list_suggestions');
-      const rows = await listSuggestions(args.status, args.limit ?? 50);
+      // oldestFirst: true takes exactly one bounded read (never a second
+      // call) and sorts/slices in JS — see LIST_SUGGESTIONS_SCAN_LIMIT above.
+      // False/omitted stays byte-identical to before this field existed.
+      const rows = args.oldestFirst
+        ? [...(await listSuggestions(args.status, LIST_SUGGESTIONS_SCAN_LIMIT))]
+            .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+            .slice(0, args.limit ?? 50)
+        : await listSuggestions(args.status, args.limit ?? 50);
       if (rows.length === 0) return text('No suggestions found.');
       // withdraw_suggestion (issue #1243) consult: a suggestion the member
       // withdrew stays in `rows` (its own status is untouched — the
