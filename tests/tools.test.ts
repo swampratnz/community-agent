@@ -2311,7 +2311,15 @@ test('SECURITY: notifyProjectMemberRemoved truncates an oversized reason via tru
   });
   const longReason = 'x'.repeat(500);
 
-  await notifyProjectMemberRemoved(adapter, 'user-1', 'discord', 'Impact Lab', undefined, undefined, longReason);
+  await notifyProjectMemberRemoved(
+    adapter,
+    'user-1',
+    'discord',
+    'Impact Lab',
+    undefined,
+    undefined,
+    longReason,
+  );
 
   assert.ok(!calls[0].includes(longReason), 'the full 500-char reason must not appear verbatim');
   assert.match(calls[0], /x{100,140}\.\.\."$/);
