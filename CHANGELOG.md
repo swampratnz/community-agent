@@ -53,6 +53,13 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   answer without needing to know `check_status` exists. Deployments that
   haven't set up the member digest channel, or have it switched off, see no
   change at all.
+- **`project_remove_member` can now tell a removed member why.** (#1253) An
+  admin can pass an optional one-line reason (e.g. the project wound down, or
+  the member became inactive) that's appended to the removal DM #1241 already
+  sends — closing the one gap that DM had versus its sibling revoke DMs
+  (`remove_project`, `remove_interests`), which already let an admin explain
+  themselves. The DM still always sends either way; the reason is never
+  stored anywhere and reaches only the removed member.
 
 ### Fixed
 - **The three peer-to-peer DMs `find_helper`, `share_project`, and
