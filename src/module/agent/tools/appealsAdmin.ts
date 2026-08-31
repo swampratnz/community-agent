@@ -6,6 +6,7 @@ import {
   type ModerationAppeal,
   resolveModerationAppeal,
 } from '@swampratnz/agent-base/storage/repository.js';
+import { APPEAL_STALE_ALERT_SCAN_LIMIT } from '../../appealStaleAlert.js';
 import { SUGGESTION_RESOLUTION_ECHO_CHARS, text, untrusted } from './helpers.js';
 import { notifyAppealResolved } from './notify.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
@@ -32,11 +33,44 @@ export const appealsAdminTools = [
         .optional()
         .describe('Filter by status (default: all statuses)'),
       limit: z.number().optional().describe('Max entries (default 50)'),
+      oldestFirst: z
+        .boolean()
+        .optional()
+        .describe(
+          'Order by created_at ascending (oldest-filed first) instead of the default newest-first — use ' +
+            'this to find appeals that have sat unreviewed the longest. Approximate for a large backlog: ' +
+            `only scans the ${APPEAL_STALE_ALERT_SCAN_LIMIT} most recently created rows matching the ` +
+            'status filter before sorting, so if that many or more match, the true oldest may fall ' +
+            'outside what was scanned — the response says so explicitly when this happens.',
+        ),
     },
     handler: async (args, { caller }) => {
       assertAtLeast(caller.role, 'admin', 'list_appeals');
-      const rows = await listAppeals(args.status, args.limit ?? 50);
+      // oldestFirst: true takes exactly one bounded read (never a second
+      // call) and sorts/slices in JS, mirroring list_reports (#1259)/
+      // list_access_requests (#1261)/list_suggestions (#1255) —
+      // agent-base's listAppeals has no ordering parameter to forward a
+      // third argument to. False/omitted stays byte-identical to before
+      // this field existed, using the identical single-call shape as before.
+      const scanned = args.oldestFirst
+        ? await listAppeals(args.status, APPEAL_STALE_ALERT_SCAN_LIMIT)
+        : null;
+      const rows = scanned
+        ? [...scanned].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime()).slice(0, args.limit ?? 50)
+        : await listAppeals(args.status, args.limit ?? 50);
       if (rows.length === 0) return text('No appeals found.');
+      // Truncation caveat (mirrors list_reports'/list_suggestions', #1259/
+      // #1255 review): scanned hitting exactly APPEAL_STALE_ALERT_SCAN_LIMIT
+      // means the DB may hold more matching rows than the single bounded
+      // scan could see, so the true oldest could be outside that window —
+      // say so rather than silently reporting a mid-recent row as oldest.
+      const truncationCaveat =
+        scanned && scanned.length === APPEAL_STALE_ALERT_SCAN_LIMIT
+          ? ` ⚠️ oldestFirst caveat: ${APPEAL_STALE_ALERT_SCAN_LIMIT}+ appeals match this filter, so only ` +
+            `the ${APPEAL_STALE_ALERT_SCAN_LIMIT} most recently created ones were scanned before sorting — ` +
+            'the true oldest may not be shown above. Narrow the status filter or resolve some appeals to ' +
+            'shrink the backlog if this list looks incomplete.'
+          : '';
       return text(
         untrusted(
           'Moderation appeals',
@@ -47,7 +81,7 @@ export const appealsAdminTools = [
                 `(${r.userId}), ${r.activeWarnings}/${r.strikeLimit} active warnings` +
                 `${r.reason ? `: ${r.reason}` : ''} (${r.createdAt.toISOString()})`,
             )
-            .join('\n'),
+            .join('\n') + truncationCaveat,
         ),
       );
     },
