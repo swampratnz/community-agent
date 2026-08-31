@@ -52,6 +52,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   (`remove_project`, `remove_interests`), which already let an admin explain
   themselves. The DM still always sends either way; the reason is never
   stored anywhere and reaches only the removed member.
+- **`list_reports` can now list content reports oldest-first.** (#1259)
+  `list_suggestions` got this fix last (#1255); `list_reports` — the
+  harassment/spam/abuse report queue — was the still-outstanding sibling.
+  With the default 50-row limit, an admin triaging with the newest-first
+  order could never see a report that had been waiting the longest once the
+  backlog passed 50, even though that's exactly the one the 48h stale-report
+  alert is warning about. Pass `oldestFirst: true` to sort by longest-waiting
+  first; a note is appended if the backlog is large enough that the true
+  oldest report might not be shown. No change to what's visible or to whom —
+  same conversation scoping and accused-admin exclusion as always.
 
 ### Fixed
 - **The three peer-to-peer DMs `find_helper`, `share_project`, and
