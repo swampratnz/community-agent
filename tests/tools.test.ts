@@ -11050,7 +11050,7 @@ function listMutedMembersHandler(role: 'member' | 'admin', platform: Platform = 
       _registeredTools: Record<
         string,
         {
-          handler: () => Promise<{
+          handler: (args?: { oldestFirst?: boolean }) => Promise<{
             content: Array<{ type: string; text: string }>;
             isError?: boolean;
           }>;
@@ -11100,7 +11100,7 @@ test(
     config.moderation.strikeLimit = 3;
     config.moderation.strikeWindowDays = 30;
     try {
-      const result = await listMutedMembersHandler('admin', LIST_MUTED_PLATFORM).handler();
+      const result = await listMutedMembersHandler('admin', LIST_MUTED_PLATFORM).handler({});
       assert.notEqual(result.isError, true);
       const text = result.content[0]?.text ?? '';
 
@@ -11147,7 +11147,7 @@ test(
     const originalLimit = config.moderation.strikeLimit;
     config.moderation.strikeLimit = 3;
     try {
-      const result = await listMutedMembersHandler('admin', LIST_MUTED_PLATFORM).handler();
+      const result = await listMutedMembersHandler('admin', LIST_MUTED_PLATFORM).handler({});
       const text = result.content[0]?.text ?? '';
       assert.match(text, new RegExp(user));
       assert.doesNotMatch(text, new RegExp(distinctiveReason), 'the reason never reaches the output');
@@ -11173,7 +11173,7 @@ test(
     // deterministic regardless of any other concurrently-running platform.
     config.moderation.strikeLimit = 1_000_000;
     try {
-      const result = await listMutedMembersHandler('admin', `${RUN}-list-muted-empty`).handler();
+      const result = await listMutedMembersHandler('admin', `${RUN}-list-muted-empty`).handler({});
       assert.equal(result.content[0]?.text, 'No members are currently muted.');
     } finally {
       config.moderation.strikeLimit = originalLimit;
@@ -11229,7 +11229,7 @@ test(
       assert.match(expected, /active/);
       assert.match(expected, /may still be muted/);
 
-      const toolResult = await listMutedMembersHandler('admin', platform).handler();
+      const toolResult = await listMutedMembersHandler('admin', platform).handler({});
       assert.equal(
         toolResult.content[0]?.text,
         expected,
@@ -11263,6 +11263,177 @@ test(
   },
 );
 
+// list_muted_members oldestFirst (issue #1267) — mirrors list_appeals'
+// oldestFirst (issue #1265, same repo): agent-base's listMutedMembers has no
+// ordering parameter, so this is implemented module-side as a single bounded
+// fetch + JS sort, using the row's own lastWarningAt rather than created_at.
+test(
+  'list_muted_members: oldestFirst orders by lastWarningAt ascending; omitted/false stays byte-identical ' +
+    'to the default newest-warning-first order (issue #1267 acceptance criteria 1-2)',
+  { skip },
+  async () => {
+    const platform = `${RUN}-muted-oldestfirst`;
+    const older = `${RUN}-muted-oldestfirst-older`;
+    const newer = `${RUN}-muted-oldestfirst-newer`;
+    for (const userId of [older, newer]) {
+      for (let i = 0; i < 3; i++) {
+        await addWarning({
+          platform,
+          userId,
+          reason: `strike-${i}`,
+          excerpt: null,
+          source: 'auto',
+          issuedBy: null,
+        });
+      }
+    }
+    await pool.query(
+      `UPDATE member_warnings SET created_at = now() - interval '2 days' WHERE platform = $1 AND user_id = $2`,
+      [platform, older],
+    );
+    await pool.query(
+      `UPDATE member_warnings SET created_at = now() - interval '1 days' WHERE platform = $1 AND user_id = $2`,
+      [platform, newer],
+    );
+
+    const originalLimit = config.moderation.strikeLimit;
+    config.moderation.strikeLimit = 3;
+    try {
+      const defaultOrder = await listMutedMembersHandler('admin', platform).handler({});
+      const defaultText = defaultOrder.content[0]?.text ?? '';
+      assert.ok(
+        defaultText.indexOf(newer) < defaultText.indexOf(older),
+        'default (no oldestFirst) lists the most-recently-warned member before the oldest one, unchanged ' +
+          'from before this issue',
+      );
+      const explicitFalse = await listMutedMembersHandler('admin', platform).handler({ oldestFirst: false });
+      assert.equal(
+        explicitFalse.content[0]?.text,
+        defaultText,
+        'oldestFirst: false must render byte-identical to the omitted-field default',
+      );
+
+      const oldestFirstOrder = await listMutedMembersHandler('admin', platform).handler({
+        oldestFirst: true,
+      });
+      const oldestFirstText = oldestFirstOrder.content[0]?.text ?? '';
+      assert.ok(
+        oldestFirstText.indexOf(older) < oldestFirstText.indexOf(newer),
+        'oldestFirst: true lists the longest-since-last-warning member before the more recent one',
+      );
+      assert.doesNotMatch(
+        oldestFirstText,
+        /oldestFirst caveat/i,
+        'a scan well under LIST_MUTED_MEMBERS_SCAN_LIMIT must not carry the "may be incomplete" caveat',
+      );
+    } finally {
+      config.moderation.strikeLimit = originalLimit;
+      await pool.query(`DELETE FROM member_warnings WHERE platform = $1`, [platform]);
+    }
+  },
+);
+
+test(
+  'list_muted_members: oldestFirst appends an explicit caveat to its output when the scan hits ' +
+    'LIST_MUTED_MEMBERS_SCAN_LIMIT, since a backlog that large means the genuinely oldest row could sit ' +
+    'outside the single bounded scan and never surface — the tool must say so rather than silently ' +
+    'reporting a mid-recent row as "oldest" (issue #1267 acceptance criterion 3)',
+  { skip },
+  async (t) => {
+    const scanLimit = 200;
+    const now = Date.now();
+    const syntheticRows = Array.from({ length: scanLimit }, (_, i) => ({
+      user_id: `${RUN}-muted-scanlimit-caveat-${i}`,
+      last_warning_at: new Date(now - i * 1000),
+      windowed_count: 3,
+      unwindowed_count: 3,
+    }));
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && /FROM member_warnings\b/.test(sql)) {
+        return Promise.resolve({ rows: syntheticRows, rowCount: syntheticRows.length });
+      }
+      return (realQuery as (...a: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+    const originalLimit = config.moderation.strikeLimit;
+    config.moderation.strikeLimit = 3;
+    try {
+      const result = await listMutedMembersHandler('admin').handler({ oldestFirst: true });
+      const rendered = result.content[0]?.text ?? '';
+      assert.match(
+        rendered,
+        /oldestFirst caveat/i,
+        'hitting the scan limit must surface an explicit caveat that the true oldest row may not be shown',
+      );
+      assert.match(
+        rendered,
+        new RegExp(String(scanLimit)),
+        'the caveat should name the scan-limit constant so an admin understands the bound',
+      );
+    } finally {
+      config.moderation.strikeLimit = originalLimit;
+      t.mock.restoreAll();
+    }
+  },
+);
+
+test(
+  'SECURITY: list_muted_members queries member_warnings exactly once regardless of oldestFirst, and ' +
+    'oldestFirst: true always bounds its fetch to the module-local scan-limit constant (200), never an ' +
+    'unbounded scan (issue #1267 acceptance criterion 4)',
+  { skip },
+  async (t) => {
+    const platform = `${RUN}-muted-scanlimit-security`;
+    const userId = `${RUN}-muted-security-user`;
+    await addWarning({ platform, userId, reason: 'r', excerpt: null, source: 'auto', issuedBy: null });
+
+    const originalLimit = config.moderation.strikeLimit;
+    config.moderation.strikeLimit = 1;
+    try {
+      for (const args of [{}, { oldestFirst: false }, { oldestFirst: true }] as const) {
+        const calls: unknown[][] = [];
+        const realQuery = pool.query.bind(pool);
+        t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+          if (typeof sql === 'string' && /FROM member_warnings\b/.test(sql)) calls.push(rest);
+          return (realQuery as (...a: unknown[]) => unknown)(sql, ...rest);
+        }) as typeof pool.query);
+        try {
+          await listMutedMembersHandler('admin', platform).handler(args);
+          assert.equal(
+            calls.length,
+            1,
+            `list_muted_members must query member_warnings exactly once for ${JSON.stringify(args)}`,
+          );
+          if (args.oldestFirst) {
+            const params = calls[0][0] as unknown[];
+            assert.equal(
+              params[params.length - 1],
+              200,
+              'oldestFirst: true must bind the module-local LIST_MUTED_MEMBERS_SCAN_LIMIT (200) to the SQL ' +
+                'LIMIT parameter, never an unbounded scan',
+            );
+          }
+        } finally {
+          t.mock.restoreAll();
+        }
+      }
+    } finally {
+      config.moderation.strikeLimit = originalLimit;
+      await pool.query(`DELETE FROM member_warnings WHERE platform = $1`, [platform]);
+    }
+  },
+);
+
+test(
+  'SECURITY: list_muted_members rejects a caller below admin tier, identically whether oldestFirst is set ' +
+    'or not — oldestFirst must never introduce a branch that reaches the query before the tier check ' +
+    '(issue #1267 acceptance criterion 5)',
+  async () => {
+    const registeredTool = listMutedMembersHandler('member');
+    await assert.rejects(() => registeredTool.handler({ oldestFirst: true }), /Permission denied/);
+  },
+);
+
 // list_blocked_members (issue #924): enumerates the WhatsApp bot-side block
 // list. Uses a run-scoped fake platform per handler call (never a shared
 // 'whatsapp' fixture) so it never collides with any other test file's
@@ -11285,7 +11456,7 @@ function listBlockedMembersHandler(role: 'member' | 'admin', platform: Platform)
       _registeredTools: Record<
         string,
         {
-          handler: () => Promise<{
+          handler: (args?: { oldestFirst?: boolean }) => Promise<{
             content: Array<{ type: string; text: string }>;
             isError?: boolean;
           }>;
@@ -11306,7 +11477,7 @@ test(
     await blockUser(platform, withReason, 'admin-1', 'harassment');
     await blockUser(platform, withoutReason, 'admin-2', null);
     try {
-      const result = await listBlockedMembersHandler('admin', platform).handler();
+      const result = await listBlockedMembersHandler('admin', platform).handler({});
       assert.notEqual(result.isError, true);
       // untrusted() strips '\n' from the rendered body (issue #227
       // quarantine-escape fix), so rows are space-joined, not newline-joined
@@ -11338,7 +11509,7 @@ test(
   'list_blocked_members reports "No blocked users." when nothing is blocked on that platform (issue #924)',
   { skip },
   async () => {
-    const result = await listBlockedMembersHandler('admin', `${RUN}-list-blocked-empty`).handler();
+    const result = await listBlockedMembersHandler('admin', `${RUN}-list-blocked-empty`).handler({});
     assert.equal(result.content[0]?.text, 'No blocked users.');
   },
 );
@@ -11356,12 +11527,12 @@ test(
     await blockUser(platformA, userA, 'admin-1', 'harassment');
     await blockUser(platformB, userB, 'admin-1', 'spam');
     try {
-      const resultA = await listBlockedMembersHandler('admin', platformA).handler();
+      const resultA = await listBlockedMembersHandler('admin', platformA).handler({});
       const textA = resultA.content[0]?.text ?? '';
       assert.match(textA, new RegExp(userA), "platform A's caller sees platform A's block");
       assert.doesNotMatch(textA, new RegExp(userB), "platform A's caller must never see platform B's block");
 
-      const resultB = await listBlockedMembersHandler('admin', platformB).handler();
+      const resultB = await listBlockedMembersHandler('admin', platformB).handler({});
       const textB = resultB.content[0]?.text ?? '';
       assert.match(textB, new RegExp(userB), "platform B's caller sees platform B's block");
       assert.doesNotMatch(textB, new RegExp(userA), "platform B's caller must never see platform A's block");
@@ -11387,7 +11558,7 @@ test(
       const expected = formatBlockedMembersList(rows);
       assert.match(expected, new RegExp(withReason));
 
-      const toolResult = await listBlockedMembersHandler('admin', platform).handler();
+      const toolResult = await listBlockedMembersHandler('admin', platform).handler({});
       assert.equal(
         toolResult.content[0]?.text,
         expected,
@@ -11417,6 +11588,159 @@ test(
       await unblockUser(platform, withReason);
       await unblockUser(platform, withoutReason);
     }
+  },
+);
+
+// list_blocked_members oldestFirst (issue #1267) — mirrors list_muted_members'
+// oldestFirst above (same issue, same file) and list_appeals' (issue #1265):
+// agent-base's listBlockedUsers has no ordering parameter, so this is
+// implemented module-side as a single bounded fetch + JS sort.
+test(
+  'list_blocked_members: oldestFirst orders by blockedAt ascending; omitted/false stays byte-identical to ' +
+    'the default newest-block-first order (issue #1267 acceptance criteria 1-2)',
+  { skip },
+  async () => {
+    const platform = `${RUN}-blocked-oldestfirst`;
+    const older = `${RUN}-blocked-oldestfirst-older`;
+    const newer = `${RUN}-blocked-oldestfirst-newer`;
+    await blockUser(platform, older, 'admin-1', null);
+    await blockUser(platform, newer, 'admin-1', null);
+    await pool.query(
+      `UPDATE blocked_users SET blocked_at = now() - interval '2 days' WHERE platform = $1 AND external_id = $2`,
+      [platform, older],
+    );
+    await pool.query(
+      `UPDATE blocked_users SET blocked_at = now() - interval '1 days' WHERE platform = $1 AND external_id = $2`,
+      [platform, newer],
+    );
+    try {
+      const defaultOrder = await listBlockedMembersHandler('admin', platform).handler({});
+      const defaultText = defaultOrder.content[0]?.text ?? '';
+      assert.ok(
+        defaultText.indexOf(newer) < defaultText.indexOf(older),
+        'default (no oldestFirst) lists the most-recently-blocked identity before the oldest one, ' +
+          'unchanged from before this issue',
+      );
+      const explicitFalse = await listBlockedMembersHandler('admin', platform).handler({
+        oldestFirst: false,
+      });
+      assert.equal(
+        explicitFalse.content[0]?.text,
+        defaultText,
+        'oldestFirst: false must render byte-identical to the omitted-field default',
+      );
+
+      const oldestFirstOrder = await listBlockedMembersHandler('admin', platform).handler({
+        oldestFirst: true,
+      });
+      const oldestFirstText = oldestFirstOrder.content[0]?.text ?? '';
+      assert.ok(
+        oldestFirstText.indexOf(older) < oldestFirstText.indexOf(newer),
+        'oldestFirst: true lists the longest-blocked identity before the more recently blocked one',
+      );
+      assert.doesNotMatch(
+        oldestFirstText,
+        /oldestFirst caveat/i,
+        'a scan well under LIST_BLOCKED_MEMBERS_SCAN_LIMIT must not carry the "may be incomplete" caveat',
+      );
+    } finally {
+      await unblockUser(platform, older);
+      await unblockUser(platform, newer);
+    }
+  },
+);
+
+test(
+  'list_blocked_members: oldestFirst appends an explicit caveat to its output when the scan hits ' +
+    'LIST_BLOCKED_MEMBERS_SCAN_LIMIT, since a backlog that large means the genuinely oldest row could sit ' +
+    'outside the single bounded scan and never surface — the tool must say so rather than silently ' +
+    'reporting a mid-recent row as "oldest" (issue #1267 acceptance criterion 3)',
+  { skip },
+  async (t) => {
+    const scanLimit = 200;
+    const now = Date.now();
+    const syntheticRows = Array.from({ length: scanLimit }, (_, i) => ({
+      external_id: `${RUN}-blocked-scanlimit-caveat-${i}`,
+      blocked_by: 'admin-1',
+      reason: null,
+      blocked_at: new Date(now - i * 1000),
+    }));
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && /FROM blocked_users\b/.test(sql)) {
+        return Promise.resolve({ rows: syntheticRows, rowCount: syntheticRows.length });
+      }
+      return (realQuery as (...a: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+    try {
+      const result = await listBlockedMembersHandler('admin', 'discord').handler({ oldestFirst: true });
+      const rendered = result.content[0]?.text ?? '';
+      assert.match(
+        rendered,
+        /oldestFirst caveat/i,
+        'hitting the scan limit must surface an explicit caveat that the true oldest row may not be shown',
+      );
+      assert.match(
+        rendered,
+        new RegExp(String(scanLimit)),
+        'the caveat should name the scan-limit constant so an admin understands the bound',
+      );
+    } finally {
+      t.mock.restoreAll();
+    }
+  },
+);
+
+test(
+  'SECURITY: list_blocked_members queries blocked_users exactly once regardless of oldestFirst, and ' +
+    'oldestFirst: true always bounds its fetch to the module-local scan-limit constant (200), never an ' +
+    'unbounded scan (issue #1267 acceptance criterion 4)',
+  { skip },
+  async (t) => {
+    const platform = `${RUN}-blocked-scanlimit-security`;
+    const userId = `${RUN}-blocked-security-user`;
+    await blockUser(platform, userId, 'admin-1', null);
+    try {
+      for (const args of [{}, { oldestFirst: false }, { oldestFirst: true }] as const) {
+        const calls: unknown[][] = [];
+        const realQuery = pool.query.bind(pool);
+        t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+          if (typeof sql === 'string' && /FROM blocked_users\b/.test(sql)) calls.push(rest);
+          return (realQuery as (...a: unknown[]) => unknown)(sql, ...rest);
+        }) as typeof pool.query);
+        try {
+          await listBlockedMembersHandler('admin', platform).handler(args);
+          assert.equal(
+            calls.length,
+            1,
+            `list_blocked_members must query blocked_users exactly once for ${JSON.stringify(args)}`,
+          );
+          if (args.oldestFirst) {
+            const params = calls[0][0] as unknown[];
+            assert.equal(
+              params[params.length - 1],
+              200,
+              'oldestFirst: true must bind the module-local LIST_BLOCKED_MEMBERS_SCAN_LIMIT (200) to the ' +
+                'SQL LIMIT parameter, never an unbounded scan',
+            );
+          }
+        } finally {
+          t.mock.restoreAll();
+        }
+      }
+    } finally {
+      await unblockUser(platform, userId);
+    }
+  },
+);
+
+test(
+  'SECURITY: list_blocked_members rejects a caller below admin tier, identically whether oldestFirst is ' +
+    'set or not — oldestFirst must never introduce a branch that reaches the query before the tier check ' +
+    '(issue #1267 acceptance criterion 5)',
+  async () => {
+    const registeredTool = listBlockedMembersHandler('member', 'discord');
+    await assert.rejects(() => registeredTool.handler({ oldestFirst: true }), /Permission denied/);
   },
 );
 

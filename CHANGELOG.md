@@ -40,6 +40,11 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   the four review-queue list tools to get it — an admin working through the
   moderation-appeal backlog can now ask for the longest-unreviewed appeal
   first, instead of only newest-filed-first.
+- **`list_muted_members` and `list_blocked_members` gain `oldestFirst` too.**
+  (#1267) The last two guild-wide "who currently" reads without it: an admin
+  auditing for stale mutes to clear or escalate, or doing periodic block-list
+  hygiene, can now ask for the longest-standing row first instead of only
+  newest-first.
 
 ## 2026-08-31
 
