@@ -19691,6 +19691,7 @@ function listSuggestionsHandler() {
           handler: (args: {
             status?: 'new' | 'reviewed' | 'declined' | 'done';
             limit?: number;
+            oldestFirst?: boolean;
           }) => Promise<{ content: Array<{ type: string; text: string }> }>;
         }
       >;
@@ -19726,6 +19727,227 @@ test(
       new RegExp(`#${toWithdraw.id} \\[new, withdrawn by member\\] `),
       'a withdrawn suggestion is annotated distinctly from a live one',
     );
+  },
+);
+
+// list_suggestions oldestFirst (issue #1255) — mirrors list_knowledge_candidates'
+// oldestFirst (knowledgeAdmin.ts), but implemented module-side as a single
+// bounded fetch + JS sort/slice, since agent-base's listSuggestions has no
+// ordering parameter to forward a third argument to.
+test(
+  'list_suggestions: oldestFirst orders the queue by created_at ascending; omitted/false stays byte-identical ' +
+    'to the default newest-first order (issue #1255 acceptance criteria 1-3)',
+  { skip },
+  async () => {
+    const oldestUser = `${RESOLVE_SUGGESTION_HANDLER_USER}-oldestfirst-oldest`;
+    const newestUser = `${RESOLVE_SUGGESTION_HANDLER_USER}-oldestfirst-newest`;
+    const oldest = await createSuggestion({
+      platform: 'discord',
+      userId: oldestUser,
+      content: `${RUN} oldest suggestion fixture`,
+    });
+    const newest = await createSuggestion({
+      platform: 'discord',
+      userId: newestUser,
+      content: `${RUN} newest suggestion fixture`,
+    });
+    assert.ok(oldest && newest);
+    await pool.query(`UPDATE suggestions SET created_at = now() - interval '2 days' WHERE id = $1`, [
+      oldest.id,
+    ]);
+    await pool.query(`UPDATE suggestions SET created_at = now() - interval '1 days' WHERE id = $1`, [
+      newest.id,
+    ]);
+
+    const defaultOrder = await listSuggestionsHandler().handler({ status: 'new', limit: 200 });
+    const defaultText = defaultOrder.content[0]?.text ?? '';
+    assert.ok(
+      defaultText.indexOf(`${RUN} newest suggestion fixture`) <
+        defaultText.indexOf(`${RUN} oldest suggestion fixture`),
+      'default (no oldestFirst) lists the newest suggestion before the oldest one, unchanged from before this issue',
+    );
+
+    const oldestFirstOrder = await listSuggestionsHandler().handler({
+      status: 'new',
+      limit: 200,
+      oldestFirst: true,
+    });
+    const oldestFirstText = oldestFirstOrder.content[0]?.text ?? '';
+    assert.ok(
+      oldestFirstText.indexOf(`${RUN} oldest suggestion fixture`) <
+        oldestFirstText.indexOf(`${RUN} newest suggestion fixture`),
+      'oldestFirst: true lists the oldest suggestion before the newest one',
+    );
+    assert.doesNotMatch(
+      oldestFirstText,
+      /oldestFirst caveat/i,
+      'a scan well under LIST_SUGGESTIONS_SCAN_LIMIT must not carry the "may be incomplete" caveat',
+    );
+  },
+);
+
+test(
+  'list_suggestions: oldestFirst appends an explicit caveat to its output when the scan hits ' +
+    'LIST_SUGGESTIONS_SCAN_LIMIT, since a backlog that large means the genuinely oldest row could sit ' +
+    'outside the single bounded scan and never surface — the tool must say so rather than silently ' +
+    'reporting a mid-recent row as "oldest" (issue #1255 review)',
+  { skip },
+  async (t) => {
+    const scanLimit = 200;
+    const now = Date.now();
+    const syntheticRows = Array.from({ length: scanLimit }, (_, i) => ({
+      id: 9_000_000 + i,
+      platform: 'discord',
+      user_id: `${RUN}-oldestfirst-scan-user-${i}`,
+      display_name: null,
+      content: `${RUN} synthetic scan-limit fixture ${i}`,
+      status: 'new',
+      created_at: new Date(now - i * 1000),
+      reviewed_by: null,
+      reviewed_at: null,
+    }));
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && /FROM suggestions\b/.test(sql)) {
+        return Promise.resolve({ rows: syntheticRows, rowCount: syntheticRows.length });
+      }
+      return (realQuery as (...a: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+    try {
+      const result = await listSuggestionsHandler().handler({ status: 'new', limit: 5, oldestFirst: true });
+      const rendered = result.content[0]?.text ?? '';
+      assert.match(
+        rendered,
+        /oldestFirst caveat/i,
+        'hitting the scan limit must surface an explicit caveat that the true oldest row may not be shown',
+      );
+      assert.match(
+        rendered,
+        new RegExp(String(scanLimit)),
+        'the caveat should name the scan-limit constant so an admin understands the bound',
+      );
+    } finally {
+      t.mock.restoreAll();
+    }
+  },
+);
+
+test(
+  'list_suggestions: a withdrawn suggestion renders the same "[status, withdrawn by member]" tag under ' +
+    'oldestFirst as under the default order (issue #1255 acceptance criterion 6)',
+  { skip },
+  async () => {
+    const withdrawnUser = `${RESOLVE_SUGGESTION_HANDLER_USER}-oldestfirst-withdrawn`;
+    const toWithdraw = await createSuggestion({
+      platform: 'discord',
+      userId: withdrawnUser,
+      content: `${RUN} oldestfirst withdrawn fixture`,
+    });
+    assert.ok(toWithdraw);
+    await recordSuggestionWithdrawal(toWithdraw.id);
+
+    const oldestFirstResult = await listSuggestionsHandler().handler({
+      status: 'new',
+      limit: 200,
+      oldestFirst: true,
+    });
+    const text = oldestFirstResult.content[0]?.text ?? '';
+    assert.match(
+      text,
+      new RegExp(`#${toWithdraw.id} \\[new, withdrawn by member\\] `),
+      'a withdrawn suggestion is annotated distinctly from a live one, the same as under the default order',
+    );
+  },
+);
+
+test(
+  'SECURITY: list_suggestions queries the suggestions table exactly once regardless of (status, limit, ' +
+    'oldestFirst), and oldestFirst: true always bounds its fetch to the module-local scan-limit constant ' +
+    '(200) rather than a caller-supplied limit — a crafted large limit can never force an unbounded scan ' +
+    '(issue #1255 acceptance criterion 4)',
+  { skip },
+  async (t) => {
+    const user = `${RESOLVE_SUGGESTION_HANDLER_USER}-oldestfirst-scanlimit`;
+    const created = await createSuggestion({
+      platform: 'discord',
+      userId: user,
+      content: `${RUN} scan limit fixture`,
+    });
+    assert.ok(created);
+
+    for (const args of [
+      { status: 'new' as const, limit: 5 },
+      { status: 'new' as const, limit: 5, oldestFirst: false },
+      { status: 'new' as const, limit: 500, oldestFirst: true },
+    ]) {
+      const calls: unknown[][] = [];
+      const realQuery = pool.query.bind(pool);
+      t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+        if (typeof sql === 'string' && /FROM suggestions\b/.test(sql)) calls.push(rest);
+        return (realQuery as (...a: unknown[]) => unknown)(sql, ...rest);
+      }) as typeof pool.query);
+      try {
+        const result = await listSuggestionsHandler().handler(args);
+        assert.equal(
+          calls.length,
+          1,
+          `list_suggestions must query the suggestions table exactly once for ${JSON.stringify(args)}`,
+        );
+        if (args.oldestFirst) {
+          const params = calls[0][0] as unknown[];
+          assert.equal(
+            params[params.length - 1],
+            200,
+            'oldestFirst: true must bind the module-local LIST_SUGGESTIONS_SCAN_LIMIT (200), never the ' +
+              "caller's own (possibly much larger) limit argument, to the SQL LIMIT parameter",
+          );
+        }
+        const rendered = result.content[0]?.text ?? '';
+        const idMatches = rendered.match(/#\d+ \[/g) ?? [];
+        assert.ok(
+          idMatches.length <= (args.limit ?? 50),
+          'rendered row count must never exceed the requested limit',
+        );
+      } finally {
+        t.mock.restoreAll();
+      }
+    }
+  },
+);
+
+test(
+  'SECURITY: list_suggestions rejects a member (and guest) caller via the same assertAtLeast re-check ' +
+    'regardless of oldestFirst (issue #1255 acceptance criterion 5)',
+  async () => {
+    const adapter = stubAdapter(async () => {});
+    for (const role of ['member', 'guest'] as const) {
+      const caller = {
+        platform: 'discord' as const,
+        userId: `${role}-list-suggestions-oldestfirst`,
+        userName: 'Caller',
+        role,
+        conversationId: 'convo-list-suggestions-oldestfirst-reject',
+      };
+      const server = buildToolServer(caller, adapter);
+      const registeredTool = (
+        server.instance as unknown as {
+          _registeredTools: Record<
+            string,
+            {
+              handler: (args: {
+                oldestFirst?: boolean;
+              }) => Promise<{ content: Array<{ type: string; text: string }> }>;
+            }
+          >;
+        }
+      )._registeredTools['list_suggestions'];
+
+      await assert.rejects(
+        () => registeredTool.handler({ oldestFirst: true }),
+        /admin/i,
+        `a ${role} caller must be rejected by the assertAtLeast re-check even with oldestFirst: true`,
+      );
+    }
   },
 );
 
