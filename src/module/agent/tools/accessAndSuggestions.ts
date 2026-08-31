@@ -17,12 +17,22 @@ import { notifyAccessRequestDeclined, notifySuggestionResolved } from './notify.
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 /**
- * `listSuggestions` (agent-base) has no ordering parameter, unlike its
- * sibling `listKnowledgeCandidates`'s `oldestFirst` — so `oldestFirst: true`
- * below fetches a single bounded page of up to this many rows and sorts
- * ascending in JS rather than passing a third argument. Same value/reasoning
- * as `adminDigest.ts`'s `SUGGESTION_RESOLUTION_SCAN_LIMIT` and its sibling
- * scan-limit constants (issue #1255): a bounded, not unbounded, approximation.
+ * `listSuggestions` (agent-base) has no ordering parameter and always
+ * queries `ORDER BY created_at DESC` — unlike its sibling
+ * `listKnowledgeCandidates`'s `oldestFirst`, which sorts at the DB layer
+ * before applying its limit. So `oldestFirst: true` below can only ever
+ * fetch the newest `LIST_SUGGESTIONS_SCAN_LIMIT` matching rows (one bounded
+ * call, never a second — see the SECURITY test in tools.test.ts) and sort
+ * that window ascending in JS. This is genuinely correct only while the
+ * matching backlog is <= this limit; beyond it, the true oldest row can fall
+ * outside the window entirely and never surface. That is the SAME bounded,
+ * precedent-accepted tradeoff `suggestionStaleAlert.ts`'s
+ * `SUGGESTION_STALE_ALERT_SCAN_LIMIT` doc comment describes for the identical
+ * `listSuggestions` limitation — this repo does not have the option of
+ * fixing the DB-level ordering without an agent-base change, so the handler
+ * below surfaces a caveat in its own output whenever the scan hits this
+ * limit, rather than silently reporting a mid-recent row as "oldest"
+ * (issue #1255 review).
  */
 const LIST_SUGGESTIONS_SCAN_LIMIT = 200;
 
@@ -145,7 +155,10 @@ export const accessAndSuggestionsTools = [
         .optional()
         .describe(
           'Order by created_at ascending (oldest-submitted first) instead of the default newest-first — ' +
-            'use this to find suggestions that have sat unreviewed the longest.',
+            'use this to find suggestions that have sat unreviewed the longest. Approximate for a large ' +
+            `backlog: only scans the ${LIST_SUGGESTIONS_SCAN_LIMIT} most recently created rows matching ` +
+            'the status filter before sorting, so if that many or more match, the true oldest may fall ' +
+            'outside what was scanned — the response says so explicitly when this happens.',
         ),
     },
     handler: async (args, { caller }) => {
@@ -153,8 +166,11 @@ export const accessAndSuggestionsTools = [
       // oldestFirst: true takes exactly one bounded read (never a second
       // call) and sorts/slices in JS — see LIST_SUGGESTIONS_SCAN_LIMIT above.
       // False/omitted stays byte-identical to before this field existed.
-      const rows = args.oldestFirst
-        ? [...(await listSuggestions(args.status, LIST_SUGGESTIONS_SCAN_LIMIT))]
+      const scanned = args.oldestFirst
+        ? await listSuggestions(args.status, LIST_SUGGESTIONS_SCAN_LIMIT)
+        : null;
+      const rows = scanned
+        ? [...scanned]
             .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
             .slice(0, args.limit ?? 50)
         : await listSuggestions(args.status, args.limit ?? 50);
@@ -167,6 +183,23 @@ export const accessAndSuggestionsTools = [
       // With no suggestion ever withdrawn this Set is always empty, so the
       // rendered line is byte-identical to before this issue.
       const withdrawnIds = await getWithdrawnSuggestionIds(rows.map((s) => s.id));
+      // Truncation caveat (issue #1255 review): `scanned` hitting exactly
+      // LIST_SUGGESTIONS_SCAN_LIMIT means the DB may hold more rows matching
+      // this status than the single bounded scan could see — the "oldest"
+      // rows below only ever come from the newest LIST_SUGGESTIONS_SCAN_LIMIT
+      // rows, so the genuine oldest could be outside that window and missing
+      // here. Say so rather than silently reporting a mid-recent row as
+      // oldest.
+      // untrusted() collapses newlines to spaces, so this caveat is joined
+      // with a single space rather than a blank line — it reads fine either
+      // way and there's no point fighting that helper's redaction regex.
+      const truncationCaveat =
+        scanned && scanned.length === LIST_SUGGESTIONS_SCAN_LIMIT
+          ? ` ⚠️ oldestFirst caveat: ${LIST_SUGGESTIONS_SCAN_LIMIT}+ suggestions match this status filter, ` +
+            `so only the ${LIST_SUGGESTIONS_SCAN_LIMIT} most recently created ones were scanned before ` +
+            'sorting — the true oldest may not be shown above. Narrow the status filter or resolve some ' +
+            'suggestions to shrink the backlog if this list looks incomplete.'
+          : '';
       return text(
         untrusted(
           'Suggestions',
@@ -175,7 +208,7 @@ export const accessAndSuggestionsTools = [
               const statusTag = withdrawnIds.has(s.id) ? `${s.status}, withdrawn by member` : s.status;
               return `#${s.id} [${statusTag}] ${s.platform} ${s.displayName ? sanitizeName(s.displayName) : s.userId} (${s.createdAt.toISOString()}): ${s.content}`;
             })
-            .join('\n'),
+            .join('\n') + truncationCaveat,
         ),
       );
     },

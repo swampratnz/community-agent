@@ -19778,6 +19778,57 @@ test(
         oldestFirstText.indexOf(`${RUN} newest suggestion fixture`),
       'oldestFirst: true lists the oldest suggestion before the newest one',
     );
+    assert.doesNotMatch(
+      oldestFirstText,
+      /oldestFirst caveat/i,
+      'a scan well under LIST_SUGGESTIONS_SCAN_LIMIT must not carry the "may be incomplete" caveat',
+    );
+  },
+);
+
+test(
+  'list_suggestions: oldestFirst appends an explicit caveat to its output when the scan hits ' +
+    'LIST_SUGGESTIONS_SCAN_LIMIT, since a backlog that large means the genuinely oldest row could sit ' +
+    'outside the single bounded scan and never surface — the tool must say so rather than silently ' +
+    'reporting a mid-recent row as "oldest" (issue #1255 review)',
+  { skip },
+  async (t) => {
+    const scanLimit = 200;
+    const now = Date.now();
+    const syntheticRows = Array.from({ length: scanLimit }, (_, i) => ({
+      id: 9_000_000 + i,
+      platform: 'discord',
+      user_id: `${RUN}-oldestfirst-scan-user-${i}`,
+      display_name: null,
+      content: `${RUN} synthetic scan-limit fixture ${i}`,
+      status: 'new',
+      created_at: new Date(now - i * 1000),
+      reviewed_by: null,
+      reviewed_at: null,
+    }));
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && /FROM suggestions\b/.test(sql)) {
+        return Promise.resolve({ rows: syntheticRows, rowCount: syntheticRows.length });
+      }
+      return (realQuery as (...a: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+    try {
+      const result = await listSuggestionsHandler().handler({ status: 'new', limit: 5, oldestFirst: true });
+      const rendered = result.content[0]?.text ?? '';
+      assert.match(
+        rendered,
+        /oldestFirst caveat/i,
+        'hitting the scan limit must surface an explicit caveat that the true oldest row may not be shown',
+      );
+      assert.match(
+        rendered,
+        new RegExp(String(scanLimit)),
+        'the caveat should name the scan-limit constant so an admin understands the bound',
+      );
+    } finally {
+      t.mock.restoreAll();
+    }
   },
 );
 
