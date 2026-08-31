@@ -46,6 +46,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   hygiene, can now ask for the longest-standing row first instead of only
   newest-first.
 
+### Fixed
+- **The stale-suggestion admin nudge no longer counts a suggestion the member
+  already withdrew.** (#1269) `withdraw_suggestion` (#1243) never reached the
+  6-hourly stale-suggestion alert, so a suggestion a member retracted could
+  still trip the "N pending suggestion(s) waiting 7d+" DM to admins — and,
+  since `resolve_suggestion` refuses a withdrawn suggestion outright, could
+  leave that alert permanently unable to reset once it fired. The alert now
+  excludes withdrawn suggestions before counting, matching the same consult
+  `list_suggestions`/`resolve_suggestion`/`my_submissions` already apply.
+
 ## 2026-08-31
 
 ### Added

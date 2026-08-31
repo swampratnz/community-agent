@@ -147,7 +147,7 @@
   "statusCheckAlert.test.ts": 4,
   "stringsCatalogue.test.ts": 5,
   "suggestIssue.test.ts": 3,
-  "suggestionStaleAlert.test.ts": 4,
+  "suggestionStaleAlert.test.ts": 5,
   "systemPrompt.test.ts": 21,
   "systemPromptSlots.test.ts": 5,
   "toolRegistry.test.ts": 4,
