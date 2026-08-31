@@ -36,6 +36,10 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   otherwise. `oldestFirst: true` now sorts by first-requested-ascending
   instead, the same option `list_suggestions` and `list_reports` gained
   yesterday.
+- **`list_appeals` gains the same `oldestFirst` option.** (#1265) The last of
+  the four review-queue list tools to get it — an admin working through the
+  moderation-appeal backlog can now ask for the longest-unreviewed appeal
+  first, instead of only newest-filed-first.
 
 ## 2026-08-31
 

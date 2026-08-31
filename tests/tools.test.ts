@@ -35216,7 +35216,11 @@ function listAppealsHandler(role: 'member' | 'admin' = 'admin', userId = 'admin-
       _registeredTools: Record<
         string,
         {
-          handler: (args: { status?: 'open' | 'resolved' | 'dismissed'; limit?: number }) => Promise<{
+          handler: (args: {
+            status?: 'open' | 'resolved' | 'dismissed';
+            limit?: number;
+            oldestFirst?: boolean;
+          }) => Promise<{
             content: Array<{ type: string; text: string }>;
             isError?: boolean;
           }>;
@@ -35306,6 +35310,178 @@ test(
     // Not asserting zero globally (other tests may leave rows), just that a
     // filtered, plausibly-empty call never errors.
     assert.equal(result.isError, false);
+  },
+);
+
+// list_appeals oldestFirst (issue #1265) — mirrors list_reports' oldestFirst
+// (reportsAdmin.ts, issue #1259): a single bounded fetch + JS sort/slice,
+// since agent-base's listAppeals has no ordering parameter to forward a
+// third argument to.
+test(
+  'list_appeals: oldestFirst orders the queue by created_at ascending; omitted/false stays byte-identical ' +
+    'to the default newest-first order (issue #1265 acceptance criteria 2-3)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-list-appeals-oldestfirst-target`;
+    const oldest = await createModerationAppeal({
+      platform: 'discord',
+      userId,
+      userName: 'Member',
+      reason: `${RUN} oldest appeal fixture`,
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    const newest = await createModerationAppeal({
+      platform: 'discord',
+      userId,
+      userName: 'Member',
+      reason: `${RUN} newest appeal fixture`,
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    try {
+      await pool.query(`UPDATE moderation_appeals SET created_at = now() - interval '2 days' WHERE id = $1`, [
+        oldest.id,
+      ]);
+      await pool.query(`UPDATE moderation_appeals SET created_at = now() - interval '1 days' WHERE id = $1`, [
+        newest.id,
+      ]);
+
+      const defaultOrder = await listAppealsHandler().handler({ limit: 200 });
+      const defaultText = defaultOrder.content[0]?.text ?? '';
+      assert.ok(
+        defaultText.indexOf(`${RUN} newest appeal fixture`) <
+          defaultText.indexOf(`${RUN} oldest appeal fixture`),
+        'default (no oldestFirst) lists the newest appeal before the oldest one, unchanged from before this issue',
+      );
+
+      const oldestFirstOrder = await listAppealsHandler().handler({ limit: 200, oldestFirst: true });
+      const oldestFirstText = oldestFirstOrder.content[0]?.text ?? '';
+      assert.ok(
+        oldestFirstText.indexOf(`${RUN} oldest appeal fixture`) <
+          oldestFirstText.indexOf(`${RUN} newest appeal fixture`),
+        'oldestFirst: true lists the oldest appeal before the newest one',
+      );
+      assert.doesNotMatch(
+        oldestFirstText,
+        /oldestFirst caveat/i,
+        'a scan well under APPEAL_STALE_ALERT_SCAN_LIMIT must not carry the "may be incomplete" caveat',
+      );
+    } finally {
+      await pool.query(`DELETE FROM moderation_appeals WHERE id = ANY($1)`, [[oldest.id, newest.id]]);
+    }
+  },
+);
+
+test(
+  'list_appeals: oldestFirst appends an explicit caveat to its output when the scan hits ' +
+    'APPEAL_STALE_ALERT_SCAN_LIMIT, since a backlog that large means the genuinely oldest row could sit ' +
+    'outside the single bounded scan and never surface — the tool must say so rather than silently ' +
+    'reporting a mid-recent row as "oldest" (issue #1265 acceptance criterion 3)',
+  { skip },
+  async (t) => {
+    const admin = `${RUN}-list-appeals-oldestfirst-caveat-admin`;
+    const scanLimit = 200;
+    const now = Date.now();
+    const syntheticRows = Array.from({ length: scanLimit }, (_, i) => ({
+      id: 9_200_000 + i,
+      platform: 'discord',
+      user_id: `${RUN}-oldestfirst-scan-appellant-${i}`,
+      user_name: null,
+      reason: `${RUN} synthetic scan-limit fixture ${i}`,
+      active_warnings: 1,
+      strike_limit: 3,
+      status: 'open',
+      created_at: new Date(now - i * 1000),
+      resolved_by: null,
+      resolved_at: null,
+    }));
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && /FROM moderation_appeals\b/.test(sql)) {
+        return Promise.resolve({ rows: syntheticRows, rowCount: syntheticRows.length });
+      }
+      return (realQuery as (...a: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+    try {
+      const result = await listAppealsHandler('admin', admin).handler({
+        status: 'open',
+        limit: 5,
+        oldestFirst: true,
+      });
+      const rendered = result.content[0]?.text ?? '';
+      assert.match(
+        rendered,
+        /oldestFirst caveat/i,
+        'hitting the scan limit must surface an explicit caveat that the true oldest row may not be shown',
+      );
+      assert.match(
+        rendered,
+        new RegExp(String(scanLimit)),
+        'the caveat should name the scan-limit constant so an admin understands the bound',
+      );
+    } finally {
+      t.mock.restoreAll();
+    }
+  },
+);
+
+test(
+  'SECURITY: list_appeals oldestFirst: true never bypasses the status filter and never exposes any field ' +
+    'the newest-first path does not already render — a re-ordering only, not a new read path (issue #1265 ' +
+    'acceptance criterion 5)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-list-appeals-oldestfirst-scope-target`;
+    const open = await createModerationAppeal({
+      platform: 'discord',
+      userId,
+      userName: 'Member',
+      reason: `${RUN} oldestfirst scope open fixture`,
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    const dismissed = await createModerationAppeal({
+      platform: 'discord',
+      userId,
+      userName: 'Member',
+      reason: `${RUN} oldestfirst scope dismissed fixture`,
+      activeWarnings: 2,
+      strikeLimit: 3,
+    });
+    await resolveModerationAppeal(dismissed.id, 'dismissed', 'admin-1');
+    try {
+      const openOnlyOldestFirst = await listAppealsHandler().handler({ status: 'open', oldestFirst: true });
+      const oldestFirstText = openOnlyOldestFirst.content[0]?.text ?? '';
+      assert.match(
+        oldestFirstText,
+        new RegExp(`#${open.id}\\b`),
+        'the matching open appeal is visible under oldestFirst',
+      );
+      assert.ok(
+        !oldestFirstText.includes(`#${dismissed.id}`),
+        'SECURITY: the status filter must still exclude the dismissed appeal under oldestFirst: true',
+      );
+
+      const defaultText = (await listAppealsHandler().handler({ status: 'open' })).content[0]?.text ?? '';
+      // untrusted() flattens every '\n' to a space (issue #227's
+      // prompt-injection guard), so rows are not newline-delimited in the
+      // rendered text — extract this appeal's own row by bracketing it
+      // between its own id and the next "#<id> [" (or end of string).
+      const rowFor = (rendered: string, id: number) =>
+        rendered.match(new RegExp(`#${id} \\[.*?\\)(?=\\s#\\d+\\s\\[|$)`))?.[0];
+      const oldestFirstRow = rowFor(oldestFirstText, open.id);
+      const defaultRow = rowFor(defaultText, open.id);
+      assert.ok(oldestFirstRow, 'the appeal row must be extractable from the oldestFirst: true rendering');
+      assert.equal(
+        oldestFirstRow,
+        defaultRow,
+        'SECURITY: the rendered row shape under oldestFirst: true must be byte-identical to the default ' +
+          'order — the re-ordering must never expose a field the default path does not already render',
+      );
+    } finally {
+      await pool.query(`DELETE FROM moderation_appeals WHERE id = ANY($1)`, [[open.id, dismissed.id]]);
+    }
   },
 );
 
@@ -35733,10 +35909,16 @@ test(
   },
 );
 
-test('SECURITY: list_appeals rejects a caller below admin tier (issue #554 acceptance criterion #6)', async () => {
-  const registeredTool = listAppealsHandler('member');
-  await assert.rejects(() => registeredTool.handler({}), /Permission denied/);
-});
+test(
+  'SECURITY: list_appeals rejects a caller below admin tier, identically whether oldestFirst is set or not ' +
+    '— oldestFirst must never introduce a branch that reaches the query before the tier check (issue #554 ' +
+    'acceptance criterion #6, issue #1265 acceptance criterion #4)',
+  async () => {
+    const registeredTool = listAppealsHandler('member');
+    await assert.rejects(() => registeredTool.handler({}), /Permission denied/);
+    await assert.rejects(() => registeredTool.handler({ oldestFirst: true }), /Permission denied/);
+  },
+);
 
 test(
   'SECURITY: resolve_appeal rejects a caller below admin tier, before any DB read/write (issue #554 acceptance criterion #6)',
