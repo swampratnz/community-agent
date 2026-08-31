@@ -25,6 +25,18 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #1122 #1123 #1132
 -->
 
+## 2026-09-01
+
+### Added
+- **Admins can now ask `list_access_requests` to show the longest-waiting
+  guest first.** (#1261) The default view already listed the most recently
+  active requester first — useful for working the queue in order, but it
+  meant a guest who pinged once, long ago, and never again could sort to the
+  bottom indefinitely as later requests pushed them down, with no way to ask
+  otherwise. `oldestFirst: true` now sorts by first-requested-ascending
+  instead, the same option `list_suggestions` and `list_reports` gained
+  yesterday.
+
 ## 2026-08-31
 
 ### Added
