@@ -2250,6 +2250,73 @@ test("SECURITY: notifyProjectMemberRemoved never consults the response-style loo
   assert.equal(respStyleCalls, 0);
 });
 
+// Optional `reason` (issue #1253, the deferred follow-up #1241's own "Growth
+// path" named) — appended as a SECOND distinct trailing clause after the
+// project-name clause, same non-interpolation convention as
+// notifyProjectRemoved/notifyInterestsRemoved's own `reason` clause.
+test('notifyProjectMemberRemoved with no reason is byte-identical to the project-name-only DM (regression guard)', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyProjectMemberRemoved(adapter, 'user-1', 'discord', 'Impact Lab');
+
+  assert.match(calls[0], /Project: "Impact Lab"$/);
+  assert.doesNotMatch(calls[0], /Reason:/);
+});
+
+test('notifyProjectMemberRemoved appends a supplied reason as a distinct trailing clause after the project-name clause', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyProjectMemberRemoved(
+    adapter,
+    'user-1',
+    'discord',
+    'Impact Lab',
+    undefined,
+    undefined,
+    'the project wound down',
+  );
+
+  assert.match(calls[0], /Project: "Impact Lab" Reason: "the project wound down"$/);
+});
+
+test("notifyProjectMemberRemoved renders a supplied reason in the te reo Māori variant with 'Take' instead of 'Reason'", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyProjectMemberRemoved(
+    adapter,
+    'user-1',
+    'discord',
+    'Impact Lab',
+    async () => 'mi',
+    undefined,
+    'kua mutu te kaupapa',
+  );
+
+  assert.match(calls[0], /Kaupapa: "Impact Lab" Take: "kua mutu te kaupapa"$/);
+});
+
+test('SECURITY: notifyProjectMemberRemoved truncates an oversized reason via truncateForEcho rather than appending it unbounded', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+  const longReason = 'x'.repeat(500);
+
+  await notifyProjectMemberRemoved(adapter, 'user-1', 'discord', 'Impact Lab', undefined, undefined, longReason);
+
+  assert.ok(!calls[0].includes(longReason), 'the full 500-char reason must not appear verbatim');
+  assert.match(calls[0], /x{100,140}\.\.\."$/);
+});
+
 // notifySuggestionResolved holds all of resolve_suggestion's new (issue #116)
 // notification behaviour, tested directly here the same way
 // notifyMemberApproved is above.
@@ -22220,6 +22287,72 @@ test(
       /No Leak Lab was removed by an admin|access to a project's shared memory/i,
       "the admin-facing reply must not itself carry the member's DM text",
     );
+  },
+);
+
+test(
+  'project_remove_member appends a supplied reason to the removal DM as a distinct trailing clause, and never changes the admin-facing reply (issue #1253 acceptance criteria #2/#3)',
+  { skip },
+  async () => {
+    const { createProject, upsertMember } = await import('@swampratnz/agent-base/storage/repository.js');
+    const slug = `${RUN}-notify-reason`;
+    await createProject({ slug, name: 'Reason Lab', createdBy: 'test' });
+    const member = `${RUN.slice(1).slice(0, 14)}5581`;
+    await upsertMember({ platform: 'discord', userId: member, role: 'member', addedBy: 'test' });
+
+    const dmCalls: Array<[string, string]> = [];
+    const add = adminProjectToolHandler('project_add_member', 'admin', dmCalls);
+    const remove = adminProjectToolHandler('project_remove_member', 'admin', dmCalls);
+
+    await add.handler({ project: slug, userId: member });
+    dmCalls.length = 0; // isolate the removal DM from the grant DM above
+
+    const removed = await remove.handler({
+      project: slug,
+      userId: member,
+      reason: 'the project wound down',
+    });
+
+    assert.equal(dmCalls.length, 1, 'exactly one DM must be sent for the removal');
+    assert.match(
+      dmCalls[0][1],
+      /Project: "Reason Lab" Reason: "the project wound down"$/,
+      'the reason must be a distinct trailing clause after the project-name clause',
+    );
+    assert.doesNotMatch(
+      removed.content[0].text,
+      /the project wound down/,
+      "the admin-facing reply must not itself carry the member's DM reason text",
+    );
+  },
+);
+
+test(
+  'SECURITY: project_remove_member never persists a supplied reason to admin_audit params (issue #1253 acceptance criterion #5)',
+  { skip },
+  async () => {
+    const { createProject, upsertMember } = await import('@swampratnz/agent-base/storage/repository.js');
+    const slug = `${RUN}-notify-reason-audit`;
+    await createProject({ slug, name: 'Reason Audit Lab', createdBy: 'test' });
+    const member = `${RUN.slice(1).slice(0, 14)}5591`;
+    await upsertMember({ platform: 'discord', userId: member, role: 'member', addedBy: 'test' });
+
+    const add = adminProjectToolHandler('project_add_member', 'admin');
+    const remove = adminProjectToolHandler('project_remove_member', 'admin');
+
+    await add.handler({ project: slug, userId: member });
+    await remove.handler({
+      project: slug,
+      userId: member,
+      reason: 'this must never reach the audit log',
+    });
+
+    const { rows } = await pool.query(
+      `SELECT params FROM admin_audit WHERE action_kind = 'project_remove_member' AND params->>'project' = $1 ORDER BY id DESC LIMIT 1`,
+      [slug],
+    );
+    assert.equal(rows.length, 1);
+    assert.ok(!('reason' in rows[0].params), 'the audited() params object must not contain a reason key');
   },
 );
 
