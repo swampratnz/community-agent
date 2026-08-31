@@ -44,6 +44,26 @@ export const WARN_USER_RATE_LIMIT_PER_HOUR = 10;
  */
 const reserveWarnSlot = makeSlidingWindowReserver(60 * 60 * 1000);
 
+/**
+ * `listMutedMembers` (agent-base) has no ordering parameter and always
+ * queries `ORDER BY MAX(created_at) DESC` — same shape as `listSuggestions`/
+ * `listAppeals`. So `oldestFirst: true` below can only ever fetch the newest
+ * `LIST_MUTED_MEMBERS_SCAN_LIMIT` matching rows (one bounded call, never a
+ * second) and sort that window ascending by `lastWarningAt` in JS — the same
+ * bounded, precedent-accepted tradeoff `list_suggestions`'/`list_appeals`'
+ * own `*_SCAN_LIMIT` constants describe (issue #1267, mirroring #1255/#1259/
+ * #1261/#1265). The handler surfaces a caveat whenever the scan hits this
+ * limit, rather than silently reporting a mid-recent row as "oldest".
+ */
+const LIST_MUTED_MEMBERS_SCAN_LIMIT = 200;
+
+/**
+ * Same reasoning as LIST_MUTED_MEMBERS_SCAN_LIMIT above, for
+ * `listBlockedUsers` (always `ORDER BY blocked_at DESC`, no ordering
+ * parameter).
+ */
+const LIST_BLOCKED_MEMBERS_SCAN_LIMIT = 200;
+
 export const moderationTools = [
   defineTool({
     name: 'moderate',
@@ -354,15 +374,53 @@ export const moderationTools = [
       'capped at 50 rows, newest warning first.',
     minTier: 'admin',
     readOnlyHint: true,
-    schema: {},
-    handler: async (_args, { caller }) => {
+    schema: {
+      oldestFirst: z
+        .boolean()
+        .optional()
+        .describe(
+          'Order by lastWarningAt ascending (longest-since-last-warning first) instead of the default ' +
+            'newest-warning-first — use this to find the stale/forgotten mutes that have sat longest, e.g. ' +
+            'to decide who to clear or escalate. Approximate for a large backlog: only scans the ' +
+            `${LIST_MUTED_MEMBERS_SCAN_LIMIT} most recently warned rows before sorting, so if that many or ` +
+            'more currently qualify, the true oldest may fall outside what was scanned — the response says ' +
+            'so explicitly when this happens.',
+        ),
+    },
+    handler: async (args, { caller }) => {
       assertAtLeast(caller.role, 'admin', 'list_muted_members');
-      const rows = await listMutedMembers(
-        caller.platform,
-        config.moderation.strikeLimit,
-        config.moderation.strikeWindowDays,
-      );
-      return text(formatMutedMembersList(rows));
+      // oldestFirst: true takes exactly one bounded read (never a second
+      // call) and sorts/slices in JS — see LIST_MUTED_MEMBERS_SCAN_LIMIT
+      // above. False/omitted stays byte-identical to before this field
+      // existed, using the identical single-call shape as before.
+      const scanned = args.oldestFirst
+        ? await listMutedMembers(
+            caller.platform,
+            config.moderation.strikeLimit,
+            config.moderation.strikeWindowDays,
+            LIST_MUTED_MEMBERS_SCAN_LIMIT,
+          )
+        : null;
+      const rows = scanned
+        ? [...scanned].sort((a, b) => a.lastWarningAt.getTime() - b.lastWarningAt.getTime()).slice(0, 50)
+        : await listMutedMembers(
+            caller.platform,
+            config.moderation.strikeLimit,
+            config.moderation.strikeWindowDays,
+          );
+      // Truncation caveat (mirrors list_suggestions'/list_appeals', #1255/
+      // #1265 review): `scanned` hitting exactly LIST_MUTED_MEMBERS_SCAN_LIMIT
+      // means more members may currently qualify than the single bounded
+      // scan could see, so the "oldest" rows below only ever come from the
+      // most recently warned LIST_MUTED_MEMBERS_SCAN_LIMIT rows — the genuine
+      // oldest could be outside that window and missing here.
+      const truncationCaveat =
+        scanned && scanned.length === LIST_MUTED_MEMBERS_SCAN_LIMIT
+          ? ` ⚠️ oldestFirst caveat: ${LIST_MUTED_MEMBERS_SCAN_LIMIT}+ members currently qualify, so only ` +
+            `the ${LIST_MUTED_MEMBERS_SCAN_LIMIT} most recently warned ones were scanned before sorting — ` +
+            'the true oldest may not be shown above.'
+          : '';
+      return text(formatMutedMembersList(rows) + truncationCaveat);
     },
   }),
 
@@ -380,11 +438,44 @@ export const moderationTools = [
       'conversation_id), capped at 50 rows, newest block first.',
     minTier: 'admin',
     readOnlyHint: true,
-    schema: {},
-    handler: async (_args, { caller }) => {
+    schema: {
+      oldestFirst: z
+        .boolean()
+        .optional()
+        .describe(
+          'Order by blockedAt ascending (longest-blocked first) instead of the default newest-block-first ' +
+            '— use this to find identities blocked ages ago and forgotten, e.g. for periodic block-list ' +
+            `hygiene. Approximate for a large backlog: only scans the ${LIST_BLOCKED_MEMBERS_SCAN_LIMIT} ` +
+            'most recently blocked rows before sorting, so if that many or more are currently blocked, the ' +
+            'true oldest may fall outside what was scanned — the response says so explicitly when this ' +
+            'happens.',
+        ),
+    },
+    handler: async (args, { caller }) => {
       assertAtLeast(caller.role, 'admin', 'list_blocked_members');
-      const rows = await listBlockedUsers(caller.platform);
-      return text(formatBlockedMembersList(rows));
+      // oldestFirst: true takes exactly one bounded read (never a second
+      // call) and sorts/slices in JS — see LIST_BLOCKED_MEMBERS_SCAN_LIMIT
+      // above. False/omitted stays byte-identical to before this field
+      // existed, using the identical single-call shape as before.
+      const scanned = args.oldestFirst
+        ? await listBlockedUsers(caller.platform, LIST_BLOCKED_MEMBERS_SCAN_LIMIT)
+        : null;
+      const rows = scanned
+        ? [...scanned].sort((a, b) => a.blockedAt.getTime() - b.blockedAt.getTime()).slice(0, 50)
+        : await listBlockedUsers(caller.platform);
+      // Truncation caveat (mirrors list_muted_members' above): `scanned`
+      // hitting exactly LIST_BLOCKED_MEMBERS_SCAN_LIMIT means more identities
+      // may currently be blocked than the single bounded scan could see, so
+      // the "oldest" rows below only ever come from the most recently
+      // blocked LIST_BLOCKED_MEMBERS_SCAN_LIMIT rows — the genuine oldest
+      // could be outside that window and missing here.
+      const truncationCaveat =
+        scanned && scanned.length === LIST_BLOCKED_MEMBERS_SCAN_LIMIT
+          ? ` ⚠️ oldestFirst caveat: ${LIST_BLOCKED_MEMBERS_SCAN_LIMIT}+ identities are currently blocked, ` +
+            `so only the ${LIST_BLOCKED_MEMBERS_SCAN_LIMIT} most recently blocked ones were scanned before ` +
+            'sorting — the true oldest may not be shown above.'
+          : '';
+      return text(formatBlockedMembersList(rows) + truncationCaveat);
     },
   }),
 
