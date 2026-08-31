@@ -45,11 +45,50 @@ export const accessAndSuggestionsTools = [
       'it without granting anything). Admin only.',
     minTier: 'admin',
     readOnlyHint: true,
-    schema: { limit: z.number().optional().describe('Max entries (default 50)') },
+    schema: {
+      limit: z.number().optional().describe('Max entries (default 50)'),
+      oldestFirst: z
+        .boolean()
+        .optional()
+        .describe(
+          'Order by first-requested ascending (longest-waiting guest first) instead of the default ' +
+            'most-recently-requested-first — use this to find a guest who pinged once, long ago, and never ' +
+            'again. Approximate for a large backlog: only scans the ' +
+            `${ACCESS_REQUEST_STALE_ALERT_SCAN_LIMIT} most recently requested rows before sorting, so if ` +
+            'that many or more are pending, the true oldest may fall outside what was scanned — the ' +
+            'response says so explicitly when this happens.',
+        ),
+    },
     handler: async (args, { caller }) => {
       assertAtLeast(caller.role, 'admin', 'list_access_requests');
-      const rows = await listAccessRequests(args.limit ?? 50);
+      // oldestFirst: true takes exactly one bounded read (never a second
+      // call) and sorts/slices in JS — see list_suggestions' identical
+      // pattern (issue #1255) for why: listAccessRequests has no ordering
+      // parameter and always queries `ORDER BY last_requested_at DESC`.
+      // False/omitted stays byte-identical to before this field existed.
+      const scanned = args.oldestFirst
+        ? await listAccessRequests(ACCESS_REQUEST_STALE_ALERT_SCAN_LIMIT)
+        : null;
+      const rows = scanned
+        ? [...scanned]
+            .sort((a, b) => a.firstRequestedAt.getTime() - b.firstRequestedAt.getTime())
+            .slice(0, args.limit ?? 50)
+        : await listAccessRequests(args.limit ?? 50);
       if (rows.length === 0) return text('No pending access requests.');
+      // Truncation caveat (mirrors list_suggestions', issue #1255 review):
+      // `scanned` hitting exactly ACCESS_REQUEST_STALE_ALERT_SCAN_LIMIT means
+      // more requests may be pending than the single bounded scan could see,
+      // so the "oldest" rows below only ever come from the most recently
+      // requested ACCESS_REQUEST_STALE_ALERT_SCAN_LIMIT rows — the genuine
+      // oldest could be outside that window and missing here. Say so rather
+      // than silently reporting a mid-recent row as oldest.
+      const truncationCaveat =
+        scanned && scanned.length === ACCESS_REQUEST_STALE_ALERT_SCAN_LIMIT
+          ? ` ⚠️ oldestFirst caveat: ${ACCESS_REQUEST_STALE_ALERT_SCAN_LIMIT}+ access requests are pending, ` +
+            `so only the ${ACCESS_REQUEST_STALE_ALERT_SCAN_LIMIT} most recently requested ones were scanned ` +
+            'before sorting — the true oldest may not be shown above. Resolve some requests to shrink the ' +
+            'backlog if this list looks incomplete.'
+          : '';
       return text(
         untrusted(
           'Access requests',
@@ -66,7 +105,7 @@ export const accessAndSuggestionsTools = [
                 `last ${r.lastRequestedAt.toISOString()}`
               );
             })
-            .join('\n'),
+            .join('\n') + truncationCaveat,
         ),
       );
     },
