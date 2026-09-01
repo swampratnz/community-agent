@@ -83,6 +83,7 @@ export {
   APPEAL_MODERATION_REASON_MAX_CHARS,
   formatAppealModerationText,
   formatReportContentText,
+  formatWithdrawAppealText,
   formatWithdrawReportText,
 } from './tools/reportsMember.js';
 export {

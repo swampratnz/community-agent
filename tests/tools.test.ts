@@ -145,6 +145,7 @@ const {
   SUGGESTION_RESOLUTION_ECHO_CHARS,
   formatAppealModerationText,
   formatReportContentText,
+  formatWithdrawAppealText,
   formatWithdrawReportText,
   formatRateAnswerText,
   formatRequestHumanHelpText,
@@ -253,6 +254,8 @@ const { listAccessRequestResolutionsSince } =
   await import('../src/module/storage/accessRequestResolutions.js');
 const { recordSuggestionWithdrawal, getWithdrawnSuggestionIds } =
   await import('../src/module/storage/suggestionWithdrawals.js');
+const { recordAppealWithdrawal, getWithdrawnAppealIds } =
+  await import('../src/module/storage/appealWithdrawals.js');
 const { buildMemberDigestContent } = await import('../src/module/memberDigest.js');
 const { formatMyDataText, formatMySubmissionsText, formatMyWarningsText } =
   await import('../src/module/agent/tools/selfService.js');
@@ -279,6 +282,7 @@ const RESOLVE_SUGGESTION_HANDLER_USER = `${RUN}-resolve-suggestion-handler`;
 const WITHDRAW_SUGGESTION_HANDLER_USER = `${RUN}-withdraw-suggestion-handler`;
 const RESOLVE_REPORT_HANDLER_USER = `${RUN}-resolve-report-handler`;
 const RESOLVE_APPEAL_HANDLER_USER = `${RUN}-resolve-appeal-handler`;
+const WITHDRAW_APPEAL_HANDLER_USER = `${RUN}-withdraw-appeal-handler`;
 const REPORT_CONTENT_HANDLER_USER = `${RUN}-report-content-handler`;
 const REMEMBER_SEARCH_HANDLER_SCOPE = `${RUN}-remember-search-handler`;
 const CATCH_UP_HANDLER_SCOPE = `${RUN}-catch-up-handler`;
@@ -6356,8 +6360,9 @@ test('community_info reply stays concise, not a wall of text (issue #92)', async
   // covering all three project member tools, not three), and again for issue
   // #1070's most_helpful_knowledge line, and again for issue #1243's
   // withdraw_suggestion clause (folded into the existing suggest_improvement
-  // line, not a new one).
-  assert.ok(replyText.length < 2260, `reply should stay short; was ${replyText.length} chars`);
+  // line, not a new one), and again for issue #1278's withdraw_appeal clause
+  // (folded into the existing appeal_moderation line, not a new one).
+  assert.ok(replyText.length < 2310, `reply should stay short; was ${replyText.length} chars`);
 });
 
 test('community_info appends the full ADMIN_CAPABILITIES_TEXT rundown for admin/super_admin callers, on top of the member content (issue #367)', async () => {
@@ -6464,6 +6469,7 @@ const MEMBER_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__withdraw_report', /withdraw/i],
   ['mcp__community__withdraw_suggestion', /withdraw an improvement suggestion you filed/i],
   ['mcp__community__appeal_moderation', /appeal my warning/i],
+  ['mcp__community__withdraw_appeal', /withdraw an appeal you filed/i],
   ['mcp__community__my_submissions', /filed suggestions\/reports/i],
   ['mcp__community__my_warnings', /active warnings/i],
   ['mcp__community__my_data', /what I've stored about you/i],
@@ -6538,7 +6544,8 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
     'NZ Claude Community — a New Zealand group building with Claude and the Anthropic API. ' +
     "Here's what you can ask me to do:\n" +
     '- Flag harassment, spam, or a rule violation to admins ("report this"), or withdraw one filed by mistake\n' +
-    '- Ask admins to review a warning you think was a mistake ("appeal my warning")\n' +
+    '- Ask admins to review a warning you think was a mistake ("appeal my warning"), or withdraw an ' +
+    'appeal you filed\n' +
     '- Ask me for our community guidelines ("what are the rules here?")\n' +
     '- Answer questions from curated community knowledge — just ask\n' +
     '- Browse the topics our knowledge base covers, if you\'re not sure what to ask ("what do you know about?")\n' +
@@ -6580,7 +6587,8 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
       'issue #841 added the community_digest line, issue #895 added the withdraw_knowledge_tip clause to ' +
       'the suggest_knowledge line, issue #927 added the project_note/project_recall/project_list line, ' +
       'issue #1070 added the most_helpful_knowledge line, issue #1243 added the withdraw_suggestion clause ' +
-      'to the suggest_improvement line; otherwise unchanged since #367)',
+      'to the suggest_improvement line, issue #1278 added the withdraw_appeal clause to the ' +
+      'appeal_moderation line; otherwise unchanged since #367)',
   );
 });
 
@@ -6750,8 +6758,10 @@ test('community_info: admin reply stays under a hard char cap, not a wall of tex
   // for issue #1188's check_knowledge_source clause (consolidated into the
   // existing knowledge-base curation bullet, not a new bullet); bumped once
   // more for issue #1230's remove_interests clause (same moderation bullet
-  // again, not a new bullet).
-  assert.ok(adminReply.length < 4830, `admin reply should stay short; was ${adminReply.length} chars`);
+  // again, not a new bullet); bumped once more alongside the member cap for
+  // issue #1278's withdraw_appeal clause (the admin reply includes the full
+  // member segment, so a member-segment addition grows this reply too).
+  assert.ok(adminReply.length < 4880, `admin reply should stay short; was ${adminReply.length} chars`);
 });
 
 test('SECURITY: community_info member-tier and guest-tier replies never name an admin/super_admin-only tool or contain any ADMIN_CAPABILITIES_TEXT-unique line (issue #367, issue #311)', async () => {
@@ -6899,9 +6909,10 @@ test('community_info: super_admin reply stays under a hard char cap, not a wall 
   // clause, and once more alongside the admin cap for issue #1188's
   // check_knowledge_source clause; bumped once more alongside the admin cap
   // for issue #1230's remove_interests clause; bumped once more alongside
-  // the member cap for issue #1243's withdraw_suggestion clause.
+  // the member cap for issue #1243's withdraw_suggestion clause; bumped once
+  // more alongside the member cap for issue #1278's withdraw_appeal clause.
   assert.ok(
-    superAdminReply.length < 5480,
+    superAdminReply.length < 5530,
     `super_admin reply should stay short; was ${superAdminReply.length} chars`,
   );
 });
@@ -28939,6 +28950,182 @@ test(
   },
 );
 
+// withdraw_appeal (issue #1278) — the fourth withdraw_* sibling, reusing
+// feedbackToolsFor's shape: the full registered-tools map for a member
+// caller so a test can chain appeal_moderation -> withdraw_appeal against
+// the SAME caller identity.
+function appealsMemberToolsFor(userId: string) {
+  const adapter = stubAdapter(async () => {});
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId,
+      userName: 'Appealing Member',
+      role: 'member' as const,
+      conversationId: 'convo-1',
+    },
+    adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (
+            args?: Record<string, unknown>,
+          ) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+        }
+      >;
+    }
+  )._registeredTools;
+}
+
+test(
+  "formatWithdrawAppealText renders te reo Māori for both outcomes when language is 'mi', and the exact " +
+    "pre-existing English string for 'auto'/'en' otherwise — id interpolations are unchanged in both " +
+    'languages (issue #1278)',
+  () => {
+    for (const language of ['auto', 'en'] as const) {
+      assert.equal(formatWithdrawAppealText([], language), 'You have no open appeals to withdraw.');
+      assert.equal(
+        formatWithdrawAppealText([42], language),
+        "Withdrew your appeal #42. They won't be reviewed.",
+      );
+      assert.equal(
+        formatWithdrawAppealText([1, 2], language),
+        "Withdrew your appeals #1, #2. They won't be reviewed.",
+      );
+    }
+    const miEmpty = formatWithdrawAppealText([], 'mi');
+    assert.notEqual(miEmpty, formatWithdrawAppealText([], 'en'));
+    const miOne = formatWithdrawAppealText([42], 'mi');
+    assert.notEqual(miOne, formatWithdrawAppealText([42], 'en'));
+    assert.match(miOne, /#42/);
+  },
+);
+
+test(
+  "withdraw_appeal marks the caller's own still-'open' appeal withdrawn and confirms it (two-outcome shape: " +
+    'none-to-withdraw, then withdrew); a second call finds nothing left pending (issue #1278 acceptance ' +
+    'criterion 1)',
+  { skip },
+  async () => {
+    const userId = `${WITHDRAW_APPEAL_HANDLER_USER}-happy`;
+    const tools = appealsMemberToolsFor(userId);
+
+    const empty = await tools['withdraw_appeal'].handler({});
+    assert.equal(empty.isError, true);
+    assert.equal(empty.content[0]?.text, 'You have no open appeals to withdraw.');
+
+    const created = await createModerationAppeal({
+      platform: 'discord',
+      userId,
+      userName: 'Appealing Member',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    assert.ok(created);
+
+    const withdrawn = await tools['withdraw_appeal'].handler({});
+    assert.equal(withdrawn.isError, false);
+    assert.equal(withdrawn.content[0]?.text, `Withdrew your appeal #${created.id}. They won't be reviewed.`);
+    const withdrawnIds = await getWithdrawnAppealIds([created.id]);
+    assert.ok(withdrawnIds.has(created.id), 'recordAppealWithdrawal must have written the row');
+
+    // Calling again is idempotent — the appeal is already withdrawn, so
+    // there is nothing left pending, not a duplicate withdrawal.
+    const second = await tools['withdraw_appeal'].handler({});
+    assert.equal(second.isError, true);
+    assert.equal(second.content[0]?.text, 'You have no open appeals to withdraw.');
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [created.id]);
+    await pool.query(`DELETE FROM appeal_withdrawals WHERE appeal_id = $1`, [created.id]);
+  },
+);
+
+test(
+  "SECURITY: withdraw_appeal only ever withdraws the CALLER's own 'open' appeal(s) — it cannot touch " +
+    "another member's appeal, and never touches one already resolved/dismissed; its schema exposes no " +
+    'id/target argument, so self-scoping is structural, not a runtime check (issue #1278 acceptance ' +
+    'criterion 1)',
+  { skip },
+  async () => {
+    const callerA = `${WITHDRAW_APPEAL_HANDLER_USER}-caller-a`;
+    const callerB = `${WITHDRAW_APPEAL_HANDLER_USER}-caller-b`;
+    const appealA = await createModerationAppeal({
+      platform: 'discord',
+      userId: callerA,
+      userName: 'Caller A',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    const appealB = await createModerationAppeal({
+      platform: 'discord',
+      userId: callerB,
+      userName: 'Caller B',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    assert.ok(appealA && appealB);
+
+    // An already-resolved appeal of the caller's own must also survive
+    // untouched.
+    const resolved = await createModerationAppeal({
+      platform: 'discord',
+      userId: callerA,
+      userName: 'Caller A',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    assert.ok(resolved);
+    await resolveModerationAppeal(resolved.id, 'resolved', 'admin-1');
+
+    const toolsA = appealsMemberToolsFor(callerA);
+    const result = await toolsA['withdraw_appeal'].handler({});
+    assert.equal(result.isError, false);
+    assert.equal(result.content[0]?.text, `Withdrew your appeal #${appealA.id}. They won't be reviewed.`);
+
+    const withdrawnIds = await getWithdrawnAppealIds([appealA.id, appealB.id, resolved.id]);
+    assert.ok(withdrawnIds.has(appealA.id), "caller A's own open appeal must be withdrawn");
+    assert.ok(!withdrawnIds.has(appealB.id), "SECURITY: caller B's appeal must NOT be withdrawn");
+    assert.ok(
+      !withdrawnIds.has(resolved.id),
+      "an already-resolved appeal of caller A's own must be untouched",
+    );
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = ANY($1)`, [
+      [appealA.id, appealB.id, resolved.id],
+    ]);
+    await pool.query(`DELETE FROM appeal_withdrawals WHERE appeal_id = ANY($1)`, [[appealA.id]]);
+  },
+);
+
+test(
+  'SECURITY: withdraw_appeal re-asserts member tier inside the handler itself, not merely via MEMBER_TOOLS ' +
+    'surface gating, matching every other privileged/self-service tool in reportsMember.ts (issue #1278)',
+  { skip },
+  async () => {
+    const guestUser = `${WITHDRAW_APPEAL_HANDLER_USER}-guest`;
+    const adapter = stubAdapter(async () => {});
+    const server = buildToolServer(
+      {
+        platform: 'discord' as const,
+        userId: guestUser,
+        userName: 'Guest',
+        role: 'guest' as const,
+        conversationId: 'convo-1',
+      },
+      adapter,
+    );
+    const tools = (
+      server.instance as unknown as {
+        _registeredTools: Record<string, { handler: () => Promise<unknown> }>;
+      }
+    )._registeredTools;
+    await assert.rejects(() => tools['withdraw_appeal'].handler(), /Permission denied/);
+  },
+);
+
 test(
   "formatSuggestImprovementText renders te reo Māori for both outcomes when language is 'mi', and the exact " +
     "pre-existing English string for 'auto'/'en' otherwise — id/limit interpolations are unchanged in both " +
@@ -34226,6 +34413,44 @@ test(
 );
 
 test(
+  "my_submissions renders a withdrawn appeal as '[withdrawn]' rather than the stale '[open]' it would " +
+    'otherwise still show, while a never-withdrawn appeal for the same caller stays byte-identical ' +
+    '(issue #1278 acceptance criteria 3, 5)',
+  { skip },
+  async () => {
+    const userId = `${MY_SUBMISSIONS_HANDLER_USER}-appeal-withdrawn`;
+    const live = await createModerationAppeal({
+      platform: 'whatsapp',
+      userId,
+      userName: 'Submitting Member',
+      reason: 'still open',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    const toWithdraw = await createModerationAppeal({
+      platform: 'whatsapp',
+      userId,
+      userName: 'Submitting Member',
+      reason: 'retracted by the member',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    assert.ok(live && toWithdraw);
+    await recordAppealWithdrawal(toWithdraw.id);
+
+    const result = await mySubmissionsHandler(userId).handler();
+    const output = result.content[0]?.text ?? '';
+
+    assert.equal(result.isError, false);
+    assert.match(output, new RegExp(`#${live.id} \\[open\\] still open`));
+    assert.match(output, new RegExp(`#${toWithdraw.id} \\[withdrawn\\] retracted by the member`));
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = ANY($1)`, [[live.id, toWithdraw.id]]);
+    await pool.query(`DELETE FROM appeal_withdrawals WHERE appeal_id = $1`, [toWithdraw.id]);
+  },
+);
+
+test(
   "my_submissions' handler output equals formatMySubmissionsText's output for the same DB state — the " +
     "'/mysubmissions'/'!mysubmissions' shortcuts (issue #1018) share this formatter, so a drift here would " +
     'silently desync the tool from the shortcut (issue #1018 authoritative acceptance criterion 1)',
@@ -35992,6 +36217,93 @@ test(
     } finally {
       await pool.query(`DELETE FROM moderation_appeals WHERE id = ANY($1)`, [[open.id, dismissed.id]]);
     }
+  },
+);
+
+test(
+  'list_appeals renders a withdrawn appeal distinctly from a live one, and stays byte-identical for a ' +
+    'never-withdrawn appeal (issue #1278 acceptance criteria 3, 5)',
+  { skip },
+  async () => {
+    const liveUser = `${RUN}-list-appeals-withdraw-live`;
+    const withdrawnUser = `${RUN}-list-appeals-withdraw-withdrawn`;
+    const live = await createModerationAppeal({
+      platform: 'discord',
+      userId: liveUser,
+      userName: 'Live Member',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    const toWithdraw = await createModerationAppeal({
+      platform: 'discord',
+      userId: withdrawnUser,
+      userName: 'Withdrawn Member',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    assert.ok(live && toWithdraw);
+    await recordAppealWithdrawal(toWithdraw.id);
+    try {
+      const result = await listAppealsHandler().handler({ status: 'open', limit: 200 });
+      const text = result.content[0]?.text ?? '';
+      assert.match(
+        text,
+        new RegExp(`#${live.id} \\[open\\] `),
+        'a never-withdrawn appeal renders byte-identical to before this issue',
+      );
+      assert.match(
+        text,
+        new RegExp(`#${toWithdraw.id} \\[open, withdrawn by member\\] `),
+        'a withdrawn appeal is annotated distinctly from a live one',
+      );
+    } finally {
+      await pool.query(`DELETE FROM moderation_appeals WHERE id = ANY($1)`, [[live.id, toWithdraw.id]]);
+      await pool.query(`DELETE FROM appeal_withdrawals WHERE appeal_id = $1`, [toWithdraw.id]);
+    }
+  },
+);
+
+test(
+  'SECURITY: resolve_appeal refuses cleanly for an appeal the member has withdrawn — no status change, no ' +
+    'resolution DM, and a distinct failure message naming the withdrawal (issue #1278 acceptance criterion 2)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-resolve-appeal-withdrawn`;
+    const created = await createModerationAppeal({
+      platform: 'discord',
+      userId,
+      userName: 'Member',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    assert.ok(created);
+    await recordAppealWithdrawal(created.id);
+
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (targetUserId) => {
+      calls.push(targetUserId);
+    });
+
+    const result = await resolveAppealHandler('admin', `${RUN}-resolve-appeal-withdrawn-admin`, {
+      platform: 'discord',
+      adapter,
+    }).handler({ id: created.id, status: 'resolved' });
+
+    assert.match(
+      result.content[0]?.text ?? '',
+      new RegExp(`Failed: Appeal #${created.id} was withdrawn by the member; nothing to resolve\\.`),
+    );
+    assert.equal(calls.length, 0, 'a withdrawn appeal must never receive a resolution DM');
+
+    const row = await pool.query(`SELECT status FROM moderation_appeals WHERE id = $1`, [created.id]);
+    assert.equal(
+      row.rows[0]?.status,
+      'open',
+      'resolveModerationAppeal must never be called for a withdrawn id — status stays untouched',
+    );
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [created.id]);
+    await pool.query(`DELETE FROM appeal_withdrawals WHERE appeal_id = $1`, [created.id]);
   },
 );
 
