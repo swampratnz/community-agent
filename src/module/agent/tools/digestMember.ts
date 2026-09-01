@@ -1,6 +1,8 @@
 import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
+import { getLanguagePreference } from '@swampratnz/agent-base/storage/repository.js';
 import { buildMemberDigestContent } from '../../memberDigest.js';
 import { text, untrusted } from './helpers.js';
+import { notice } from '../../strings/notices.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 export const digestMemberTools = [
@@ -30,7 +32,10 @@ export const digestMemberTools = [
         platform: caller.platform,
         userId: caller.userId,
       });
-      if (message == null) return text('Nothing to report right now.');
+      if (message == null) {
+        const language = await getLanguagePreference(caller.platform, caller.userId);
+        return text(notice('memberDigestEmptyNotice', { language }));
+      }
       // This tool result re-enters the model's context (unlike the weekly
       // channel post, sent straight to Discord) — quarantine it the same way
       // admin_digest quarantines buildAdminDigestForAdmin's own return
