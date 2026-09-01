@@ -45,6 +45,13 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   auditing for stale mutes to clear or escalate, or doing periodic block-list
   hygiene, can now ask for the longest-standing row first instead of only
   newest-first.
+- **`list_roster` gains `oldestFirst` too — the sixth and last review queue to
+  get it.** (#1285) An admin working the onboarding backlog (`list_roster`,
+  filter `not_members`) could only ever see the 50 most recently joined
+  guests, the exact opposite of who the 168h stale-onboarding DM nags about.
+  `oldestFirst: true` now sorts by earliest-joined-first instead, for every
+  filter, the same option every other admin review-queue list tool already
+  had.
 - **You can now withdraw a moderation appeal you filed.** (#1278)
   `report_content`, `suggest_knowledge` and `suggest_improvement` already let
   you retract one filed by mistake — `appeal_moderation` was the last of the
