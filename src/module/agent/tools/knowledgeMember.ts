@@ -37,7 +37,7 @@ import {
   rankKnowledgeByRetrieval,
   text,
 } from './helpers.js';
-import { WHO_IS_INTO_NO_PROFILE_HINT } from './social.js';
+import { formatWhoIsIntoEmptyText } from './social.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 // most_helpful_knowledge's internal fetch cap (issue #1070) — same bounded-
@@ -257,9 +257,12 @@ export const knowledgeMemberTools = [
       const interestsText = interestsByOwner.get(`${caller.platform}:${caller.userId}`);
       if (!interestsText) {
         // Same "publish interests first" guidance who_is_into({mine:true})
-        // already renders for this case (issue #1022) — reused verbatim,
-        // not a new string.
-        return text(WHO_IS_INTO_NO_PROFILE_HINT);
+        // already renders for this case (issue #1022) — reused via
+        // formatWhoIsIntoEmptyText so a 'mi'-preference caller gets the same
+        // translated wording that call site gives them, not an English-only
+        // bypass of it.
+        const language = await getLanguagePreference(caller.platform, caller.userId);
+        return text(formatWhoIsIntoEmptyText('noProfile', language));
       }
       const hits = await searchKnowledge(interestsText, {
         platform: caller.platform,

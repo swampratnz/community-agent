@@ -28,7 +28,8 @@ const skip = hasDb
 
 await import('./support/registerToolRegistry.js');
 await import('./support/registerNotices.js');
-const { buildToolServer, WHO_IS_INTO_NO_PROFILE_HINT } = await import('../src/module/agent/tools.js');
+const { buildToolServer, WHO_IS_INTO_NO_PROFILE_HINT, formatWhoIsIntoEmptyText } =
+  await import('../src/module/agent/tools.js');
 const { MEMBER_TOOLS } = await import('@swampratnz/agent-base/auth/rbac.js');
 const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
 const { embed } = await import('@swampratnz/agent-base/storage/embeddings.js');
@@ -177,6 +178,47 @@ test(
       knowledgeQueryCalls,
       0,
       'searchKnowledge must never query the knowledge table when the caller has no published interests',
+    );
+  },
+);
+
+test(
+  "knowledge_for_me's no-profile guidance is translated for a 'mi'-preference caller, via " +
+    "formatWhoIsIntoEmptyText('noProfile', language) rather than the raw English-only constant — matching " +
+    "who_is_into({mine:true}) and the !whois mine command's own threading of getLanguagePreference (PR #1288 " +
+    'review fix)',
+  async (t) => {
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && sql.includes('FROM member_interests')) {
+        return Promise.resolve({ rows: [], rowCount: 0 });
+      }
+      if (typeof sql === 'string' && sql.includes('FROM language_prefs')) {
+        return Promise.resolve({ rows: [{ language: 'mi' }], rowCount: 1 });
+      }
+      return (realQuery as (...args: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-member-no-profile-mi`,
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: `${RUN}-no-profile-mi`,
+      isDirect: false,
+    };
+    const result = await getKnowledgeForMeHandler(caller).handler({});
+    const text = result.content[0]?.text ?? '';
+
+    assert.equal(
+      text,
+      formatWhoIsIntoEmptyText('noProfile', 'mi'),
+      "a 'mi'-preference caller must get the Māori no-profile guidance, not the English-only constant",
+    );
+    assert.notEqual(
+      text,
+      WHO_IS_INTO_NO_PROFILE_HINT,
+      'the Māori rendering must differ from the raw English constant',
     );
   },
 );
