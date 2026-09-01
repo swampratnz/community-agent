@@ -1,6 +1,5 @@
 import { logger } from '@swampratnz/agent-base/logger.js';
 import { startTrackedJob } from '@swampratnz/agent-base/jobs/trackedJob.js';
-import { initialUsageAlertTracker, stepUsageAlertTracker } from '@swampratnz/agent-base/usageAlert.js';
 import { WindowClosedError } from '@swampratnz/agent-base/platforms/types.js';
 import {
   listAdmins,
@@ -9,6 +8,8 @@ import {
   type AdminIdentity,
   type ContentReport,
 } from '@swampratnz/agent-base/storage/repository.js';
+import { persistedPerKeyCrossingLatch, type CrossingLatchDeps } from './crossingLatch.js';
+import { REPORT_STALE_ALERT_POLICY_KEY } from './storage/policies.js';
 import type { JobSpec } from '@swampratnz/agent-base/jobs/types.js';
 import type { Platform, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
@@ -75,10 +76,16 @@ function staleOpenReports(reports: readonly ContentReport[], now: number): Conte
  * stays silent while it remains >=1 (including a partial decrease that never
  * reaches zero), and re-arms once their own stale count returns to zero —
  * the identical per-queue semantics the two sibling jobs ship with, applied
- * per admin instead of guild-wide. `listAdminIdentities`/
- * `listOpenReportsForAdmin`/`resolveViewerIds` are injectable so tests can
- * drive the latch across ticks and across admins with no real DB and no
- * timers.
+ * per admin instead of guild-wide. Unlike those two siblings' flat
+ * `persistedCrossingLatch`, each admin's own crossing state survives a
+ * process restart via `persistedPerKeyCrossingLatch` (issue #1271, the named
+ * follow-up to #1198's five-job sweep, which explicitly scoped this
+ * per-admin shape out): the latch is keyed by
+ * `${admin.platform}:${admin.platformUserId}`, so a redeploy mid-backlog does
+ * not re-fire the DM to an admin whose stale count is still >=1.
+ * `listAdminIdentities`/`listOpenReportsForAdmin`/`resolveViewerIds`/
+ * `latchDeps` are injectable so tests can drive the latch across ticks and
+ * across admins with no real DB and no timers.
  *
  * Per-admin isolation covers the WHOLE gather+send sequence, not just the
  * send: `adapter.conversationsForUser`/`resolveViewerIds`/
@@ -103,8 +110,9 @@ export function makeDefaultReportStaleAlertRun(
     platform,
     platformUserId,
   ) => (await resolveLinkedIdentities(platform, platformUserId)).map((identity) => identity.userId),
+  latchDeps?: CrossingLatchDeps,
 ): () => Promise<void> {
-  const trackers = new Map<string, ReturnType<typeof initialUsageAlertTracker>>();
+  const latch = persistedPerKeyCrossingLatch(REPORT_STALE_ALERT_POLICY_KEY, latchDeps);
   return async () => {
     const now = Date.now();
     for (const admin of await listAdminIdentities()) {
@@ -122,9 +130,7 @@ export function makeDefaultReportStaleAlertRun(
         const stale = staleOpenReports(reports, now);
 
         const key = `${admin.platform}:${admin.platformUserId}`;
-        const tracker = trackers.get(key) ?? initialUsageAlertTracker();
-        const step = stepUsageAlertTracker(tracker, stale.length, 1);
-        trackers.set(key, step.tracker);
+        const step = await latch.step(key, stale.length);
         if (!step.shouldAlert) continue;
 
         const oldestAgeHours = Math.floor(
@@ -151,6 +157,7 @@ export function makeDefaultReportStaleAlertRun(
             );
           }
         }
+        await step.commit();
       } catch (err) {
         // Mirrors adminDigest.ts's runAdminDigestOnce: the per-admin scope
         // reads (conversationsForUser/resolveViewerIds/listOpenReportsForAdmin)

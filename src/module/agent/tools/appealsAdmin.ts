@@ -6,6 +6,8 @@ import {
   type ModerationAppeal,
   resolveModerationAppeal,
 } from '@swampratnz/agent-base/storage/repository.js';
+import { APPEAL_STALE_ALERT_SCAN_LIMIT } from '../../appealStaleAlert.js';
+import { getWithdrawnAppealIds } from '../../storage/appealWithdrawals.js';
 import { SUGGESTION_RESOLUTION_ECHO_CHARS, text, untrusted } from './helpers.js';
 import { notifyAppealResolved } from './notify.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
@@ -32,22 +34,65 @@ export const appealsAdminTools = [
         .optional()
         .describe('Filter by status (default: all statuses)'),
       limit: z.number().optional().describe('Max entries (default 50)'),
+      oldestFirst: z
+        .boolean()
+        .optional()
+        .describe(
+          'Order by created_at ascending (oldest-filed first) instead of the default newest-first — use ' +
+            'this to find appeals that have sat unreviewed the longest. Approximate for a large backlog: ' +
+            `only scans the ${APPEAL_STALE_ALERT_SCAN_LIMIT} most recently created rows matching the ` +
+            'status filter before sorting, so if that many or more match, the true oldest may fall ' +
+            'outside what was scanned — the response says so explicitly when this happens.',
+        ),
     },
     handler: async (args, { caller }) => {
       assertAtLeast(caller.role, 'admin', 'list_appeals');
-      const rows = await listAppeals(args.status, args.limit ?? 50);
+      // oldestFirst: true takes exactly one bounded read (never a second
+      // call) and sorts/slices in JS, mirroring list_reports (#1259)/
+      // list_access_requests (#1261)/list_suggestions (#1255) —
+      // agent-base's listAppeals has no ordering parameter to forward a
+      // third argument to. False/omitted stays byte-identical to before
+      // this field existed, using the identical single-call shape as before.
+      const scanned = args.oldestFirst ? await listAppeals(args.status, APPEAL_STALE_ALERT_SCAN_LIMIT) : null;
+      const rows = scanned
+        ? [...scanned]
+            .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+            .slice(0, args.limit ?? 50)
+        : await listAppeals(args.status, args.limit ?? 50);
       if (rows.length === 0) return text('No appeals found.');
+      // withdraw_appeal (issue #1278) consult: an appeal the member withdrew
+      // stays in `rows` (its own status is untouched — the withdrawal lives
+      // in the separate appeal_withdrawals table) but must read distinctly
+      // from a live one, so an admin never triages an appeal the member
+      // already retracted as if it were still open. With no appeal ever
+      // withdrawn this Set is always empty, so the rendered line is
+      // byte-identical to before this issue.
+      const withdrawnIds = await getWithdrawnAppealIds(rows.map((r) => r.id));
+      // Truncation caveat (mirrors list_reports'/list_suggestions', #1259/
+      // #1255 review): scanned hitting exactly APPEAL_STALE_ALERT_SCAN_LIMIT
+      // means the DB may hold more matching rows than the single bounded
+      // scan could see, so the true oldest could be outside that window —
+      // say so rather than silently reporting a mid-recent row as oldest.
+      const truncationCaveat =
+        scanned && scanned.length === APPEAL_STALE_ALERT_SCAN_LIMIT
+          ? ` ⚠️ oldestFirst caveat: ${APPEAL_STALE_ALERT_SCAN_LIMIT}+ appeals match this filter, so only ` +
+            `the ${APPEAL_STALE_ALERT_SCAN_LIMIT} most recently created ones were scanned before sorting — ` +
+            'the true oldest may not be shown above. Narrow the status filter or resolve some appeals to ' +
+            'shrink the backlog if this list looks incomplete.'
+          : '';
       return text(
         untrusted(
           'Moderation appeals',
           rows
-            .map(
-              (r) =>
-                `#${r.id} [${r.status}] ${r.platform} — ${r.userName ? sanitizeName(r.userName) : r.userId} ` +
+            .map((r) => {
+              const statusTag = withdrawnIds.has(r.id) ? `${r.status}, withdrawn by member` : r.status;
+              return (
+                `#${r.id} [${statusTag}] ${r.platform} — ${r.userName ? sanitizeName(r.userName) : r.userId} ` +
                 `(${r.userId}), ${r.activeWarnings}/${r.strikeLimit} active warnings` +
-                `${r.reason ? `: ${r.reason}` : ''} (${r.createdAt.toISOString()})`,
-            )
-            .join('\n'),
+                `${r.reason ? `: ${r.reason}` : ''} (${r.createdAt.toISOString()})`
+              );
+            })
+            .join('\n') + truncationCaveat,
         ),
       );
     },
@@ -82,6 +127,14 @@ export const appealsAdminTools = [
         actionKind: 'resolve_appeal',
         params: { id: args.id, status: args.status },
         run: async () => {
+          // withdraw_appeal consult (issue #1278), checked BEFORE
+          // resolveModerationAppeal so a withdrawn appeal never gets a
+          // status change or a resolution DM — the member already retracted
+          // it, so there is nothing left to resolve.
+          const withdrawn = await getWithdrawnAppealIds([args.id]);
+          if (withdrawn.has(args.id)) {
+            throw new Error(`Appeal #${args.id} was withdrawn by the member; nothing to resolve.`);
+          }
           const row = await resolveModerationAppeal(args.id, args.status, caller.userId);
           if (!row) throw new Error(`No appeal with id ${args.id}.`);
           state.row = row;

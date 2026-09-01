@@ -25,6 +25,64 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #1122 #1123 #1132
 -->
 
+## 2026-09-01
+
+### Added
+- **Admins can now ask `list_access_requests` to show the longest-waiting
+  guest first.** (#1261) The default view already listed the most recently
+  active requester first — useful for working the queue in order, but it
+  meant a guest who pinged once, long ago, and never again could sort to the
+  bottom indefinitely as later requests pushed them down, with no way to ask
+  otherwise. `oldestFirst: true` now sorts by first-requested-ascending
+  instead, the same option `list_suggestions` and `list_reports` gained
+  yesterday.
+- **`list_appeals` gains the same `oldestFirst` option.** (#1265) The last of
+  the four review-queue list tools to get it — an admin working through the
+  moderation-appeal backlog can now ask for the longest-unreviewed appeal
+  first, instead of only newest-filed-first.
+- **`list_muted_members` and `list_blocked_members` gain `oldestFirst` too.**
+  (#1267) The last two guild-wide "who currently" reads without it: an admin
+  auditing for stale mutes to clear or escalate, or doing periodic block-list
+  hygiene, can now ask for the longest-standing row first instead of only
+  newest-first.
+- **You can now withdraw a moderation appeal you filed.** (#1278)
+  `report_content`, `suggest_knowledge` and `suggest_improvement` already let
+  you retract one filed by mistake — `appeal_moderation` was the last of the
+  four member-contribution queues with no such lever. `withdraw_appeal`
+  retracts all of your own still-open appeals; once withdrawn, an admin's
+  `resolve_appeal` refuses it cleanly instead of resolving something you
+  already took back, and `list_appeals`/`my_submissions` both show it as
+  withdrawn rather than the stale "open" status.
+
+### Fixed
+- **The content-report stale-backlog nudge now survives a restart.** (#1271)
+  Every admin gets a DM once their own open content-report backlog has been
+  waiting more than 48h — the tightest-SLA, most safety-sensitive of the six
+  stale-queue alerts, since it's the harassment/spam/abuse report queue. A
+  redeploy while an admin's backlog was still open used to re-send that DM
+  for a backlog that hadn't actually changed, because (unlike its five
+  sibling alerts, already fixed) this one's "already alerted" state was
+  per-admin and lived only in memory. It's now persisted the same
+  restart-safe way as the others, so a routine redeploy no longer re-fires a
+  duplicate nudge.
+- **`community_guidelines` and `community_digest` now reply in te reo Māori
+  when there's nothing to show.** (#1274) A member with a standing te reo
+  Māori language preference asking about the community's rules when none are
+  set, or asking for their digest when there's nothing new, used to get a
+  fixed English fallback either way — even though `/guidelines`, `!guidelines`,
+  `/digest` and `!digest` already replied correctly for the same situation.
+  Both tools now select the same already-translated fallback text their
+  slash-command/text-command counterparts use.
+- **`share_project`'s duplicate-project note no longer suggests a connection
+  request that's guaranteed to be refused.** (#1276) When a shared project
+  landed above the near-duplicate similarity threshold against an existing
+  showcased project, the note always pointed you at
+  `request_project_connection` as a way to team up — even when the matched
+  project wasn't seeking collaborators, in which case that call refuses
+  immediately. The note now only suggests it when the matched project is
+  actually seeking collaborators; otherwise it stops after pointing you at
+  `list_projects`.
+
 ## 2026-08-31
 
 ### Added
@@ -45,6 +103,23 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   notes had silently gone empty. No new data is collected or retained — this
   is the same best-effort DM pattern the bot already uses for approvals and
   other admin actions.
+- **`project_remove_member` can now tell a removed member why.** (#1253) An
+  admin can pass an optional one-line reason (e.g. the project wound down, or
+  the member became inactive) that's appended to the removal DM #1241 already
+  sends — closing the one gap that DM had versus its sibling revoke DMs
+  (`remove_project`, `remove_interests`), which already let an admin explain
+  themselves. The DM still always sends either way; the reason is never
+  stored anywhere and reaches only the removed member.
+- **`list_reports` can now list content reports oldest-first.** (#1259)
+  `list_suggestions` got this fix last (#1255); `list_reports` — the
+  harassment/spam/abuse report queue — was the still-outstanding sibling.
+  With the default 50-row limit, an admin triaging with the newest-first
+  order could never see a report that had been waiting the longest once the
+  backlog passed 50, even though that's exactly the one the 48h stale-report
+  alert is warning about. Pass `oldestFirst: true` to sort by longest-waiting
+  first; a note is appended if the backlog is large enough that the true
+  oldest report might not be shown. No change to what's visible or to whom —
+  same conversation scoping and accused-admin exclusion as always.
 
 ### Fixed
 - **The three peer-to-peer DMs `find_helper`, `share_project`, and
@@ -60,6 +135,17 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   gets that one notification in their own preferred language/style, same
   as every other DM the bot sends them. No new data is collected; the
   requester's own free text stays exactly as quarantined as before.
+- **`update_knowledge`/`merge_knowledge` now say so when a fix DM to past
+  unhelpful raters might not have reached everyone.** (#1262) These two
+  admin tools already DM whoever previously rated a fixed entry unhelpful
+  (#1169), but their lookup is one bounded scan across an admin's whole
+  scope — if 200+ more-recent unhelpful ratings had piled up on *other*
+  entries, this entry's own raters could silently fall outside that scan
+  and get zero DMs, with the reply reporting success either way. The reply
+  now appends a short note whenever that scan hit its limit, so an admin
+  who fixes a heavily-flagged entry in a busy scope knows to check rather
+  than assume everyone was told. The underlying gap itself (the scan is
+  still bounded) is unchanged; this only ends the silence about it.
 
 ## 2026-08-30
 

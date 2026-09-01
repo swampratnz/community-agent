@@ -26,6 +26,17 @@ export const ACCESS_REQUEST_STALE_ALERT_POLICY_KEY = 'access_request_stale_alert
 export const ROSTER_STALE_ALERT_POLICY_KEY = 'roster_stale_alert_active';
 export const DEPARTED_ADMIN_ALERT_POLICY_KEY = 'departed_admin_alert_active';
 
+/**
+ * `reportStaleAlert.ts`'s per-admin crossing-latch active set (issue #1271,
+ * the named follow-up to #1198): a JSON array of the `platform:platformUserId`
+ * strings for admins whose own stale-report latch is currently open (already
+ * alerted, not yet re-armed) — `persistedPerKeyCrossingLatch`'s per-key
+ * analogue of the six flat markers above. Never a report id, reporter/target
+ * identity, or reason — only the perceiving admin's own platform id, already
+ * retained in `community_users` and already admin-visible via `list_admins`.
+ */
+export const REPORT_STALE_ALERT_POLICY_KEY = 'report_stale_alert_active';
+
 export const COMMUNITY_POLICY_KEYS = {
   community_guidelines: null,
   community_guidelines_mi: null,
@@ -37,6 +48,7 @@ export const COMMUNITY_POLICY_KEYS = {
   [ACCESS_REQUEST_STALE_ALERT_POLICY_KEY]: null,
   [ROSTER_STALE_ALERT_POLICY_KEY]: null,
   [DEPARTED_ADMIN_ALERT_POLICY_KEY]: null,
+  [REPORT_STALE_ALERT_POLICY_KEY]: null,
 } as const;
 
 /**

@@ -16,7 +16,7 @@ import {
   unarchiveProject,
   unbindProjectSurface,
 } from '@swampratnz/agent-base/storage/repository.js';
-import { platformArg, text } from './helpers.js';
+import { platformArg, SUGGESTION_RESOLUTION_ECHO_CHARS, text } from './helpers.js';
 import { notifyProjectMemberAdded, notifyProjectMemberRemoved } from './notify.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
@@ -169,13 +169,24 @@ export const projectsAdminTools = [
     description:
       "Take away a member's access to a project's shared memory. They immediately stop being able to " +
       'read or add to it. Notes they already recorded stay with the project — this revokes access, it ' +
-      "does not erase their contributions. Never changes anyone's tier. Admin only.",
+      "does not erase their contributions. Never changes anyone's tier. Optional reason (max " +
+      `${SUGGESTION_RESOLUTION_ECHO_CHARS} characters) is appended to the removal DM the member always ` +
+      'receives — the DM fires either way, unlike remove_project/remove_interests, so there is no silent ' +
+      'option here. Admin only.',
     minTier: 'admin',
     readOnlyHint: false,
     schema: {
       project: z.string().describe('The project slug'),
       userId: z.string().min(1).describe('Platform user id of the member to remove'),
       platform: platformArg,
+      reason: z
+        .string()
+        .max(SUGGESTION_RESOLUTION_ECHO_CHARS)
+        .optional()
+        .describe(
+          'Optional, one-line, member-facing explanation appended to the removal DM (e.g. project wound ' +
+            `down, member inactive) — max ${SUGGESTION_RESOLUTION_ECHO_CHARS} characters. Never persisted.`,
+        ),
     },
     handler: async (args, { caller, audited, resolveMemberTarget, adapterFor }) => {
       assertAtLeast(caller.role, 'admin', 'project_remove_member');
@@ -187,6 +198,9 @@ export const projectsAdminTools = [
       const { result } = await audited({
         actionKind: 'project_remove_member',
         targetUserId: target.userId,
+        // reason is deliberately excluded (issue #1253) — it only ever
+        // reaches the one DM below, same non-persistence convention as
+        // remove_project/remove_interests.
         params: { project: args.project },
         run: async () => {
           const project = await getProjectBySlug(args.project);
@@ -202,11 +216,21 @@ export const projectsAdminTools = [
       // "newly removed" transition, never on "not a member", and never
       // changes this tool's own reported outcome above. Reaches only the
       // removed member's own resolved identity — nobody else learns which
-      // project they were removed from.
+      // project they were removed from. Optional `reason` (issue #1253) is
+      // threaded straight through to the DM, never into the tool's own
+      // returned result text above.
       if (state.projectName) {
         const memberAdapter = adapterFor(target.platform);
         if (memberAdapter) {
-          await notifyProjectMemberRemoved(memberAdapter, target.userId, target.platform, state.projectName);
+          await notifyProjectMemberRemoved(
+            memberAdapter,
+            target.userId,
+            target.platform,
+            state.projectName,
+            undefined,
+            undefined,
+            args.reason,
+          );
         }
       }
       return text(result);

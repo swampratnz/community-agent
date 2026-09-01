@@ -160,7 +160,7 @@ export const infoTools = [
         languagePreference === 'mi'
           ? ((await getCommunityGuidelinesMi()) ?? (await getCommunityGuidelines()))
           : await getCommunityGuidelines();
-      return text(guidelines ?? 'No community guidelines have been set yet — ask an admin.');
+      return text(guidelines ?? notice('communityGuidelinesUnsetNotice', { language: languagePreference }));
     },
   }),
 

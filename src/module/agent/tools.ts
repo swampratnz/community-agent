@@ -83,6 +83,7 @@ export {
   APPEAL_MODERATION_REASON_MAX_CHARS,
   formatAppealModerationText,
   formatReportContentText,
+  formatWithdrawAppealText,
   formatWithdrawReportText,
 } from './tools/reportsMember.js';
 export {
@@ -112,6 +113,7 @@ export {
   TOP_KNOWLEDGE_FETCH_CAP,
   KNOWLEDGE_FIX_NOTIFY_CAP,
   KNOWLEDGE_FIX_NOTIFY_FETCH_CAP,
+  KNOWLEDGE_FIX_NOTIFY_TRUNCATION_CAVEAT,
 } from './tools/knowledgeAdmin.js';
 export { WARN_USER_RATE_LIMIT_PER_HOUR } from './tools/moderation.js';
 export { TEAM_SETUP_MEMBER_CAP } from './tools/teamSetup.js';
