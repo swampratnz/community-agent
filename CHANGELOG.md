@@ -57,6 +57,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   per-admin and lived only in memory. It's now persisted the same
   restart-safe way as the others, so a routine redeploy no longer re-fires a
   duplicate nudge.
+- **`community_guidelines` and `community_digest` now reply in te reo Māori
+  when there's nothing to show.** (#1274) A member with a standing te reo
+  Māori language preference asking about the community's rules when none are
+  set, or asking for their digest when there's nothing new, used to get a
+  fixed English fallback either way — even though `/guidelines`, `!guidelines`,
+  `/digest` and `!digest` already replied correctly for the same situation.
+  Both tools now select the same already-translated fallback text their
+  slash-command/text-command counterparts use.
 
 ## 2026-08-31
 

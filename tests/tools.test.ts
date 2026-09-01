@@ -13297,6 +13297,55 @@ test(
   },
 );
 
+test(
+  'community_guidelines tool handler serves the te reo Māori empty-state notice to a caller with a ' +
+    "standing 'mi' language preference, byte-for-byte equal to notice('communityGuidelinesUnsetNotice', " +
+    "{ language: 'mi' }) — matching what /guidelines and !guidelines already return for the same " +
+    'caller/state (issue #1274 acceptance criterion 1)',
+  { skip },
+  async () => {
+    resetPolicyCacheForTests();
+    const miUser = `${RUN}-guidelines-unset-mi`;
+    await setLanguagePreference('discord', miUser, 'mi');
+    const server = buildToolServer(
+      {
+        platform: 'discord' as const,
+        userId: miUser,
+        userName: 'Member',
+        role: 'member' as const,
+        conversationId: `${RUN}-guidelines-unset-mi-convo`,
+      },
+      stubAdapter(async () => {}),
+    );
+    const readTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: () => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['community_guidelines'];
+
+    try {
+      assert.equal(
+        await getCommunityGuidelines(),
+        null,
+        'precondition: guidelines start unset (see the cleanup note above this test)',
+      );
+      const result = await readTool.handler();
+      assert.equal(result.content[0]?.text, notice('communityGuidelinesUnsetNotice', { language: 'mi' }));
+      assert.equal(
+        result.content[0]?.text,
+        'Kāore anō kia whakaritea he aratohu hapori — pātaia he kaiwhakahaere.',
+        "must match /guidelines'/!guidelines' own mi rendering for the same empty state",
+      );
+    } finally {
+      resetPolicyCacheForTests();
+      await pool.query(`DELETE FROM language_prefs WHERE platform = 'discord' AND user_id = $1`, [miUser]);
+    }
+  },
+);
+
 // grant_admin's CONFIRM-gated wiring (issue #201): notifyAdminApproved itself
 // is unit-tested above; this exercises the handler's computation of
 // wasAlreadyAdmin from getMemberRole BEFORE the upsertMember call, mirroring
@@ -37892,6 +37941,181 @@ test(
         await pool.query('DELETE FROM context_digests WHERE id = $1', [digestId]);
       }
     }
+  },
+);
+
+test(
+  'community_digest tool handler serves the te reo Māori empty-state notice to a caller with a standing ' +
+    "'mi' language preference when buildMemberDigestContent resolves null, byte-for-byte equal to " +
+    "notice('memberDigestEmptyNotice', { language: 'mi' }) — matching what /digest and !digest already " +
+    'return for the same caller/state (issue #1274 acceptance criterion 2)',
+  { skip },
+  async () => {
+    const memberId = `${RUN}-community-digest-mi-member`;
+    try {
+      await upsertMember({ platform: 'discord', userId: memberId, role: 'member', addedBy: `${RUN}-actor` });
+      await setLanguagePreference('discord', memberId, 'mi');
+
+      const adapter = stubAdapter(async () => {});
+      const caller = {
+        platform: 'discord' as const,
+        userId: memberId,
+        userName: 'Member',
+        role: 'member' as const,
+        conversationId: `${RUN}-community-digest-mi-convo`,
+      };
+      const server = buildToolServer(caller, adapter);
+      const registeredTool = (
+        server.instance as unknown as {
+          _registeredTools: Record<
+            string,
+            { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+          >;
+        }
+      )._registeredTools['community_digest'];
+
+      const result = await registeredTool.handler({});
+      const out = result.content[0]?.text ?? '';
+
+      // Language never influences whether there's anything to report — only
+      // which fallback string is used once buildMemberDigestContent has
+      // already resolved that — so a caller-less (language-independent)
+      // call tells us which branch this run actually landed in, same
+      // opportunistic-precondition shape as the English-preference test
+      // above (this repo's context_digests table is shared cross-file).
+      const direct = await buildMemberDigestContent();
+      if (direct == null) {
+        assert.equal(out, notice('memberDigestEmptyNotice', { language: 'mi' }));
+        assert.equal(
+          out,
+          'Kāore he pūrongo i tēnei wā.',
+          "must match /digest's own mi rendering for the same empty state",
+        );
+      }
+    } finally {
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        memberId,
+      ]);
+      await pool.query(`DELETE FROM language_prefs WHERE platform = 'discord' AND user_id = $1`, [memberId]);
+    }
+  },
+);
+
+test(
+  'SECURITY: community_guidelines/community_digest invoke exactly the same repository functions as ' +
+    'before this change, and the language passed into notice() traces only to caller.platform/' +
+    'caller.userId (the stored language_prefs row) — never to message content or any other source ' +
+    '(issue #1274 SECURITY criteria 5, 6)',
+  { skip },
+  async (t) => {
+    const langPrefCalls: unknown[][] = [];
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && sql.includes('FROM language_prefs')) {
+        langPrefCalls.push(rest[0] as unknown[]);
+      }
+      return (realQuery as (...args: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+
+    // community_guidelines: getLanguagePreference is already invoked
+    // unconditionally today (it feeds the content-selection branch), so this
+    // change adds no new query here — reusing that same already-fetched
+    // value for the empty branch too (net zero, per the proposal's cost
+    // story).
+    resetPolicyCacheForTests();
+    const guidelinesUser = `${RUN}-guidelines-security-user`;
+    const guidelinesServer = buildToolServer(
+      {
+        platform: 'discord' as const,
+        userId: guidelinesUser,
+        userName: 'Member',
+        role: 'member' as const,
+        conversationId: `${RUN}-guidelines-security-convo`,
+      },
+      stubAdapter(async () => {}),
+    );
+    const guidelinesTool = (
+      guidelinesServer.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: () => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['community_guidelines'];
+
+    langPrefCalls.length = 0;
+    const guidelinesResult = await guidelinesTool.handler();
+    assert.equal(guidelinesResult.content[0]?.text, notice('communityGuidelinesUnsetNotice'));
+    assert.equal(langPrefCalls.length, 1, 'exactly one language_prefs lookup, same as before this change');
+    assert.deepEqual(
+      langPrefCalls[0],
+      ['discord', guidelinesUser],
+      'must pass only caller.platform/caller.userId — never any other source',
+    );
+    resetPolicyCacheForTests();
+
+    // community_digest: getLanguagePreference is a new call on the empty
+    // branch only — asserted here to invoke the same accessor every sibling
+    // command handler already uses, with no other new query, and never on
+    // the non-empty branch (mirrors the remember_search/catch_up SECURITY
+    // test's shape for the same "empty-branch-only, caller-identity-only"
+    // invariant, issue #1176).
+    const digestMemberId = `${RUN}-community-digest-security-member`;
+    await upsertMember({
+      platform: 'discord',
+      userId: digestMemberId,
+      role: 'member',
+      addedBy: `${RUN}-actor`,
+    });
+    const digestServer = buildToolServer(
+      {
+        platform: 'discord' as const,
+        userId: digestMemberId,
+        userName: 'Member',
+        role: 'member' as const,
+        conversationId: `${RUN}-community-digest-security-convo`,
+      },
+      stubAdapter(async () => {}),
+    );
+    const digestTool = (
+      digestServer.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['community_digest'];
+
+    langPrefCalls.length = 0;
+    const digestResult = await digestTool.handler({});
+    const digestOut = digestResult.content[0]?.text ?? '';
+    const direct = await buildMemberDigestContent();
+    // buildMemberDigestContent itself already reads the caller's language
+    // preference unconditionally (issue #1042, for the non-empty branch's
+    // section labels) — that pre-existing lookup fires either way, so it is
+    // not new. This PR's own addition is the SECOND lookup that only fires
+    // when buildMemberDigestContent resolves null, for the notice() fallback.
+    for (const call of langPrefCalls) {
+      assert.deepEqual(call, ['discord', digestMemberId], 'must pass only caller.platform/caller.userId');
+    }
+    if (direct == null) {
+      assert.equal(digestOut, notice('memberDigestEmptyNotice'));
+      assert.equal(
+        langPrefCalls.length,
+        2,
+        "one pre-existing lookup from buildMemberDigestContent plus this PR's new empty-branch lookup",
+      );
+    } else {
+      assert.equal(
+        langPrefCalls.length,
+        1,
+        'only the pre-existing buildMemberDigestContent lookup — no new lookup on the non-empty branch',
+      );
+    }
+
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      digestMemberId,
+    ]);
   },
 );
 
