@@ -65,6 +65,15 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   `/digest` and `!digest` already replied correctly for the same situation.
   Both tools now select the same already-translated fallback text their
   slash-command/text-command counterparts use.
+- **`share_project`'s duplicate-project note no longer suggests a connection
+  request that's guaranteed to be refused.** (#1276) When a shared project
+  landed above the near-duplicate similarity threshold against an existing
+  showcased project, the note always pointed you at
+  `request_project_connection` as a way to team up — even when the matched
+  project wasn't seeking collaborators, in which case that call refuses
+  immediately. The note now only suggests it when the matched project is
+  actually seeking collaborators; otherwise it stops after pointing you at
+  `list_projects`.
 
 ## 2026-08-31
 
