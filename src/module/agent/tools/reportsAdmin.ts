@@ -7,6 +7,7 @@ import {
   resolveContentReport,
   resolveLinkedIdentities,
 } from '@swampratnz/agent-base/storage/repository.js';
+import { REPORT_STALE_ALERT_SCAN_LIMIT } from '../../reportStaleAlert.js';
 import { SUGGESTION_RESOLUTION_ECHO_CHARS, text, untrusted } from './helpers.js';
 import { notifyReportResolved } from './notify.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
@@ -28,6 +29,16 @@ export const reportsAdminTools = [
         .describe('Filter by status (default: all statuses)'),
       limit: z.number().optional().describe('Max entries (default 50)'),
       targetUserId: z.string().optional().describe('Only show reports filed against this member'),
+      oldestFirst: z
+        .boolean()
+        .optional()
+        .describe(
+          'Order by created_at ascending (oldest-filed first) instead of the default newest-first — use ' +
+            'this to find reports that have sat unreviewed the longest. Approximate for a large backlog: ' +
+            `only scans the ${REPORT_STALE_ALERT_SCAN_LIMIT} most recently created rows matching the ` +
+            'status/target filters before sorting, so if that many or more match, the true oldest may fall ' +
+            'outside what was scanned — the response says so explicitly when this happens.',
+        ),
     },
     handler: async (args, { caller, callerScope }) => {
       assertAtLeast(caller.role, 'admin', 'list_reports');
@@ -37,8 +48,32 @@ export const reportsAdminTools = [
       // one platform could otherwise see a DM report filed against their other
       // identity, since a single raw id `<> ALL` their own list.
       const viewerIds = (await resolveLinkedIdentities(caller.platform, caller.userId)).map((i) => i.userId);
-      const rows = await listReports(allowed, args.status, args.limit ?? 50, viewerIds, args.targetUserId);
+      // oldestFirst: true takes exactly one bounded read (never a second
+      // call) and sorts/slices in JS, mirroring list_suggestions (#1255) —
+      // agent-base's listReports has no ordering parameter to forward a
+      // sixth argument to. False/omitted stays byte-identical to before this
+      // field existed, using the identical single-call shape as before.
+      const scanned = args.oldestFirst
+        ? await listReports(allowed, args.status, REPORT_STALE_ALERT_SCAN_LIMIT, viewerIds, args.targetUserId)
+        : null;
+      const rows = scanned
+        ? [...scanned]
+            .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+            .slice(0, args.limit ?? 50)
+        : await listReports(allowed, args.status, args.limit ?? 50, viewerIds, args.targetUserId);
       if (rows.length === 0) return text('No reports found (within your conversations).');
+      // Truncation caveat (mirrors list_suggestions', #1255 review): scanned
+      // hitting exactly REPORT_STALE_ALERT_SCAN_LIMIT means the DB may hold
+      // more matching rows than the single bounded scan could see, so the
+      // true oldest could be outside that window — say so rather than
+      // silently reporting a mid-recent row as oldest.
+      const truncationCaveat =
+        scanned && scanned.length === REPORT_STALE_ALERT_SCAN_LIMIT
+          ? ` ⚠️ oldestFirst caveat: ${REPORT_STALE_ALERT_SCAN_LIMIT}+ reports match this filter, so only ` +
+            `the ${REPORT_STALE_ALERT_SCAN_LIMIT} most recently created ones were scanned before sorting — ` +
+            'the true oldest may not be shown above. Narrow the status filter or resolve some reports to ' +
+            'shrink the backlog if this list looks incomplete.'
+          : '';
       return text(
         untrusted(
           'Content reports',
@@ -49,7 +84,7 @@ export const reportsAdminTools = [
                 `${r.targetUserId ? `, target ${r.targetUserId}` : ''}${r.messageId ? `, message ${r.messageId}` : ''}: ` +
                 `${r.reason} (${r.createdAt.toISOString()})`,
             )
-            .join('\n'),
+            .join('\n') + truncationCaveat,
         ),
       );
     },

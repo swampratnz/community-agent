@@ -13,6 +13,7 @@ import {
   purgeUserData,
   type LanguagePreference,
 } from '@swampratnz/agent-base/storage/repository.js';
+import { getWithdrawnAppealIds } from '../../storage/appealWithdrawals.js';
 import { getWithdrawnSuggestionIds } from '../../storage/suggestionWithdrawals.js';
 import { formatRelativeAge, PROJECT_NOTE_RETENTION_NOTICE, text, truncateForEcho } from './helpers.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
@@ -71,10 +72,11 @@ export function formatMyWarningsText(
  * and retrieval counts are identical, unchanged interpolations in both
  * languages.
  *
- * `withdrawnSuggestionIds` (issue #1243) defaults to an empty Set, so every
- * existing call site (the `/mysubmissions`/`!mysubmissions` commands, and
- * every pre-#1243 test) renders byte-identically without passing it; only
- * the `my_submissions` tool handler below passes a populated one.
+ * `withdrawnSuggestionIds` (issue #1243) and `withdrawnAppealIds` (issue
+ * #1278) both default to an empty Set, so every existing call site (the
+ * `/mysubmissions`/`!mysubmissions` commands, and every pre-#1243/#1278
+ * test) renders byte-identically without passing them; only the
+ * `my_submissions` tool handler below passes populated ones.
  */
 export function formatMySubmissionsText(
   suggestions: Awaited<ReturnType<typeof listOwnSuggestions>>,
@@ -84,6 +86,7 @@ export function formatMySubmissionsText(
   connectionRequests: Awaited<ReturnType<typeof listOwnProjectConnectionRequests>>,
   language: LanguagePreference,
   withdrawnSuggestionIds: ReadonlySet<number> = new Set(),
+  withdrawnAppealIds: ReadonlySet<number> = new Set(),
 ): string {
   const mi = language === 'mi';
   if (
@@ -130,10 +133,16 @@ export function formatMySubmissionsText(
     lines.push(mi ? 'Āu pīra:' : 'Your appeals:');
     for (const a of appeals) {
       const reason = a.reason ? truncateForEcho(a.reason) : mi ? 'kāore he take i homai' : 'no reason given';
+      // withdraw_appeal consult (issue #1278): a withdrawn appeal's own
+      // `status` column is untouched (the withdrawal lives in the separate
+      // appeal_withdrawals table), so it renders `withdrawn` here rather
+      // than the stale `open` it would otherwise still show — mirroring the
+      // suggestions branch's withdrawnSuggestionIds check above.
+      const statusTag = withdrawnAppealIds.has(a.id) ? 'withdrawn' : a.status;
       lines.push(
         mi
-          ? `- #${a.id} [${a.status}] ${reason} — i tukuna ${formatRelativeAge(a.createdAt)}`
-          : `- #${a.id} [${a.status}] ${reason} — filed ${formatRelativeAge(a.createdAt)}`,
+          ? `- #${a.id} [${statusTag}] ${reason} — i tukuna ${formatRelativeAge(a.createdAt)}`
+          : `- #${a.id} [${statusTag}] ${reason} — filed ${formatRelativeAge(a.createdAt)}`,
       );
     }
   }
@@ -297,6 +306,10 @@ export const selfServiceTools = [
         suggestions.length > 0
           ? await getWithdrawnSuggestionIds(suggestions.map((s) => s.id))
           : new Set<number>();
+      // withdraw_appeal consult (issue #1278) — same empty-input
+      // short-circuit as the suggestions consult just above.
+      const withdrawnAppealIds =
+        appeals.length > 0 ? await getWithdrawnAppealIds(appeals.map((a) => a.id)) : new Set<number>();
       return text(
         formatMySubmissionsText(
           suggestions,
@@ -306,6 +319,7 @@ export const selfServiceTools = [
           connectionRequests,
           language,
           withdrawnSuggestionIds,
+          withdrawnAppealIds,
         ),
         isEmpty,
       );

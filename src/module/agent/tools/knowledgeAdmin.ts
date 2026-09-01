@@ -79,6 +79,19 @@ export const KNOWLEDGE_FIX_NOTIFY_FETCH_CAP = 200;
 // heavily-flagged entry can't trigger an unbounded DM burst.
 export const KNOWLEDGE_FIX_NOTIFY_CAP = 10;
 
+// Truncation caveat (issue #1262): appended to update_knowledge/merge_knowledge's
+// success reply only when collectUnhelpfulRaters' fetch hit KNOWLEDGE_FIX_NOTIFY_FETCH_CAP
+// exactly, i.e. the crowd-out described in that constant's comment may have
+// happened. Mirrors list_suggestions' oldestFirst truncation caveat
+// (accessAndSuggestions.ts) verbatim in shape: a fixed template with no
+// interpolated rater identity, other-entry id/content, or count beyond this
+// already-public constant — pinned by a SECURITY test so a future edit can't
+// turn it into a data-carrying (and therefore leaking) line.
+export const KNOWLEDGE_FIX_NOTIFY_TRUNCATION_CAVEAT =
+  ` ⚠️ Note: ${KNOWLEDGE_FIX_NOTIFY_FETCH_CAP}+ more-recent unhelpful ratings exist elsewhere in your ` +
+  "scope, so this entry's own past raters may have fallen outside the notification fetch window and " +
+  'not all received a fix DM.';
+
 /**
  * Collects the deduped, capped set of unhelpful raters to notify when
  * update_knowledge/merge_knowledge fixes one of `entryIds` (issue #1169).
@@ -95,12 +108,17 @@ export const KNOWLEDGE_FIX_NOTIFY_CAP = 10;
  * documented limitation: `listAnswerFeedback` has no per-entry filter, so a
  * rater of THIS entry can fall outside the fetch window (and get zero DMs)
  * if 200+ more-recent unhelpful ratings exist elsewhere in the admin's scope.
+ * `truncated` (issue #1262) surfaces exactly that: true iff the underlying
+ * fetch returned KNOWLEDGE_FIX_NOTIFY_FETCH_CAP rows, i.e. the admin's scope
+ * has at least that many unhelpful ratings and the fetch window may not
+ * contain all of `entryIds`' true history. `targets` is unchanged in shape
+ * and contents from before this field existed.
  */
 async function collectUnhelpfulRaters(
   entryIds: readonly number[],
   allowed: string[] | null,
   caller: { platform: Platform; userId: string },
-): Promise<Array<{ platform: Platform; userId: string }>> {
+): Promise<{ targets: Array<{ platform: Platform; userId: string }>; truncated: boolean }> {
   const rows = await listAnswerFeedback(allowed, true, KNOWLEDGE_FIX_NOTIFY_FETCH_CAP);
   const matching = rows
     .filter((r) => r.knowledgeEntryId != null && entryIds.includes(r.knowledgeEntryId))
@@ -115,7 +133,7 @@ async function collectUnhelpfulRaters(
     targets.push({ platform: r.platform, userId: r.userId });
     if (targets.length >= KNOWLEDGE_FIX_NOTIFY_CAP) break;
   }
-  return targets;
+  return { targets, truncated: rows.length === KNOWLEDGE_FIX_NOTIFY_FETCH_CAP };
 }
 
 /**
@@ -458,7 +476,7 @@ export const knowledgeAdminTools = [
         // lands, same "before" timing as the `prior` content capture above —
         // see collectUnhelpfulRaters's doc comment.
         const allowed = await callerScope();
-        const raterTargets = await collectUnhelpfulRaters([args.id], allowed, caller);
+        const { targets: raterTargets, truncated } = await collectUnhelpfulRaters([args.id], allowed, caller);
         const state: { similarEntry?: KnowledgeDuplicateMatch } = {};
         const { success, result } = await audited({
           actionKind: 'update_knowledge',
@@ -496,6 +514,7 @@ export const knowledgeAdminTools = [
           const label = similarEntry.title ? `"${similarEntry.title}"` : similarEntry.content.slice(0, 80);
           reply += ` Note: this looks similar (${pct}%) to existing entry #${similarEntry.id} (${label}) — consider update_knowledge on #${similarEntry.id} instead if this is the same topic.`;
         }
+        if (truncated) reply += KNOWLEDGE_FIX_NOTIFY_TRUNCATION_CAVEAT;
         return reply;
       });
     },
@@ -569,7 +588,11 @@ export const knowledgeAdminTools = [
           // lands — keepId's history plus mergeId's (which is about to be
           // deleted), unioned and deduped by collectUnhelpfulRaters.
           const allowed = await callerScope();
-          const raterTargets = await collectUnhelpfulRaters([args.keepId, args.mergeId], allowed, caller);
+          const { targets: raterTargets, truncated } = await collectUnhelpfulRaters(
+            [args.keepId, args.mergeId],
+            allowed,
+            caller,
+          );
           const { success, result } = await audited({
             actionKind: 'merge_knowledge',
             params: {
@@ -593,7 +616,9 @@ export const knowledgeAdminTools = [
           });
           if (!success) return `Failed: ${result}`;
           await notifyUnhelpfulRatersFixed(raterTargets, adapterFor);
-          return `Merged knowledge entry #${args.mergeId} into #${args.keepId}.`;
+          let reply = `Merged knowledge entry #${args.mergeId} into #${args.keepId}.`;
+          if (truncated) reply += KNOWLEDGE_FIX_NOTIFY_TRUNCATION_CAVEAT;
+          return reply;
         },
       );
     },

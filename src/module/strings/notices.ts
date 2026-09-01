@@ -555,7 +555,8 @@ const NOTICE_ENTRIES = {
       'NZ Claude Community — a New Zealand group building with Claude and the Anthropic API. ' +
       "Here's what you can ask me to do:\n" +
       '- Flag harassment, spam, or a rule violation to admins ("report this"), or withdraw one filed by mistake\n' +
-      '- Ask admins to review a warning you think was a mistake ("appeal my warning")\n' +
+      '- Ask admins to review a warning you think was a mistake ("appeal my warning"), or withdraw an ' +
+      'appeal you filed\n' +
       '- Ask me for our community guidelines ("what are the rules here?")\n' +
       '- Answer questions from curated community knowledge — just ask\n' +
       '- Browse the topics our knowledge base covers, if you\'re not sure what to ask ("what do you know about?")\n' +
@@ -592,7 +593,7 @@ const NOTICE_ENTRIES = {
         '- Tohu i te whakatoihara, te para, te takahi tikanga rānei ki ngā kaiwhakahaere ("report this"), ' +
         'tango rānei i tētahi i tukuna pōhēhē\n' +
         '- Tono ki ngā kaiwhakahaere kia arotake i tētahi whakatūpato e whakaaro ana koe he pōhēhē ' +
-        '("appeal my warning")\n' +
+        '("appeal my warning"), tango rānei i tētahi pīra i tukuna e koe\n' +
         '- Pātai mai i ā mātou tikanga hapori ("what are the rules here?")\n' +
         '- Whakautu pātai mai i te mōhiotanga hapori kua whiriwhiria — pātai noa mai\n' +
         '- Tirotiro i ngā kaupapa e kapi ana e tō mātou pātengi mōhiotanga, mehemea kāore koe e mōhio he aha ' +

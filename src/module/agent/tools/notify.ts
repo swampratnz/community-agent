@@ -656,6 +656,17 @@ export async function notifyProjectMemberAdded(
  * else is ever notified of which project they were removed from. Same
  * fail-safe language/style lookups, `WindowClosedError` recovery, and
  * swallow-and-log-everything-else shape as `notifyProjectMemberAdded` above.
+ *
+ * Optional `reason` (issue #1253, the deferred follow-up named in #1241's own
+ * "Growth path") is appended as a SECOND distinct trailing clause, after the
+ * project-name clause, via `truncateForEcho` — never interpolated into the
+ * translated base string, same non-interpolation convention as
+ * `notifyProjectRemoved`'s `reason` clause. Appended as the LAST positional
+ * parameter (after `getRespStyle`), same ordering discipline
+ * `notifyProjectRemoved` itself documents for its own `getRespStyle`
+ * addition, so every existing positional call site (the production call in
+ * `projectsAdmin.ts` and every test call site) stays byte-identical with no
+ * `reason` supplied.
  */
 export async function notifyProjectMemberRemoved(
   adapter: PlatformAdapter,
@@ -664,13 +675,17 @@ export async function notifyProjectMemberRemoved(
   projectName: string,
   getLangPref: typeof getLanguagePreference = getLanguagePreference,
   getRespStyle: typeof getResponseStyle = getResponseStyle,
+  reason?: string,
 ): Promise<void> {
   const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
   const style: ResponseStyle | undefined =
     lang === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
   const base = notice('projectMemberRemovedMessage', { language: lang, style });
   const echoedName = truncateForEcho(projectName);
-  const message = `${base} ${lang === 'mi' ? 'Kaupapa' : 'Project'}: "${echoedName}"`;
+  const echoedReason = reason ? truncateForEcho(reason) : null;
+  const message =
+    `${base} ${lang === 'mi' ? 'Kaupapa' : 'Project'}: "${echoedName}"` +
+    (echoedReason ? ` ${lang === 'mi' ? 'Take' : 'Reason'}: "${echoedReason}"` : '');
   await adapter.sendDirectMessage(userId, message).catch((err) => {
     if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
       adapter.queueForWindowReopen(userId, message, 'low');
