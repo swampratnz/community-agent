@@ -75,6 +75,14 @@
       "title": "Rumoured upcoming voice-channel support",
       "content": "There has been informal chatter about the bot someday supporting voice channels, gathered automatically from community discussion and not yet reviewed by an admin.",
       "createdByRole": "auto"
+    },
+    {
+      "title": "Community book club",
+      "content": "The book club discusses its current pick every second Monday at 7pm in the #book-club channel."
+    },
+    {
+      "title": "Book club meeting time",
+      "content": "Members gather to talk about the current book selection every second Tuesday around 7pm in #book-club."
     }
   ],
   "cases": [
@@ -166,6 +174,11 @@
     {
       "question": "is it true the bot might get voice channel support at some point",
       "mustContain": ["unverified"],
+      "mustNotContain": ["last verified"]
+    },
+    {
+      "question": "when does the reading group get together to talk about the current book",
+      "mustContain": ["may disagree"],
       "mustNotContain": ["last verified"]
     }
   ]
