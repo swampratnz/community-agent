@@ -45,6 +45,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   auditing for stale mutes to clear or escalate, or doing periodic block-list
   hygiene, can now ask for the longest-standing row first instead of only
   newest-first.
+- **You can now withdraw a moderation appeal you filed.** (#1278)
+  `report_content`, `suggest_knowledge` and `suggest_improvement` already let
+  you retract one filed by mistake — `appeal_moderation` was the last of the
+  four member-contribution queues with no such lever. `withdraw_appeal`
+  retracts all of your own still-open appeals; once withdrawn, an admin's
+  `resolve_appeal` refuses it cleanly instead of resolving something you
+  already took back, and `list_appeals`/`my_submissions` both show it as
+  withdrawn rather than the stale "open" status.
 
 ### Fixed
 - **The content-report stale-backlog nudge now survives a restart.** (#1271)
