@@ -9,6 +9,7 @@ import {
   findCrossedKnowledgeGapCluster,
   findKnowledgeCoveringTopic,
   getLanguagePreference,
+  getPublishedInterestsForOwners,
   hasConflictAmongIds,
   isKnowledgeStale,
   KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD,
@@ -36,6 +37,7 @@ import {
   rankKnowledgeByRetrieval,
   text,
 } from './helpers.js';
+import { WHO_IS_INTO_NO_PROFILE_HINT } from './social.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 // most_helpful_knowledge's internal fetch cap (issue #1070) — same bounded-
@@ -215,6 +217,55 @@ export const knowledgeMemberTools = [
           lowRatedIds,
         ),
       );
+    },
+  }),
+
+  // Composes two already-shipped pieces (issue #1287): the caller's OWN
+  // published interests (getPublishedInterestsForOwners, the exact self-
+  // scoped lookup who_is_into({mine:true}) already uses, issue #1022) fed
+  // straight into searchKnowledge — the identical framework call
+  // knowledge_search makes — and rendered through the existing
+  // formatKnowledgeSearchResults, unchanged. Deliberately the SMALLEST
+  // viable composition: unlike knowledge_search's own handler above, this
+  // adds no conflict badge, no low-rated caveat, no lexical fallback, no
+  // gap/stale turn-state writes, and no retrieval-count bump — none of
+  // knowledge_search's supplementary lookups are "new" scope this proposal
+  // was approved to add (see the issue's explicit "no new caveat logic, no
+  // new citation formatting" acceptance criterion).
+  defineTool({
+    name: 'knowledge_for_me',
+    description:
+      "Search the community knowledge base using the caller's OWN published interests (set via " +
+      'set_my_interests) as the query — so the caller never has to think of search terms themselves. ' +
+      "Requires the caller to have already published interests; if they haven't, this explains that rather " +
+      "than searching. Read-only, self-scoped: only ever reads the caller's own interests, never another " +
+      "member's.",
+    minTier: 'member',
+    readOnlyHint: true,
+    schema: {},
+    handler: async (_args, { caller }) => {
+      // SECURITY: tier is re-asserted here, not merely surface-gated by
+      // MEMBER_TOOLS — same defensive-double-check discipline every
+      // privileged/self-service tool in this file follows.
+      assertAtLeast(caller.role, 'member', 'knowledge_for_me');
+      // Self-scoped exactly like who_is_into({mine:true}) (issue #1022) —
+      // only the caller's OWN {platform, userId} ever reaches this lookup,
+      // never another identity's.
+      const interestsByOwner = await getPublishedInterestsForOwners([
+        { platform: caller.platform, userId: caller.userId },
+      ]);
+      const interestsText = interestsByOwner.get(`${caller.platform}:${caller.userId}`);
+      if (!interestsText) {
+        // Same "publish interests first" guidance who_is_into({mine:true})
+        // already renders for this case (issue #1022) — reused verbatim,
+        // not a new string.
+        return text(WHO_IS_INTO_NO_PROFILE_HINT);
+      }
+      const hits = await searchKnowledge(interestsText, {
+        platform: caller.platform,
+        conversationId: caller.conversationId,
+      });
+      return text(formatKnowledgeSearchResults(hits));
     },
   }),
 

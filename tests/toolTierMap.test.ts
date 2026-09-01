@@ -44,6 +44,7 @@ const EXPECTED: Record<string, readonly string[]> = {
     'community_info',
     'find_helper',
     'forget_me',
+    'knowledge_for_me',
     'knowledge_search',
     'list_events',
     'list_knowledge_topics',

@@ -101,6 +101,7 @@
   "jobsRegistry.test.ts": 1,
   "knowledgeCandidateStaleAlert.test.ts": 4,
   "knowledgeEntryIdRouter.test.ts": 1,
+  "knowledgeForMe.test.ts": 2,
   "knowledgeGapAlert.router.test.ts": 2,
   "knowledgeRefresh.test.ts": 2,
   "knowledgeRefreshStructuredOutput.test.ts": 4,
