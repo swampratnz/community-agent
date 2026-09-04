@@ -33,6 +33,7 @@
     "tests/dbCoverageCheck.test.ts",
     "tests/displayTime.test.ts",
     "tests/evalAnswersImportFreshness.test.ts",
+    "tests/evalAnswersScopeSafety.test.ts",
     "tests/fetchPageTool.test.ts",
     "tests/imageGenAudit.test.ts",
     "tests/importDirection.test.ts",
