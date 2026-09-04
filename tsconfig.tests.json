@@ -37,6 +37,7 @@
     "tests/imageGenAudit.test.ts",
     "tests/importDirection.test.ts",
     "tests/jobsRegistry.test.ts",
+    "tests/knowledgeForMe.test.ts",
     "tests/knowledgeSourceCheckTool.test.ts",
     "tests/memberDigest.test.ts",
     "tests/noticeDebounce.test.ts",

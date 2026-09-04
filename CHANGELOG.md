@@ -39,6 +39,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   `create_event` and `delete_member_note` already use, so the confirming
   admin sees what they're actually approving before it goes out.
 
+## 2026-09-02
+
+### Added
+- **New `knowledge_for_me` tool: search the knowledge base using your own
+  published interests.** (#1287) If you've told the bot what you're into via
+  `set_my_interests`, you can now ask it to search the community's knowledge
+  base for you using that same text — no need to think of search terms
+  yourself. If you haven't published interests yet, it tells you to call
+  `set_my_interests` first rather than searching.
+
 ## 2026-09-01
 
 ### Added
