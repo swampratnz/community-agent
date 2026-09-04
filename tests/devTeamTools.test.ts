@@ -189,7 +189,11 @@ test(
   async (t) => {
     const longHandler = await handlerFor(t, 'dev_team_dispatch', 'super_admin', 'convo-deliver-desc-long');
     const longDescription = 'y'.repeat(250);
-    const longResult = await longHandler({ mode: 'deliver', repo: 'owner/name', description: longDescription });
+    const longResult = await longHandler({
+      mode: 'deliver',
+      repo: 'owner/name',
+      description: longDescription,
+    });
     const longNotice = longResult.content[0].text;
     assert.match(
       longNotice,
@@ -217,7 +221,7 @@ test(
     assert.match(
       noDescNotice,
       /^⚠️ Pending: DISPATCH a DELIVER job to the dev-team service on owner\/name \(it will make changes \/ open a PR\)\n/,
-      'with no description, the notice falls back byte-for-byte to today\'s label-only text',
+      "with no description, the notice falls back byte-for-byte to today's label-only text",
     );
     cancelPendingAction('discord', 'convo-deliver-no-desc', 'super-1');
   },

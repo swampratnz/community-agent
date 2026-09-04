@@ -447,7 +447,8 @@ export const superAdminTools = [
       const title = redactSecrets(args.title, knownSecrets);
       const redactedBody = redactSecrets(args.body, knownSecrets);
       const body =
-        redactedBody + `\n\n---\n_Filed from ${caller.platform} chat by a super admin via the community agent._`;
+        redactedBody +
+        `\n\n---\n_Filed from ${caller.platform} chat by a super admin via the community agent._`;
       const labels = config.github.labels;
       const key = `${caller.platform}:${caller.userId}`;
 
