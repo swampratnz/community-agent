@@ -27,6 +27,20 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 
 ## 2026-09-04
 
+### Security
+- **`whatsapp-auth/` (the WhatsApp session credentials) is now created
+  owner-only by default, closing a gap `docs/SECURITY.md`'s own checklist
+  named but nothing enforced.** (#1301) The systemd unit now sets
+  `UMask=0077`, so anything the running service creates — `whatsapp-auth/`
+  should a future version link on first run, the Claude session-state dir,
+  the model cache — is `0700`/`0600` from creation instead of inheriting the
+  host's default (often world-readable) umask. The one-time interactive
+  linking step in `docs/DEPLOYMENT.md`, which is where `whatsapp-auth/` is
+  actually created today, now runs under `umask 077` with an explicit
+  `chmod -R go-rwx whatsapp-auth` fixup afterwards. Reading that directory is
+  equivalent to a full WhatsApp session hijack, so this only tightens who can
+  read data that was already meant to be operator-only.
+
 ### Fixed
 - **The CONFIRM prompt for filing a GitHub issue or dispatching a dev-team
   delivery now shows the actual content, not just a label.** (#1299) A super

@@ -31,6 +31,7 @@
     "tests/backgroundJobCostAlert.test.ts",
     "tests/conflictResolverEligibility.test.ts",
     "tests/dbCoverageCheck.test.ts",
+    "tests/deployHardening.test.ts",
     "tests/displayTime.test.ts",
     "tests/evalAnswersImportFreshness.test.ts",
     "tests/fetchPageTool.test.ts",
