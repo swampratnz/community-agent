@@ -41,8 +41,13 @@ const { WindowClosedError } = await import('@swampratnz/agent-base/platforms/wha
 const POLL_MS = 5 * 60_000;
 const THRESHOLD = statusCheckAlertThreshold(5);
 
-function makeAdapter(): { adapter: PlatformAdapter; dms: Array<{ userId: string; text: string }> } {
+function makeAdapter(): {
+  adapter: PlatformAdapter;
+  dms: Array<{ userId: string; text: string }>;
+  channelSends: Array<{ conversationId: string; text: string }>;
+} {
   const dms: Array<{ userId: string; text: string }> = [];
+  const channelSends: Array<{ conversationId: string; text: string }> = [];
   const adapter: PlatformAdapter = {
     platform: 'discord',
     adminCapabilities: new Set(),
@@ -50,7 +55,9 @@ function makeAdapter(): { adapter: PlatformAdapter; dms: Array<{ userId: string;
     async stop() {},
     isConnected: () => true,
     onMessage() {},
-    async sendMessage(_out: OutgoingMessage) {},
+    async sendMessage(out: OutgoingMessage) {
+      channelSends.push({ conversationId: out.conversationId, text: out.text });
+    },
     async sendDirectMessage(userId: string, text: string) {
       dms.push({ userId, text });
     },
@@ -61,7 +68,7 @@ function makeAdapter(): { adapter: PlatformAdapter; dms: Array<{ userId: string;
       return '';
     },
   };
-  return { adapter, dms };
+  return { adapter, dms, channelSends };
 }
 
 // run()'s alert path is fire-and-forget (`void alertSuperAdmins(...)`, no
@@ -468,6 +475,40 @@ test(
       t.mock.timers.tick(POLL_MS); // -> none
       await flush();
       assert.equal(dms.length, 2, 'exactly one resolved DM follows');
+    } finally {
+      clearInterval(timer!);
+    }
+  },
+);
+
+test(
+  'startStatusCheck: with MEMBER_DIGEST_CHANNEL_ID unset (this file leaves it unset), an incident start + ' +
+    'resolve transition sends zero adapter.sendMessage (channel post) calls — regression guard that the ' +
+    'issue #1251 member-channel push is byte-identical to today’s behaviour for a deployment that has ' +
+    'not opted in (acceptance criterion 4a)',
+  async (t) => {
+    resetStatusCacheForTests();
+    const { adapter, dms, channelSends } = makeAdapter();
+    let body = ALL_OPERATIONAL_BODY;
+    const runOnce = () => pollAnthropicStatus(async () => body);
+
+    t.mock.timers.enable({ apis: ['setInterval'] });
+    const timer = startStatusCheck([adapter], runOnce);
+    try {
+      await flush();
+      body = INCIDENT_BODY;
+      t.mock.timers.tick(POLL_MS); // start
+      await flush();
+      body = ALL_OPERATIONAL_BODY;
+      t.mock.timers.tick(POLL_MS); // resolve
+      await flush();
+
+      assert.equal(dms.length, 2, 'the super-admin DMs still fire (start + resolved)');
+      assert.equal(
+        channelSends.length,
+        0,
+        'no channel post ever occurs when MEMBER_DIGEST_CHANNEL_ID is unset',
+      );
     } finally {
       clearInterval(timer!);
     }
