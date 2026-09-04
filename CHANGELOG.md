@@ -25,6 +25,20 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #1122 #1123 #1132
 -->
 
+## 2026-09-04
+
+### Fixed
+- **The CONFIRM prompt for filing a GitHub issue or dispatching a dev-team
+  delivery now shows the actual content, not just a label.** (#1299) A super
+  admin confirming `suggest_issue` used to see only the title — the body,
+  which becomes the entire text of a permanent public GitHub issue, never
+  appeared. Confirming `dev_team_dispatch`'s `deliver` mode (which makes real
+  repo changes and opens a PR) showed neither the title nor the task
+  description handed to the remote coding agent. Both CONFIRM notices now
+  include a bounded excerpt of the actual payload, the same truncation shape
+  `create_event` and `delete_member_note` already use, so the confirming
+  admin sees what they're actually approving before it goes out.
+
 ## 2026-09-01
 
 ### Added
