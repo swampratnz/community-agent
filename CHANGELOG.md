@@ -22,7 +22,7 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #775 #784 #804 #807 #809 #810 #812 #814 #816 #817 #818 #819 #821 #824 #825
 #868 #896 #899 #904 #949 #950 #951 #952 #953 #954 #955 #956 #957 #958 #961
 #963 #964 #965 #968 #971 #983 #988 #989 #991 #992 #994 #1017 #1071 #1086
-#1122 #1123 #1132
+#1122 #1123 #1132 #1232 #1236
 -->
 
 ## 2026-09-04
@@ -247,6 +247,18 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-08-29
 
 ### Added
+- **A member added ahead of time — pre-registered or added via
+  `team_setup` — now also receives the admin-configured welcome message
+  when their access is approved, not just the community guidelines.**
+  (#1223) #1171 appended community guidelines to the approval DM sent when
+  a gated access request is approved, but the admin-configured welcome
+  text (`set_welcome_message`) was never included — so a member who never
+  generates a join/first-contact event (because they were pre-registered
+  or batch-added) never saw it, even though every organically-joining
+  member does. The welcome block is skipped for a member the bot has
+  already seen, so a guest who joins normally and is approved later still
+  gets it only once rather than twice; guidelines are unaffected and
+  always render as before. No new data is collected.
 - **The weekly admin digest's response-latency line now splits into auto-answer vs. mention/DM.** (#1220)
   The single blended time-to-first-answer line (#1210) could hide a regression in either bucket — replies in
   `AUTO_ANSWER_CHANNEL_IDS` channels running slow while mention/DM replies stay fine, or vice versa. Two more
@@ -276,6 +288,15 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   conversation-scoped aggregate the tool already used.
 
 ### Fixed
+- **`!reviewqueue`/`/reviewqueue` now show a real reports count instead of
+  a placeholder pointing at another command.** (#1227) Four of the five
+  lines showed a live number; the reports line always read a static "see
+  `list_reports` or `review_queue` (scoped to your conversations)" —
+  exactly the friction the shortcut exists to remove. It now renders the
+  caller-scoped open-reports count and oldest-age, computed with the same
+  scoping (`callerScope()`, admin exclusion) `review_queue`'s own handler
+  already uses, so the shortcut and the full tool can never show a
+  different number for the same admin.
 - **`!reviewqueue`/`/reviewqueue` now show the onboarding-queue line on a
   gated-access community, matching `review_queue`.** (#1216) #1208 added a
   sixth line to `review_queue` — how many guests are present but never added
