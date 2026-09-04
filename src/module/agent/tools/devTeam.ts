@@ -137,8 +137,19 @@ export const devTeamTools = [
       // without the super admin's own out-of-band reply. assess is read-only
       // and runs without confirmation.
       if (args.mode === 'deliver') {
+        // CONFIRM must show the actual brief handed to the remote code-writing
+        // agent, not just the repo label (issue #1299). Same truncation shape
+        // as create_event's description preview (events.ts) and
+        // delete_member_note's note preview (roster.ts): slice(0, N) with a
+        // trailing '…' iff truncated; falls back byte-for-byte to the
+        // label-only text when description is absent. requireConfirm's own
+        // choke-point strip (context.ts) still sanitizes the whole
+        // description against line/tag forgery — no second sanitizer here.
+        const descPreview = args.description
+          ? ` ("${args.description.slice(0, 200)}${args.description.length > 200 ? '…' : ''}")`
+          : '';
         return requireConfirm(
-          `DISPATCH a DELIVER job to the dev-team service on ${devTeamField(args.repo)} (it will make changes / open a PR)`,
+          `DISPATCH a DELIVER job to the dev-team service on ${devTeamField(args.repo)} (it will make changes / open a PR)${descPreview}`,
           'super_admin',
           dispatch,
         );
