@@ -231,7 +231,11 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   title, `forget_me`'s caller name; audit 2026-07-28 N2/N6). The real action
   verb and target always lead the notice, so an injected privileged turn can
   *append* misleading text but can never forge a second notice line or a fake
-  tag.
+  tag. `suggest_issue`'s body and `dev_team_dispatch`'s `deliver`-mode
+  description — the two fields whose content actually becomes a published
+  issue or a task brief for a remote coding agent — are also quoted in the
+  notice as a bounded, truncated excerpt (issue #1299), so the confirming
+  admin sees the real payload, not just a short label, before it goes out.
 - **Defence in depth**: every privileged tool calls `assertAtLeast()` before
   any side effect.
 - **Identity is platform-derived**: super admins come from env config; admins
@@ -2475,7 +2479,10 @@ deliberately narrow:
   enabled without a token.
 - **Super-admin only, CONFIRM-gated.** Members/admins can't reach it (`rbac.ts`
   + an in-handler `assertAtLeast` re-check), and it creates nothing until an
-  out-of-band CONFIRM — so an injected turn can't silently file issues.
+  out-of-band CONFIRM — so an injected turn can't silently file issues. The
+  CONFIRM notice quotes the title **and** a bounded excerpt of the body
+  (issue #1299) — previously only the title appeared, so the confirming admin
+  never saw the bulk of what was about to become a permanent public issue.
 - **Secret scrub.** The title and body are run through the same
   `redactSecrets` filter as outbound messages before the API call, so a key
   pasted into chat can't be laundered into a (world-readable) issue.
