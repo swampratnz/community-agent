@@ -68,6 +68,7 @@
   "dbCoverageCheck.test.ts": 1,
   "dbTimeoutDegradation.test.ts": 3,
   "departedAdminAlert.test.ts": 6,
+  "deployHardening.test.ts": 2,
   "devTeamClient.test.ts": 8,
   "devTeamDispatchPartial.test.ts": 1,
   "devTeamTools.test.ts": 11,
