@@ -1,6 +1,14 @@
 import dns from 'node:dns/promises';
 import { Agent, buildConnector, type Dispatcher } from 'undici';
 import { logger } from '@swampratnz/agent-base/logger.js';
+// A namespace import, not `import { isDisallowedIp } from '...'`: this exact
+// specifier is also `mock.module`'d (with only `safeFetch` as a named export)
+// by tests/fetchPageTool.test.ts, which transitively imports this module via
+// tools/index.js. A named import is resolved at ESM link time and would
+// throw ("does not provide an export named 'isDisallowedIp'") the instant
+// that mock is active, crashing that unrelated test file. A namespace import
+// has no such static check — `safeFetchUtil.isDisallowedIp` below.
+import * as safeFetchUtil from '@swampratnz/agent-base/util/safeFetch.js';
 import {
   latestKnowledgeSourceCheckAt,
   listKnowledgeSourceUrls,
@@ -28,11 +36,15 @@ import {
  * hosts. Without a guard, an admin could use the returned reachability
  * boolean as a blind internal-network probe (e.g. a cloud metadata address).
  * The initial URL AND every redirect hop's Location are DNS-resolved and
- * checked against a denylist of loopback/private/link-local/cloud-metadata
- * ranges before any request is issued to them; a disallowed target is
- * refused outright — no request, no persisted result (see
- * `classifySourceUrl`'s `'refused'` outcome and `runKnowledgeLinkCheck`,
- * which never calls `recordKnowledgeSourceCheck` for it).
+ * checked against `isDisallowedIp` — the loopback/private/link-local/
+ * cloud-metadata denylist imported from `@swampratnz/agent-base`'s
+ * `safeFetch` (issue #1303: this used to be a private, independently
+ * maintained copy of that same denylist, which is exactly the drift shape
+ * that produced the CGNAT/audit-M8 near-miss) — before any request is
+ * issued to them; a disallowed target is refused outright — no request, no
+ * persisted result (see `classifySourceUrl`'s `'refused'` outcome and
+ * `runKnowledgeLinkCheck`, which never calls `recordKnowledgeSourceCheck`
+ * for it).
  *
  * DNS-rebinding/TOCTOU closed (issue #587): the guard resolves each hop's
  * hostname exactly once via the injectable `lookup`; the request for that
@@ -98,74 +110,20 @@ function isRetryableStatus(status: number): boolean {
   return status === 429 || (status >= 500 && status < 600);
 }
 
-const DISALLOWED_V4_CIDRS: ReadonlyArray<readonly [string, number]> = [
-  ['0.0.0.0', 8], // "this network" / 0.0.0.0 → localhost on many stacks
-  ['127.0.0.0', 8],
-  ['10.0.0.0', 8],
-  // CGNAT (RFC 6598) — the Tailscale/tailnet address space this deploy runs a
-  // bearer-token dev-team service on, so a sourceUrl resolving here would be a
-  // blind host/port probe oracle over the tailnet (audit M8).
-  ['100.64.0.0', 10],
-  ['172.16.0.0', 12],
-  ['192.0.0.0', 24], // IETF protocol assignments
-  ['192.168.0.0', 16],
-  ['198.18.0.0', 15], // benchmarking range
-  ['169.254.0.0', 16], // includes 169.254.169.254, the common cloud metadata address
-  ['224.0.0.0', 4], // multicast
-  ['240.0.0.0', 4], // reserved / "future use" (includes 255.255.255.255)
-];
-
-function ipv4ToInt(ip: string): number {
-  const parts = ip.split('.').map(Number);
-  return ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0;
-}
-
-function isDisallowedIpv4(ip: string): boolean {
-  const target = ipv4ToInt(ip);
-  return DISALLOWED_V4_CIDRS.some(([base, bits]) => {
-    const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
-    return (target & mask) === (ipv4ToInt(base) & mask);
-  });
-}
-
-/** Split an IPv6 literal (`::`-compression-aware) into its 8 hex groups. */
-function expandIpv6(ip: string): string[] {
-  const addr = ip.split('%')[0]; // strip a zone id, if any
-  const [head, tail] = addr.includes('::') ? addr.split('::') : [addr, ''];
-  const headParts = head ? head.split(':') : [];
-  const tailParts = tail ? tail.split(':') : [];
-  const missing = Math.max(0, 8 - headParts.length - tailParts.length);
-  return [...headParts, ...Array(missing).fill('0'), ...tailParts].map((p) => p || '0');
-}
-
-function isDisallowedIpv6(ip: string): boolean {
-  const normalized = ip.toLowerCase();
-  if (normalized === '::' || normalized === '::1') return true; // unspecified / loopback
-  const v4Mapped = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-  if (v4Mapped) return isDisallowedIpv4(v4Mapped[1]);
-  const v4Compat = normalized.match(/^::(\d+\.\d+\.\d+\.\d+)$/);
-  if (v4Compat) return isDisallowedIpv4(v4Compat[1]); // deprecated "IPv4-compatible" form
-  const groups = expandIpv6(normalized).map((g) => parseInt(g, 16));
-  const first16 = groups[0];
-  if ((first16 & 0xfe00) === 0xfc00) return true; // fc00::/7 (unique local)
-  if ((first16 & 0xffc0) === 0xfe80) return true; // fe80::/10 (link-local)
-  if ((first16 & 0xffc0) === 0xfec0) return true; // fec0::/10 (deprecated site-local)
-  if (groups[0] === 0x0064 && groups[1] === 0xff9b && groups.slice(2, 6).every((g) => g === 0)) {
-    return true; // 64:ff9b::/96 (NAT64 well-known prefix — may embed a disallowed IPv4 target)
-  }
-  return false;
-}
-
-/** True if `ip` falls in a loopback/private/link-local/cloud-metadata range. */
-export function isDisallowedIp(ip: string, family: number): boolean {
-  return family === 6 ? isDisallowedIpv6(ip) : isDisallowedIpv4(ip);
-}
+/**
+ * Re-exported (via the namespace import above) so this module's public
+ * surface — and `tests/linkCheck.test.ts`'s module-namespace import — is
+ * unchanged even though the denylist itself now lives in
+ * `@swampratnz/agent-base`'s `safeFetch` (issue #1303) rather than a private
+ * copy here.
+ */
+export const isDisallowedIp = safeFetchUtil.isDisallowedIp;
 
 type GuardOutcome =
   { kind: 'allowed'; pinnedAddress: string } | { kind: 'blocked' } | { kind: 'dns-failure' };
 
 /**
- * https-only, plus a DNS resolution check against the denylist above. A
+ * https-only, plus a DNS resolution check against `isDisallowedIp`. A
  * `'dns-failure'` (the hostname simply doesn't resolve) is NOT `'blocked'` —
  * that's a legitimate reachability signal (`classifySourceUrl` turns it into
  * `'unreachable'`), distinct from a hostname that resolves fine but to a

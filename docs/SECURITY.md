@@ -921,9 +921,15 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   be used as a blind internal-network probe (e.g. hitting a cloud metadata
   address), it carries a dedicated SSRF guard: **https-only**, and the
   initial URL **and every redirect hop's `Location`** are DNS-resolved and
-  checked against a denylist of loopback/private/link-local/cloud-metadata
-  ranges (IPv4 + IPv6, including NAT64, deprecated IPv4-compatible/site-local
-  forms, and the unspecified address) before any request is issued — a
+  checked against `isDisallowedIp` — a denylist of loopback/private/
+  link-local/cloud-metadata ranges (IPv4 + IPv6, including NAT64, deprecated
+  IPv4-compatible/site-local forms, and the unspecified address) — before any
+  request is issued. That denylist is **imported from
+  `@swampratnz/agent-base`'s `safeFetch`** (issue #1303) rather than
+  maintained as a private copy in `linkCheck.ts`, closing a drift class where
+  the two independently-maintained copies could silently diverge (one CGNAT
+  entry was previously missing from one of them — the "audit M8" near-miss);
+  `linkCheck.ts` re-exports it so its public surface is unchanged. A
   disallowed target is refused outright, with **no request and no persisted
   result** (`classifySourceUrl`'s `'refused'` outcome; `runKnowledgeLinkCheck`
   never calls the DB write for it). The response **body is never read**
