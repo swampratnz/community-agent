@@ -198,7 +198,7 @@ test('SECURITY: a right-to-left override cannot ride through the render/extract 
 
   const extracted = run('extract', JSON.stringify([comment(out)]));
   assert.ok(!extracted.includes(rlo), 'RLO survived the extract() side too');
-  assert.match(extracted, /before  after/);
+  assert.match(extracted, /before {2}after/);
 });
 
 test('SECURITY: zero-width space and BOM cannot ride through the render/extract round trip', () => {

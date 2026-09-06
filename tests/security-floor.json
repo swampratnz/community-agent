@@ -91,7 +91,7 @@
   "grokImage.test.ts": 3,
   "guestKnowledgeShortcut.test.ts": 3,
   "guestKnowledgeShortcutRouter.test.ts": 5,
-  "handoffNote.test.ts": 8,
+  "handoffNote.test.ts": 11,
   "health.test.ts": 3,
   "humanHelpRequestRouter.test.ts": 3,
   "imageGenAudit.test.ts": 1,
