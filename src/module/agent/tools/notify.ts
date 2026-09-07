@@ -1246,6 +1246,14 @@ export async function notifyWarningsCleared(
  * `getRespStyle` (issue #1212), same three-way-widened-ternary shape as its
  * siblings above, appended as the LAST parameter for the same
  * external-call-site-compatibility reason.
+ *
+ * `removed` (issue #1319) selects a second, textually distinct message for
+ * `delete_knowledge`'s use of this same machinery: "corrected" is factually
+ * wrong for a deletion (there is no replacement to re-ask about) and risks
+ * confusing a rater into thinking stale content is now fixed. Defaults to
+ * `false` (the original "fixed" wording) so every existing call site is
+ * unchanged; appended last for the same call-site-compatibility reason as
+ * `getRespStyle`.
  */
 export async function notifyKnowledgeEntryFixed(
   adapter: PlatformAdapter,
@@ -1253,12 +1261,18 @@ export async function notifyKnowledgeEntryFixed(
   platform: Platform,
   getLangPref: typeof getLanguagePreference = getLanguagePreference,
   getRespStyle: typeof getResponseStyle = getResponseStyle,
+  removed = false,
 ): Promise<void> {
   const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
   const style: ResponseStyle | undefined =
     lang === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
-  const message =
-    lang === 'mi'
+  const message = removed
+    ? lang === 'mi'
+      ? 'Kua tangohia tētahi whakautu i kīia e koe he kore-āwhina.'
+      : style === 'plain'
+        ? 'An answer you said was unhelpful has now been removed.'
+        : 'An answer you rated unhelpful earlier has since been removed.'
+    : lang === 'mi'
       ? 'Kua whakatikaina tētahi whakautu i kīia e koe he kore-āwhina i mua — nau mai ki te pātai anō mehemea ' +
         'kei te hiahia koe ki ngā mōhiohanga hōu.'
       : style === 'plain'
