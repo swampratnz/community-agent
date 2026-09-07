@@ -28,11 +28,18 @@ const skip = hasDb
 
 await import('./support/registerToolRegistry.js');
 await import('./support/registerNotices.js');
-const { buildToolServer, WHO_IS_INTO_NO_PROFILE_HINT, formatWhoIsIntoEmptyText } =
-  await import('../src/module/agent/tools.js');
+const {
+  buildToolServer,
+  WHO_IS_INTO_NO_PROFILE_HINT,
+  formatWhoIsIntoEmptyText,
+  KNOWLEDGE_CONFLICT_CAVEAT_TEXT,
+} = await import('../src/module/agent/tools.js');
 const { MEMBER_TOOLS } = await import('@swampratnz/agent-base/auth/rbac.js');
 const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
+const { logger } = await import('@swampratnz/agent-base/logger.js');
 const { embed } = await import('@swampratnz/agent-base/storage/embeddings.js');
+const { config } = await import('@swampratnz/agent-base/config.js');
+const { notice } = await import('../src/module/strings/notices.js');
 const { setMemberInterests } = await import('@swampratnz/agent-base/storage/repository.js');
 const pgvector = (await import('pgvector/pg')).default;
 
@@ -93,6 +100,17 @@ function atCosineSimilarity(anchor: number[], rho: number): number[] {
   const unitOrth = orth.map((v) => v / norm);
   const scale = Math.sqrt(1 - rho * rho);
   return anchor.map((v, i) => rho * v + scale * unitOrth[i]);
+}
+
+// `config.behaviour` is deeply `readonly` in agent-base's config type (this
+// file is on tsconfig.tests.json's typechecked ratchet, unlike the untyped
+// tests/tools.test.ts, which mutates the same field directly). The cast
+// below is confined to this one setter so the readonly-ness stays enforced
+// everywhere else in the file.
+function setKnowledgeLowRatedCaveatMinUnhelpful(value: number): void {
+  (
+    config.behaviour as unknown as { knowledgeLowRatedCaveatMinUnhelpful: number }
+  ).knowledgeLowRatedCaveatMinUnhelpful = value;
 }
 
 const RUN = `t${Date.now()}${Math.floor(Math.random() * 1e6)}`;
@@ -313,5 +331,358 @@ test(
       'a rejected guest caller must never reach getPublishedInterestsForOwners',
     );
     assert.equal(knowledgeQueryCalls, 0, 'a rejected guest caller must never reach searchKnowledge');
+  },
+);
+
+// Issue #1321: knowledge_for_me's handler used to call
+// formatKnowledgeSearchResults bare, defaulting `hasConflict`/`lowRatedIds`
+// off — the one remaining renderer call site missing the caveats every
+// sibling knowledge-serving surface already carries. These tests mirror
+// knowledge_search's own low-rated/conflict fixture style (tests/tools.test.ts)
+// adapted to knowledge_for_me's own query source (the caller's published
+// interests text, not a caller-supplied query).
+
+test(
+  'knowledge_for_me renders the same low-rated caveat text knowledge_search renders for a hit ' +
+    'areKnowledgeEntriesLowRated flags, and sorts it after a non-low-rated near-tie sibling (issue #1321 ' +
+    'acceptance criterion 1)',
+  { skip },
+  async (t) => {
+    const was = config.behaviour.knowledgeLowRatedCaveatMinUnhelpful;
+    setKnowledgeLowRatedCaveatMinUnhelpful(2);
+    t.after(() => {
+      setKnowledgeLowRatedCaveatMinUnhelpful(was);
+    });
+
+    const scope = `${RUN}-low-rated`;
+    const userId = `${RUN}-member-low-rated`;
+    const interests = `low-rated caveat test interests ${RUN}`;
+    await setMemberInterests('discord', userId, interests);
+
+    const anchorVec = await embed(interests);
+    // Same rho for both fixtures, so their similarities land within
+    // KNOWLEDGE_TIE_MARGIN of each other and the lowRatedIds-aware tie-break
+    // (formatKnowledgeSearchResults) is what decides the order, not a real
+    // relevance gap.
+    const nearVec = atCosineSimilarity(anchorVec, 0.9);
+    const { rows: lowRatedRows } = await pool.query(
+      `INSERT INTO knowledge (scope, title, content, embedding) VALUES ($1,$2,$3,$4) RETURNING id`,
+      [scope, `Low-rated entry ${RUN}`, 'LOW_RATED_FOR_ME_TEXT', pgvector.toSql(nearVec)],
+    );
+    const { rows: fineRows } = await pool.query(
+      `INSERT INTO knowledge (scope, title, content, embedding) VALUES ($1,$2,$3,$4) RETURNING id`,
+      [scope, `Fine entry ${RUN}`, 'FINE_FOR_ME_TEXT', pgvector.toSql(nearVec)],
+    );
+    const lowRatedId = Number(lowRatedRows[0].id);
+    const fineId = Number(fineRows[0].id);
+
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && sql.includes('FROM answer_feedback')) {
+        return Promise.resolve({ rows: [{ id: lowRatedId }], rowCount: 1 });
+      }
+      return (realQuery as (...args: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+
+    const caller = {
+      platform: 'discord' as const,
+      userId,
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: scope,
+      isDirect: false,
+    };
+    const result = await getKnowledgeForMeHandler(caller).handler({});
+    const text = result.content[0]?.text ?? '';
+    const rows = text.split('\n').filter((l) => l.startsWith('- '));
+    const lowRatedLine = rows.find((l) => l.includes('LOW_RATED_FOR_ME_TEXT'));
+    const fineLine = rows.find((l) => l.includes('FINE_FOR_ME_TEXT'));
+
+    const caveatText = notice('knowledgeLowRatedCaveat');
+    assert.ok(
+      lowRatedLine?.includes(caveatText),
+      "the flagged entry's own line must carry the same low-rated caveat text knowledge_search renders",
+    );
+    assert.ok(
+      !fineLine?.includes(caveatText),
+      'a sibling entry outside the low-rated set must never carry it',
+    );
+    assert.ok(
+      rows.indexOf(fineLine ?? '') < rows.indexOf(lowRatedLine ?? ''),
+      'the non-low-rated near-tie sibling must sort ahead of the low-rated entry (the lowRatedIds tie-break engages)',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[lowRatedId, fineId]]);
+    await setMemberInterests('discord', userId, 'clear');
+  },
+);
+
+test(
+  'knowledge_for_me appends the trailing conflict-caveat note exactly once when hasConflictAmongIds resolves ' +
+    'true for the relevant hits, and omits it when false (issue #1321 acceptance criterion 2)',
+  { skip },
+  async (t) => {
+    const scope = `${RUN}-conflict`;
+    const userId = `${RUN}-member-conflict`;
+    const interests = `conflict caveat test interests ${RUN}`;
+    await setMemberInterests('discord', userId, interests);
+
+    const anchorVec = await embed(interests);
+    const midBandVec = atCosineSimilarity(anchorVec, 0.7);
+    const { rows: aRows } = await pool.query(
+      `INSERT INTO knowledge (scope, title, content, embedding) VALUES ($1,$2,$3,$4) RETURNING id`,
+      [scope, `Conflict A ${RUN}`, 'CONFLICT_A_FOR_ME_TEXT', pgvector.toSql(anchorVec)],
+    );
+    const { rows: bRows } = await pool.query(
+      `INSERT INTO knowledge (scope, title, content, embedding) VALUES ($1,$2,$3,$4) RETURNING id`,
+      [scope, `Conflict B ${RUN}`, 'CONFLICT_B_FOR_ME_TEXT', pgvector.toSql(midBandVec)],
+    );
+    const aId = Number(aRows[0].id);
+    const bId = Number(bRows[0].id);
+
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && sql.includes('JOIN knowledge b')) {
+        return Promise.resolve({ rows: [{ '?column?': 1 }], rowCount: 1 });
+      }
+      return (realQuery as (...args: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+
+    const caller = {
+      platform: 'discord' as const,
+      userId,
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: scope,
+      isDirect: false,
+    };
+    const result = await getKnowledgeForMeHandler(caller).handler({});
+    const text = result.content[0]?.text ?? '';
+
+    const escapedCaveat = KNOWLEDGE_CONFLICT_CAVEAT_TEXT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    assert.equal(
+      (text.match(new RegExp(escapedCaveat, 'g')) ?? []).length,
+      1,
+      'the caveat appears exactly once when hasConflictAmongIds resolves true',
+    );
+    assert.match(
+      text,
+      new RegExp(`\\n\\n\\(${escapedCaveat}\\)$`),
+      'the caveat is the exact fixed exported string, appended as a trailing line',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[aId, bId]]);
+    await setMemberInterests('discord', userId, 'clear');
+  },
+);
+
+test(
+  'SECURITY: knowledge_for_me triggers no hasConflictAmongIds call with fewer than 2 relevant hits, and no ' +
+    'areKnowledgeEntriesLowRated call with zero relevant hits or the low-rated feature disabled (issue #1321 ' +
+    'acceptance criterion 3)',
+  { skip },
+  async (t) => {
+    assert.equal(
+      config.behaviour.knowledgeLowRatedCaveatMinUnhelpful,
+      0,
+      'this test only proves the disabled-feature half with the feature at its off default',
+    );
+
+    const scope = `${RUN}-short-circuit`;
+    const userId = `${RUN}-member-short-circuit`;
+    const interests = `short circuit test interests ${RUN}`;
+    await setMemberInterests('discord', userId, interests);
+    const anchorVec = await embed(interests);
+    const { rows } = await pool.query(
+      `INSERT INTO knowledge (scope, title, content, embedding) VALUES ($1,$2,$3,$4) RETURNING id`,
+      [scope, `Solo entry ${RUN}`, 'SOLO_FOR_ME_TEXT', pgvector.toSql(anchorVec)],
+    );
+    const id = Number(rows[0].id);
+
+    let conflictQueryRan = false;
+    let lowRatedQueryRan = false;
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && sql.includes('JOIN knowledge b')) conflictQueryRan = true;
+      if (typeof sql === 'string' && sql.includes('FROM answer_feedback')) lowRatedQueryRan = true;
+      return (realQuery as (...args: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+
+    const caller = {
+      platform: 'discord' as const,
+      userId,
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: scope,
+      isDirect: false,
+    };
+    await getKnowledgeForMeHandler(caller).handler({});
+
+    assert.equal(
+      conflictQueryRan,
+      false,
+      'hasConflictAmongIds must never even be called with fewer than 2 relevant hits',
+    );
+    assert.equal(
+      lowRatedQueryRan,
+      false,
+      'areKnowledgeEntriesLowRated must never even be called with the feature disabled',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
+    await setMemberInterests('discord', userId, 'clear');
+  },
+);
+
+test(
+  'SECURITY: knowledge_for_me never renders a source: clause for an autoGenerated: true hit, regardless of ' +
+    'its low-rated/conflict status (the formatKnowledgeCitationNote !autoGenerated guard, issue #1321 ' +
+    'acceptance criterion 4)',
+  { skip },
+  async (t) => {
+    const was = config.behaviour.knowledgeLowRatedCaveatMinUnhelpful;
+    setKnowledgeLowRatedCaveatMinUnhelpful(2);
+    t.after(() => {
+      setKnowledgeLowRatedCaveatMinUnhelpful(was);
+    });
+
+    const scope = `${RUN}-auto-generated`;
+    const userId = `${RUN}-member-auto-generated`;
+    const interests = `auto generated citation guard test ${RUN}`;
+    await setMemberInterests('discord', userId, interests);
+
+    // Embedding is pinned directly to the interests' own embed() output
+    // (rather than derived from `content` via saveKnowledge) so relevance is
+    // deterministic, matching this file's other raw-INSERT fixtures above —
+    // real-content embedding similarity between two unrelated short strings
+    // isn't reliably above the relevance floor.
+    const anchorVec = await embed(interests);
+    const { rows: autoRows } = await pool.query(
+      `INSERT INTO knowledge (scope, title, content, created_by_role, source_url, source_title, embedding)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+      [
+        scope,
+        `Auto-generated entry ${RUN}`,
+        'AUTO_GENERATED_FOR_ME_TEXT',
+        'auto',
+        'https://example.com/auto-generated-for-me',
+        'Example source',
+        pgvector.toSql(anchorVec),
+      ],
+    );
+    const autoId = Number(autoRows[0].id);
+
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && sql.includes('FROM answer_feedback')) {
+        return Promise.resolve({ rows: [{ id: autoId }], rowCount: 1 });
+      }
+      if (typeof sql === 'string' && sql.includes('JOIN knowledge b')) {
+        return Promise.resolve({ rows: [{ '?column?': 1 }], rowCount: 1 });
+      }
+      return (realQuery as (...args: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+
+    // Only this one entry is in scope, so hasConflictAmongIds never actually
+    // runs (relevantIds.length < 2) — the mock above exists only in case a
+    // future change widens the fetch; the assertion below is about the
+    // rendered text regardless.
+    const caller = {
+      platform: 'discord' as const,
+      userId,
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: scope,
+      isDirect: false,
+    };
+    const result = await getKnowledgeForMeHandler(caller).handler({});
+    const text = result.content[0]?.text ?? '';
+
+    assert.match(text, /AUTO_GENERATED_FOR_ME_TEXT/, 'the auto-generated entry must still be served');
+    assert.doesNotMatch(
+      text,
+      /source:/,
+      'an autoGenerated: true hit must never render a source: clause, regardless of low-rated/conflict status',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [autoId]);
+    await setMemberInterests('discord', userId, 'clear');
+  },
+);
+
+test(
+  'SECURITY: knowledge_for_me still returns the plain search results — no thrown error, no raw error text, ' +
+    'caveats simply omitted — when both areKnowledgeEntriesLowRated and hasConflictAmongIds reject (fail-safe, ' +
+    'issue #1321 acceptance criterion 5)',
+  { skip },
+  async (t) => {
+    const was = config.behaviour.knowledgeLowRatedCaveatMinUnhelpful;
+    setKnowledgeLowRatedCaveatMinUnhelpful(2);
+    t.after(() => {
+      setKnowledgeLowRatedCaveatMinUnhelpful(was);
+    });
+
+    const scope = `${RUN}-failsafe`;
+    const userId = `${RUN}-member-failsafe`;
+    const interests = `fail safe test interests ${RUN}`;
+    await setMemberInterests('discord', userId, interests);
+
+    const anchorVec = await embed(interests);
+    const midBandVec = atCosineSimilarity(anchorVec, 0.7);
+    const { rows: aRows } = await pool.query(
+      `INSERT INTO knowledge (scope, title, content, embedding) VALUES ($1,$2,$3,$4) RETURNING id`,
+      [scope, `Failsafe A ${RUN}`, 'STILL_SERVED_FOR_ME_A', pgvector.toSql(anchorVec)],
+    );
+    const { rows: bRows } = await pool.query(
+      `INSERT INTO knowledge (scope, title, content, embedding) VALUES ($1,$2,$3,$4) RETURNING id`,
+      [scope, `Failsafe B ${RUN}`, 'STILL_SERVED_FOR_ME_B', pgvector.toSql(midBandVec)],
+    );
+    const aId = Number(aRows[0].id);
+    const bId = Number(bRows[0].id);
+
+    const warnLog = t.mock.method(logger, 'warn', () => {});
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && sql.includes('FROM answer_feedback')) {
+        return Promise.reject(new Error('low-rated lookup unavailable'));
+      }
+      if (typeof sql === 'string' && sql.includes('JOIN knowledge b')) {
+        return Promise.reject(new Error('conflict lookup unavailable'));
+      }
+      return (realQuery as (...args: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+
+    const caller = {
+      platform: 'discord' as const,
+      userId,
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: scope,
+      isDirect: false,
+    };
+    const result = await getKnowledgeForMeHandler(caller).handler({});
+    const text = result.content[0]?.text ?? '';
+
+    assert.equal(
+      result.isError,
+      false,
+      'a lookup rejection in either lookup must never fail the whole reply',
+    );
+    assert.ok(text.includes('STILL_SERVED_FOR_ME_A'), 'the first entry must still be served');
+    assert.ok(text.includes('STILL_SERVED_FOR_ME_B'), 'the second entry must still be served');
+    assert.doesNotMatch(
+      text,
+      new RegExp(KNOWLEDGE_CONFLICT_CAVEAT_TEXT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+      'a conflict-lookup failure must degrade to no caveat, never an error',
+    );
+    assert.doesNotMatch(
+      text,
+      new RegExp(notice('knowledgeLowRatedCaveat').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+      'a low-rated-lookup failure must degrade to no caveat, never an error',
+    );
+    assert.ok(warnLog.mock.calls.length >= 2, 'both lookup failures must be logged, not silently swallowed');
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[aId, bId]]);
+    await setMemberInterests('discord', userId, 'clear');
   },
 );

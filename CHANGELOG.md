@@ -25,6 +25,19 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #1122 #1123 #1132 #1232 #1236
 -->
 
+## 2026-09-08
+
+### Fixed
+- **`knowledge_for_me` now warns you the same way every other knowledge
+  surface does.** (#1321) `knowledge_search`, `most_helpful_knowledge`, and
+  both the `/kb`/`!kb` shortcuts already flag a community-rated-unhelpful
+  entry or two disagreeing entries when they show up in your results —
+  `knowledge_for_me` (which searches using your own published interests, so
+  you never have to think of search terms) was shipped without those two
+  caveats, so it could hand back a flagged-unhelpful or conflicting entry
+  with no warning at all. It now carries the same low-rated and conflict
+  notes as the rest of the knowledge base.
+
 ## 2026-09-07
 
 ### Added
