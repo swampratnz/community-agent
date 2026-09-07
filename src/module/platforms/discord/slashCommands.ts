@@ -14,7 +14,7 @@ import {
   formatMyDataText,
   formatMySubmissionsText,
   formatMyWarningsText,
-  MY_DATA_SUMMARY_FETCH_CAP,
+  getMyDataSupplementalCounts,
 } from '../../agent/tools/selfService.js';
 import {
   EVENTS_LIST_LIMIT,
@@ -555,20 +555,19 @@ async function handleMyData(interaction: ChatInputCommandInteraction, deps: Slas
   const used =
     role !== 'super_admin' && limit !== 0 ? await countRepliesToUser('discord', interaction.user.id) : null;
   const language = await getLanguagePreference('discord', interaction.user.id);
-  const [appeals, knowledgeTips, connectionRequests] = await Promise.all([
-    listOwnAppeals('discord', interaction.user.id, MY_DATA_SUMMARY_FETCH_CAP),
-    listOwnKnowledgeCandidates('discord', interaction.user.id, MY_DATA_SUMMARY_FETCH_CAP),
-    listOwnProjectConnectionRequests('discord', interaction.user.id, MY_DATA_SUMMARY_FETCH_CAP),
-  ]);
+  const { appealsFiled, knowledgeTipsFiled, connectionRequestsSent } = await getMyDataSupplementalCounts(
+    'discord',
+    interaction.user.id,
+  );
   const message = formatMyDataText(
     summary,
     role,
     limit,
     used,
     language,
-    appeals.length,
-    knowledgeTips.length,
-    connectionRequests.length,
+    appealsFiled,
+    knowledgeTipsFiled,
+    connectionRequestsSent,
   );
   recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
   await replyEphemeral(interaction, message, deps);

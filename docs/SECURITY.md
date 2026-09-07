@@ -4386,9 +4386,16 @@ often.
   silently omits" defect issue #1030 fixed once already on this tool for its
   language preference — fetched module-side via the already-self-scoped
   `listOwnAppeals`/`listOwnKnowledgeCandidates`/`listOwnProjectConnectionRequests`
-  reads `my_submissions` also performs, bounded at
+  reads `my_submissions` also performs, each bounded at
   `MY_DATA_SUMMARY_FETCH_CAP` (500) rather than folded into base's
-  `getMyDataSummary` return shape. It deliberately does **not**
+  `getMyDataSummary` return shape. The first version of #1311 called those
+  reads with only the invoking identity, which silently undercounted a
+  linked-identity caller and contradicted this same scope claim (PR review) —
+  `getMyDataSupplementalCounts` (selfService.ts) now resolves
+  `resolveLinkedIdentities` itself and sums each identity's capped counts, the
+  same aggregation `getMyDataSummary` does internally for its own five
+  fields, so all eight counts genuinely share one scope. It deliberately does
+  **not**
   count or query `member_notes` (issue #45's members-have-no-self-access
   boundary), `member_warnings` (see `my_warnings` instead), `server_roster`,
   `admin_digest_sends`, `access_requests` (a pending request is guest-tier

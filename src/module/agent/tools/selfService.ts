@@ -1,5 +1,6 @@
 import { config } from '@swampratnz/agent-base/config.js';
 import type { Tier } from '@swampratnz/agent-base/auth/rbac.js';
+import type { Platform } from '@swampratnz/agent-base/platforms/types.js';
 import {
   countActiveWarnings,
   countRepliesToUser,
@@ -11,6 +12,7 @@ import {
   listOwnReports,
   listOwnSuggestions,
   purgeUserData,
+  resolveLinkedIdentities,
   type LanguagePreference,
 } from '@swampratnz/agent-base/storage/repository.js';
 import { getWithdrawnAppealIds } from '../../storage/appealWithdrawals.js';
@@ -204,6 +206,46 @@ export const MY_DATA_SUMMARY_FETCH_CAP = 500;
  */
 function formatCappedCount(n: number, cap: number): string {
   return n >= cap ? `${cap}+` : `${n}`;
+}
+
+/**
+ * `my_data`'s appeals/knowledge-tips/connection-requests counts (issue
+ * #1311), aggregated across every identity linked via `link_member` —
+ * `getMyDataSummary` (base-owned) already does this for its own five fields
+ * via `resolveLinkedIdentities`, and `my_data`'s own tool description
+ * promises the same "own identity plus any identity linked via link_member"
+ * scope, so these three module-side counts must match it too (PR review on
+ * #1311's first attempt: a member who files from a linked identity B and
+ * runs `my_data` from identity A must not see an undercount just because the
+ * fetch happens to live in this module rather than in base's summary). Each
+ * identity's `listOwn*` reads are independently bounded at
+ * `MY_DATA_SUMMARY_FETCH_CAP`, then summed; `formatCappedCount` still renders
+ * `${cap}+` once the summed total reaches the cap, so a sum built from
+ * several uncapped identity-level reads can still never present a truncated
+ * grand total as definitive. Shared by all three call sites (the tool
+ * handler below, and the `/mydata`/`!mydata` commands) rather than
+ * duplicated, since the linked-identity resolution makes each call site's
+ * inline version noticeably more than the one-line-per-field it used to be.
+ */
+export async function getMyDataSupplementalCounts(
+  platform: Platform,
+  userId: string,
+): Promise<{ appealsFiled: number; knowledgeTipsFiled: number; connectionRequestsSent: number }> {
+  const identities = await resolveLinkedIdentities(platform, userId);
+  let appealsFiled = 0;
+  let knowledgeTipsFiled = 0;
+  let connectionRequestsSent = 0;
+  for (const identity of identities) {
+    const [appeals, knowledgeTips, connectionRequests] = await Promise.all([
+      listOwnAppeals(identity.platform, identity.userId, MY_DATA_SUMMARY_FETCH_CAP),
+      listOwnKnowledgeCandidates(identity.platform, identity.userId, MY_DATA_SUMMARY_FETCH_CAP),
+      listOwnProjectConnectionRequests(identity.platform, identity.userId, MY_DATA_SUMMARY_FETCH_CAP),
+    ]);
+    appealsFiled += appeals.length;
+    knowledgeTipsFiled += knowledgeTips.length;
+    connectionRequestsSent += connectionRequests.length;
+  }
+  return { appealsFiled, knowledgeTipsFiled, connectionRequestsSent };
 }
 
 /**
@@ -429,15 +471,13 @@ export const selfServiceTools = [
       // as info.ts/notify.ts, read a second time here rather than folded
       // into getMyDataSummary's (base-owned) return shape.
       const language = await getLanguagePreference(caller.platform, caller.userId);
-      // Appeals/knowledge-tips/connection-requests counts (issue #1311) —
-      // the same three self-scoped `listOwn*` reads `my_submissions` already
-      // performs above, module-side (getMyDataSummary is base-owned) and
-      // fetched bounded rather than folded into that base return shape.
-      const [appeals, knowledgeTips, connectionRequests] = await Promise.all([
-        listOwnAppeals(caller.platform, caller.userId, MY_DATA_SUMMARY_FETCH_CAP),
-        listOwnKnowledgeCandidates(caller.platform, caller.userId, MY_DATA_SUMMARY_FETCH_CAP),
-        listOwnProjectConnectionRequests(caller.platform, caller.userId, MY_DATA_SUMMARY_FETCH_CAP),
-      ]);
+      // Appeals/knowledge-tips/connection-requests counts (issue #1311),
+      // linked-identity-aggregated the same way getMyDataSummary's own five
+      // fields are (module-side since getMyDataSummary is base-owned).
+      const { appealsFiled, knowledgeTipsFiled, connectionRequestsSent } = await getMyDataSupplementalCounts(
+        caller.platform,
+        caller.userId,
+      );
       return text(
         formatMyDataText(
           summary,
@@ -445,9 +485,9 @@ export const selfServiceTools = [
           limit,
           used,
           language,
-          appeals.length,
-          knowledgeTips.length,
-          connectionRequests.length,
+          appealsFiled,
+          knowledgeTipsFiled,
+          connectionRequestsSent,
         ),
       );
     },

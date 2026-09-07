@@ -37042,6 +37042,81 @@ test(
 );
 
 test(
+  "SECURITY: my_data's appeals/knowledge-tips/connection-requests counts are aggregated across every " +
+    "identity linked via link_member, matching getMyDataSummary's own five fields — a caller who files from " +
+    "a linked identity must see it counted from EITHER identity, the same completeness my_data's tool " +
+    'description promises ("the caller\'s own identity plus any identity linked via link_member") for every ' +
+    "other field it renders (PR review on issue #1311's first attempt, which fetched only the invoking " +
+    'identity and silently undercounted a linked caller)',
+  { skip },
+  async () => {
+    const discordUser = `${MY_DATA_HANDLER_USER}-linked-d`;
+    const whatsappUser = `${MY_DATA_HANDLER_USER}-linked-w`;
+    const ownerId = `${MY_DATA_HANDLER_USER}-linked-owner`;
+
+    await upsertMember({
+      platform: 'discord',
+      userId: discordUser,
+      role: 'member',
+      addedBy: `${MY_DATA_HANDLER_USER}-linked-admin`,
+    });
+    await upsertMember({
+      platform: 'whatsapp',
+      userId: whatsappUser,
+      role: 'member',
+      addedBy: `${MY_DATA_HANDLER_USER}-linked-admin`,
+    });
+    await linkMembers('discord', discordUser, 'whatsapp', whatsappUser);
+
+    // Every fixture is filed from the DISCORD identity only.
+    const appeal = await createModerationAppeal({
+      platform: 'discord',
+      userId: discordUser,
+      userName: 'Linked Member',
+      reason: 'the warning was wrong',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    const tip = await createKnowledgeTip({
+      platform: 'discord',
+      userId: discordUser,
+      topic: `${MY_DATA_HANDLER_USER} linked knowledge tip topic`,
+      title: 'how to reset your password',
+      content: 'go to settings then security',
+    });
+    const shared = await shareProject({
+      platform: 'whatsapp',
+      userId: ownerId,
+      name: 'Linked Dashboard',
+      description: 'a dashboard project',
+      seekingCollaborators: true,
+    });
+    assert.ok(shared.ok, 'fixture project recorded');
+    const claimed = await recordProjectConnectionIfUnderCap(
+      'whatsapp',
+      ownerId,
+      'discord',
+      discordUser,
+      shared.id,
+    );
+    assert.ok(appeal && tip && claimed, 'fixtures recorded for the discord identity');
+
+    // Read via the WHATSAPP identity — my_data must still see the discord
+    // identity's fixtures, exactly like getMyDataSummary's other fields
+    // already do for a linked caller.
+    const output = (await myDataHandler(whatsappUser).handler()).content[0]?.text ?? '';
+    assert.match(output, /Appeals filed: 1/);
+    assert.match(output, /Knowledge tips filed: 1/);
+    assert.match(output, /Connection requests sent: 1/);
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE user_id = $1`, [discordUser]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE source_user_id = $1`, [discordUser]);
+    await pool.query(`DELETE FROM project_connection_requests WHERE requester_user_id = $1`, [discordUser]);
+    await pool.query(`DELETE FROM member_projects WHERE id = $1`, [shared.id]);
+  },
+);
+
+test(
   'formatMyDataText renders a truncated appeals/knowledge-tips/connection-requests count as ' +
     "'${MY_DATA_SUMMARY_FETCH_CAP}+' rather than the possibly-short raw fetch length, so a fetch that hit the " +
     'cap is never presented as a definitive total (issue #1311 acceptance criterion 2)',
