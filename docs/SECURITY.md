@@ -340,6 +340,19 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   applies the same pattern: both identities must already be known community
   members (a `community_users` row exists) — it cannot conjure membership,
   only associate two identities that already have it.
+- **`moderate` never lets one admin durably act against another admin+**
+  (issue #1323, extending #572's `block_user`-only guard): `kick_user`,
+  `ban_user`, `timeout_user` and `block_user` all refuse a `targetUserId`
+  that resolves to `admin` or `super_admin` tier, checked before the
+  reachability check above and before any CONFIRM is queued — so an
+  admin-tier account (compromised, coerced, or rogue) cannot kick, ban,
+  timeout or block another admin or super admin with nothing but its own
+  CONFIRM reply. This is distinct from the reachability bullet above: that
+  one validates the target has been *seen*, this one validates the target's
+  *tier*. Deliberately excludes `delete_message` (targets a message, not a
+  person's standing) and `warn_user` (only the strike/mute *escalation* is
+  exempted for an admin+ target, via `applyManualWarnStrike`, not the warning
+  itself) and the two restorative actions `unban_user`/`unblock_user`.
 - **Tone calibration for off-limits declines and playful probes** (issue
   #913, the un-shipped residue of #756's rejected on-demand skill): a fixed,
   always-on `TONE_CALIBRATION_CLAUSE` in `systemPrompt.ts`'s `GUIDELINES`

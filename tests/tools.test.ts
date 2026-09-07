@@ -10395,6 +10395,156 @@ test(
 );
 
 test(
+  'SECURITY: kick_user refuses to target a plain admin, before any CONFIRM is queued or performAdminAction ' +
+    'is called (issue #1323, widening the block_user admin-target guard)',
+  { skip },
+  async () => {
+    const conv = `${RUN}-kick-admin-target`;
+    const targetAdmin = `${conv}-admin`;
+    await upsertMember({ platform: 'discord', userId: targetAdmin, role: 'admin', addedBy: `${RUN}-actor` });
+    const adapter = moderateAdapter({ platform: 'discord', capabilities: ['kick_user'] });
+    const handler = moderateHandler({ platform: 'discord', conversationId: conv, adapter });
+
+    const result = await handler.handler({
+      action: 'kick_user',
+      targetUserId: targetAdmin,
+      reason: 'persistent abuse',
+    });
+
+    assert.equal(result.isError, true);
+    assert.match(result.content[0]?.text ?? '', /cannot kick an admin or super admin/i);
+    assert.equal(hasPendingAction('discord', conv, 'admin-1'), false, 'no CONFIRM may be queued');
+    assert.equal(adapter.performCalls.length, 0, 'the adapter must never be reached');
+  },
+);
+
+test(
+  'SECURITY: ban_user refuses to target a super admin, before any CONFIRM is queued or performAdminAction ' +
+    'is called (issue #1323, widening the block_user admin-target guard)',
+  async () => {
+    const conv = `${RUN}-ban-super-admin-target`;
+    const adapter = moderateAdapter({ platform: 'whatsapp', capabilities: ['ban_user', 'unban_user'] });
+    const handler = moderateHandler({ platform: 'whatsapp', conversationId: conv, adapter });
+
+    // process.env.SUPER_ADMIN_WHATSAPP_NUMBERS ('super-1,super-2') is set at
+    // the top of this file — 'super-1' resolves to 'super_admin' with no DB
+    // row needed.
+    const result = await handler.handler({
+      action: 'ban_user',
+      targetUserId: 'super-1',
+      reason: 'persistent abuse',
+    });
+
+    assert.equal(result.isError, true);
+    assert.match(result.content[0]?.text ?? '', /cannot ban an admin or super admin/i);
+    assert.equal(hasPendingAction('whatsapp', conv, 'admin-1'), false, 'no CONFIRM may be queued');
+    assert.equal(adapter.performCalls.length, 0, 'the adapter must never be reached');
+  },
+);
+
+test(
+  'SECURITY: timeout_user refuses to target a plain admin, before any CONFIRM is queued or ' +
+    'performAdminAction is called (issue #1323, widening the block_user admin-target guard)',
+  { skip },
+  async () => {
+    const conv = `${RUN}-timeout-admin-target`;
+    const targetAdmin = `${conv}-admin`;
+    await upsertMember({ platform: 'discord', userId: targetAdmin, role: 'admin', addedBy: `${RUN}-actor` });
+    const adapter = moderateAdapter({ platform: 'discord', capabilities: ['timeout_user'] });
+    const handler = moderateHandler({ platform: 'discord', conversationId: conv, adapter });
+
+    const result = await handler.handler({
+      action: 'timeout_user',
+      targetUserId: targetAdmin,
+      reason: 'persistent abuse',
+      durationMinutes: 60,
+    });
+
+    assert.equal(result.isError, true);
+    assert.match(result.content[0]?.text ?? '', /cannot timeout an admin or super admin/i);
+    assert.equal(hasPendingAction('discord', conv, 'admin-1'), false, 'no CONFIRM may be queued');
+    assert.equal(adapter.performCalls.length, 0, 'the adapter must never be reached');
+  },
+);
+
+test(
+  'SECURITY: delete_message and warn_user against an admin target are unchanged by the widened guard — ' +
+    'delete_message still proceeds to CONFIRM and warn_user still executes (issue #1323 regression pin, ' +
+    'acceptance criterion 8)',
+  { skip },
+  async () => {
+    const conv = `${RUN}-delete-warn-admin-target-unchanged`;
+    const targetAdmin = `${conv}-admin`;
+    const messageId = `${conv}-msg`;
+    await upsertMember({ platform: 'discord', userId: targetAdmin, role: 'admin', addedBy: `${RUN}-actor` });
+    await seedKnownUser('discord', conv, targetAdmin);
+    await recordInteraction({
+      platform: 'discord',
+      conversationId: conv,
+      userId: targetAdmin,
+      role: 'admin',
+      direction: 'inbound',
+      content: 'spam-ish message',
+      messageId,
+    });
+
+    const deleteAdapter = moderateAdapter({ platform: 'discord', capabilities: ['delete_message'] });
+    const deleteHandler = moderateHandler({
+      platform: 'discord',
+      conversationId: conv,
+      adapter: deleteAdapter,
+    });
+    const deleteResult = await deleteHandler.handler({
+      action: 'delete_message',
+      targetUserId: targetAdmin,
+      reason: 'spam',
+      messageId,
+    });
+    assert.equal(deleteResult.isError, false, 'delete_message against an admin target must still proceed');
+    assert.equal(hasPendingAction('discord', conv, 'admin-1'), true, 'delete_message still queues CONFIRM');
+    assert.equal(deleteAdapter.performCalls.length, 0, 'CONFIRM only queues the action, never runs it');
+    cancelPendingAction('discord', conv, 'admin-1');
+
+    const warnAdapter = moderateAdapter({ platform: 'discord', capabilities: ['warn_user'] });
+    const warnHandler = moderateHandler({ platform: 'discord', conversationId: conv, adapter: warnAdapter });
+    const warnResult = await warnHandler.handler({
+      action: 'warn_user',
+      targetUserId: targetAdmin,
+      reason: 'spam',
+    });
+    assert.equal(warnResult.isError, false, 'warn_user against an admin target must still execute');
+    assert.equal(warnAdapter.performCalls.length, 1, 'warn_user sends immediately, no CONFIRM needed');
+  },
+);
+
+test(
+  'kick_user/ban_user/timeout_user against an ordinary member are unaffected by the widened admin-target ' +
+    'guard — still require CONFIRM and never refuse the target (issue #1323 regression, acceptance criterion 9)',
+  { skip },
+  async () => {
+    const conv = `${RUN}-mod-actions-ordinary-member-unaffected`;
+    const targetMember = `${conv}-member`;
+    await seedKnownUser('discord', conv, targetMember);
+
+    for (const action of ['kick_user', 'ban_user', 'timeout_user'] as const) {
+      const adapter = moderateAdapter({ platform: 'discord', capabilities: [action] });
+      const handler = moderateHandler({ platform: 'discord', conversationId: conv, adapter });
+      const result = await handler.handler({
+        action,
+        targetUserId: targetMember,
+        reason: 'testing',
+        ...(action === 'timeout_user' ? { durationMinutes: 30 } : {}),
+      });
+
+      assert.equal(result.isError, false, `${action} against an ordinary member must not be refused`);
+      assert.equal(hasPendingAction('discord', conv, 'admin-1'), true, `${action} must still queue CONFIRM`);
+      assert.equal(adapter.performCalls.length, 0, 'CONFIRM only queues the action, never runs it');
+      cancelPendingAction('discord', conv, 'admin-1');
+    }
+  },
+);
+
+test(
   'SECURITY: block_user does not execute until CONFIRM is received — queued only, no performAdminAction ' +
     'call and no admin_audit row until the admin confirms (issue #572), mirroring the existing ' +
     'ban_user/kick_user CONFIRM behaviour',

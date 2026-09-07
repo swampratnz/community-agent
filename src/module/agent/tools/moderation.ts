@@ -68,7 +68,7 @@ export const moderationTools = [
   defineTool({
     name: 'moderate',
     description:
-      'Perform a moderation action. warn_user sends immediately; timeout/kick/ban/unban/delete/block/unblock require the admin to reply CONFIRM. ban_user (Discord only) is durable — the member cannot rejoin via invite — but unban_user reverses it in-bot, same gates as every other action. block_user (WhatsApp only) is the bot-side equivalent: it stops the bot ever replying to that sender again, platform-wide, with no platform API call; unblock_user reverses it. block_user cannot target an admin or super admin. Admins can only act in conversations they are in.',
+      'Perform a moderation action. warn_user sends immediately; timeout/kick/ban/unban/delete/block/unblock require the admin to reply CONFIRM. ban_user (Discord only) is durable — the member cannot rejoin via invite — but unban_user reverses it in-bot, same gates as every other action. block_user (WhatsApp only) is the bot-side equivalent: it stops the bot ever replying to that sender again, platform-wide, with no platform API call; unblock_user reverses it. kick_user, ban_user, timeout_user and block_user cannot target an admin or super admin. Admins can only act in conversations they are in.',
     minTier: 'admin',
     readOnlyHint: false,
     schema: {
@@ -112,17 +112,24 @@ export const moderationTools = [
       ) {
         return text(unreachableConversationRefusal(targetConversation), true);
       }
-      // block_user cannot target an admin/super admin — mirrors remove_member's
-      // and applyManualWarnStrike's existing "never act against an admin+"
-      // guard. Checked before isKnownUser: an admin/super admin's role is
-      // resolved from env/community_users, not from ever having been "seen"
-      // in an interaction, so this refusal must not depend on that unrelated
+      // kick_user/ban_user/timeout_user/block_user cannot target an
+      // admin/super admin — mirrors remove_member's and
+      // applyManualWarnStrike's existing "never act against an admin+" guard
+      // (issue #1323 widens this from block_user alone to its three siblings
+      // in this same handler, which share the identical consequence class:
+      // removing or restricting the target's standing on the platform).
+      // Checked before isKnownUser: an admin/super admin's role is resolved
+      // from env/community_users, not from ever having been "seen" in an
+      // interaction, so this refusal must not depend on that unrelated
       // reachability check.
       if (
-        args.action === 'block_user' &&
+        (args.action === 'block_user' ||
+          args.action === 'kick_user' ||
+          args.action === 'ban_user' ||
+          args.action === 'timeout_user') &&
         atLeast(await resolveRole(caller.platform, args.targetUserId), 'admin')
       ) {
-        return text('Refusing: cannot block an admin or super admin.', true);
+        return text(`Refusing: cannot ${args.action.replace('_user', '')} an admin or super admin.`, true);
       }
       // unblock_user admits via isUserBlocked as an ALTERNATE path to
       // isKnownUser: purge_user_data/forget_me hard-deletes the target's
