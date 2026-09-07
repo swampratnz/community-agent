@@ -62,6 +62,7 @@ import {
   formatMyDataText,
   formatMySubmissionsText,
   formatMyWarningsText,
+  getMyDataSupplementalCounts,
 } from './agent/tools/selfService.js';
 import { TEXT_COMMAND_UNMATCHED, type RegisteredCommand } from '@swampratnz/agent-base/commands/registry.js';
 import { formatStatusMessage, getStatusCache } from './status/anthropicStatus.js';
@@ -333,7 +334,20 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
       const used =
         role !== 'super_admin' && limit !== 0 ? await countRepliesToUser(msg.platform, msg.userId) : null;
       const language = await getLanguagePreference(msg.platform, msg.userId);
-      return formatMyDataText(summary, role, limit, used, language);
+      const { appealsFiled, knowledgeTipsFiled, connectionRequestsSent } = await getMyDataSupplementalCounts(
+        msg.platform,
+        msg.userId,
+      );
+      return formatMyDataText(
+        summary,
+        role,
+        limit,
+        used,
+        language,
+        appealsFiled,
+        knowledgeTipsFiled,
+        connectionRequestsSent,
+      );
     },
   },
   {

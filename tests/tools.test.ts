@@ -258,7 +258,7 @@ const { recordSuggestionWithdrawal, getWithdrawnSuggestionIds } =
 const { recordAppealWithdrawal, getWithdrawnAppealIds } =
   await import('../src/module/storage/appealWithdrawals.js');
 const { buildMemberDigestContent } = await import('../src/module/memberDigest.js');
-const { formatMyDataText, formatMySubmissionsText, formatMyWarningsText } =
+const { formatMyDataText, formatMySubmissionsText, formatMyWarningsText, MY_DATA_SUMMARY_FETCH_CAP } =
   await import('../src/module/agent/tools/selfService.js');
 const { getPendingAlertsForTests, resetPendingAlertsForTests } =
   await import('@swampratnz/agent-base/pendingAlertQueue.js');
@@ -36827,6 +36827,9 @@ test(
     assert.match(output, /Knowledge entries sourced from you: 0/);
     assert.match(output, /Content reports you've filed: 0/);
     assert.match(output, /Suggestions you've filed: 0/);
+    assert.match(output, /Appeals filed: 0/);
+    assert.match(output, /Knowledge tips filed: 0/);
+    assert.match(output, /Connection requests sent: 0/);
     assert.match(output, /Projects you've shared: 0/);
     assert.match(output, /Response style preference: standard \(default\)/);
     assert.match(output, /my_warnings/, 'points to my_warnings for active-warning status');
@@ -36841,17 +36844,29 @@ test(
   { skip },
   async () => {
     const userId = `${MY_DATA_HANDLER_USER}-formatter-parity`;
-    const [handlerResult, summary, language] = await Promise.all([
+    const [handlerResult, summary, language, appeals, knowledgeTips, connectionRequests] = await Promise.all([
       myDataHandler(userId).handler(),
       getMyDataSummary('whatsapp', userId),
       getLanguagePreference('whatsapp', userId),
+      listOwnAppeals('whatsapp', userId, MY_DATA_SUMMARY_FETCH_CAP),
+      listOwnKnowledgeCandidates('whatsapp', userId, MY_DATA_SUMMARY_FETCH_CAP),
+      listOwnProjectConnectionRequests('whatsapp', userId, MY_DATA_SUMMARY_FETCH_CAP),
     ]);
     const limit = config.behaviour.dailyReplyLimitPerUser;
     const used = limit !== 0 ? await countRepliesToUser('whatsapp', userId) : null;
 
     assert.equal(
       handlerResult.content[0]?.text ?? '',
-      formatMyDataText(summary, 'member', limit, used, language),
+      formatMyDataText(
+        summary,
+        'member',
+        limit,
+        used,
+        language,
+        appeals.length,
+        knowledgeTips.length,
+        connectionRequests.length,
+      ),
     );
   },
 );
@@ -36910,6 +36925,225 @@ test(
     assert.match(output, /Projects you've shared: 1/);
     assert.match(output, /Interests published \(who_is_into\): yes/);
     assert.match(output, /Response style preference: plain/);
+  },
+);
+
+test(
+  "my_data reports the caller's own filed appeal, knowledge tip and sent connection-request counts — the " +
+    'same three record kinds forget_me/purge_user_data erase, previously missing from this summary (issue ' +
+    '#1311 acceptance criterion 1)',
+  { skip },
+  async () => {
+    const userId = `${MY_DATA_HANDLER_USER}-appeals-tips-connreq`;
+    const ownerId = `${MY_DATA_HANDLER_USER}-appeals-tips-connreq-owner`;
+
+    const appeal = await createModerationAppeal({
+      platform: 'whatsapp',
+      userId,
+      userName: 'Data Member',
+      reason: 'the warning was wrong',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    const tip = await createKnowledgeTip({
+      platform: 'whatsapp',
+      userId,
+      topic: `${MY_DATA_HANDLER_USER} knowledge tip topic`,
+      title: 'how to reset your password',
+      content: 'go to settings then security',
+    });
+    const shared = await shareProject({
+      platform: 'whatsapp',
+      userId: ownerId,
+      name: 'Data Dashboard',
+      description: 'a dashboard project',
+      seekingCollaborators: true,
+    });
+    assert.ok(shared.ok, 'fixture project recorded');
+    const claimed = await recordProjectConnectionIfUnderCap(
+      'whatsapp',
+      ownerId,
+      'whatsapp',
+      userId,
+      shared.id,
+    );
+    assert.ok(appeal && tip && claimed, 'fixtures recorded');
+
+    const result = await myDataHandler(userId).handler();
+    const output = result.content[0]?.text ?? '';
+
+    assert.equal(result.isError, false);
+    assert.match(output, /Appeals filed: 1/);
+    assert.match(output, /Knowledge tips filed: 1/);
+    assert.match(output, /Connection requests sent: 1/);
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE user_id = $1`, [userId]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE source_user_id = $1`, [userId]);
+    await pool.query(`DELETE FROM project_connection_requests WHERE requester_user_id = $1`, [userId]);
+    await pool.query(`DELETE FROM member_projects WHERE id = $1`, [shared.id]);
+  },
+);
+
+test(
+  "SECURITY: my_data's appeals/knowledge-tips/connection-requests counts reflect only the caller's OWN " +
+    "(platform, userId) — never another member's filed items, scoped identically to every other field my_data " +
+    'renders (issue #1311 SECURITY criterion)',
+  { skip },
+  async () => {
+    const caller = `${MY_DATA_HANDLER_USER}-scoping-caller`;
+    const otherUser = `${MY_DATA_HANDLER_USER}-scoping-other`;
+    const ownerId = `${MY_DATA_HANDLER_USER}-scoping-owner`;
+
+    const otherAppeal = await createModerationAppeal({
+      platform: 'whatsapp',
+      userId: otherUser,
+      userName: 'Other Member',
+      reason: "someone else's appeal",
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    const otherTip = await createKnowledgeTip({
+      platform: 'whatsapp',
+      userId: otherUser,
+      topic: `${MY_DATA_HANDLER_USER} scoping tip topic`,
+      title: "someone else's tip",
+      content: 'not the caller',
+    });
+    const shared = await shareProject({
+      platform: 'whatsapp',
+      userId: ownerId,
+      name: 'Scoping Dashboard',
+      description: 'a dashboard project',
+      seekingCollaborators: true,
+    });
+    assert.ok(shared.ok, 'fixture project recorded');
+    const otherClaim = await recordProjectConnectionIfUnderCap(
+      'whatsapp',
+      ownerId,
+      'whatsapp',
+      otherUser,
+      shared.id,
+    );
+    assert.ok(otherAppeal && otherTip && otherClaim, 'fixtures recorded for the OTHER user');
+
+    // The tool takes no arguments (pinned above) — there is no identifier a
+    // model could supply to redirect the read, so the caller sees only their
+    // own (zero) counts, never the other user's fixtures just created.
+    const output = (await myDataHandler(caller).handler()).content[0]?.text ?? '';
+    assert.match(output, /Appeals filed: 0/);
+    assert.match(output, /Knowledge tips filed: 0/);
+    assert.match(output, /Connection requests sent: 0/);
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE user_id = $1`, [otherUser]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE source_user_id = $1`, [otherUser]);
+    await pool.query(`DELETE FROM project_connection_requests WHERE requester_user_id = $1`, [otherUser]);
+    await pool.query(`DELETE FROM member_projects WHERE id = $1`, [shared.id]);
+  },
+);
+
+test(
+  "SECURITY: my_data's appeals/knowledge-tips/connection-requests counts are aggregated across every " +
+    "identity linked via link_member, matching getMyDataSummary's own five fields — a caller who files from " +
+    "a linked identity must see it counted from EITHER identity, the same completeness my_data's tool " +
+    'description promises ("the caller\'s own identity plus any identity linked via link_member") for every ' +
+    "other field it renders (PR review on issue #1311's first attempt, which fetched only the invoking " +
+    'identity and silently undercounted a linked caller)',
+  { skip },
+  async () => {
+    const discordUser = `${MY_DATA_HANDLER_USER}-linked-d`;
+    const whatsappUser = `${MY_DATA_HANDLER_USER}-linked-w`;
+    const ownerId = `${MY_DATA_HANDLER_USER}-linked-owner`;
+
+    await upsertMember({
+      platform: 'discord',
+      userId: discordUser,
+      role: 'member',
+      addedBy: `${MY_DATA_HANDLER_USER}-linked-admin`,
+    });
+    await upsertMember({
+      platform: 'whatsapp',
+      userId: whatsappUser,
+      role: 'member',
+      addedBy: `${MY_DATA_HANDLER_USER}-linked-admin`,
+    });
+    await linkMembers('discord', discordUser, 'whatsapp', whatsappUser);
+
+    // Every fixture is filed from the DISCORD identity only.
+    const appeal = await createModerationAppeal({
+      platform: 'discord',
+      userId: discordUser,
+      userName: 'Linked Member',
+      reason: 'the warning was wrong',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    const tip = await createKnowledgeTip({
+      platform: 'discord',
+      userId: discordUser,
+      topic: `${MY_DATA_HANDLER_USER} linked knowledge tip topic`,
+      title: 'how to reset your password',
+      content: 'go to settings then security',
+    });
+    const shared = await shareProject({
+      platform: 'whatsapp',
+      userId: ownerId,
+      name: 'Linked Dashboard',
+      description: 'a dashboard project',
+      seekingCollaborators: true,
+    });
+    assert.ok(shared.ok, 'fixture project recorded');
+    const claimed = await recordProjectConnectionIfUnderCap(
+      'whatsapp',
+      ownerId,
+      'discord',
+      discordUser,
+      shared.id,
+    );
+    assert.ok(appeal && tip && claimed, 'fixtures recorded for the discord identity');
+
+    // Read via the WHATSAPP identity — my_data must still see the discord
+    // identity's fixtures, exactly like getMyDataSummary's other fields
+    // already do for a linked caller.
+    const output = (await myDataHandler(whatsappUser).handler()).content[0]?.text ?? '';
+    assert.match(output, /Appeals filed: 1/);
+    assert.match(output, /Knowledge tips filed: 1/);
+    assert.match(output, /Connection requests sent: 1/);
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE user_id = $1`, [discordUser]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE source_user_id = $1`, [discordUser]);
+    await pool.query(`DELETE FROM project_connection_requests WHERE requester_user_id = $1`, [discordUser]);
+    await pool.query(`DELETE FROM member_projects WHERE id = $1`, [shared.id]);
+  },
+);
+
+test(
+  'formatMyDataText renders a truncated appeals/knowledge-tips/connection-requests count as ' +
+    "'${MY_DATA_SUMMARY_FETCH_CAP}+' rather than the possibly-short raw fetch length, so a fetch that hit the " +
+    'cap is never presented as a definitive total (issue #1311 acceptance criterion 2)',
+  () => {
+    const zeroSummary = {
+      ownMessages: 0,
+      repliesToThem: 0,
+      knowledgeEntries: 0,
+      reportsFiled: 0,
+      suggestionsFiled: 0,
+      projectsShared: 0,
+      interestsPublished: 0,
+      responseStyle: 'standard' as const,
+    };
+    const output = formatMyDataText(
+      zeroSummary,
+      'member',
+      0,
+      null,
+      'auto',
+      MY_DATA_SUMMARY_FETCH_CAP,
+      MY_DATA_SUMMARY_FETCH_CAP,
+      MY_DATA_SUMMARY_FETCH_CAP,
+    );
+    assert.match(output, new RegExp(`Appeals filed: ${MY_DATA_SUMMARY_FETCH_CAP}\\+`));
+    assert.match(output, new RegExp(`Knowledge tips filed: ${MY_DATA_SUMMARY_FETCH_CAP}\\+`));
+    assert.match(output, new RegExp(`Connection requests sent: ${MY_DATA_SUMMARY_FETCH_CAP}\\+`));
   },
 );
 

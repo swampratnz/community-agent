@@ -4376,9 +4376,26 @@ often.
   the deletion path above** — NZ Privacy Act 2020 gives individuals a right
   to see what's held about them, not just to erase it. It reports counts for
   exactly the same tables `forget_me` deletes (own messages, replies sent to
-  them, knowledge sourced from them, reports/suggestions they filed, their
-  response-style preference), scoped identically via `resolveLinkedIdentities`
-  so it can never see another member's data. It deliberately does **not**
+  them, knowledge sourced from them, reports/suggestions/appeals they filed,
+  knowledge tips filed via `suggest_knowledge`, project-connection requests
+  they sent, their response-style preference), scoped identically via
+  `resolveLinkedIdentities` so it can never see another member's data. The
+  appeals/knowledge-tips/connection-requests counts (issue #1311) were added
+  after `my_data`'s summary was found to omit three record kinds `forget_me`/
+  `purge_user_data` already erased — the same "promises completeness,
+  silently omits" defect issue #1030 fixed once already on this tool for its
+  language preference — fetched module-side via the already-self-scoped
+  `listOwnAppeals`/`listOwnKnowledgeCandidates`/`listOwnProjectConnectionRequests`
+  reads `my_submissions` also performs, each bounded at
+  `MY_DATA_SUMMARY_FETCH_CAP` (500) rather than folded into base's
+  `getMyDataSummary` return shape. The first version of #1311 called those
+  reads with only the invoking identity, which silently undercounted a
+  linked-identity caller and contradicted this same scope claim (PR review) —
+  `getMyDataSupplementalCounts` (selfService.ts) now resolves
+  `resolveLinkedIdentities` itself and sums each identity's capped counts, the
+  same aggregation `getMyDataSummary` does internally for its own five
+  fields, so all eight counts genuinely share one scope. It deliberately does
+  **not**
   count or query `member_notes` (issue #45's members-have-no-self-access
   boundary), `member_warnings` (see `my_warnings` instead), `server_roster`,
   `admin_digest_sends`, `access_requests` (a pending request is guest-tier
