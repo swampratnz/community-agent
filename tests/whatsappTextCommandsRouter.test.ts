@@ -1726,6 +1726,29 @@ test('!mysubmissions returns the same content the shared formatter renders for a
   assert.equal(sent[0].text, formatMySubmissionsText(expectedSuggestions, [], [], [], [], 'auto'));
 });
 
+test('!mysubmissions renders the find_helper receipt section — the new section reaches this shortcut too, not just the my_submissions tool (issue #1313 acceptance criterion 4)', async (t) => {
+  const createdAt = new Date('2026-08-01T00:00:00Z');
+  t.mock.method(pool, 'query', (async (sql: string) => {
+    if (sql.includes('SELECT role FROM community_users')) return { rows: [{ role: 'member' }], rowCount: 0 };
+    if (sql.includes('FROM knowledge_candidates')) return { rows: [], rowCount: 0 };
+    if (sql.includes('FROM find_helper_requests')) {
+      return {
+        rows: [{ id: 9, topic: 'a shortcut-reachability topic', matched: true, created_at: createdAt }],
+        rowCount: 0,
+      };
+    }
+    return { rows: [], rowCount: 0 };
+  }) as typeof pool.query);
+  const router = makeRouter({ runTurn: throwingRunTurn });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!mysubmissions', userId: 'member-1' }));
+
+  assert.match(sent[0].text, /Your help requests:/);
+  assert.match(sent[0].text, /- #9 — "a shortcut-reachability topic" — matched — filed/);
+});
+
 test('!mysubmissions renders a withdrawn suggestion as [withdrawn], matching the my_submissions tool handler for the same DB state (issue #1243 — the automated-review-requested fix threading getWithdrawnSuggestionIds through this shortcut too)', async (t) => {
   const createdAt = new Date('2026-08-01T00:00:00Z');
   t.mock.method(pool, 'query', (async (sql: string) => {

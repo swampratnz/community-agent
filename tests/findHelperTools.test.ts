@@ -45,6 +45,7 @@ const {
 } = await import('@swampratnz/agent-base/storage/repository.js');
 const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
 const { resolveRecipientNoticeSelection } = await import('../src/module/agent/tools/helpers.js');
+const { listOwnFindHelperRequests } = await import('../src/module/storage/findHelperRequests.js');
 
 const RUN = `t${Date.now()}${Math.floor(Math.random() * 1e6)}`;
 
@@ -64,6 +65,7 @@ after(async () => {
     await pool.query(`DELETE FROM response_style_prefs WHERE platform = 'discord' AND user_id LIKE $1`, [
       `${RUN}%`,
     ]);
+    await pool.query(`DELETE FROM find_helper_requests WHERE requester_user_id LIKE $1`, [`${RUN}%`]);
   }
   await closeDb();
 });
@@ -1208,3 +1210,97 @@ test("resolveRecipientNoticeSelection skips the response-style lookup entirely o
   );
   assert.equal(styleLookupCalled, false, 'the style lookup must never run once language is mi');
 });
+
+// --- issue #1313: find_helper's own-request receipt write-site correctness ---
+
+test(
+  'SECURITY: find_helper writes zero find_helper_requests rows on the disabled early-return (issue #1313 acceptance criterion 3)',
+  { skip },
+  async () => {
+    const requester = `${RUN}-find-helper-receipt-disabled-requester`;
+    const wasEnabled = config.findHelper.enabled;
+    try {
+      config.findHelper.enabled = false;
+      const findTool = findHelperHandler({ userId: requester }, stubAdapter([]));
+      const result = await findTool.handler({ topic: 'anything' });
+      assert.equal(result.isError, true);
+    } finally {
+      config.findHelper.enabled = wasEnabled;
+    }
+
+    const rows = await listOwnFindHelperRequests('discord', requester, 10);
+    assert.equal(rows.length, 0, 'a disabled call must never write a find_helper_requests row');
+  },
+);
+
+test(
+  'SECURITY: find_helper writes zero find_helper_requests rows when the requester is at their daily cap (issue #1313 acceptance criterion 3)',
+  { skip },
+  async () => {
+    const requester = `${RUN}-find-helper-receipt-dailycap-requester`;
+    for (let i = 0; i < FIND_HELPER_REQUESTER_DAILY_LIMIT; i++) {
+      await pool.query(
+        `INSERT INTO helper_notifications
+           (helper_platform, helper_user_id, requester_platform, requester_user_id, topic)
+         VALUES ('discord', $1, 'discord', $2, $3)`,
+        [`${RUN}-find-helper-receipt-dailycap-prior-helper-${i}`, requester, `prior topic ${i}`],
+      );
+    }
+
+    const findTool = findHelperHandler({ userId: requester }, stubAdapter([]));
+    const result = await findTool.handler({ topic: 'anything' });
+    assert.equal(result.isError, true);
+
+    const rows = await listOwnFindHelperRequests('discord', requester, 10);
+    assert.equal(
+      rows.length,
+      0,
+      'a requester at their daily cap must never write a find_helper_requests row',
+    );
+
+    await pool.query(`DELETE FROM helper_notifications WHERE requester_user_id = $1`, [requester]);
+  },
+);
+
+test(
+  'find_helper writes exactly one find_helper_requests row with matched=true on a real matched ask (issue #1313 acceptance criterion 3)',
+  { skip },
+  async () => {
+    const requester = `${RUN}-find-helper-receipt-matched-requester`;
+    const helper = `${RUN}-find-helper-receipt-matched-helper`;
+    const topic = `${RUN} unique receipt-matched topic phrase`;
+    await setMemberInterests('discord', helper, topic);
+    await setHelperAvailability('discord', helper, true);
+
+    const findTool = findHelperHandler({ userId: requester }, stubAdapter([]));
+    const result = await findTool.handler({ topic });
+    assert.equal(result.isError, false);
+
+    const rows = await listOwnFindHelperRequests('discord', requester, 10);
+    assert.equal(rows.length, 1, 'exactly one row is written for a real matched ask');
+    assert.equal(rows[0]?.matched, true);
+    assert.equal(rows[0]?.topic, topic);
+
+    await pool.query(`DELETE FROM member_interests WHERE platform = 'discord' AND user_id = $1`, [helper]);
+    await pool.query(`DELETE FROM helper_notifications WHERE helper_user_id = $1`, [helper]);
+  },
+);
+
+test(
+  'find_helper writes exactly one find_helper_requests row with matched=false on a real noMatch ask (issue #1313 acceptance criterion 3)',
+  { skip },
+  async () => {
+    const requester = `${RUN}-find-helper-receipt-nomatch-requester`;
+    const topic = `${RUN} unique receipt-nomatch topic phrase`;
+
+    const findTool = findHelperHandler({ userId: requester }, stubAdapter([]));
+    const result = await findTool.handler({ topic });
+    assert.equal(result.isError, false);
+    assert.match(result.content[0]?.text ?? '', /no one available/i);
+
+    const rows = await listOwnFindHelperRequests('discord', requester, 10);
+    assert.equal(rows.length, 1, 'exactly one row is written for a real noMatch ask');
+    assert.equal(rows[0]?.matched, false);
+    assert.equal(rows[0]?.topic, topic);
+  },
+);

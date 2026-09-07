@@ -3,6 +3,7 @@ import { config } from '@swampratnz/agent-base/config.js';
 import { logger } from '@swampratnz/agent-base/logger.js';
 import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 import { buildAdminDigestForAdmin } from './adminDigest.js';
+import { listOwnFindHelperRequests } from './storage/findHelperRequests.js';
 import { getWithdrawnSuggestionIds } from './storage/suggestionWithdrawals.js';
 import {
   areKnowledgeEntriesLowRated,
@@ -293,14 +294,16 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
     whatsapp: async (text, msg, role, deps) => {
       if (!/^!mysubmissions$/i.test(text)) return TEXT_COMMAND_UNMATCHED;
       if (!atLeast(role, 'member')) return null;
-      const [suggestions, reports, appeals, knowledgeTips, connectionRequests, language] = await Promise.all([
-        listOwnSuggestions(msg.platform, msg.userId, 10),
-        listOwnReports(msg.platform, msg.userId, 10),
-        listOwnAppeals(msg.platform, msg.userId, 10),
-        listOwnKnowledgeCandidates(msg.platform, msg.userId, 10),
-        listOwnProjectConnectionRequests(msg.platform, msg.userId, 10),
-        deps.getLangPref(msg.platform, msg.userId),
-      ]);
+      const [suggestions, reports, appeals, knowledgeTips, connectionRequests, findHelperRequests, language] =
+        await Promise.all([
+          listOwnSuggestions(msg.platform, msg.userId, 10),
+          listOwnReports(msg.platform, msg.userId, 10),
+          listOwnAppeals(msg.platform, msg.userId, 10),
+          listOwnKnowledgeCandidates(msg.platform, msg.userId, 10),
+          listOwnProjectConnectionRequests(msg.platform, msg.userId, 10),
+          listOwnFindHelperRequests(msg.platform, msg.userId, 10),
+          deps.getLangPref(msg.platform, msg.userId),
+        ]);
       // withdraw_suggestion consult (issue #1243) — matches the
       // my_submissions tool handler's own empty-input short-circuit
       // (selfService.ts) so a withdrawn suggestion never renders the stale
@@ -317,6 +320,12 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
         connectionRequests,
         language,
         withdrawnSuggestionIds,
+        // No appeal-withdrawal consult here (pre-existing gap, unrelated to
+        // issue #1313) — passing the same empty default formatMySubmissionsText
+        // itself uses keeps this positional call correct now findHelperRequests
+        // follows it.
+        new Set<number>(),
+        findHelperRequests,
       );
     },
   },

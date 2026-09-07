@@ -47,6 +47,7 @@ import {
   untrusted,
 } from './helpers.js';
 import { notifyInterestsRemoved, notifyProjectRemoved } from './notify.js';
+import { recordFindHelperRequest } from '../../storage/findHelperRequests.js';
 import { notice } from '../../strings/notices.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
@@ -670,6 +671,10 @@ export const socialTools = [
           logger.warn({ err, userId: hashId(candidate.userId) }, 'find_helper DM failed');
         });
         const language = await getLanguagePreference(caller.platform, caller.userId);
+        // Issue #1313: log this real ask for the caller's own my_submissions
+        // receipt — never the matched candidate's identity, preserving
+        // find_helper's non-disclosure guarantee above.
+        await recordFindHelperRequest(caller.platform, caller.userId, args.topic, true);
         return text(formatFindHelperText('matched', FIND_HELPER_REQUESTER_DAILY_LIMIT, language));
       }
       // Issue #1178: no live person matched — before giving up, check
@@ -691,6 +696,9 @@ export const socialTools = [
         .slice(0, FIND_HELPER_PROJECT_SUGGESTION_LIMIT);
       const suggestionBlock = suggestions.length > 0 ? await formatProjectResults(suggestions) : undefined;
       const language = await getLanguagePreference(caller.platform, caller.userId);
+      // Issue #1313: log this real ask (no live match) for the caller's own
+      // my_submissions receipt — see the matched branch's identical call above.
+      await recordFindHelperRequest(caller.platform, caller.userId, args.topic, false);
       return text(
         formatFindHelperText('noMatch', FIND_HELPER_REQUESTER_DAILY_LIMIT, language, suggestionBlock),
       );

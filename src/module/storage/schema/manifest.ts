@@ -29,6 +29,7 @@ export const COMMUNITY_SCHEMA_FRAGMENTS = [
   '81-access-request-resolutions.sql',
   '82-suggestion-withdrawals.sql',
   '83-appeal-withdrawals.sql',
+  '84-find-helper-requests.sql',
 ] as const;
 
 const schemaDir = dirname(fileURLToPath(import.meta.url));

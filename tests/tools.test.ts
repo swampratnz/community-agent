@@ -257,6 +257,8 @@ const { recordSuggestionWithdrawal, getWithdrawnSuggestionIds } =
   await import('../src/module/storage/suggestionWithdrawals.js');
 const { recordAppealWithdrawal, getWithdrawnAppealIds } =
   await import('../src/module/storage/appealWithdrawals.js');
+const { recordFindHelperRequest, listOwnFindHelperRequests } =
+  await import('../src/module/storage/findHelperRequests.js');
 const { buildMemberDigestContent } = await import('../src/module/memberDigest.js');
 const { formatMyDataText, formatMySubmissionsText, formatMyWarningsText } =
   await import('../src/module/agent/tools/selfService.js');
@@ -35141,6 +35143,128 @@ test(
 
     await pool.query(`DELETE FROM project_connection_requests WHERE requester_user_id = $1`, [otherUser]);
     await pool.query(`DELETE FROM member_projects WHERE id = ANY($1)`, [[ownProject.id, otherProject.id]]);
+  },
+);
+
+// find_helper's own-request receipt (issue #1313), the last of the
+// rate-capped member-writes to get one — mirrors the connection-requests
+// section tests above. Seeded directly via recordFindHelperRequest rather
+// than driving find_helper's own matching logic (already covered end-to-end
+// by tests/findHelperTools.test.ts), so these tests exercise only the
+// my_submissions render, not find_helper's matching.
+test(
+  'my_submissions lists the caller\'s own find_helper asks in a "Your help requests:" section — topic, ' +
+    'matched/no-match outcome, and relative age, with no status beyond that outcome (issue #1313)',
+  { skip },
+  async () => {
+    const userId = `${MY_SUBMISSIONS_HANDLER_USER}-findhelper`;
+    await recordFindHelperRequest('whatsapp', userId, 'need help with pgvector tuning', true);
+    await recordFindHelperRequest('whatsapp', userId, 'looking for a Discord bot mentor', false);
+
+    const result = await mySubmissionsHandler(userId).handler();
+    const output = result.content[0]?.text ?? '';
+
+    assert.equal(result.isError, false);
+    assert.match(output, /Your help requests:/);
+    assert.match(
+      output,
+      /- #\d+ — "need help with pgvector tuning" — matched — filed [^\n]+$/m,
+      'a matched ask renders its topic and the matched outcome',
+    );
+    assert.match(
+      output,
+      /- #\d+ — "looking for a Discord bot mentor" — no match — filed [^\n]+$/m,
+      'a no-match ask renders its topic and the no-match outcome',
+    );
+
+    await pool.query(`DELETE FROM find_helper_requests WHERE requester_user_id = $1`, [userId]);
+  },
+);
+
+test(
+  'my_submissions omits the "Your help requests:" block when the caller has made none, leaving the rest of the rendering unchanged (issue #1313)',
+  { skip },
+  async () => {
+    const userId = `${MY_SUBMISSIONS_HANDLER_USER}-no-findhelper`;
+    const suggestion = await createSuggestion({
+      platform: 'whatsapp',
+      userId,
+      content: 'add dark mode six',
+    });
+    assert.ok(suggestion, 'fixture recorded');
+
+    const result = await mySubmissionsHandler(userId).handler();
+    const output = result.content[0]?.text ?? '';
+
+    assert.equal(result.isError, false);
+    assert.match(output, new RegExp(`#${suggestion.id}.*\\[new\\].*add dark mode six`));
+    assert.doesNotMatch(
+      output,
+      /Your help requests:/,
+      'no find_helper asks made, so no section header at all',
+    );
+  },
+);
+
+test(
+  "SECURITY: my_submissions' find_helper receipt never contains a matched helper's identity or handle — only " +
+    "the caller's own topic and the matched/no-match outcome, preserving find_helper's non-disclosure " +
+    'guarantee (issue #1313 acceptance criterion 5)',
+  { skip },
+  async () => {
+    const userId = `${MY_SUBMISSIONS_HANDLER_USER}-findhelper-nondisclosure`;
+    const helperHandle = `${MY_SUBMISSIONS_HANDLER_USER}-findhelper-nondisclosure-helper-id`;
+    await recordFindHelperRequest('whatsapp', userId, 'a very unique non-disclosure topic phrase', true);
+
+    const rows = await listOwnFindHelperRequests('whatsapp', userId, 10);
+    assert.equal(rows.length, 1);
+    assert.doesNotMatch(
+      JSON.stringify(rows),
+      new RegExp(helperHandle),
+      'SECURITY: listOwnFindHelperRequests never returns a matched candidate identity',
+    );
+
+    const result = await mySubmissionsHandler(userId).handler();
+    const output = result.content[0]?.text ?? '';
+    assert.doesNotMatch(
+      output,
+      new RegExp(helperHandle),
+      "SECURITY: the rendered receipt never contains a matched helper's identity",
+    );
+
+    await pool.query(`DELETE FROM find_helper_requests WHERE requester_user_id = $1`, [userId]);
+  },
+);
+
+test(
+  'formatMySubmissionsText renders a te reo Māori heading and outcome labels for the find_helper receipt ' +
+    'section, byte-identical English for "en"/"auto" (issue #1313 acceptance criterion 4)',
+  () => {
+    const findHelperRequests = [
+      { id: 1, topic: 'matched topic', matched: true, createdAt: new Date('2026-08-01T00:00:00Z') },
+      { id: 2, topic: 'unmatched topic', matched: false, createdAt: new Date('2026-08-01T00:00:00Z') },
+    ];
+    const en = formatMySubmissionsText([], [], [], [], [], 'en', undefined, undefined, findHelperRequests);
+    const auto = formatMySubmissionsText(
+      [],
+      [],
+      [],
+      [],
+      [],
+      'auto',
+      undefined,
+      undefined,
+      findHelperRequests,
+    );
+    const mi = formatMySubmissionsText([], [], [], [], [], 'mi', undefined, undefined, findHelperRequests);
+
+    assert.equal(auto, en, 'the "auto" render must be byte-identical to "en"');
+    assert.match(en, /Your help requests:/);
+    assert.match(en, /- #1 — "matched topic" — matched — filed/);
+    assert.match(en, /- #2 — "unmatched topic" — no match — filed/);
+    assert.match(mi, /Āu tono āwhina:/);
+    assert.match(mi, /- #1 — "matched topic" — i kitea he tāngata — i tukuna/);
+    assert.match(mi, /- #2 — "unmatched topic" — kāore i kitea — i tukuna/);
   },
 );
 

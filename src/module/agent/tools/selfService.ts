@@ -14,6 +14,7 @@ import {
   type LanguagePreference,
 } from '@swampratnz/agent-base/storage/repository.js';
 import { getWithdrawnAppealIds } from '../../storage/appealWithdrawals.js';
+import { listOwnFindHelperRequests } from '../../storage/findHelperRequests.js';
 import { getWithdrawnSuggestionIds } from '../../storage/suggestionWithdrawals.js';
 import { formatRelativeAge, PROJECT_NOTE_RETENTION_NOTICE, text, truncateForEcho } from './helpers.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
@@ -77,6 +78,12 @@ export function formatMyWarningsText(
  * `/mysubmissions`/`!mysubmissions` commands, and every pre-#1243/#1278
  * test) renders byte-identically without passing them; only the
  * `my_submissions` tool handler below passes populated ones.
+ *
+ * `findHelperRequests` (issue #1313) is the last of the rate-capped
+ * member-writes to get a receipt here — a plain RECEIPT like
+ * `connectionRequests`, never the matched candidate's identity (find_helper's
+ * non-disclosure guarantee), so each row shows only the caller's own topic
+ * and whether a match was found.
  */
 export function formatMySubmissionsText(
   suggestions: Awaited<ReturnType<typeof listOwnSuggestions>>,
@@ -87,6 +94,7 @@ export function formatMySubmissionsText(
   language: LanguagePreference,
   withdrawnSuggestionIds: ReadonlySet<number> = new Set(),
   withdrawnAppealIds: ReadonlySet<number> = new Set(),
+  findHelperRequests: Awaited<ReturnType<typeof listOwnFindHelperRequests>> = [],
 ): string {
   const mi = language === 'mi';
   if (
@@ -94,7 +102,8 @@ export function formatMySubmissionsText(
     reports.length === 0 &&
     appeals.length === 0 &&
     knowledgeTips.length === 0 &&
-    connectionRequests.length === 0
+    connectionRequests.length === 0 &&
+    findHelperRequests.length === 0
   ) {
     return mi
       ? 'Kāore anō koe kia tuku taunakitanga, pūrongo rānei.'
@@ -180,6 +189,21 @@ export function formatMySubmissionsText(
         mi
           ? `- #${c.id} — ${projectLabel} — i tukuna ${formatRelativeAge(c.createdAt)}`
           : `- #${c.id} — ${projectLabel} — filed ${formatRelativeAge(c.createdAt)}`,
+      );
+    }
+  }
+  if (findHelperRequests.length > 0) {
+    if (lines.length > 0) lines.push('');
+    lines.push(mi ? 'Āu tono āwhina:' : 'Your help requests:');
+    for (const h of findHelperRequests) {
+      // No status column exists here either (same receipt shape as
+      // connectionRequests above) — matched/no match is the only outcome
+      // find_helper's non-disclosure guarantee allows this receipt to show.
+      const outcome = h.matched ? (mi ? 'i kitea he tāngata' : 'matched') : mi ? 'kāore i kitea' : 'no match';
+      lines.push(
+        mi
+          ? `- #${h.id} — "${truncateForEcho(h.topic)}" — ${outcome} — i tukuna ${formatRelativeAge(h.createdAt)}`
+          : `- #${h.id} — "${truncateForEcho(h.topic)}" — ${outcome} — filed ${formatRelativeAge(h.createdAt)}`,
       );
     }
   }
@@ -273,32 +297,37 @@ export const selfServiceTools = [
     name: 'my_submissions',
     description:
       "List the caller's OWN previously-filed suggestions, content reports, moderation appeals, knowledge " +
-      'tips, and sent project-connection requests — id, a short content preview, current status, and when ' +
-      'each was filed. Use this when a member asks what happened to something they submitted earlier (e.g. ' +
-      '"what happened to my report?"). The connection-requests section is a plain RECEIPT (what you asked, ' +
-      "when) — request_project_connection has no accept/decline state, so there's no status to show, and a " +
-      'capped/refused attempt is never recorded so it never appears here either. Never returns another ' +
-      "member's content or the reviewing admin's identity — only the shared admin queue " +
-      '(list_suggestions/list_reports/list_appeals/list_knowledge_candidates) exposes that, and this tool ' +
-      'never reaches it.',
+      'tips, sent project-connection requests, and find_helper asks — id, a short content preview, current ' +
+      'status, and when each was filed. Use this when a member asks what happened to something they ' +
+      'submitted earlier (e.g. "what happened to my report?"). The connection-requests and help-requests ' +
+      'sections are plain RECEIPTS (what you asked, when) — request_project_connection/find_helper have no ' +
+      "accept/decline state, so there's no status to show beyond find_helper's own matched/no-match outcome, " +
+      'and a capped/refused attempt is never recorded so it never appears here either. Never returns another ' +
+      "member's content, the reviewing admin's identity, or (for help requests) the identity of anyone " +
+      'find_helper contacted — only the shared admin queue ' +
+      '(list_suggestions/list_reports/list_appeals/list_knowledge_candidates) exposes reviewer identity, and ' +
+      'this tool never reaches it.',
     minTier: 'member',
     readOnlyHint: false,
     schema: {},
     handler: async (_args, { caller }) => {
-      const [suggestions, reports, appeals, knowledgeTips, connectionRequests, language] = await Promise.all([
-        listOwnSuggestions(caller.platform, caller.userId, 10),
-        listOwnReports(caller.platform, caller.userId, 10),
-        listOwnAppeals(caller.platform, caller.userId, 10),
-        listOwnKnowledgeCandidates(caller.platform, caller.userId, 10),
-        listOwnProjectConnectionRequests(caller.platform, caller.userId, 10),
-        getLanguagePreference(caller.platform, caller.userId),
-      ]);
+      const [suggestions, reports, appeals, knowledgeTips, connectionRequests, findHelperRequests, language] =
+        await Promise.all([
+          listOwnSuggestions(caller.platform, caller.userId, 10),
+          listOwnReports(caller.platform, caller.userId, 10),
+          listOwnAppeals(caller.platform, caller.userId, 10),
+          listOwnKnowledgeCandidates(caller.platform, caller.userId, 10),
+          listOwnProjectConnectionRequests(caller.platform, caller.userId, 10),
+          listOwnFindHelperRequests(caller.platform, caller.userId, 10),
+          getLanguagePreference(caller.platform, caller.userId),
+        ]);
       const isEmpty =
         suggestions.length === 0 &&
         reports.length === 0 &&
         appeals.length === 0 &&
         knowledgeTips.length === 0 &&
-        connectionRequests.length === 0;
+        connectionRequests.length === 0 &&
+        findHelperRequests.length === 0;
       // withdraw_suggestion consult (issue #1243) — skipped entirely when
       // there are no suggestions to annotate, matching this function's own
       // empty-input short-circuit.
@@ -320,6 +349,7 @@ export const selfServiceTools = [
           language,
           withdrawnSuggestionIds,
           withdrawnAppealIds,
+          findHelperRequests,
         ),
         isEmpty,
       );

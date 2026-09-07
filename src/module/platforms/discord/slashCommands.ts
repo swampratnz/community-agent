@@ -4,6 +4,7 @@ import { logger } from '@swampratnz/agent-base/logger.js';
 import { resolveRole } from '@swampratnz/agent-base/auth/roles.js';
 import { atLeast, toolsForRole } from '@swampratnz/agent-base/auth/rbac.js';
 import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
+import { listOwnFindHelperRequests } from '../../storage/findHelperRequests.js';
 import { getCommunityGuidelines, getCommunityGuidelinesMi } from '../../storage/policies.js';
 import { getWithdrawnSuggestionIds } from '../../storage/suggestionWithdrawals.js';
 import { notice } from '../../strings/notices.js';
@@ -508,14 +509,16 @@ async function handleMySubmissions(
     await replyEphemeral(interaction, NOT_AUTHORIZED_TEXT, deps);
     return;
   }
-  const [suggestions, reports, appeals, knowledgeTips, connectionRequests, language] = await Promise.all([
-    listOwnSuggestions('discord', interaction.user.id, 10),
-    listOwnReports('discord', interaction.user.id, 10),
-    listOwnAppeals('discord', interaction.user.id, 10),
-    listOwnKnowledgeCandidates('discord', interaction.user.id, 10),
-    listOwnProjectConnectionRequests('discord', interaction.user.id, 10),
-    getLanguagePreference('discord', interaction.user.id),
-  ]);
+  const [suggestions, reports, appeals, knowledgeTips, connectionRequests, findHelperRequests, language] =
+    await Promise.all([
+      listOwnSuggestions('discord', interaction.user.id, 10),
+      listOwnReports('discord', interaction.user.id, 10),
+      listOwnAppeals('discord', interaction.user.id, 10),
+      listOwnKnowledgeCandidates('discord', interaction.user.id, 10),
+      listOwnProjectConnectionRequests('discord', interaction.user.id, 10),
+      listOwnFindHelperRequests('discord', interaction.user.id, 10),
+      getLanguagePreference('discord', interaction.user.id),
+    ]);
   // withdraw_suggestion consult (issue #1243) — matches the my_submissions
   // tool handler's own empty-input short-circuit (selfService.ts) so a
   // withdrawn suggestion never renders the stale "[new]" here either.
@@ -531,6 +534,11 @@ async function handleMySubmissions(
     connectionRequests,
     language,
     withdrawnSuggestionIds,
+    // No appeal-withdrawal consult here (pre-existing gap, unrelated to issue
+    // #1313) — passing the same empty default formatMySubmissionsText itself
+    // uses keeps this positional call correct now findHelperRequests follows.
+    new Set<number>(),
+    findHelperRequests,
   );
   recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
   await replyEphemeral(interaction, message, deps);
