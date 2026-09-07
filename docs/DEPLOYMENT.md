@@ -85,12 +85,15 @@ sudo -u community-agent bash -lc 'set -a; . ./.env; set +a; npm run migrate:prod
 
 ## 6. Link the WhatsApp number (one-time, interactive)
 ```bash
-sudo -u community-agent bash -lc 'set -a; . ./.env; set +a; npm run whatsapp:link'
+sudo -u community-agent bash -lc 'umask 077; set -a; . ./.env; set +a; npm run whatsapp:link'
+sudo -u community-agent chmod -R go-rwx whatsapp-auth
 ```
 A QR code prints in the terminal. On the dedicated phone:
 **WhatsApp → Settings → Linked Devices → Link a device → scan**.
 Wait for `WhatsApp connected`, then Ctrl-C. Credentials are saved in
-`whatsapp-auth/` and reused by the service.
+`whatsapp-auth/` and reused by the service. The `umask 077` makes the
+directory owner-only from creation; the `chmod` afterwards is a fixup in case
+anything was already created under a laxer umask.
 
 ## 6b. (Alternative) Configure the WhatsApp Cloud API instead of Baileys
 Skip step 6 and use the official, ToS-compliant Meta Cloud API instead:
