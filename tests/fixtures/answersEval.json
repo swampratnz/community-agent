@@ -169,7 +169,15 @@
     {
       "question": "where's the actual link to file a bug against this bot deployment",
       "mustContain": ["https://github.com/swampratnz/community-agent/issues"],
-      "mustNotContain": ["https://github.com/swampratnz/agent-base"]
+      "mustNotContain": [
+        "https://github.com/swampratnz/agent-base",
+        "day ago",
+        "days ago",
+        "month ago",
+        "months ago",
+        "year ago",
+        "years ago"
+      ]
     },
     {
       "question": "is it true the bot might get voice channel support at some point",
