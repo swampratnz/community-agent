@@ -13,6 +13,7 @@ import {
   rosterCounts,
 } from '@swampratnz/agent-base/storage/repository.js';
 import { platformArg, text, untrusted } from './helpers.js';
+import { ROSTER_STALE_ALERT_SCAN_LIMIT } from '../../rosterStaleAlert.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 export const rosterTools = [
@@ -132,14 +133,49 @@ export const rosterTools = [
         ),
       days: z.number().optional().describe("Window in days for 'recent'/'left' (default 7, max 90)"),
       limit: z.number().optional().describe('Max entries (default 50, max 200)'),
+      oldestFirst: z
+        .boolean()
+        .optional()
+        .describe(
+          'Order by leftAt ?? joinedAt ascending (earliest first) instead of the default most-recent-first ' +
+            'order — use this to find who has been waiting longest, e.g. the longest-waiting not_members ' +
+            'onboarding queue entry. Approximate for a large backlog: only scans the ' +
+            `${ROSTER_STALE_ALERT_SCAN_LIMIT} most recent rows before sorting, so if that many or more match, ` +
+            'the true oldest may fall outside what was scanned — the response says so explicitly when this happens.',
+        ),
     },
     handler: async (args, { caller }) => {
       assertAtLeast(caller.role, 'admin', 'list_roster');
       const filter = args.filter ?? 'recent';
-      const rows = await listRoster(caller.platform, filter, args.days ?? 7, args.limit ?? 50);
+      // oldestFirst: true takes exactly one bounded read (never a second
+      // call) and sorts/slices in JS — same shape as list_access_requests'
+      // oldestFirst (issue #1261). False/omitted stays byte-identical to
+      // before this field existed.
+      const scanned = args.oldestFirst
+        ? await listRoster(caller.platform, filter, args.days ?? 7, ROSTER_STALE_ALERT_SCAN_LIMIT)
+        : null;
+      const rows = scanned
+        ? [...scanned]
+            .sort((a, b) => (a.leftAt ?? a.joinedAt).getTime() - (b.leftAt ?? b.joinedAt).getTime())
+            .slice(0, args.limit ?? 50)
+        : await listRoster(caller.platform, filter, args.days ?? 7, args.limit ?? 50);
       const counts = await rosterCounts(caller.platform);
       const summary = `Roster: ${counts.total} present · ${counts.joinedThisWeek} joined this week · ${counts.leftThisWeek} left this week.`;
       if (rows.length === 0) return text(`${summary}\nNo entries match filter "${filter}".`);
+      // Truncation caveat (mirrors list_access_requests', issue #1261 review):
+      // `scanned` hitting exactly ROSTER_STALE_ALERT_SCAN_LIMIT means more
+      // rows may match than the single bounded scan could see, so the
+      // "oldest" rows below only ever come from the most recent
+      // ROSTER_STALE_ALERT_SCAN_LIMIT rows — the genuine oldest could be
+      // outside that window and missing here. Say so rather than silently
+      // reporting a mid-recent row as oldest.
+      const truncationCaveat =
+        scanned && scanned.length === ROSTER_STALE_ALERT_SCAN_LIMIT
+          ? ` ⚠️ oldestFirst caveat: ${ROSTER_STALE_ALERT_SCAN_LIMIT}+ rows match filter "${filter}", so only ` +
+            `the ${ROSTER_STALE_ALERT_SCAN_LIMIT} most recent ones were scanned before sorting — the true ` +
+            'oldest may not be shown above. Narrow the filter or resolve some onboarding entries to shrink ' +
+            'the backlog if this list looks incomplete.'
+          : '';
       return text(
         `${summary}\n` +
           untrusted(
@@ -152,7 +188,7 @@ export const rosterTools = [
                   `${r.rejoinedCount > 0 ? `, rejoined ${r.rejoinedCount}x` : ''}` +
                   `${r.isMember ? '' : ', NOT yet a member'}`,
               )
-              .join('\n'),
+              .join('\n') + truncationCaveat,
           ),
       );
     },

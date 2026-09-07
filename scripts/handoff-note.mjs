@@ -102,12 +102,47 @@ const CONTROL_TOKEN_PATTERNS = [
 ];
 
 /**
- * Strip C0 controls (except tab/newline), DEL, and the Unicode line/paragraph
- * separators. These render as nothing but can break line-oriented consumers —
- * every downstream reader here is line-oriented.
+ * Codepoint ranges stripped from a note before it goes anywhere. Each entry is
+ * `[start, end]` (inclusive), given as numeric code points rather than \u
+ * escapes or embedded literal characters — deliberately, so this file, whose
+ * entire purpose is stripping hidden/invisible Unicode, never has to carry the
+ * very characters it strips.
+ *
+ *  - 0x00-0x08, 0x0B, 0x0C, 0x0E-0x1F, 0x7F: C0 controls (except tab/newline)
+ *    and DEL. Render as nothing but can break line-oriented consumers — every
+ *    downstream reader here is line-oriented.
+ *  - 0x2028-0x2029: the Unicode line/paragraph separators, for the same
+ *    line-oriented reason.
+ *  - 0x200B-0x200F, 0x202A-0x202E, 0x2060-0x2069, 0xFEFF: the zero-width
+ *    formatting block (ZWSP..RLM, word joiner..PDI, BOM/ZWNBSP) and the
+ *    bidirectional-control block (LRE..RLO). These render as nothing either,
+ *    but can visually reorder or hide the surrounding text (e.g. an RLO
+ *    override) without changing what an LLM reader sees, since codepoints are
+ *    read in logical order regardless of bidi rendering — a spoofing
+ *    technique flagged against this exact channel (#1291).
+ *
+ * Ordinary Unicode, including macrons (Maori, whanau), is untouched: only
+ * these narrow, named blocks are stripped.
  */
-// eslint-disable-next-line no-control-regex
-const CONTROL_CHARS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u2028\u2029]/g;
+const STRIPPED_CODEPOINT_RANGES = [
+  [0x00, 0x08],
+  [0x0b, 0x0b],
+  [0x0c, 0x0c],
+  [0x0e, 0x1f],
+  [0x7f, 0x7f],
+  [0x2028, 0x2029],
+  [0x200b, 0x200f],
+  [0x202a, 0x202e],
+  [0x2060, 0x2069],
+  [0xfeff, 0xfeff],
+];
+
+const CONTROL_CHARS = new RegExp(
+  `[${STRIPPED_CODEPOINT_RANGES.map(([start, end]) =>
+    start === end ? String.fromCharCode(start) : `${String.fromCharCode(start)}-${String.fromCharCode(end)}`,
+  ).join('')}]`,
+  'g',
+);
 
 /**
  * The one sanitiser, applied on the way IN (render) and again on the way OUT
