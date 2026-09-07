@@ -28,6 +28,12 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-09-08
 
 ### Fixed
+- **An admin can no longer kick, ban, or timeout another admin (or a super
+  admin) on Discord with just their own CONFIRM reply.** (#1323) `block_user`
+  already refused to target an admin or super admin; `kick_user`, `ban_user`,
+  and `timeout_user` — the three other destructive, person-targeting actions
+  in the same tool — had no such check. Those three now refuse the same way
+  block_user does.
 - **`knowledge_for_me` now warns you the same way every other knowledge
   surface does.** (#1321) `knowledge_search`, `most_helpful_knowledge`, and
   both the `/kb`/`!kb` shortcuts already flag a community-rated-unhelpful

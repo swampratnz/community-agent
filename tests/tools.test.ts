@@ -10489,7 +10489,11 @@ test(
     });
 
     const deleteAdapter = moderateAdapter({ platform: 'discord', capabilities: ['delete_message'] });
-    const deleteHandler = moderateHandler({ platform: 'discord', conversationId: conv, adapter: deleteAdapter });
+    const deleteHandler = moderateHandler({
+      platform: 'discord',
+      conversationId: conv,
+      adapter: deleteAdapter,
+    });
     const deleteResult = await deleteHandler.handler({
       action: 'delete_message',
       targetUserId: targetAdmin,

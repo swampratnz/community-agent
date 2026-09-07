@@ -129,10 +129,7 @@ export const moderationTools = [
           args.action === 'timeout_user') &&
         atLeast(await resolveRole(caller.platform, args.targetUserId), 'admin')
       ) {
-        return text(
-          `Refusing: cannot ${args.action.replace('_user', '')} an admin or super admin.`,
-          true,
-        );
+        return text(`Refusing: cannot ${args.action.replace('_user', '')} an admin or super admin.`, true);
       }
       // unblock_user admits via isUserBlocked as an ALTERNATE path to
       // isKnownUser: purge_user_data/forget_me hard-deletes the target's
