@@ -49,6 +49,7 @@ const { runAgentTurn } = await import('@swampratnz/agent-base/agent/core.js');
 type CallerContextType = import('@swampratnz/agent-base/auth/rbac.js').CallerContext;
 type PlatformAdapterType = import('@swampratnz/agent-base/platforms/types.js').PlatformAdapter;
 type OutgoingMessageType = import('@swampratnz/agent-base/platforms/types.js').OutgoingMessage;
+type KnowledgeCreatedByRole = Parameters<typeof saveKnowledge>[0]['createdByRole'];
 
 interface FixtureCase {
   question: string;
@@ -59,6 +60,9 @@ interface FixtureCase {
 interface FixtureKnowledgeEntry {
   title: string;
   content: string;
+  sourceUrl?: string;
+  sourceTitle?: string;
+  createdByRole?: KnowledgeCreatedByRole;
 }
 
 interface Fixture {
@@ -120,7 +124,14 @@ interface CaseResult {
 
 async function main(): Promise<number> {
   for (const entry of fixture.knowledgeEntries) {
-    await saveKnowledge({ title: entry.title, content: entry.content, scope: EVAL_SCOPE });
+    await saveKnowledge({
+      title: entry.title,
+      content: entry.content,
+      scope: EVAL_SCOPE,
+      sourceUrl: entry.sourceUrl,
+      sourceTitle: entry.sourceTitle,
+      createdByRole: entry.createdByRole,
+    });
   }
 
   const results: CaseResult[] = [];
