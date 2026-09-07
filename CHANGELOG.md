@@ -124,6 +124,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   notes had silently gone empty. No new data is collected or retained — this
   is the same best-effort DM pattern the bot already uses for approvals and
   other admin actions.
+- **When Anthropic has a status incident, the whole community can now hear
+  about it, not just super admins.** (#1251) A status change was already
+  DMed to super admins only; if the member digest channel is configured and
+  enabled, that same message — word for word, nothing added — now also
+  posts there, so a member asking "is Claude down?" mid-incident gets an
+  answer without needing to know `check_status` exists. Deployments that
+  haven't set up the member digest channel, or have it switched off, see no
+  change at all.
 - **`project_remove_member` can now tell a removed member why.** (#1253) An
   admin can pass an optional one-line reason (e.g. the project wound down, or
   the member became inactive) that's appended to the removal DM #1241 already
