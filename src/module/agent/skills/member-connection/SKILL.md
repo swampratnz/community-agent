@@ -20,6 +20,13 @@ description: Coach set_my_interests/who_is_into/set_helper_availability/find_hel
   self-match path ("find people like me") — both need the caller's own
   published interests row to work from. Mention this as guidance before the
   member hits it as a bounce, not after.
+- **Point to `knowledge_for_me` after publishing.** Once a member has
+  published interests via `set_my_interests`, mention that `knowledge_for_me`
+  can search the community knowledge base using that same published text —
+  so the member never has to separately think up search terms. Same
+  prerequisite as above (`set_my_interests` first), and it searches only the
+  caller's own published interests, never another member's — the same
+  self-scoping this skill already uses for `who_is_into`/`find_helper`.
 - **Set honest expectations for `find_helper`.** It sends **at most one
   direct message, to a single best match**, only to members who opted in via
   `set_helper_availability(true)`, and the requester never learns who (if
