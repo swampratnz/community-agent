@@ -6362,8 +6362,9 @@ test('community_info reply stays concise, not a wall of text (issue #92)', async
   // #1070's most_helpful_knowledge line, and again for issue #1243's
   // withdraw_suggestion clause (folded into the existing suggest_improvement
   // line, not a new one), and again for issue #1278's withdraw_appeal clause
-  // (folded into the existing appeal_moderation line, not a new one).
-  assert.ok(replyText.length < 2310, `reply should stay short; was ${replyText.length} chars`);
+  // (folded into the existing appeal_moderation line, not a new one), and
+  // again for issue #1287's knowledge_for_me line.
+  assert.ok(replyText.length < 2440, `reply should stay short; was ${replyText.length} chars`);
 });
 
 test('community_info appends the full ADMIN_CAPABILITIES_TEXT rundown for admin/super_admin callers, on top of the member content (issue #367)', async () => {
@@ -6462,6 +6463,7 @@ const MEMBER_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__community_guidelines', /guideline|rule/i],
   ['mcp__community__check_status', /known Anthropic outage/i],
   ['mcp__community__knowledge_search', /knowledge/i],
+  ['mcp__community__knowledge_for_me', /published interests as the query/i],
   ['mcp__community__list_knowledge_topics', /browse the topics/i],
   ['mcp__community__most_helpful_knowledge', /most relied on/i],
   ['mcp__community__remember_search', /past messages|remember/i],
@@ -6551,6 +6553,8 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
     '- Answer questions from curated community knowledge — just ask\n' +
     '- Browse the topics our knowledge base covers, if you\'re not sure what to ask ("what do you know about?")\n' +
     '- Ask what\'s most relied on in our knowledge base ("what does the community find most useful?")\n' +
+    "- Search our knowledge base using your own published interests as the query, once you've set " +
+    'them ("find things related to what I\'m into")\n' +
     '- Search back through your own past messages for something said earlier\n' +
     "- Check what I've stored about you, your active warnings, or your filed suggestions/reports\n" +
     '- Catch you up on recent activity in this conversation ("what did I miss?")\n' +
@@ -6589,7 +6593,7 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
       'the suggest_knowledge line, issue #927 added the project_note/project_recall/project_list line, ' +
       'issue #1070 added the most_helpful_knowledge line, issue #1243 added the withdraw_suggestion clause ' +
       'to the suggest_improvement line, issue #1278 added the withdraw_appeal clause to the ' +
-      'appeal_moderation line; otherwise unchanged since #367)',
+      'appeal_moderation line, issue #1287 added the knowledge_for_me line; otherwise unchanged since #367)',
   );
 });
 
@@ -6761,8 +6765,10 @@ test('community_info: admin reply stays under a hard char cap, not a wall of tex
   // more for issue #1230's remove_interests clause (same moderation bullet
   // again, not a new bullet); bumped once more alongside the member cap for
   // issue #1278's withdraw_appeal clause (the admin reply includes the full
-  // member segment, so a member-segment addition grows this reply too).
-  assert.ok(adminReply.length < 4880, `admin reply should stay short; was ${adminReply.length} chars`);
+  // member segment, so a member-segment addition grows this reply too);
+  // bumped once more alongside the member cap for issue #1287's
+  // knowledge_for_me line (same reason).
+  assert.ok(adminReply.length < 4990, `admin reply should stay short; was ${adminReply.length} chars`);
 });
 
 test('SECURITY: community_info member-tier and guest-tier replies never name an admin/super_admin-only tool or contain any ADMIN_CAPABILITIES_TEXT-unique line (issue #367, issue #311)', async () => {
@@ -6911,9 +6917,11 @@ test('community_info: super_admin reply stays under a hard char cap, not a wall 
   // check_knowledge_source clause; bumped once more alongside the admin cap
   // for issue #1230's remove_interests clause; bumped once more alongside
   // the member cap for issue #1243's withdraw_suggestion clause; bumped once
-  // more alongside the member cap for issue #1278's withdraw_appeal clause.
+  // more alongside the member cap for issue #1278's withdraw_appeal clause;
+  // bumped once more alongside the member cap for issue #1287's
+  // knowledge_for_me line.
   assert.ok(
-    superAdminReply.length < 5530,
+    superAdminReply.length < 5640,
     `super_admin reply should stay short; was ${superAdminReply.length} chars`,
   );
 });

@@ -561,6 +561,8 @@ const NOTICE_ENTRIES = {
       '- Answer questions from curated community knowledge — just ask\n' +
       '- Browse the topics our knowledge base covers, if you\'re not sure what to ask ("what do you know about?")\n' +
       '- Ask what\'s most relied on in our knowledge base ("what does the community find most useful?")\n' +
+      "- Search our knowledge base using your own published interests as the query, once you've set " +
+      'them ("find things related to what I\'m into")\n' +
       '- Search back through your own past messages for something said earlier\n' +
       "- Check what I've stored about you, your active warnings, or your filed suggestions/reports\n" +
       '- Catch you up on recent activity in this conversation ("what did I miss?")\n' +
@@ -600,6 +602,8 @@ const NOTICE_ENTRIES = {
         'te pātai ("what do you know about?")\n' +
         '- Pātai he aha kei roto i tō mātou pātengi mōhiotanga e tino whakamahia ana e te hapori ("what does ' +
         'the community find most useful?")\n' +
+        '- Rapu i tō mātou pātengi mōhiotanga mā ō hiahia kua whakaputaina hei kupu rapu, ina kua ' +
+        'whakaritea kētia e koe ("find things related to what I\'m into")\n' +
         '- Rapu whakamuri i āu karere o mua mō tētahi mea i kīa i mua\n' +
         '- Tirohia he aha kua rongoātia e ahau mōu, ō whakatūpato e mahi tonu ana, ō tono/pūrongo rānei kua ' +
         'tukuna\n' +
