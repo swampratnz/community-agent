@@ -227,11 +227,14 @@ export const knowledgeMemberTools = [
   // knowledge_search makes — and rendered through the existing
   // formatKnowledgeSearchResults, unchanged. Deliberately the SMALLEST
   // viable composition: unlike knowledge_search's own handler above, this
-  // adds no conflict badge, no low-rated caveat, no lexical fallback, no
-  // gap/stale turn-state writes, and no retrieval-count bump — none of
-  // knowledge_search's supplementary lookups are "new" scope this proposal
-  // was approved to add (see the issue's explicit "no new caveat logic, no
-  // new citation formatting" acceptance criterion).
+  // adds no lexical fallback and no gap/stale turn-state writes or
+  // retrieval-count bump — those remain deliberately out of scope (#1287).
+  // The low-rated/conflict caveats below are NOT new scope, though: #1287's
+  // own acceptance criterion #1 promised them via reuse of
+  // formatKnowledgeSearchResults, and issue #1321 closes the gap between
+  // that promise and the bare call this handler used to make. Gating and
+  // fail-safe behaviour mirror knowledge_search's identical lookups above in
+  // this same file exactly.
   defineTool({
     name: 'knowledge_for_me',
     description:
@@ -268,7 +271,35 @@ export const knowledgeMemberTools = [
         platform: caller.platform,
         conversationId: caller.conversationId,
       });
-      return text(formatKnowledgeSearchResults(hits));
+      const relevantIds = hits
+        .filter((h) => h.similarity >= KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD)
+        .map((h) => h.id);
+      const hasConflict =
+        relevantIds.length >= 2
+          ? await hasConflictAmongIds(relevantIds).catch((err) => {
+              logger.warn({ err }, 'Knowledge conflict check failed; omitting the conflict note');
+              return false;
+            })
+          : false;
+      const lowRatedIds =
+        config.behaviour.knowledgeLowRatedCaveatMinUnhelpful > 0 && relevantIds.length > 0
+          ? await areKnowledgeEntriesLowRated(
+              relevantIds,
+              config.behaviour.knowledgeLowRatedCaveatMinUnhelpful,
+            ).catch((err) => {
+              logger.warn({ err }, 'Knowledge low-rated caveat lookup failed; omitting the caveat');
+              return new Set<number>();
+            })
+          : new Set<number>();
+      return text(
+        formatKnowledgeSearchResults(
+          hits,
+          config.adminDigest.knowledgeStaleDays,
+          config.adminDigest.knowledgeStaleMaxAgeDays,
+          hasConflict,
+          lowRatedIds,
+        ),
+      );
     },
   }),
 
