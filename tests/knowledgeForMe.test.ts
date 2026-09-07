@@ -41,7 +41,8 @@ const { embed } = await import('@swampratnz/agent-base/storage/embeddings.js');
 const { config } = await import('@swampratnz/agent-base/config.js');
 const { notice } = await import('../src/module/strings/notices.js');
 const { COMMUNITY_TURN_STATE_FINALIZER } = await import('../src/module/agent/communityTurnState.js');
-const { setMemberInterests, recordInteraction } = await import('@swampratnz/agent-base/storage/repository.js');
+const { setMemberInterests, recordInteraction } =
+  await import('@swampratnz/agent-base/storage/repository.js');
 const pgvector = (await import('pgvector/pg')).default;
 
 if (hasDb) await embed('warmup').catch(() => {});
@@ -739,7 +740,7 @@ test(
 
 test(
   'knowledge_for_me writes the top-scoring qualifying hit id into turnState.lastKnowledgeHitId, and ' +
-    "COMMUNITY_TURN_STATE_FINALIZER then surfaces it as knowledgeEntryId (issue #1325 acceptance criteria 1, 3)",
+    'COMMUNITY_TURN_STATE_FINALIZER then surfaces it as knowledgeEntryId (issue #1325 acceptance criteria 1, 3)',
   { skip },
   async () => {
     const scope = `${RUN}-attribution-stamp`;
@@ -826,7 +827,12 @@ test(
     const anchorVec = await embed(interests);
     const { rows } = await pool.query(
       `INSERT INTO knowledge (scope, title, content, embedding) VALUES ($1,$2,$3,$4) RETURNING id`,
-      [`${RUN}-no-turnstate`, `No turnstate entry ${RUN}`, 'NO_TURNSTATE_FOR_ME_TEXT', pgvector.toSql(anchorVec)],
+      [
+        `${RUN}-no-turnstate`,
+        `No turnstate entry ${RUN}`,
+        'NO_TURNSTATE_FOR_ME_TEXT',
+        pgvector.toSql(anchorVec),
+      ],
     );
     const id = Number(rows[0].id);
 
@@ -861,7 +867,12 @@ test(
     const anchorVec = await embed(interests);
     const { rows } = await pool.query(
       `INSERT INTO knowledge (scope, title, content, embedding) VALUES ($1,$2,$3,$4) RETURNING id`,
-      [scope, `Attribution security entry ${RUN}`, 'ATTRIBUTION_SECURITY_FOR_ME_TEXT', pgvector.toSql(anchorVec)],
+      [
+        scope,
+        `Attribution security entry ${RUN}`,
+        'ATTRIBUTION_SECURITY_FOR_ME_TEXT',
+        pgvector.toSql(anchorVec),
+      ],
     );
     const id = Number(rows[0].id);
 
@@ -875,7 +886,11 @@ test(
     };
     const turnState: { lastKnowledgeHitId: number | null } = { lastKnowledgeHitId: null };
     await getKnowledgeForMeHandler(caller, turnState).handler({});
-    assert.equal(turnState.lastKnowledgeHitId, id, 'precondition: the call must have stamped the served entry id');
+    assert.equal(
+      turnState.lastKnowledgeHitId,
+      id,
+      'precondition: the call must have stamped the served entry id',
+    );
 
     // Simulates what the router's outbound-recording stamp (issue #411) does
     // with the finalizer's output — the exact meta shape
