@@ -187,6 +187,42 @@ test('SECURITY: control characters are stripped from a note', () => {
   assert.match(out, /before \[31mafter still one line/);
 });
 
+test('SECURITY: a right-to-left override cannot ride through the render/extract round trip', () => {
+  // U+202E (RLO) can make rendered text visually diverge from its underlying
+  // byte order — a spoofing technique flagged against this exact channel
+  // (#1291). Built from a numeric code point, not a \u escape or an embedded
+  // literal character, for the same reason the script itself avoids them.
+  const rlo = String.fromCharCode(0x202e);
+  const out = posted(`before ${rlo} after`);
+  assert.ok(!out.includes(rlo), 'RLO survived render()');
+
+  const extracted = run('extract', JSON.stringify([comment(out)]));
+  assert.ok(!extracted.includes(rlo), 'RLO survived the extract() side too');
+  assert.match(extracted, /before {2}after/);
+});
+
+test('SECURITY: zero-width space and BOM cannot ride through the render/extract round trip', () => {
+  const zwsp = String.fromCharCode(0x200b);
+  const bom = String.fromCharCode(0xfeff);
+  const out = posted(`before ${zwsp}mid${bom} after`);
+  assert.ok(!out.includes(zwsp), 'ZWSP survived render()');
+  assert.ok(!out.includes(bom), 'BOM survived render()');
+
+  const extracted = run('extract', JSON.stringify([comment(out)]));
+  assert.ok(!extracted.includes(zwsp), 'ZWSP survived the extract() side too');
+  assert.ok(!extracted.includes(bom), 'BOM survived the extract() side too');
+  assert.match(extracted, /before mid after/);
+});
+
+test('SECURITY: the bidi/zero-width strip is character-class-scoped, not a blunt non-ASCII strip', () => {
+  // Negative/scoping assertion: ordinary Unicode — including te reo macrons —
+  // must round-trip unchanged, proving the fix targets exactly the named
+  // formatting blocks and nothing wider.
+  const text = 'Kia ora te whānau — ngā mihi ki a koutou katoa, Māori and English both.';
+  const extracted = run('extract', JSON.stringify([comment(posted(text))]));
+  assert.equal(extracted, `| ${text}`);
+});
+
 test('SECURITY: instruction-shaped prose is preserved verbatim, not silently dropped', () => {
   // The deliberate design choice (see the script header): containment is
   // structural — quoting, bounding, framing — and NOT an attempt to detect
