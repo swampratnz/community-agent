@@ -71,6 +71,7 @@ await import('./support/registerToolRegistry.js');
 const {
   notifyMemberApproved,
   notifyAdminApproved,
+  notifyAdminRevoked,
   notifyAccessRequestDeclined,
   notifyProjectRemoved,
   notifyProjectMemberAdded,
@@ -1585,6 +1586,144 @@ test("SECURITY: notifyAdminApproved never consults the response-style lookup onc
   );
 
   assert.equal(respStyleCalls, 0);
+});
+
+// notifyAdminRevoked holds all of revoke_admin's new (issue #1317)
+// notification behaviour — the demotion-side mirror of notifyAdminApproved
+// above, the one role-change action in this family that stayed silent.
+test('notifyAdminRevoked sends exactly one demotion DM, and resolves true (issue #1317)', async () => {
+  const calls: Array<[string, string]> = [];
+  const adapter = stubAdapter(async (userId, message) => {
+    calls.push([userId, message]);
+  });
+
+  const delivered = await notifyAdminRevoked(adapter, 'user-1', 'discord');
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'user-1');
+  assert.match(calls[0][1], /no longer an admin/i);
+  assert.equal(delivered, true);
+});
+
+test('notifyAdminRevoked swallows a DM failure rather than throwing, and resolves false (issue #1317)', async () => {
+  const adapter = stubAdapter(async () => {
+    throw new Error('DMs closed');
+  });
+
+  const delivered = await notifyAdminRevoked(adapter, 'user-1', 'discord');
+
+  assert.equal(delivered, false);
+});
+
+test("notifyAdminRevoked sends the te reo Māori variant for a caller with a stored 'mi' preference (issue #1317)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAdminRevoked(adapter, 'user-1', 'discord', async () => 'mi');
+
+  assert.match(calls[0], /Kāore koe e noho kaiwhakahaere/);
+  assert.doesNotMatch(calls[0], /no longer an admin/);
+});
+
+test("notifyAdminRevoked sends the English default for the default 'auto' preference (issue #1317)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAdminRevoked(adapter, 'user-1', 'discord', async () => 'auto');
+
+  assert.match(calls[0], /no longer an admin/);
+});
+
+test("SECURITY: notifyAdminRevoked degrades to the English default, rather than throwing or dropping the DM, when the language-preference lookup fails (issue #52's invariant extended to issue #1317)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAdminRevoked(adapter, 'user-1', 'discord', async () => {
+    throw new Error('DB unreachable');
+  });
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /no longer an admin/);
+});
+
+test("notifyAdminRevoked sends the plain-language variant for a caller with a stored 'plain' response style (issue #1317)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAdminRevoked(
+    adapter,
+    'user-1',
+    'discord',
+    async () => 'auto',
+    async () => 'plain',
+  );
+
+  assert.match(calls[0], /Your admin tools are no longer available\./);
+});
+
+test("SECURITY: notifyAdminRevoked degrades to the English default, rather than throwing or dropping the DM, when the response-style lookup fails (issue #52's invariant extended to issue #1317)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAdminRevoked(
+    adapter,
+    'user-1',
+    'discord',
+    async () => 'auto',
+    async () => {
+      throw new Error('DB unreachable');
+    },
+  );
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /no longer an admin/);
+});
+
+test("SECURITY: notifyAdminRevoked never consults the response-style lookup once language has resolved to 'mi' (issue #1317)", async () => {
+  let respStyleCalls = 0;
+  const adapter = stubAdapter(async () => {});
+
+  await notifyAdminRevoked(
+    adapter,
+    'user-1',
+    'discord',
+    async () => 'mi',
+    async () => {
+      respStyleCalls += 1;
+      throw new Error('must never be reached when lang is mi');
+    },
+  );
+
+  assert.equal(respStyleCalls, 0);
+});
+
+test('SECURITY: notifyAdminRevoked queues via queueForWindowReopen at "low" priority on a WindowClosedError, rather than dropping the DM (issue #1317, #644 recovery extended)', async () => {
+  const queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }> = [];
+  const adapter: PlatformAdapter = {
+    ...stubAdapter(async () => {
+      throw new WindowClosedError('user-1');
+    }),
+    queueForWindowReopen(userId: string, message: string, priority: 'system' | 'low') {
+      queued.push({ userId, message, priority });
+    },
+  };
+
+  const delivered = await notifyAdminRevoked(adapter, 'user-1', 'discord');
+
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0]?.userId, 'user-1');
+  assert.equal(queued[0]?.priority, 'low');
+  assert.equal(delivered, true);
 });
 
 // notifyAccessRequestDeclined holds all of decline_access_request's new
@@ -13847,6 +13986,174 @@ test(
         `DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = ANY($1::text[])`,
         [[memberTargetId, adminTargetId]],
       );
+    }
+  },
+);
+
+// revoke_admin's reply now reflects demotion-DM delivery too (issue #1317),
+// the mirror-image fix for grant_admin's own #556 note above. Unlike
+// grant_admin, revoke_admin has no CONFIRM gate, so its handler executes and
+// returns the reply directly.
+test(
+  "revoke_admin's reply appends a fixed note iff the demotion DM failed, and is byte-identical to today otherwise (issue #1317)",
+  { skip },
+  async () => {
+    const targetUserId = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    let shouldFail = false;
+    const adapter = stubAdapter(async () => {
+      if (shouldFail) throw new Error('DMs closed');
+    });
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'super-1',
+      userName: 'SuperAdmin',
+      role: 'super_admin' as const,
+      conversationId: `convo-revoke-admin-dm-${targetUserId}`,
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['revoke_admin'];
+
+    try {
+      // 1. DM fails on a successful demotion: the note is appended.
+      await upsertMember({ platform: 'discord', userId: targetUserId, role: 'admin', addedBy: 'super-1' });
+      shouldFail = true;
+      const failedResult = await registeredTool.handler({ userId: targetUserId, platform: 'discord' });
+      assert.equal(
+        failedResult.content[0].text,
+        `${targetUserId} is now a member on discord. (Couldn't DM them about the demotion — they may not know yet.)`,
+      );
+
+      // 2. DM succeeds on a successful demotion: byte-identical to today, no note.
+      await upsertMember({ platform: 'discord', userId: targetUserId, role: 'admin', addedBy: 'super-1' });
+      shouldFail = false;
+      const succeededResult = await registeredTool.handler({ userId: targetUserId, platform: 'discord' });
+      assert.equal(succeededResult.content[0].text, `${targetUserId} is now a member on discord.`);
+    } finally {
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        targetUserId,
+      ]);
+    }
+  },
+);
+
+test(
+  'SECURITY: revoke_admin never calls notifyAdminRevoked on the isSuperAdmin refusal path or the "target is not currently an admin" failure path (issue #1317)',
+  { skip },
+  async () => {
+    const dmCalls: string[] = [];
+    const adapter = stubAdapter(async (userId) => {
+      dmCalls.push(userId);
+    });
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'super-1',
+      userName: 'SuperAdmin',
+      role: 'super_admin' as const,
+      conversationId: 'convo-revoke-admin-no-dm',
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          {
+            handler: (
+              args: object,
+            ) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+          }
+        >;
+      }
+    )._registeredTools['revoke_admin'];
+
+    // 1. isSuperAdmin refusal path: temporarily configure a discord snowflake
+    // as a super admin (same override pattern as discordAdapter.test.ts),
+    // since this file's fixed SUPER_ADMIN_WHATSAPP_NUMBERS ('super-1',
+    // 'super-2') aren't valid whatsapp-number-shaped ids and so can never
+    // reach this branch through resolveMemberTarget's own id validation.
+    const superSnowflake = '123456789012345678';
+    const wasSuperAdmins = config.rbac.superAdminDiscordIds;
+    config.rbac.superAdminDiscordIds = [superSnowflake];
+    let refusalResult: { content: Array<{ type: string; text: string }>; isError?: boolean };
+    try {
+      refusalResult = await registeredTool.handler({ userId: superSnowflake, platform: 'discord' });
+    } finally {
+      config.rbac.superAdminDiscordIds = wasSuperAdmins;
+    }
+    assert.equal(refusalResult.isError, true);
+    assert.match(refusalResult.content[0].text, /Refusing: super admins are configured/);
+
+    // 2. "not currently an admin" failure path: a member who was never promoted.
+    const notAdminUserId = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    try {
+      await upsertMember({ platform: 'discord', userId: notAdminUserId, role: 'member', addedBy: 'super-1' });
+      const failureResult = await registeredTool.handler({ userId: notAdminUserId, platform: 'discord' });
+      assert.equal(failureResult.isError, true);
+      assert.match(failureResult.content[0].text, /^Failed:/);
+
+      assert.equal(dmCalls.length, 0, 'no demotion DM was ever sent on either refusal/failure path');
+    } finally {
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        notAdminUserId,
+      ]);
+    }
+  },
+);
+
+test(
+  "SECURITY: a notifyAdminRevoked delivery failure never changes revoke_admin's reported success and never reverses the already-committed demoteAdmin write (issue #1317)",
+  { skip },
+  async () => {
+    const targetUserId = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    const adapter = stubAdapter(async () => {
+      throw new Error('DMs closed');
+    });
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'super-1',
+      userName: 'SuperAdmin',
+      role: 'super_admin' as const,
+      conversationId: `convo-revoke-admin-non-interference-${targetUserId}`,
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          {
+            handler: (
+              args: object,
+            ) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+          }
+        >;
+      }
+    )._registeredTools['revoke_admin'];
+
+    try {
+      await upsertMember({ platform: 'discord', userId: targetUserId, role: 'admin', addedBy: 'super-1' });
+      const result = await registeredTool.handler({ userId: targetUserId, platform: 'discord' });
+
+      assert.equal(
+        result.isError,
+        false,
+        'a failed demotion DM must never flip the reported outcome to an error',
+      );
+      assert.match(result.content[0].text, /^.+ is now a member on discord\./);
+      assert.equal(
+        await getMemberRole('discord', targetUserId),
+        'member',
+        'the demoteAdmin write must stay committed regardless of DM delivery',
+      );
+    } finally {
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        targetUserId,
+      ]);
     }
   },
 );

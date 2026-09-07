@@ -409,6 +409,52 @@ export async function notifyAdminApproved(
 }
 
 /**
+ * Best-effort demotion DM for `revoke_admin` (issue #1317) — the mirror-image
+ * of `notifyAdminApproved` above, the one role-change action in this family
+ * that stayed silent toward the person it changed. Same shape as
+ * `notifyAdminApproved`: a failed DM (closed DMs, WhatsApp 24h window, etc.)
+ * is logged and swallowed — the demotion itself is the source of truth,
+ * never blocked on this — and a `WindowClosedError` rejection is queued via
+ * `queueForWindowReopen` at `'low'` priority instead of logged-and-dropped,
+ * same #644/#888/#922/#998/#1040 parity every sibling in this file gets.
+ * Exported separately from the `revoke_admin` tool so it's unit-testable
+ * without the MCP tool-call transport. Honours the target's standing `'mi'`
+ * language preference and `'plain'` response style identically to
+ * `notifyAdminApproved` above.
+ *
+ * Returns `true`/`false` on the same terms as `notifyAdminApproved` above —
+ * `revoke_admin` uses this to tell the acting super admin the demotion DM
+ * didn't land.
+ */
+export async function notifyAdminRevoked(
+  adapter: PlatformAdapter,
+  userId: string,
+  platform: Platform,
+  getLangPref: typeof getLanguagePreference = getLanguagePreference,
+  getRespStyle: typeof getResponseStyle = getResponseStyle,
+): Promise<boolean> {
+  const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
+  const style: ResponseStyle | undefined =
+    lang === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
+  const message = notice('adminRevokedMessage', { language: lang, style });
+  return adapter
+    .sendDirectMessage(userId, message)
+    .then(() => true)
+    .catch((err) => {
+      if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+        adapter.queueForWindowReopen(userId, message, 'low');
+        logger.warn(
+          { userId, platform },
+          "Admin demotion DM: recipient's window is closed, queued for reopen",
+        );
+        return true;
+      }
+      logger.warn({ err, userId }, 'Admin demotion DM failed');
+      return false;
+    });
+}
+
+/**
  * Best-effort decline DM for `decline_access_request` (issue #1126) — the
  * last member of the review-queue decline family (`resolve_suggestion`,
  * `resolve_report`, `resolve_appeal`, `decline_knowledge_candidate`) that

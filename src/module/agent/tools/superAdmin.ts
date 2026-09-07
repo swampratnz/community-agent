@@ -35,7 +35,7 @@ import {
   resolveSanitizedLabel,
   text,
 } from './helpers.js';
-import { notifyAdminApproved } from './notify.js';
+import { notifyAdminApproved, notifyAdminRevoked } from './notify.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 /**
@@ -45,6 +45,13 @@ import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
  * since this is a promotion, not a fresh membership.
  */
 const ADMIN_DM_FAILED_NOTE = " (Couldn't DM them about the promotion — they may not know yet.)";
+
+/**
+ * Fixed, static note appended to `revoke_admin`'s reply when
+ * `notifyAdminRevoked` reports the demotion DM did not land (issue #1317) —
+ * the demotion-worded mirror of `ADMIN_DM_FAILED_NOTE` above.
+ */
+const ADMIN_REVOKE_DM_FAILED_NOTE = " (Couldn't DM them about the demotion — they may not know yet.)";
 
 /**
  * This deployment's systemd redeploy unit — community content (it names THIS
@@ -143,7 +150,7 @@ export const superAdminTools = [
     minTier: 'super_admin',
     readOnlyHint: false,
     schema: { userId: z.string().min(1).describe('Platform user id to demote'), platform: platformArg },
-    handler: async (args, { caller, audited, resolveMemberTarget }) => {
+    handler: async (args, { caller, adapterFor, audited, resolveMemberTarget }) => {
       assertAtLeast(caller.role, 'super_admin', 'revoke_admin');
       const { platform, userId } = await resolveMemberTarget(args.userId, args.platform);
       const label = await resolveSanitizedLabel(platform, userId);
@@ -160,8 +167,21 @@ export const superAdminTools = [
           return 'demoted to member';
         },
       });
-      if (success) await resetSessionsForRoleChange(platform, userId, 'revoke_admin');
-      return text(success ? `${label} is now a member on ${platform}.` : `Failed: ${result}`, !success);
+      let dmDelivered = true;
+      if (success) {
+        await resetSessionsForRoleChange(platform, userId, 'revoke_admin');
+        // Cross-platform demotion DM (issue #1317), mirroring grant_admin's
+        // own promotion-DM routing above: the TARGET's platform adapter, not
+        // the acting super admin's current-turn one. An unregistered target
+        // attempts nothing, so it counts as delivered.
+        const adminTarget = adapterFor(platform);
+        dmDelivered = adminTarget ? await notifyAdminRevoked(adminTarget, userId, platform) : true;
+      }
+      const note = dmDelivered ? '' : ADMIN_REVOKE_DM_FAILED_NOTE;
+      return text(
+        success ? `${label} is now a member on ${platform}.${note}` : `Failed: ${result}`,
+        !success,
+      );
     },
   }),
 

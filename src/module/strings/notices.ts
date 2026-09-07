@@ -373,6 +373,20 @@ const NOTICE_ENTRIES = {
         'Ask me "what can you do?" for a rundown, including your new admin tools.',
     },
   },
+  // --- revoke_admin demotion DM (agent/tools/notify.ts, issue #1317) ---
+  /**
+   * The demotion counterpart to `adminApprovedMessage` above — static, no
+   * per-row content to interpolate, same base/mi/plain triple shape.
+   */
+  adminRevokedMessage: {
+    base: "You're no longer an admin on NZ Claude Community — your admin tools are no longer available.",
+    language: {
+      mi: 'Kāore koe e noho kaiwhakahaere (admin) anō i NZ Claude Community — kua kore ō rākau whakahaere.',
+    },
+    style: {
+      plain: "You're no longer an admin on NZ Claude Community. Your admin tools are no longer available.",
+    },
+  },
   // --- decline_access_request resolution DM (agent/tools/notify.ts, issue #1126) ---
   /**
    * The neutral decline DM for `decline_access_request` — static/templated,
