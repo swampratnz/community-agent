@@ -9,6 +9,7 @@ import {
 import { alertAdmins } from './appealStaleAlert.js';
 import { persistedCrossingLatch, type CrossingLatchDeps } from './crossingLatch.js';
 import { SUGGESTION_STALE_ALERT_POLICY_KEY } from './storage/policies.js';
+import { getWithdrawnSuggestionIds } from './storage/suggestionWithdrawals.js';
 import type { JobSpec } from '@swampratnz/agent-base/jobs/types.js';
 import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
@@ -81,6 +82,17 @@ function staleSuggestions(suggestions: readonly Suggestion[], now: number): Sugg
  * (`Math.min(..., 200)`), so it is the widest scan available from here; above
  * 200 pending suggestions the count still understates, the same bounded,
  * precedent-accepted tradeoff `appealStaleAlert.ts` ships with.
+ *
+ * `getWithdrawnIds` (issue #1269) is the same withdrawal consult #1243 gave
+ * `list_suggestions`/`resolve_suggestion`/`my_submissions` — a withdrawn
+ * suggestion's base `status` stays `'new'` forever (sidecar-table design,
+ * see `suggestionWithdrawals.ts`), so without this filter a member-withdrawn
+ * suggestion would count toward `stale.length`, could flip the crossing
+ * latch, and — since `resolve_suggestion` refuses a withdrawn id outright —
+ * could leave the latch permanently unable to re-arm. The lookup is scoped
+ * to exactly the ids `listOpenSuggestions()` returned this tick, applied
+ * before `staleSuggestions()` so a withdrawn suggestion never counts toward
+ * either `stale.length` or `oldestAgeHours`.
  */
 export function makeDefaultSuggestionStaleAlertRun(
   adapters: readonly PlatformAdapter[],
@@ -88,12 +100,17 @@ export function makeDefaultSuggestionStaleAlertRun(
     listSuggestions('new', SUGGESTION_STALE_ALERT_SCAN_LIMIT),
   listAdminIdentities: () => Promise<AdminIdentity[]> = listAdmins,
   latchDeps?: CrossingLatchDeps,
+  getWithdrawnIds: (ids: readonly number[]) => Promise<Set<number>> = getWithdrawnSuggestionIds,
 ): () => Promise<void> {
   const latch = persistedCrossingLatch(SUGGESTION_STALE_ALERT_POLICY_KEY, latchDeps);
   return async () => {
     const now = Date.now();
     const suggestions = await listOpenSuggestions();
-    const stale = staleSuggestions(suggestions, now);
+    const withdrawnIds = await getWithdrawnIds(suggestions.map((suggestion) => suggestion.id));
+    const stale = staleSuggestions(
+      suggestions.filter((suggestion) => !withdrawnIds.has(suggestion.id)),
+      now,
+    );
     const step = await latch.step(stale.length);
     if (!step.shouldAlert) return;
 

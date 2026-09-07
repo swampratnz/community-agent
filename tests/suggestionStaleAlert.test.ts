@@ -182,6 +182,7 @@ test('SECURITY: the crossing-tick alert DM contains no suggestion id, content, u
     listOpenSuggestions,
     listAdminIdentities,
     fakePolicyStore(),
+    async () => new Set<number>(),
   );
 
   await runOnce();
@@ -212,6 +213,7 @@ test('makeDefaultSuggestionStaleAlertRun: a pending-suggestion set with none old
     listOpenSuggestions,
     listAdminIdentities,
     fakePolicyStore(),
+    async () => new Set<number>(),
   );
 
   await runOnce();
@@ -230,6 +232,7 @@ test('makeDefaultSuggestionStaleAlertRun: alerts exactly once on the tick the st
     listOpenSuggestions,
     listAdminIdentities,
     fakePolicyStore(),
+    async () => new Set<number>(),
   );
 
   await runOnce(); // 0 -> no alert
@@ -259,6 +262,7 @@ test('makeDefaultSuggestionStaleAlertRun: the latch re-arms once the stale count
     listOpenSuggestions,
     listAdminIdentities,
     fakePolicyStore(),
+    async () => new Set<number>(),
   );
 
   await runOnce(); // 0 -> 2, crosses
@@ -285,6 +289,7 @@ test('makeDefaultSuggestionStaleAlertRun: writes the active marker to the policy
     listOpenSuggestions,
     listAdminIdentities,
     store,
+    async () => new Set<number>(),
   );
 
   assert.equal(store.written.length, 0, 'no write before the tick runs');
@@ -308,6 +313,7 @@ test('makeDefaultSuggestionStaleAlertRun: restart-safety — a fresh factory see
     listOpenSuggestions,
     listAdminIdentities,
     store,
+    async () => new Set<number>(),
   );
 
   await runOnce();
@@ -340,6 +346,7 @@ test('makeDefaultSuggestionStaleAlertRun: re-arm survives a restart — the mark
     async () => [suggestion({ ageHours: 200 })],
     listAdminIdentities,
     store,
+    async () => new Set<number>(),
   );
   await secondProcess();
   assert.equal(dms.length, 1, 'a fresh crossing after the persisted re-arm alerts again');
@@ -360,6 +367,7 @@ test('SECURITY: makeDefaultSuggestionStaleAlertRun never threads a member/admin 
     listOpenSuggestions,
     listAdminIdentities,
     store,
+    async () => new Set<number>(),
   );
 
   await runOnce();
@@ -406,6 +414,7 @@ test('SECURITY: a WindowClosedError for one admin is queued via queueForWindowRe
     listOpenSuggestions,
     listAdminIdentities,
     fakePolicyStore(),
+    async () => new Set<number>(),
   );
 
   await runOnce();
@@ -418,6 +427,152 @@ test('SECURITY: a WindowClosedError for one admin is queued via queueForWindowRe
   assert.equal(queued.length, 1);
   assert.equal(queued[0].userId, 'admin-closed');
   assert.equal(queued[0].priority, 'low');
+});
+
+// --- withdrawal consult (issue #1269) ---------------------------------------
+
+test('makeDefaultSuggestionStaleAlertRun: a withdrawn suggestion older than the threshold is excluded — stale count is 0 and the latch does not fire', async () => {
+  const { adapter, dms } = makeAdapter();
+  const withdrawn = suggestion({ ageHours: 200, id: 1 });
+  const listOpenSuggestions = async () => [withdrawn];
+  const listAdminIdentities = async () => admins([{}]);
+  const getWithdrawnIds = async () => new Set([1]);
+  const runOnce = makeDefaultSuggestionStaleAlertRun(
+    [adapter],
+    listOpenSuggestions,
+    listAdminIdentities,
+    fakePolicyStore(),
+    getWithdrawnIds,
+  );
+
+  await runOnce();
+
+  assert.equal(dms.length, 0, 'a withdrawn stale suggestion must never trigger the alert');
+});
+
+test('makeDefaultSuggestionStaleAlertRun: a mix of one withdrawn and one non-withdrawn stale suggestion alerts with count 1, and oldestAgeHours excludes the withdrawn one even though it is older', async () => {
+  const { adapter, dms } = makeAdapter();
+  const withdrawnOlder = suggestion({ ageHours: 500, id: 1 });
+  const nonWithdrawn = suggestion({ ageHours: 200, id: 2 });
+  const listOpenSuggestions = async () => [withdrawnOlder, nonWithdrawn];
+  const listAdminIdentities = async () => admins([{}]);
+  const getWithdrawnIds = async () => new Set([1]);
+  const runOnce = makeDefaultSuggestionStaleAlertRun(
+    [adapter],
+    listOpenSuggestions,
+    listAdminIdentities,
+    fakePolicyStore(),
+    getWithdrawnIds,
+  );
+
+  await runOnce();
+
+  assert.equal(dms.length, 1);
+  assert.equal(
+    dms[0].text,
+    '💡 1 pending suggestion(s) have been waiting more than 168h (7d) for review (oldest: 200h) — ' +
+      'run `list_suggestions` to review.',
+    'count and oldestAgeHours must both come from the non-withdrawn suggestion only',
+  );
+});
+
+test('makeDefaultSuggestionStaleAlertRun: getWithdrawnIds is invoked with exactly the ids returned by listOpenSuggestions for that tick', async () => {
+  const { adapter } = makeAdapter();
+  const listOpenSuggestions = async () => [
+    suggestion({ ageHours: 200, id: 5 }),
+    suggestion({ ageHours: 1, id: 7 }),
+  ];
+  const listAdminIdentities = async () => admins([{}]);
+  const seenIds: number[][] = [];
+  const getWithdrawnIds = async (ids: readonly number[]) => {
+    seenIds.push([...ids]);
+    return new Set<number>();
+  };
+  const runOnce = makeDefaultSuggestionStaleAlertRun(
+    [adapter],
+    listOpenSuggestions,
+    listAdminIdentities,
+    fakePolicyStore(),
+    getWithdrawnIds,
+  );
+
+  await runOnce();
+
+  assert.deepEqual(seenIds, [[5, 7]], 'the lookup is scoped to exactly the scanned ids, not a wider query');
+});
+
+test('makeDefaultSuggestionStaleAlertRun: zero-withdrawal parity — with an empty withdrawn set, behaviour is byte-identical to the pre-#1269 run', async () => {
+  const { adapter, dms } = makeAdapter();
+  const store = fakePolicyStore();
+  // Built EAGERLY, before runOnce() captures its clock — see the identical
+  // comment above (the "crossing-tick alert DM" test) and issue #1071: a
+  // fixture dated INSIDE this lazy callback stamps createdAt later than the
+  // job's own `now`, occasionally flooring "200h" to "199h" and reddening
+  // this exact-text assertion.
+  const onlySuggestion = [suggestion({ ageHours: 200, id: 1 })];
+  const listOpenSuggestions = async () => onlySuggestion;
+  const listAdminIdentities = async () => admins([{}]);
+  const getWithdrawnIds = async () => new Set<number>();
+  const runOnce = makeDefaultSuggestionStaleAlertRun(
+    [adapter],
+    listOpenSuggestions,
+    listAdminIdentities,
+    store,
+    getWithdrawnIds,
+  );
+
+  await runOnce();
+
+  assert.equal(dms.length, 1);
+  assert.equal(
+    dms[0].text,
+    '💡 1 pending suggestion(s) have been waiting more than 168h (7d) for review (oldest: 200h) — ' +
+      'run `list_suggestions` to review.',
+  );
+  assert.deepEqual(store.written, [
+    { key: SUGGESTION_STALE_ALERT_POLICY_KEY, value: 'true', updatedBy: 'system' },
+  ]);
+});
+
+test('makeDefaultSuggestionStaleAlertRun: getWithdrawnIds defaults to getWithdrawnSuggestionIds when not injected', () => {
+  assert.doesNotThrow(() => makeDefaultSuggestionStaleAlertRun([]));
+});
+
+test('SECURITY: the withdrawal filter does not widen the alert DM — a withdrawn suggestion carrying secret id/content/userId/displayName never appears, even mixed with a non-withdrawn stale suggestion', async () => {
+  const { adapter, dms } = makeAdapter();
+  const secretUserId = 'secret-withdrawn-user-id';
+  const secretDisplayName = 'secret-withdrawn-display-name';
+  const secretContent = 'secret-withdrawn-suggestion-content';
+  const withdrawnSecret = suggestion({
+    ageHours: 500,
+    id: 4242,
+    userId: secretUserId,
+    displayName: secretDisplayName,
+    content: secretContent,
+  });
+  const nonWithdrawn = suggestion({ ageHours: 200, id: 2 });
+  const listOpenSuggestions = async () => [withdrawnSecret, nonWithdrawn];
+  const listAdminIdentities = async () => admins([{}]);
+  const getWithdrawnIds = async () => new Set([4242]);
+  const runOnce = makeDefaultSuggestionStaleAlertRun(
+    [adapter],
+    listOpenSuggestions,
+    listAdminIdentities,
+    fakePolicyStore(),
+    getWithdrawnIds,
+  );
+
+  await runOnce();
+
+  assert.equal(dms.length, 1);
+  const body = dms[0].text;
+  assert.ok(!body.includes('4242'), 'withdrawn suggestion id must never appear in the alert DM');
+  assert.ok(!body.includes(secretUserId), 'withdrawn suggestion userId must never appear in the alert DM');
+  assert.ok(
+    !body.includes(secretDisplayName),
+    'withdrawn suggestion displayName must never appear in the alert DM',
+  );
+  assert.ok(!body.includes(secretContent), 'withdrawn suggestion content must never appear in the alert DM');
 });
 
 test('startSuggestionStaleAlert: always-on, no enable flag — creates a timer even with no *_ENABLED env set', () => {
