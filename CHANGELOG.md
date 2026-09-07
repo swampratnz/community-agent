@@ -37,6 +37,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   tips) already has: a "Your help requests" section listing each topic you
   asked about, whether a match was found, and when — never who (if anyone)
   was contacted, preserving `find_helper`'s existing non-disclosure guarantee.
+- **A demoted admin now gets a DM.** (#1317) `revoke_admin` was the one
+  role-change action left with no notification — `grant_admin` already tells
+  a newly-promoted admin, but until now someone demoted back to member found
+  out only by their admin tools quietly disappearing. It now sends a
+  best-effort DM (English and te reo Māori) once the demotion is committed,
+  the same non-blocking pattern as the promotion DM: a failed send never
+  reverses the demotion or changes the reported outcome, only adding a short
+  note to the acting super admin's reply if the DM didn't land.
 
 ### Fixed
 - **`my_data` (and its `/mydata`/`!mydata` mirrors) now reports your filed
