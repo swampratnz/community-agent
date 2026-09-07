@@ -291,6 +291,50 @@ test(
 );
 
 test(
+  'issue #1315 AC #1 — member-connection SKILL.md mentions knowledge_for_me by name, including its ' +
+    'set_my_interests prerequisite and what it does',
+  () => {
+    const skillPath = join(
+      dirname(fileURLToPath(import.meta.url)),
+      '../src/module/agent/skills/member-connection/SKILL.md',
+    );
+    const body = readFileSync(skillPath, 'utf8');
+    assert.match(body, /knowledge_for_me/, 'SKILL.md must mention knowledge_for_me by name');
+    assert.match(
+      body,
+      /published interests via `set_my_interests`[\s\S]{0,200}knowledge_for_me/,
+      'the knowledge_for_me bullet must name the set_my_interests-first prerequisite',
+    );
+    assert.match(
+      body,
+      /knowledge_for_me[\s\S]{0,200}search the community knowledge base/,
+      'the knowledge_for_me bullet must state what the tool does',
+    );
+  },
+);
+
+test(
+  'SECURITY: issue #1315 AC #2 — the knowledge_for_me bullet in member-connection SKILL.md states it ' +
+    "reads only the caller's own published interests, never another member's",
+  () => {
+    const skillPath = join(
+      dirname(fileURLToPath(import.meta.url)),
+      '../src/module/agent/skills/member-connection/SKILL.md',
+    );
+    const body = readFileSync(skillPath, 'utf8');
+    const bulletMatch = body.match(
+      /\*\*Point to `knowledge_for_me` after publishing\.\*\*[\s\S]*?(?=\n- |\n$)/,
+    );
+    assert.ok(bulletMatch, 'expected a dedicated knowledge_for_me bullet in SKILL.md');
+    assert.match(
+      bulletMatch[0],
+      /caller's own published interests/i,
+      "the knowledge_for_me bullet must state it reads only the caller's own interests",
+    );
+  },
+);
+
+test(
   'SECURITY: issue #1058 — api-cost-and-latency resolves to the bundled SKILL.md, grants no new tool ' +
     "access, and changes no role's disallowedTools",
   async () => {
