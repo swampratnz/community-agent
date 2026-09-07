@@ -178,7 +178,10 @@ export const superAdminTools = [
         dmDelivered = adminTarget ? await notifyAdminRevoked(adminTarget, userId, platform) : true;
       }
       const note = dmDelivered ? '' : ADMIN_REVOKE_DM_FAILED_NOTE;
-      return text(success ? `${label} is now a member on ${platform}.${note}` : `Failed: ${result}`, !success);
+      return text(
+        success ? `${label} is now a member on ${platform}.${note}` : `Failed: ${result}`,
+        !success,
+      );
     },
   }),
 
