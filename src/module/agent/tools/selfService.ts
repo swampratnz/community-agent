@@ -186,6 +186,26 @@ export function formatMySubmissionsText(
   return lines.join('\n');
 }
 
+// my_data's internal fetch cap for its appeals/knowledge-tips/connection-
+// requests counts (issue #1311): comfortably above realistic per-member
+// volumes, the same "generous, bounded fetch" reasoning as
+// TOP_KNOWLEDGE_FETCH_CAP/MOST_HELPFUL_KNOWLEDGE_FETCH_CAP. `formatMyDataText`
+// appends a trailing `+` whenever a count lands exactly on the cap (see
+// `formatCappedCount` below), so a truncated fetch is never presented as a
+// definitive total.
+export const MY_DATA_SUMMARY_FETCH_CAP = 500;
+
+/**
+ * Renders a count that may have been silently truncated by a bounded fetch
+ * (`MY_DATA_SUMMARY_FETCH_CAP`) as `${cap}+` rather than the possibly-short
+ * raw number — same shape as `KNOWLEDGE_FIX_NOTIFY_TRUNCATION_CAVEAT`'s
+ * `${cap}+` wording (knowledgeAdmin.ts), applied per-count instead of as a
+ * standalone caveat sentence.
+ */
+function formatCappedCount(n: number, cap: number): string {
+  return n >= cap ? `${cap}+` : `${n}`;
+}
+
 /**
  * Pure render of `my_data`'s summary — the same "one function, two entry
  * points" split as `formatMyWarningsText`/`formatMySubmissionsText`, shared
@@ -197,6 +217,12 @@ export function formatMySubmissionsText(
  * as an explicit parameter (rather than read inside this function) so the
  * render stays pure — symmetric with the sibling `responseStyle` preference
  * already carried on `summary` (issue #1030).
+ *
+ * `appealsFiled`/`knowledgeTipsFiled`/`connectionRequestsSent` (issue #1311)
+ * are raw `.length` counts of a `MY_DATA_SUMMARY_FETCH_CAP`-bounded fetch —
+ * the same three record kinds `forget_me`/`purge_user_data` also erase, and
+ * the same three `listOwn*` reads `my_submissions` already performs in this
+ * file, just counted here instead of listed.
  */
 export function formatMyDataText(
   summary: Awaited<ReturnType<typeof getMyDataSummary>>,
@@ -204,6 +230,9 @@ export function formatMyDataText(
   limit: number,
   used: number | null,
   language: LanguagePreference,
+  appealsFiled: number,
+  knowledgeTipsFiled: number,
+  connectionRequestsSent: number,
 ): string {
   const lines = [
     `Messages you've sent: ${summary.ownMessages}`,
@@ -211,6 +240,9 @@ export function formatMyDataText(
     `Knowledge entries sourced from you: ${summary.knowledgeEntries}`,
     `Content reports you've filed: ${summary.reportsFiled}`,
     `Suggestions you've filed: ${summary.suggestionsFiled}`,
+    `Appeals filed: ${formatCappedCount(appealsFiled, MY_DATA_SUMMARY_FETCH_CAP)}`,
+    `Knowledge tips filed: ${formatCappedCount(knowledgeTipsFiled, MY_DATA_SUMMARY_FETCH_CAP)}`,
+    `Connection requests sent: ${formatCappedCount(connectionRequestsSent, MY_DATA_SUMMARY_FETCH_CAP)}`,
     `Projects you've shared: ${summary.projectsShared}`,
     `Interests published (who_is_into): ${summary.interestsPublished > 0 ? 'yes' : 'no'}`,
     `Response style preference: ${summary.responseStyle === 'plain' ? 'plain' : 'standard (default)'}`,
@@ -370,7 +402,8 @@ export const selfServiceTools = [
     name: 'my_data',
     description:
       'Summarize what the bot has stored about the caller: their own message count, replies the bot has ' +
-      'sent them, knowledge entries sourced from them, content reports and suggestions they filed, whether ' +
+      'sent them, knowledge entries sourced from them, content reports and suggestions they filed, moderation ' +
+      'appeals filed, knowledge tips filed via suggest_knowledge, project-connection requests sent, whether ' +
       "they've published interests for member discovery, their standing response-style and language " +
       "preferences, and where they stand against today's daily reply budget. Use " +
       'this when a member asks what the bot knows about them, wants to see what forget_me would erase ' +
@@ -396,7 +429,27 @@ export const selfServiceTools = [
       // as info.ts/notify.ts, read a second time here rather than folded
       // into getMyDataSummary's (base-owned) return shape.
       const language = await getLanguagePreference(caller.platform, caller.userId);
-      return text(formatMyDataText(summary, caller.role, limit, used, language));
+      // Appeals/knowledge-tips/connection-requests counts (issue #1311) —
+      // the same three self-scoped `listOwn*` reads `my_submissions` already
+      // performs above, module-side (getMyDataSummary is base-owned) and
+      // fetched bounded rather than folded into that base return shape.
+      const [appeals, knowledgeTips, connectionRequests] = await Promise.all([
+        listOwnAppeals(caller.platform, caller.userId, MY_DATA_SUMMARY_FETCH_CAP),
+        listOwnKnowledgeCandidates(caller.platform, caller.userId, MY_DATA_SUMMARY_FETCH_CAP),
+        listOwnProjectConnectionRequests(caller.platform, caller.userId, MY_DATA_SUMMARY_FETCH_CAP),
+      ]);
+      return text(
+        formatMyDataText(
+          summary,
+          caller.role,
+          limit,
+          used,
+          language,
+          appeals.length,
+          knowledgeTips.length,
+          connectionRequests.length,
+        ),
+      );
     },
   }),
 ];

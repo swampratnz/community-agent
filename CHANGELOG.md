@@ -25,6 +25,19 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #1122 #1123 #1132 #1232 #1236
 -->
 
+## 2026-09-07
+
+### Accessibility
+- **`my_data` (and its `/mydata`/`!mydata` mirrors) now reports your filed
+  appeals, knowledge tips, and sent project-connection requests, not just
+  your reports and suggestions.** (#1311) `my_data`'s own description frames
+  it as a preview of what `forget_me`/`purge_user_data` would erase — but all
+  three of these record kinds are demonstrably erased by that same purge and
+  were silently missing from the preview, even though `my_submissions`
+  already lists them. All three surfaces (the tool, `/mydata`, `!mydata`) now
+  show `Appeals filed:`, `Knowledge tips filed:`, and `Connection requests
+  sent:` lines alongside the existing counts.
+
 ## 2026-09-04
 
 ### Security
