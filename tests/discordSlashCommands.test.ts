@@ -1878,7 +1878,7 @@ test('/mydata returns the same content the shared formatter renders for a caller
     interestsPublished: 0,
     responseStyle: 'standard' as const,
   };
-  assert.equal(replies[0].content, formatMyDataText(zeroSummary, 'member', 5, 2, 'auto'));
+  assert.equal(replies[0].content, formatMyDataText(zeroSummary, 'member', 5, 2, 'auto', 0, 0, 0));
   assert.match(replies[0].content, /Replies in the last 24h: 2 \/ 5/);
 });
 

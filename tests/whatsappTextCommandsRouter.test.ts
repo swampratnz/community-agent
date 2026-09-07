@@ -1902,7 +1902,7 @@ test(
       interestsPublished: 0,
       responseStyle: 'standard' as const,
     };
-    assert.equal(sent[0].text, formatMyDataText(zeroSummary, 'member', 5, 2, 'auto'));
+    assert.equal(sent[0].text, formatMyDataText(zeroSummary, 'member', 5, 2, 'auto', 0, 0, 0));
   },
 );
 
