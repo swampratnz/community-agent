@@ -40,7 +40,8 @@ const { logger } = await import('@swampratnz/agent-base/logger.js');
 const { embed } = await import('@swampratnz/agent-base/storage/embeddings.js');
 const { config } = await import('@swampratnz/agent-base/config.js');
 const { notice } = await import('../src/module/strings/notices.js');
-const { setMemberInterests } = await import('@swampratnz/agent-base/storage/repository.js');
+const { COMMUNITY_TURN_STATE_FINALIZER } = await import('../src/module/agent/communityTurnState.js');
+const { setMemberInterests, recordInteraction } = await import('@swampratnz/agent-base/storage/repository.js');
 const pgvector = (await import('pgvector/pg')).default;
 
 if (hasDb) await embed('warmup').catch(() => {});
@@ -73,20 +74,63 @@ type KnowledgeForMeHandler = {
   }>;
 };
 
-function getKnowledgeForMeHandler(caller: {
-  platform: 'discord';
-  userId: string;
-  userName: string;
-  role: 'member' | 'guest';
-  conversationId: string;
-  isDirect: boolean;
-}): KnowledgeForMeHandler {
-  const server = buildToolServer(caller, stubAdapter());
+function getKnowledgeForMeHandler(
+  caller: {
+    platform: 'discord';
+    userId: string;
+    userName: string;
+    role: 'member' | 'guest';
+    conversationId: string;
+    isDirect: boolean;
+  },
+  turnState?: { lastKnowledgeHitId: number | null },
+): KnowledgeForMeHandler {
+  const server = buildToolServer(caller, stubAdapter(), undefined, turnState);
   return (
     server.instance as unknown as {
       _registeredTools: Record<string, KnowledgeForMeHandler>;
     }
   )._registeredTools['knowledge_for_me'];
+}
+
+type RateAnswerHandler = {
+  handler: (args: {
+    helpful: boolean;
+    comment?: string;
+  }) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+};
+
+function getRateAnswerHandler(userId: string, conversationId: string): RateAnswerHandler {
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId,
+      userName: 'Rating Member',
+      role: 'member' as const,
+      conversationId,
+      isDirect: false,
+    },
+    stubAdapter(),
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<string, RateAnswerHandler>;
+    }
+  )._registeredTools['rate_answer'];
+}
+
+// Mirrors tools.test.ts's own withAnswerCandidateFlag helper (issue #726) —
+// `config.knowledgeAnswerCandidate` is deeply `readonly` in agent-base's
+// config type, so the cast is confined to this one setter, same discipline
+// as setKnowledgeLowRatedCaveatMinUnhelpful below.
+async function withAnswerCandidateFlag<T>(enabled: boolean, fn: () => Promise<T>): Promise<T> {
+  const original = config.knowledgeAnswerCandidate.enabled;
+  (config.knowledgeAnswerCandidate as { enabled: boolean }).enabled = enabled;
+  try {
+    return await fn();
+  } finally {
+    (config.knowledgeAnswerCandidate as { enabled: boolean }).enabled = original;
+  }
 }
 
 /** A unit vector at an exact cosine similarity `rho` to `anchor` (mirrors tools.test.ts's own helper). */
@@ -683,6 +727,194 @@ test(
     assert.ok(warnLog.mock.calls.length >= 2, 'both lookup failures must be logged, not silently swallowed');
 
     await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[aId, bId]]);
+    await setMemberInterests('discord', userId, 'clear');
+  },
+);
+
+// Issue #1325: knowledge_for_me computes the same relevantIds knowledge_search
+// does but never stamped turnState.lastKnowledgeHitId, so a helpful rating on
+// one of its answers was misattributed as "ungrounded" (see feedback.ts's
+// #726 draft guard). These tests exercise the stamp this file's handler now
+// performs, mirroring knowledge_search's own turnState tests in tests/tools.test.ts.
+
+test(
+  'knowledge_for_me writes the top-scoring qualifying hit id into turnState.lastKnowledgeHitId, and ' +
+    "COMMUNITY_TURN_STATE_FINALIZER then surfaces it as knowledgeEntryId (issue #1325 acceptance criteria 1, 3)",
+  { skip },
+  async () => {
+    const scope = `${RUN}-attribution-stamp`;
+    const userId = `${RUN}-member-attribution-stamp`;
+    const interests = `attribution stamp test interests ${RUN}`;
+    await setMemberInterests('discord', userId, interests);
+
+    const anchorVec = await embed(interests);
+    const { rows } = await pool.query(
+      `INSERT INTO knowledge (scope, title, content, embedding) VALUES ($1,$2,$3,$4) RETURNING id`,
+      [scope, `Attribution stamp entry ${RUN}`, 'ATTRIBUTION_STAMP_FOR_ME_TEXT', pgvector.toSql(anchorVec)],
+    );
+    const id = Number(rows[0].id);
+
+    const caller = {
+      platform: 'discord' as const,
+      userId,
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: scope,
+      isDirect: false,
+    };
+    const turnState: { lastKnowledgeHitId: number | null } = { lastKnowledgeHitId: null };
+    const result = await getKnowledgeForMeHandler(caller, turnState).handler({});
+    const text = result.content[0]?.text ?? '';
+
+    assert.match(text, /ATTRIBUTION_STAMP_FOR_ME_TEXT/, 'the qualifying entry must still be served');
+    assert.equal(
+      turnState.lastKnowledgeHitId,
+      id,
+      'a qualifying knowledge_for_me call must write its top-scoring hit id into turnState',
+    );
+    assert.deepEqual(
+      COMMUNITY_TURN_STATE_FINALIZER(turnState),
+      { knowledgeEntryId: id },
+      'the finalizer must surface the stamped id as knowledgeEntryId, the same key knowledge_search feeds',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
+    await setMemberInterests('discord', userId, 'clear');
+  },
+);
+
+test(
+  'knowledge_for_me leaves an earlier qualifying turnState.lastKnowledgeHitId untouched when its own call finds ' +
+    'no qualifying hit — last QUALIFYING call wins, matching knowledge_search (issue #1325 acceptance criterion 2)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-member-no-clobber`;
+    const interests = `no clobber test interests ${RUN} with no matching knowledge entry`;
+    await setMemberInterests('discord', userId, interests);
+
+    const caller = {
+      platform: 'discord' as const,
+      userId,
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: `${RUN}-no-clobber`,
+      isDirect: false,
+    };
+    // Simulates an earlier, qualifying knowledge_search call in the same turn.
+    const turnState: { lastKnowledgeHitId: number | null } = { lastKnowledgeHitId: 424242 };
+    await getKnowledgeForMeHandler(caller, turnState).handler({});
+
+    assert.equal(
+      turnState.lastKnowledgeHitId,
+      424242,
+      'a below-floor (or no-hit) knowledge_for_me call must never clear an earlier qualifying turnState id',
+    );
+
+    await setMemberInterests('discord', userId, 'clear');
+  },
+);
+
+test(
+  'knowledge_for_me leaves turnState.lastKnowledgeHitId null when buildToolServer was called with no turnState ' +
+    'at all (issue #1325) — must not throw just because there is no turnState ref to write into',
+  { skip },
+  async () => {
+    const userId = `${RUN}-member-no-turnstate`;
+    const interests = `no turnstate test interests ${RUN}`;
+    await setMemberInterests('discord', userId, interests);
+
+    const anchorVec = await embed(interests);
+    const { rows } = await pool.query(
+      `INSERT INTO knowledge (scope, title, content, embedding) VALUES ($1,$2,$3,$4) RETURNING id`,
+      [`${RUN}-no-turnstate`, `No turnstate entry ${RUN}`, 'NO_TURNSTATE_FOR_ME_TEXT', pgvector.toSql(anchorVec)],
+    );
+    const id = Number(rows[0].id);
+
+    const caller = {
+      platform: 'discord' as const,
+      userId,
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: `${RUN}-no-turnstate`,
+      isDirect: false,
+    };
+    // No turnState argument at all.
+    await getKnowledgeForMeHandler(caller).handler({});
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
+    await setMemberInterests('discord', userId, 'clear');
+  },
+);
+
+test(
+  'SECURITY: a rate_answer(helpful: true) following a knowledge_for_me answer that carries the ' +
+    "knowledgeEntryId this fix now stamps never drafts an ungrounded knowledge candidate — feedback.ts's " +
+    'grounding.knowledgeEntryId === null guard correctly skips createKnowledgeTip (issue #1325 acceptance ' +
+    'criterion 4)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-attribution-security`;
+    const userId = `${RUN}-member-attribution-security`;
+    const interests = `attribution security test interests ${RUN}`;
+    await setMemberInterests('discord', userId, interests);
+
+    const anchorVec = await embed(interests);
+    const { rows } = await pool.query(
+      `INSERT INTO knowledge (scope, title, content, embedding) VALUES ($1,$2,$3,$4) RETURNING id`,
+      [scope, `Attribution security entry ${RUN}`, 'ATTRIBUTION_SECURITY_FOR_ME_TEXT', pgvector.toSql(anchorVec)],
+    );
+    const id = Number(rows[0].id);
+
+    const caller = {
+      platform: 'discord' as const,
+      userId,
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: scope,
+      isDirect: false,
+    };
+    const turnState: { lastKnowledgeHitId: number | null } = { lastKnowledgeHitId: null };
+    await getKnowledgeForMeHandler(caller, turnState).handler({});
+    assert.equal(turnState.lastKnowledgeHitId, id, 'precondition: the call must have stamped the served entry id');
+
+    // Simulates what the router's outbound-recording stamp (issue #411) does
+    // with the finalizer's output — the exact meta shape
+    // tests/knowledgeEntryIdRouter.test.ts pins for the primary reply path.
+    const { knowledgeEntryId } = COMMUNITY_TURN_STATE_FINALIZER(turnState);
+    await recordInteraction({
+      platform: 'discord',
+      conversationId: scope,
+      userId,
+      role: 'member',
+      direction: 'inbound',
+      content: `${RUN} attribution security question`,
+    });
+    await recordInteraction({
+      platform: 'discord',
+      conversationId: scope,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'ATTRIBUTION_SECURITY_FOR_ME_TEXT',
+      meta: { replyToUserId: userId, knowledgeEntryId },
+    });
+
+    await withAnswerCandidateFlag(true, async () => {
+      const result = await getRateAnswerHandler(userId, scope).handler({ helpful: true });
+      assert.notEqual(result.isError, true);
+    });
+
+    const rows2 = await pool.query(`SELECT 1 FROM knowledge_candidates WHERE source_user_id = $1`, [userId]);
+    assert.equal(
+      rows2.rows.length,
+      0,
+      'SECURITY: a helpful rating on a knowledge_for_me answer now correctly grounded via the ' +
+        'lastKnowledgeHitId stamp must never draft a redundant candidate',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [userId]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [scope]);
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
     await setMemberInterests('discord', userId, 'clear');
   },
 );

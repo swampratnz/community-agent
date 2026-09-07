@@ -234,7 +234,9 @@ export const knowledgeMemberTools = [
   // formatKnowledgeSearchResults, and issue #1321 closes the gap between
   // that promise and the bare call this handler used to make. Gating and
   // fail-safe behaviour mirror knowledge_search's identical lookups above in
-  // this same file exactly.
+  // this same file exactly. The `lastKnowledgeHitId` feedback-attribution
+  // stamp (issue #1325) was never a deliberate deferral here (unlike the
+  // three above), so it's reused too — see the stamp below.
   defineTool({
     name: 'knowledge_for_me',
     description:
@@ -246,7 +248,7 @@ export const knowledgeMemberTools = [
     minTier: 'member',
     readOnlyHint: true,
     schema: {},
-    handler: async (_args, { caller }) => {
+    handler: async (_args, { caller, turnState }) => {
       // SECURITY: tier is re-asserted here, not merely surface-gated by
       // MEMBER_TOOLS — same defensive-double-check discipline every
       // privileged/self-service tool in this file follows.
@@ -274,6 +276,14 @@ export const knowledgeMemberTools = [
       const relevantIds = hits
         .filter((h) => h.similarity >= KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD)
         .map((h) => h.id);
+      // Best-effort knowledge_search-hit correlation (issue #1325), byte-
+      // identical to knowledge_search's own stamp above: only overwrite on a
+      // QUALIFYING call, so a later no-hit call in the same turn never
+      // clobbers an earlier qualifying id with null (last *qualifying* call
+      // wins, matching #411 acceptance criterion 3).
+      if (turnState && relevantIds.length > 0) {
+        turnState.lastKnowledgeHitId = relevantIds[0];
+      }
       const hasConflict =
         relevantIds.length >= 2
           ? await hasConflictAmongIds(relevantIds).catch((err) => {
