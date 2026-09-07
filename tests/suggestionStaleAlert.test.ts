@@ -182,6 +182,7 @@ test('SECURITY: the crossing-tick alert DM contains no suggestion id, content, u
     listOpenSuggestions,
     listAdminIdentities,
     fakePolicyStore(),
+    async () => new Set<number>(),
   );
 
   await runOnce();
@@ -212,6 +213,7 @@ test('makeDefaultSuggestionStaleAlertRun: a pending-suggestion set with none old
     listOpenSuggestions,
     listAdminIdentities,
     fakePolicyStore(),
+    async () => new Set<number>(),
   );
 
   await runOnce();
@@ -230,6 +232,7 @@ test('makeDefaultSuggestionStaleAlertRun: alerts exactly once on the tick the st
     listOpenSuggestions,
     listAdminIdentities,
     fakePolicyStore(),
+    async () => new Set<number>(),
   );
 
   await runOnce(); // 0 -> no alert
@@ -259,6 +262,7 @@ test('makeDefaultSuggestionStaleAlertRun: the latch re-arms once the stale count
     listOpenSuggestions,
     listAdminIdentities,
     fakePolicyStore(),
+    async () => new Set<number>(),
   );
 
   await runOnce(); // 0 -> 2, crosses
@@ -285,6 +289,7 @@ test('makeDefaultSuggestionStaleAlertRun: writes the active marker to the policy
     listOpenSuggestions,
     listAdminIdentities,
     store,
+    async () => new Set<number>(),
   );
 
   assert.equal(store.written.length, 0, 'no write before the tick runs');
@@ -308,6 +313,7 @@ test('makeDefaultSuggestionStaleAlertRun: restart-safety — a fresh factory see
     listOpenSuggestions,
     listAdminIdentities,
     store,
+    async () => new Set<number>(),
   );
 
   await runOnce();
@@ -340,6 +346,7 @@ test('makeDefaultSuggestionStaleAlertRun: re-arm survives a restart — the mark
     async () => [suggestion({ ageHours: 200 })],
     listAdminIdentities,
     store,
+    async () => new Set<number>(),
   );
   await secondProcess();
   assert.equal(dms.length, 1, 'a fresh crossing after the persisted re-arm alerts again');
@@ -360,6 +367,7 @@ test('SECURITY: makeDefaultSuggestionStaleAlertRun never threads a member/admin 
     listOpenSuggestions,
     listAdminIdentities,
     store,
+    async () => new Set<number>(),
   );
 
   await runOnce();
@@ -406,6 +414,7 @@ test('SECURITY: a WindowClosedError for one admin is queued via queueForWindowRe
     listOpenSuggestions,
     listAdminIdentities,
     fakePolicyStore(),
+    async () => new Set<number>(),
   );
 
   await runOnce();
@@ -495,7 +504,13 @@ test('makeDefaultSuggestionStaleAlertRun: getWithdrawnIds is invoked with exactl
 test('makeDefaultSuggestionStaleAlertRun: zero-withdrawal parity — with an empty withdrawn set, behaviour is byte-identical to the pre-#1269 run', async () => {
   const { adapter, dms } = makeAdapter();
   const store = fakePolicyStore();
-  const listOpenSuggestions = async () => [suggestion({ ageHours: 200, id: 1 })];
+  // Built EAGERLY, before runOnce() captures its clock — see the identical
+  // comment above (the "crossing-tick alert DM" test) and issue #1071: a
+  // fixture dated INSIDE this lazy callback stamps createdAt later than the
+  // job's own `now`, occasionally flooring "200h" to "199h" and reddening
+  // this exact-text assertion.
+  const onlySuggestion = [suggestion({ ageHours: 200, id: 1 })];
+  const listOpenSuggestions = async () => onlySuggestion;
   const listAdminIdentities = async () => admins([{}]);
   const getWithdrawnIds = async () => new Set<number>();
   const runOnce = makeDefaultSuggestionStaleAlertRun(
