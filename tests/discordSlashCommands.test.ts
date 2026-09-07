@@ -180,6 +180,8 @@ function mockPool(
     knowledgeCandidateRows?: PoolRow[];
     /** `listOwnProjectConnectionRequests`' rows (issue #1018), raw snake_case DB shape. */
     connectionRequestRows?: PoolRow[];
+    /** `listOwnFindHelperRequests`' rows (issue #1313), raw snake_case DB shape. */
+    findHelperRequestRows?: PoolRow[];
     /** `countRepliesToUser`'s count for `/mydata`'s daily-reply-budget line (issue #1018). */
     repliesUsed?: number;
     /** `listKnowledgeTopics`' titles for `/kbtopics` (issue #1036), raw already-string rows. */
@@ -352,6 +354,9 @@ function mockPool(
     }
     if (sql.includes('FROM project_connection_requests')) {
       return { rows: opts.connectionRequestRows ?? [], rowCount: 0 };
+    }
+    if (sql.includes('FROM find_helper_requests')) {
+      return { rows: opts.findHelperRequestRows ?? [], rowCount: 0 };
     }
     // getMyDataSummary's own interactions read (own_messages/replies_to_them)
     // is distinguished from countRepliesToUser's budget count below by its
@@ -1716,6 +1721,28 @@ test('/mysubmissions returns the same content the shared formatter renders for a
     await adapterDeps(adapter).filtered(formatMySubmissionsText(expectedSuggestions, [], [], [], [], 'auto')),
   );
   assert.match(replies[0].content, /Your suggestions:/);
+});
+
+test('/mysubmissions renders the find_helper receipt section — the new section reaches this shortcut too, not just the my_submissions tool (issue #1313 acceptance criterion 4)', async (t) => {
+  const createdAt = new Date('2026-08-01T00:00:00Z');
+  mockPool(t, {
+    memberRole: 'member',
+    findHelperRequestRows: [
+      { id: 9, topic: 'a slash-command reachability topic', matched: false, created_at: createdAt },
+    ],
+  });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({ commandName: 'mysubmissions', userId: 'member-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.match(replies[0].content, /Your help requests:/);
+  assert.match(
+    replies[0].content,
+    // outbound filtering rewrites em-dashes to commas on Discord (stripEmDashes) — same reason the
+    // populated-suggestions test above compares against filtered() output rather than the raw formatter.
+    /- #9, "a slash-command reachability topic", no match, filed/,
+  );
 });
 
 test('/mysubmissions renders a withdrawn suggestion as [withdrawn], matching the my_submissions tool handler for the same DB state (issue #1243 — the automated-review-requested fix threading getWithdrawnSuggestionIds through this shortcut too)', async (t) => {

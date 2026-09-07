@@ -27,6 +27,17 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 
 ## 2026-09-07
 
+### Added
+- **`my_submissions` (and its `/mysubmissions`/`!mysubmissions` shortcuts) now
+  shows your own `find_helper` history.** (#1313) `find_helper` is a scarce,
+  rate-capped action, but until now it was the one such member action with no
+  way to check what you'd already asked — you had to scroll back through
+  chat. It now gets the same self-service receipt every other rate-capped
+  request (project-connection asks, suggestions, reports/appeals, knowledge
+  tips) already has: a "Your help requests" section listing each topic you
+  asked about, whether a match was found, and when — never who (if anyone)
+  was contacted, preserving `find_helper`'s existing non-disclosure guarantee.
+
 ### Fixed
 - **`my_data` (and its `/mydata`/`!mydata` mirrors) now reports your filed
   appeals, knowledge tips, and sent project-connection requests, not just
