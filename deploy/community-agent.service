@@ -53,6 +53,11 @@ RestrictSUIDSGID=true
 RestrictNamespaces=user mnt pid net
 LockPersonality=true
 MemoryDenyWriteExecute=false
+# Every file/directory this process creates (whatsapp-auth/ if a future
+# version links on first run, the home/.claude session-state dir, the model
+# cache) is owner-only from creation, independent of the host's default
+# umask. See docs/SECURITY.md's whatsapp-auth/ chmod 700 checklist item.
+UMask=0077
 # Resource caps.
 LimitNOFILE=65536
 

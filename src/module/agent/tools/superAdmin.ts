@@ -445,8 +445,9 @@ export const superAdminTools = [
       // otherwise written verbatim, so this is the one sanitisation on the path.
       const knownSecrets = [config.github.token].filter((s): s is string => Boolean(s));
       const title = redactSecrets(args.title, knownSecrets);
+      const redactedBody = redactSecrets(args.body, knownSecrets);
       const body =
-        redactSecrets(args.body, knownSecrets) +
+        redactedBody +
         `\n\n---\n_Filed from ${caller.platform} chat by a super admin via the community agent._`;
       const labels = config.github.labels;
       const key = `${caller.platform}:${caller.userId}`;
@@ -466,7 +467,19 @@ export const superAdminTools = [
         return success ? result : `Failed: ${result}`;
       };
 
-      return requireConfirm(`file a GitHub issue on ${config.github.repo}: "${title}"`, 'super_admin', run);
+      // CONFIRM must show the actual payload, not just the label — body is the
+      // bulk of what becomes a permanent public issue (issue #1299). Same
+      // truncation shape as create_event's description preview
+      // (events.ts) and delete_member_note's note preview (roster.ts):
+      // slice(0, N) with a trailing '…' iff truncated. requireConfirm's own
+      // choke-point strip (context.ts) still sanitizes the whole description
+      // against line/tag forgery — no second sanitizer here.
+      const bodyPreview = ` ("${redactedBody.slice(0, 200)}${redactedBody.length > 200 ? '…' : ''}")`;
+      return requireConfirm(
+        `file a GitHub issue on ${config.github.repo}: "${title}"${bodyPreview}`,
+        'super_admin',
+        run,
+      );
     },
   }),
 ];

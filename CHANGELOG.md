@@ -22,8 +22,46 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #775 #784 #804 #807 #809 #810 #812 #814 #816 #817 #818 #819 #821 #824 #825
 #868 #896 #899 #904 #949 #950 #951 #952 #953 #954 #955 #956 #957 #958 #961
 #963 #964 #965 #968 #971 #983 #988 #989 #991 #992 #994 #1017 #1071 #1086
-#1122 #1123 #1132
+#1122 #1123 #1132 #1232 #1236
 -->
+
+## 2026-09-04
+
+### Security
+- **`whatsapp-auth/` (the WhatsApp session credentials) is now created
+  owner-only by default, closing a gap `docs/SECURITY.md`'s own checklist
+  named but nothing enforced.** (#1301) The systemd unit now sets
+  `UMask=0077`, so anything the running service creates — `whatsapp-auth/`
+  should a future version link on first run, the Claude session-state dir,
+  the model cache — is `0700`/`0600` from creation instead of inheriting the
+  host's default (often world-readable) umask. The one-time interactive
+  linking step in `docs/DEPLOYMENT.md`, which is where `whatsapp-auth/` is
+  actually created today, now runs under `umask 077` with an explicit
+  `chmod -R go-rwx whatsapp-auth` fixup afterwards. Reading that directory is
+  equivalent to a full WhatsApp session hijack, so this only tightens who can
+  read data that was already meant to be operator-only.
+
+### Fixed
+- **The CONFIRM prompt for filing a GitHub issue or dispatching a dev-team
+  delivery now shows the actual content, not just a label.** (#1299) A super
+  admin confirming `suggest_issue` used to see only the title — the body,
+  which becomes the entire text of a permanent public GitHub issue, never
+  appeared. Confirming `dev_team_dispatch`'s `deliver` mode (which makes real
+  repo changes and opens a PR) showed neither the title nor the task
+  description handed to the remote coding agent. Both CONFIRM notices now
+  include a bounded excerpt of the actual payload, the same truncation shape
+  `create_event` and `delete_member_note` already use, so the confirming
+  admin sees what they're actually approving before it goes out.
+
+## 2026-09-02
+
+### Added
+- **New `knowledge_for_me` tool: search the knowledge base using your own
+  published interests.** (#1287) If you've told the bot what you're into via
+  `set_my_interests`, you can now ask it to search the community's knowledge
+  base for you using that same text — no need to think of search terms
+  yourself. If you haven't published interests yet, it tells you to call
+  `set_my_interests` first rather than searching.
 
 ## 2026-09-01
 
@@ -45,6 +83,13 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   auditing for stale mutes to clear or escalate, or doing periodic block-list
   hygiene, can now ask for the longest-standing row first instead of only
   newest-first.
+- **`list_roster` gains `oldestFirst` too — the sixth and last review queue to
+  get it.** (#1285) An admin working the onboarding backlog (`list_roster`,
+  filter `not_members`) could only ever see the 50 most recently joined
+  guests, the exact opposite of who the 168h stale-onboarding DM nags about.
+  `oldestFirst: true` now sorts by earliest-joined-first instead, for every
+  filter, the same option every other admin review-queue list tool already
+  had.
 - **You can now withdraw a moderation appeal you filed.** (#1278)
   `report_content`, `suggest_knowledge` and `suggest_improvement` already let
   you retract one filed by mistake — `appeal_moderation` was the last of the
@@ -103,6 +148,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   notes had silently gone empty. No new data is collected or retained — this
   is the same best-effort DM pattern the bot already uses for approvals and
   other admin actions.
+- **When Anthropic has a status incident, the whole community can now hear
+  about it, not just super admins.** (#1251) A status change was already
+  DMed to super admins only; if the member digest channel is configured and
+  enabled, that same message — word for word, nothing added — now also
+  posts there, so a member asking "is Claude down?" mid-incident gets an
+  answer without needing to know `check_status` exists. Deployments that
+  haven't set up the member digest channel, or have it switched off, see no
+  change at all.
 - **`project_remove_member` can now tell a removed member why.** (#1253) An
   admin can pass an optional one-line reason (e.g. the project wound down, or
   the member became inactive) that's appended to the removal DM #1241 already
@@ -226,6 +279,18 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-08-29
 
 ### Added
+- **A member added ahead of time — pre-registered or added via
+  `team_setup` — now also receives the admin-configured welcome message
+  when their access is approved, not just the community guidelines.**
+  (#1223) #1171 appended community guidelines to the approval DM sent when
+  a gated access request is approved, but the admin-configured welcome
+  text (`set_welcome_message`) was never included — so a member who never
+  generates a join/first-contact event (because they were pre-registered
+  or batch-added) never saw it, even though every organically-joining
+  member does. The welcome block is skipped for a member the bot has
+  already seen, so a guest who joins normally and is approved later still
+  gets it only once rather than twice; guidelines are unaffected and
+  always render as before. No new data is collected.
 - **The weekly admin digest's response-latency line now splits into auto-answer vs. mention/DM.** (#1220)
   The single blended time-to-first-answer line (#1210) could hide a regression in either bucket — replies in
   `AUTO_ANSWER_CHANNEL_IDS` channels running slow while mention/DM replies stay fine, or vice versa. Two more
@@ -255,6 +320,15 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   conversation-scoped aggregate the tool already used.
 
 ### Fixed
+- **`!reviewqueue`/`/reviewqueue` now show a real reports count instead of
+  a placeholder pointing at another command.** (#1227) Four of the five
+  lines showed a live number; the reports line always read a static "see
+  `list_reports` or `review_queue` (scoped to your conversations)" —
+  exactly the friction the shortcut exists to remove. It now renders the
+  caller-scoped open-reports count and oldest-age, computed with the same
+  scoping (`callerScope()`, admin exclusion) `review_queue`'s own handler
+  already uses, so the shortcut and the full tool can never show a
+  different number for the same admin.
 - **`!reviewqueue`/`/reviewqueue` now show the onboarding-queue line on a
   gated-access community, matching `review_queue`.** (#1216) #1208 added a
   sixth line to `review_queue` — how many guests are present but never added
