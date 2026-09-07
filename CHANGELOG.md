@@ -45,6 +45,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   the same non-blocking pattern as the promotion DM: a failed send never
   reverses the demotion or changes the reported outcome, only adding a short
   note to the acting super admin's reply if the DM didn't land.
+- **`delete_knowledge` now tells the members who flagged the removed
+  entry.** (#1319) `update_knowledge` and `merge_knowledge` already DM every
+  in-scope member who'd rated the fixed entry unhelpful; `delete_knowledge`
+  was the third remediation action an admin reaches for from
+  `list_low_rated_knowledge` and the one left silent, even though removal is
+  the more drastic outcome. It now sends the same best-effort, deduped,
+  capped DM, worded distinctly ("...has since been removed") from the
+  existing "...has since been corrected" wording so a rater can't mistake a
+  deletion notice for a correction — a failed send never changes
+  `delete_knowledge`'s own reported outcome.
 
 ### Fixed
 - **`my_data` (and its `/mydata`/`!mydata` mirrors) now reports your filed

@@ -142,16 +142,24 @@ async function collectUnhelpfulRaters(
  * silently skipped, matching every other `adapterFor` call site in this file
  * (accept/decline_knowledge_candidate above). notifyKnowledgeEntryFixed never
  * throws (it catches its own send failures), so this never affects
- * update_knowledge/merge_knowledge's own reported outcome.
+ * update_knowledge/merge_knowledge/delete_knowledge's own reported outcome.
+ *
+ * `removed` (issue #1319) is forwarded verbatim to notifyKnowledgeEntryFixed,
+ * selecting the "removed" wording for delete_knowledge's fan-out instead of
+ * the "fixed" wording update_knowledge/merge_knowledge use; defaults to
+ * `false` so those two call sites are unchanged.
  */
 async function notifyUnhelpfulRatersFixed(
   targets: Array<{ platform: Platform; userId: string }>,
   adapterFor: (platform: Platform) => PlatformAdapter | undefined,
+  removed = false,
 ): Promise<void> {
   await Promise.all(
     targets.map((target) => {
       const adapter = adapterFor(target.platform);
-      return adapter ? notifyKnowledgeEntryFixed(adapter, target.userId, target.platform) : Promise.resolve();
+      return adapter
+        ? notifyKnowledgeEntryFixed(adapter, target.userId, target.platform, undefined, undefined, removed)
+        : Promise.resolve();
     }),
   );
 }
@@ -527,9 +535,15 @@ export const knowledgeAdminTools = [
     minTier: 'admin',
     readOnlyHint: false,
     schema: { id: z.number().describe('Knowledge entry id (from list_knowledge or knowledge_search)') },
-    handler: async (args, { caller, requireConfirm, audited }) => {
+    handler: async (args, { caller, requireConfirm, audited, callerScope, adapterFor }) => {
       assertAtLeast(caller.role, 'admin', 'delete_knowledge');
       return requireConfirm(`delete knowledge entry #${args.id}`, 'admin', async () => {
+        // issue #1319: capture this entry's unhelpful raters BEFORE the
+        // deletion lands — same "before" timing update_knowledge/
+        // merge_knowledge use, so a successfully-deleted entry's rater
+        // history isn't lost to the delete.
+        const allowed = await callerScope();
+        const { targets: raterTargets, truncated } = await collectUnhelpfulRaters([args.id], allowed, caller);
         const { success, result } = await audited({
           actionKind: 'delete_knowledge',
           params: { id: args.id },
@@ -539,7 +553,11 @@ export const knowledgeAdminTools = [
             return 'deleted';
           },
         });
-        return success ? `Deleted knowledge entry #${args.id}.` : `Failed: ${result}`;
+        if (!success) return `Failed: ${result}`;
+        await notifyUnhelpfulRatersFixed(raterTargets, adapterFor, true);
+        let reply = `Deleted knowledge entry #${args.id}.`;
+        if (truncated) reply += KNOWLEDGE_FIX_NOTIFY_TRUNCATION_CAVEAT;
+        return reply;
       });
     },
   }),
