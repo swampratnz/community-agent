@@ -7,6 +7,7 @@ import {
   resolveModerationAppeal,
 } from '@swampratnz/agent-base/storage/repository.js';
 import { APPEAL_STALE_ALERT_SCAN_LIMIT } from '../../appealStaleAlert.js';
+import { getWithdrawnAppealIds } from '../../storage/appealWithdrawals.js';
 import { SUGGESTION_RESOLUTION_ECHO_CHARS, text, untrusted } from './helpers.js';
 import { notifyAppealResolved } from './notify.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
@@ -59,6 +60,14 @@ export const appealsAdminTools = [
             .slice(0, args.limit ?? 50)
         : await listAppeals(args.status, args.limit ?? 50);
       if (rows.length === 0) return text('No appeals found.');
+      // withdraw_appeal (issue #1278) consult: an appeal the member withdrew
+      // stays in `rows` (its own status is untouched — the withdrawal lives
+      // in the separate appeal_withdrawals table) but must read distinctly
+      // from a live one, so an admin never triages an appeal the member
+      // already retracted as if it were still open. With no appeal ever
+      // withdrawn this Set is always empty, so the rendered line is
+      // byte-identical to before this issue.
+      const withdrawnIds = await getWithdrawnAppealIds(rows.map((r) => r.id));
       // Truncation caveat (mirrors list_reports'/list_suggestions', #1259/
       // #1255 review): scanned hitting exactly APPEAL_STALE_ALERT_SCAN_LIMIT
       // means the DB may hold more matching rows than the single bounded
@@ -75,12 +84,14 @@ export const appealsAdminTools = [
         untrusted(
           'Moderation appeals',
           rows
-            .map(
-              (r) =>
-                `#${r.id} [${r.status}] ${r.platform} — ${r.userName ? sanitizeName(r.userName) : r.userId} ` +
+            .map((r) => {
+              const statusTag = withdrawnIds.has(r.id) ? `${r.status}, withdrawn by member` : r.status;
+              return (
+                `#${r.id} [${statusTag}] ${r.platform} — ${r.userName ? sanitizeName(r.userName) : r.userId} ` +
                 `(${r.userId}), ${r.activeWarnings}/${r.strikeLimit} active warnings` +
-                `${r.reason ? `: ${r.reason}` : ''} (${r.createdAt.toISOString()})`,
-            )
+                `${r.reason ? `: ${r.reason}` : ''} (${r.createdAt.toISOString()})`
+              );
+            })
             .join('\n') + truncationCaveat,
         ),
       );
@@ -116,6 +127,14 @@ export const appealsAdminTools = [
         actionKind: 'resolve_appeal',
         params: { id: args.id, status: args.status },
         run: async () => {
+          // withdraw_appeal consult (issue #1278), checked BEFORE
+          // resolveModerationAppeal so a withdrawn appeal never gets a
+          // status change or a resolution DM — the member already retracted
+          // it, so there is nothing left to resolve.
+          const withdrawn = await getWithdrawnAppealIds([args.id]);
+          if (withdrawn.has(args.id)) {
+            throw new Error(`Appeal #${args.id} was withdrawn by the member; nothing to resolve.`);
+          }
           const row = await resolveModerationAppeal(args.id, args.status, caller.userId);
           if (!row) throw new Error(`No appeal with id ${args.id}.`);
           state.row = row;

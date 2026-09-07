@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 // graph evaluates a notice consumer registers it explicitly here, first.
 import './support/registerNotices.js';
 import type { OutgoingMessage, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
+import { fakePolicyStore } from './support/fakePolicyStore.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -26,6 +27,7 @@ const {
   startReportStaleAlert,
 } = await import('../src/module/reportStaleAlert.js');
 const { WindowClosedError } = await import('@swampratnz/agent-base/platforms/whatsapp/cloudAdapter.js');
+const { REPORT_STALE_ALERT_POLICY_KEY } = await import('../src/module/storage/policies.js');
 
 type Platform = 'discord' | 'whatsapp';
 type ContentReport = {
@@ -189,6 +191,7 @@ test('SECURITY: the crossing-tick alert DM contains no report id, reporter, targ
     listAdminIdentities,
     listOpenReportsForAdmin,
     async () => [],
+    fakePolicyStore(),
   );
 
   await runOnce();
@@ -219,6 +222,7 @@ test('makeDefaultReportStaleAlertRun: an open-reports set with none older than t
     listAdminIdentities,
     listOpenReportsForAdmin,
     async () => [],
+    fakePolicyStore(),
   );
 
   await runOnce();
@@ -237,6 +241,7 @@ test('makeDefaultReportStaleAlertRun: alerts exactly once on the tick the stale 
     listAdminIdentities,
     listOpenReportsForAdmin,
     async () => [],
+    fakePolicyStore(),
   );
 
   await runOnce(); // 0 -> no alert
@@ -266,6 +271,7 @@ test('makeDefaultReportStaleAlertRun: the latch re-arms once the stale count ret
     listAdminIdentities,
     listOpenReportsForAdmin,
     async () => [],
+    fakePolicyStore(),
   );
 
   await runOnce(); // 0 -> 2, crosses
@@ -279,6 +285,133 @@ test('makeDefaultReportStaleAlertRun: the latch re-arms once the stale count ret
   await runOnce(); // crosses again
   assert.equal(dms.length, 2, 'a fresh crossing after returning to 0 fires a second, distinct alert');
 });
+
+test(
+  "makeDefaultReportStaleAlertRun: restart-safety — seeded from a store already holding an admin's own key " +
+    "active, that admin's still->=1 first tick does not re-send the DM",
+  async () => {
+    const { adapter, dms } = makeAdapter(true, { 'admin-0': ['convo-1'] });
+    const store = fakePolicyStore({ [REPORT_STALE_ALERT_POLICY_KEY]: ['discord:admin-0'] });
+    const listOpenReportsForAdmin = async () => [report({ ageHours: 60 })];
+    const listAdminIdentities = async () => admins([{}]);
+    const runOnce = makeDefaultReportStaleAlertRun(
+      [adapter],
+      listAdminIdentities,
+      listOpenReportsForAdmin,
+      async () => [],
+      store,
+    );
+
+    await runOnce();
+
+    assert.equal(
+      dms.length,
+      0,
+      'a fresh process must not re-fire for an already-active, still-stale backlog',
+    );
+  },
+);
+
+test(
+  "makeDefaultReportStaleAlertRun: an admin's re-arm is persisted synchronously and survives a restart — a " +
+    'fresh run reseeded from the written store alerts again on a later crossing',
+  async () => {
+    const { adapter, dms } = makeAdapter(true, { 'admin-0': ['convo-1'] });
+    const store = fakePolicyStore();
+    let staleCount = 2;
+    const listOpenReportsForAdmin = async () =>
+      Array.from({ length: staleCount }, (_, i) => report({ ageHours: 60, id: i }));
+    const listAdminIdentities = async () => admins([{}]);
+    const runOnce = makeDefaultReportStaleAlertRun(
+      [adapter],
+      listAdminIdentities,
+      listOpenReportsForAdmin,
+      async () => [],
+      store,
+    );
+
+    await runOnce(); // 0 -> 2, crosses
+    assert.equal(dms.length, 1);
+    assert.deepEqual(await store.readPolicy(REPORT_STALE_ALERT_POLICY_KEY), ['discord:admin-0']);
+
+    staleCount = 0;
+    await runOnce(); // re-arms, persisted synchronously — no commit() call needed
+    assert.deepEqual(await store.readPolicy(REPORT_STALE_ALERT_POLICY_KEY), []);
+
+    // Simulate a restart: a brand-new run, seeded from the same (now re-armed) store.
+    staleCount = 1;
+    const restarted = makeDefaultReportStaleAlertRun(
+      [adapter],
+      listAdminIdentities,
+      listOpenReportsForAdmin,
+      async () => [],
+      store,
+    );
+    await restarted(); // 0 -> 1, crosses again
+    assert.equal(
+      dms.length,
+      2,
+      'a fresh crossing after a persisted re-arm alerts again, even from a brand-new process',
+    );
+  },
+);
+
+test(
+  "SECURITY: per-admin isolation of persisted state — a two-admin run's crossing latch persists only the " +
+    "admin(s) whose own count actually crossed, never the other admin's key",
+  async () => {
+    const { adapter, dms } = makeAdapter(true, {
+      'admin-a': ['convo-a'],
+      'admin-b': ['convo-b'],
+    });
+    const store = fakePolicyStore();
+    const staleReport = report({ ageHours: 60, id: 1, conversationId: 'convo-a' });
+    const listOpenReportsForAdmin = async (scope: readonly string[]) =>
+      scope.includes(staleReport.conversationId) ? [staleReport] : [];
+    const listAdminIdentities = async () =>
+      admins([{ platformUserId: 'admin-a' }, { platformUserId: 'admin-b' }]);
+    const runOnce = makeDefaultReportStaleAlertRun(
+      [adapter],
+      listAdminIdentities,
+      listOpenReportsForAdmin,
+      async () => [],
+      store,
+    );
+
+    await runOnce();
+
+    assert.deepEqual(
+      dms.map((d) => d.userId),
+      ['admin-a'],
+    );
+    assert.deepEqual(
+      await store.readPolicy(REPORT_STALE_ALERT_POLICY_KEY),
+      ['discord:admin-a'],
+      "admin-b never crossed, so admin-b's key must never appear in the persisted active set",
+    );
+  },
+);
+
+test(
+  'makeDefaultReportStaleAlertRun: a malformed stored value (not an array) is treated as an empty active set, ' +
+    'with no throw and no suppressed alert',
+  async () => {
+    const { adapter, dms } = makeAdapter(true, { 'admin-0': ['convo-1'] });
+    const store = fakePolicyStore({ [REPORT_STALE_ALERT_POLICY_KEY]: 'not-an-array' });
+    const listOpenReportsForAdmin = async () => [report({ ageHours: 60 })];
+    const listAdminIdentities = async () => admins([{}]);
+    const runOnce = makeDefaultReportStaleAlertRun(
+      [adapter],
+      listAdminIdentities,
+      listOpenReportsForAdmin,
+      async () => [],
+      store,
+    );
+
+    await assert.doesNotReject(runOnce());
+    assert.equal(dms.length, 1, 'a malformed stored value must not suppress a genuine crossing');
+  },
+);
 
 test(
   'SECURITY: two admins with disjoint conversationsForUser scopes — admin A never alerts/counts a report only ' +
@@ -303,6 +436,7 @@ test(
       listAdminIdentities,
       listOpenReportsForAdmin,
       async () => [],
+      fakePolicyStore(),
     );
 
     await runOnce();
@@ -340,6 +474,7 @@ test(
       listAdminIdentities,
       listOpenReportsForAdmin,
       resolveViewerIds,
+      fakePolicyStore(),
     );
 
     await runOnce();
@@ -367,6 +502,7 @@ test('SECURITY: a WindowClosedError for one admin is queued via queueForWindowRe
     listAdminIdentities,
     listOpenReportsForAdmin,
     async () => [],
+    fakePolicyStore(),
   );
 
   await runOnce();
@@ -414,6 +550,7 @@ test(
       listAdminIdentities,
       listOpenReportsForAdmin,
       async () => [],
+      fakePolicyStore(),
     );
 
     await assert.doesNotReject(runOnce());
@@ -435,6 +572,7 @@ test('alertReportStale: an admin with no adapter matching its platform (or a dis
     listAdminIdentities,
     listOpenReportsForAdmin,
     async () => [],
+    fakePolicyStore(),
   );
 
   await assert.doesNotReject(runOnce());

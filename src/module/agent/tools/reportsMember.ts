@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
 import { config } from '@swampratnz/agent-base/config.js';
 import {
   countActiveWarnings,
@@ -7,11 +8,13 @@ import {
   createModerationAppeal,
   getLanguagePreference,
   isKnownUser,
+  listOwnAppeals,
   REPORT_RATE_LIMIT_PER_DAY,
   withdrawOwnReports,
   type LanguagePreference,
 } from '@swampratnz/agent-base/storage/repository.js';
 import { makeCooldownReserver } from '@swampratnz/agent-base/util/rateReservation.js';
+import { getWithdrawnAppealIds, recordAppealWithdrawal } from '../../storage/appealWithdrawals.js';
 import { text } from './helpers.js';
 import { ackReportedMessage, notifyAppealFiled, notifyReportFiled, notifyReportWithdrawn } from './notify.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
@@ -85,6 +88,25 @@ export function formatAppealModerationText(
 }
 
 /**
+ * Pure render for `withdraw_appeal`'s outcomes — none-to-withdraw, and
+ * withdrew (singular/plural) — the fourth sibling of `formatWithdrawReportText`
+ * above / `formatWithdrawSuggestionText` (feedback.ts) / `formatWithdrawKnowledgeTipConfirmText`
+ * (knowledgeMember.ts), issue #1278. `ids` is already scoped to the caller's
+ * own still-`'open'`, not-yet-withdrawn appeals by the handler; this function
+ * does no scoping itself, only formatting.
+ */
+export function formatWithdrawAppealText(ids: number[], language: LanguagePreference): string {
+  const mi = language === 'mi';
+  if (ids.length === 0) {
+    return mi ? 'Kāore he pīra tuwhera hei tango māu.' : 'You have no open appeals to withdraw.';
+  }
+  const list = ids.map((id) => `#${id}`).join(', ');
+  return mi
+    ? `Kua tangohia ${ids.length > 1 ? 'ō pīra' : 'tō pīra'} ${list}. Kāore ēnei e arotakehia.`
+    : `Withdrew your appeal${ids.length > 1 ? 's' : ''} ${list}. They won't be reviewed.`;
+}
+
+/**
  * appeal_moderation's optional free-text `reason` (issue #496) — same
  * bound treatment as `report_content`'s `reason`, since both are a short,
  * member-supplied explanation destined for an outbound admin DM.
@@ -110,6 +132,12 @@ const appealModerationCooldown = makeCooldownReserver();
 function reserveAppealSlot(key: string, cooldownHours: number): boolean {
   return appealModerationCooldown(key, cooldownHours * 60 * 60 * 1000);
 }
+
+// withdraw_appeal's candidate scan cap (issue #1278) — same "generous,
+// bounded fetch" reasoning as WITHDRAW_SUGGESTION_SCAN_LIMIT (feedback.ts):
+// appeal_moderation's own per-caller cooldown makes a real backlog of a
+// single member's still-open appeals far smaller than this in practice.
+const WITHDRAW_APPEAL_SCAN_LIMIT = 500;
 
 export const reportsMemberTools = [
   defineTool({
@@ -266,6 +294,49 @@ export const reportsMemberTools = [
       });
       const language = await getLanguagePreference(caller.platform, caller.userId);
       return text(formatAppealModerationText('sent', cooldownHours, language));
+    },
+  }),
+
+  // Appellant can retract their OWN open appeal(s) — the fourth sibling
+  // (issue #1278) of withdraw_report/withdraw_knowledge_tip/
+  // withdraw_suggestion, scoped via listOwnAppeals' own (platform, userId)
+  // predicate, so it can never touch another member's appeal. Unlike
+  // withdraw_report this never mutates the base moderation_appeals row (its
+  // status CHECK constraint is base-owned, with no 'withdrawn' value): the
+  // withdrawal is recorded in the module-owned appeal_withdrawals table
+  // instead, consulted by resolve_appeal/list_appeals/my_submissions rather
+  // than changing what those reads select.
+  defineTool({
+    name: 'withdraw_appeal',
+    description:
+      'Withdraw your OWN still-open moderation appeal(s) — use this if you filed one by mistake or want to ' +
+      'retract it before an admin reviews it. It only ever affects appeals YOU filed and only ones still ' +
+      "'open'; it cannot touch anyone else's appeal or one already resolved/dismissed. The appeal is marked " +
+      'withdrawn and kept on record (not deleted); resolve_appeal will refuse a withdrawn one.',
+    minTier: 'member',
+    readOnlyHint: false,
+    schema: {},
+    handler: async (_args, { caller }) => {
+      // SECURITY: tier is re-asserted here, matching withdraw_suggestion's
+      // own defensive double-check — not merely surface-gated by
+      // MEMBER_TOOLS.
+      assertAtLeast(caller.role, 'member', 'withdraw_appeal');
+      const own = await listOwnAppeals(caller.platform, caller.userId, WITHDRAW_APPEAL_SCAN_LIMIT);
+      const pending = own.filter((a) => a.status === 'open');
+      const alreadyWithdrawn =
+        pending.length > 0 ? await getWithdrawnAppealIds(pending.map((a) => a.id)) : new Set<number>();
+      const toWithdraw = pending.filter((a) => !alreadyWithdrawn.has(a.id));
+      const language = await getLanguagePreference(caller.platform, caller.userId);
+      if (toWithdraw.length === 0) {
+        return text(formatWithdrawAppealText([], language), true);
+      }
+      await Promise.all(toWithdraw.map((a) => recordAppealWithdrawal(a.id)));
+      return text(
+        formatWithdrawAppealText(
+          toWithdraw.map((a) => a.id),
+          language,
+        ),
+      );
     },
   }),
 ];

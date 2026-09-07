@@ -260,6 +260,14 @@ export const PROJECT_DUPLICATE_SEARCH_LIMIT = 3;
  * resolves it via `resolveSanitizedLabel` before constructing this outcome,
  * same convention as `find_helper`'s `requesterLabel`).
  *
+ * `matchSeekingCollaborators` (issue #1276) gates the note's
+ * `request_project_connection` clause on the MATCHED project's own
+ * `seekingCollaborators` flag — that handler refuses immediately whenever the
+ * target project isn't seeking (`notSeeking`, below), so suggesting it
+ * unconditionally recommended a call the bot already had the data to know
+ * would fail. The call site already has this boolean in hand from the
+ * `searchProjects` hit; no new query is added.
+ *
  * `created`'s optional `notifiedHelper` (issue #1200) appends one line only
  * when the same-call seekingCollaborators push (mirroring `find_helper`'s
  * match-and-notify path) actually reached an opted-in helper — never who,
@@ -275,7 +283,14 @@ export function formatShareProjectText(
     | { kind: 'notFound'; name: string }
     | { kind: 'created'; name: string; notifiedHelper?: boolean }
     | { kind: 'updated'; name: string }
-    | { kind: 'similar'; name: string; matchId: number; matchName: string; matchOwner: string },
+    | {
+        kind: 'similar';
+        name: string;
+        matchId: number;
+        matchName: string;
+        matchOwner: string;
+        matchSeekingCollaborators: boolean;
+      },
   language: LanguagePreference,
 ): string {
   const mi = language === 'mi';
@@ -320,6 +335,14 @@ export function formatShareProjectText(
       return mi ? `Kua whakahoutia a "${outcome.name}".` : `Updated "${outcome.name}".`;
     case 'similar': {
       const matchName = untrustedEntryContent(outcome.matchName);
+      if (!outcome.matchSeekingCollaborators) {
+        return mi
+          ? `Kua tohaina a "${outcome.name}" — ka kitea e ētahi atu mema mā te list_projects. Tuhinga: he rite ` +
+              `tēnei ki te kaupapa #${outcome.matchId} "${matchName}" a ${outcome.matchOwner} — tirohia te ` +
+              'list_projects.'
+          : `Shared "${outcome.name}" — other members can find it with list_projects. Note: this looks similar ` +
+              `to #${outcome.matchId} "${matchName}" by ${outcome.matchOwner} — check list_projects.`;
+      }
       return mi
         ? `Kua tohaina a "${outcome.name}" — ka kitea e ētahi atu mema mā te list_projects. Tuhinga: he rite ` +
             `tēnei ki te kaupapa #${outcome.matchId} "${matchName}" a ${outcome.matchOwner} — tirohia te ` +
@@ -850,7 +873,14 @@ export const socialTools = [
           const matchOwner = await resolveSanitizedLabel(match.platform, match.userId);
           return text(
             formatShareProjectText(
-              { kind: 'similar', name: args.name, matchId: match.id, matchName: match.name, matchOwner },
+              {
+                kind: 'similar',
+                name: args.name,
+                matchId: match.id,
+                matchName: match.name,
+                matchOwner,
+                matchSeekingCollaborators: Boolean(match.seekingCollaborators),
+              },
               language,
             ),
           );

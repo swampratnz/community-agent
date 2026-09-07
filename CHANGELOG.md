@@ -25,6 +25,20 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #1122 #1123 #1132
 -->
 
+## 2026-09-04
+
+### Fixed
+- **The CONFIRM prompt for filing a GitHub issue or dispatching a dev-team
+  delivery now shows the actual content, not just a label.** (#1299) A super
+  admin confirming `suggest_issue` used to see only the title — the body,
+  which becomes the entire text of a permanent public GitHub issue, never
+  appeared. Confirming `dev_team_dispatch`'s `deliver` mode (which makes real
+  repo changes and opens a PR) showed neither the title nor the task
+  description handed to the remote coding agent. Both CONFIRM notices now
+  include a bounded excerpt of the actual payload, the same truncation shape
+  `create_event` and `delete_member_note` already use, so the confirming
+  admin sees what they're actually approving before it goes out.
+
 ## 2026-09-01
 
 ### Added
@@ -45,6 +59,50 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   auditing for stale mutes to clear or escalate, or doing periodic block-list
   hygiene, can now ask for the longest-standing row first instead of only
   newest-first.
+- **`list_roster` gains `oldestFirst` too — the sixth and last review queue to
+  get it.** (#1285) An admin working the onboarding backlog (`list_roster`,
+  filter `not_members`) could only ever see the 50 most recently joined
+  guests, the exact opposite of who the 168h stale-onboarding DM nags about.
+  `oldestFirst: true` now sorts by earliest-joined-first instead, for every
+  filter, the same option every other admin review-queue list tool already
+  had.
+- **You can now withdraw a moderation appeal you filed.** (#1278)
+  `report_content`, `suggest_knowledge` and `suggest_improvement` already let
+  you retract one filed by mistake — `appeal_moderation` was the last of the
+  four member-contribution queues with no such lever. `withdraw_appeal`
+  retracts all of your own still-open appeals; once withdrawn, an admin's
+  `resolve_appeal` refuses it cleanly instead of resolving something you
+  already took back, and `list_appeals`/`my_submissions` both show it as
+  withdrawn rather than the stale "open" status.
+
+### Fixed
+- **The content-report stale-backlog nudge now survives a restart.** (#1271)
+  Every admin gets a DM once their own open content-report backlog has been
+  waiting more than 48h — the tightest-SLA, most safety-sensitive of the six
+  stale-queue alerts, since it's the harassment/spam/abuse report queue. A
+  redeploy while an admin's backlog was still open used to re-send that DM
+  for a backlog that hadn't actually changed, because (unlike its five
+  sibling alerts, already fixed) this one's "already alerted" state was
+  per-admin and lived only in memory. It's now persisted the same
+  restart-safe way as the others, so a routine redeploy no longer re-fires a
+  duplicate nudge.
+- **`community_guidelines` and `community_digest` now reply in te reo Māori
+  when there's nothing to show.** (#1274) A member with a standing te reo
+  Māori language preference asking about the community's rules when none are
+  set, or asking for their digest when there's nothing new, used to get a
+  fixed English fallback either way — even though `/guidelines`, `!guidelines`,
+  `/digest` and `!digest` already replied correctly for the same situation.
+  Both tools now select the same already-translated fallback text their
+  slash-command/text-command counterparts use.
+- **`share_project`'s duplicate-project note no longer suggests a connection
+  request that's guaranteed to be refused.** (#1276) When a shared project
+  landed above the near-duplicate similarity threshold against an existing
+  showcased project, the note always pointed you at
+  `request_project_connection` as a way to team up — even when the matched
+  project wasn't seeking collaborators, in which case that call refuses
+  immediately. The note now only suggests it when the matched project is
+  actually seeking collaborators; otherwise it stops after pointing you at
+  `list_projects`.
 
 ### Fixed
 - **The stale-suggestion admin nudge no longer counts a suggestion the member
@@ -76,6 +134,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   notes had silently gone empty. No new data is collected or retained — this
   is the same best-effort DM pattern the bot already uses for approvals and
   other admin actions.
+- **When Anthropic has a status incident, the whole community can now hear
+  about it, not just super admins.** (#1251) A status change was already
+  DMed to super admins only; if the member digest channel is configured and
+  enabled, that same message — word for word, nothing added — now also
+  posts there, so a member asking "is Claude down?" mid-incident gets an
+  answer without needing to know `check_status` exists. Deployments that
+  haven't set up the member digest channel, or have it switched off, see no
+  change at all.
 - **`project_remove_member` can now tell a removed member why.** (#1253) An
   admin can pass an optional one-line reason (e.g. the project wound down, or
   the member became inactive) that's appended to the removal DM #1241 already
