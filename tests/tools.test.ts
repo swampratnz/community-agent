@@ -7064,8 +7064,10 @@ test('community_info reply stays concise, not a wall of text (issue #92)', async
   // withdraw_suggestion clause (folded into the existing suggest_improvement
   // line, not a new one), and again for issue #1278's withdraw_appeal clause
   // (folded into the existing appeal_moderation line, not a new one), and
-  // again for issue #1287's knowledge_for_me line.
-  assert.ok(replyText.length < 2440, `reply should stay short; was ${replyText.length} chars`);
+  // again for issue #1287's knowledge_for_me line, and again for issue
+  // #1344's withdraw_project_note clause (folded into the existing project
+  // line, not a new one).
+  assert.ok(replyText.length < 2510, `reply should stay short; was ${replyText.length} chars`);
 });
 
 test('community_info appends the full ADMIN_CAPABILITIES_TEXT rundown for admin/super_admin callers, on top of the member content (issue #367)', async () => {
@@ -7161,6 +7163,7 @@ const MEMBER_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__project_recall', /shared memory/i],
   ['mcp__community__project_note', /Record decisions in a project/i],
   ['mcp__community__project_list', /list your projects/i],
+  ['mcp__community__withdraw_project_note', /withdraw a project note you recorded by mistake/i],
   ['mcp__community__community_guidelines', /guideline|rule/i],
   ['mcp__community__check_status', /known Anthropic outage/i],
   ['mcp__community__knowledge_search', /knowledge/i],
@@ -7279,7 +7282,7 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
     'X?"), or opt in/out of being notified for other members\' requests\n' +
     '- Pull the community digest on demand\n' +
     "- Record decisions in a project you're part of and search that project's shared memory later, or " +
-    'list your projects\n' +
+    'list your projects, or withdraw a project note you recorded by mistake\n' +
     '- Erase all your stored data any time ("forget me")';
 
   assert.equal(
@@ -7294,7 +7297,9 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
       'the suggest_knowledge line, issue #927 added the project_note/project_recall/project_list line, ' +
       'issue #1070 added the most_helpful_knowledge line, issue #1243 added the withdraw_suggestion clause ' +
       'to the suggest_improvement line, issue #1278 added the withdraw_appeal clause to the ' +
-      'appeal_moderation line, issue #1287 added the knowledge_for_me line; otherwise unchanged since #367)',
+      'appeal_moderation line, issue #1287 added the knowledge_for_me line, issue #1344 added the ' +
+      'withdraw_project_note clause to the project_note/project_recall/project_list line; otherwise ' +
+      'unchanged since #367)',
   );
 });
 
@@ -7468,8 +7473,9 @@ test('community_info: admin reply stays under a hard char cap, not a wall of tex
   // issue #1278's withdraw_appeal clause (the admin reply includes the full
   // member segment, so a member-segment addition grows this reply too);
   // bumped once more alongside the member cap for issue #1287's
-  // knowledge_for_me line (same reason).
-  assert.ok(adminReply.length < 4990, `admin reply should stay short; was ${adminReply.length} chars`);
+  // knowledge_for_me line (same reason); bumped once more alongside the
+  // member cap for issue #1344's withdraw_project_note clause (same reason).
+  assert.ok(adminReply.length < 5060, `admin reply should stay short; was ${adminReply.length} chars`);
 });
 
 test('SECURITY: community_info member-tier and guest-tier replies never name an admin/super_admin-only tool or contain any ADMIN_CAPABILITIES_TEXT-unique line (issue #367, issue #311)', async () => {
@@ -7620,9 +7626,10 @@ test('community_info: super_admin reply stays under a hard char cap, not a wall 
   // the member cap for issue #1243's withdraw_suggestion clause; bumped once
   // more alongside the member cap for issue #1278's withdraw_appeal clause;
   // bumped once more alongside the member cap for issue #1287's
-  // knowledge_for_me line.
+  // knowledge_for_me line; bumped once more alongside the member cap for
+  // issue #1344's withdraw_project_note clause.
   assert.ok(
-    superAdminReply.length < 5640,
+    superAdminReply.length < 5710,
     `super_admin reply should stay short; was ${superAdminReply.length} chars`,
   );
 });
@@ -24439,7 +24446,7 @@ function whoIsIntoHandler(caller: {
 
 /** Pull one project tool's handler out of a server built for `caller`. */
 function projectToolHandler(
-  name: 'project_recall' | 'project_note' | 'project_list',
+  name: 'project_recall' | 'project_note' | 'project_list' | 'withdraw_project_note',
   caller: { role?: 'member' | 'guest' | 'admin' | 'super_admin'; userId?: string; conversationId?: string },
 ) {
   const adapter = stubAdapter(async () => {});
@@ -25718,11 +25725,16 @@ test('SECURITY: project_recall/project_note/project_list refuse a guest-tier cal
     /Permission denied/,
     'project_list must refuse an open-mode guest even though it is in MEMBER_TOOLS',
   );
+  await assert.rejects(
+    () => projectToolHandler('withdraw_project_note', { role: 'guest' }).handler({ noteId: 1 }),
+    /Permission denied/,
+    'withdraw_project_note must refuse an open-mode guest even though it is in MEMBER_TOOLS',
+  );
 });
 
 // --- issue #1141: project_recall/project_note/project_list honour a standing 'mi' language preference ---
 
-test("the five project-notes notices (projectRecallEmpty/projectNoteInvalidProject/projectNoteRateLimited/projectNoteSaved/projectListEmpty) render the te reo Māori variant for language 'mi', the exact pre-existing English literal for 'auto'/unset, and actually differ between the two (issue #1141)", () => {
+test("the seven project-notes notices (projectRecallEmpty/projectNoteInvalidProject/projectNoteRateLimited/projectNoteSaved/projectListEmpty/projectNoteWithdrawn/projectNoteWithdrawRefused) render the te reo Māori variant for language 'mi', the exact pre-existing English literal for 'auto'/unset, and actually differ between the two (issue #1141, extended by issue #1344)", () => {
   assert.equal(
     notice('projectRecallEmpty', { language: 'mi' }),
     'Kāore he mea i ngā mahara tiritahi o te kaupapa e ōrite ana ki tērā (kāore rānei he kaupapa e watea ana ki a koe i konei).',
@@ -25746,25 +25758,41 @@ test("the five project-notes notices (projectRecallEmpty/projectNoteInvalidProje
     "You've already recorded 50 project notes in the last 24 hours. Try again later, or ask an admin " +
       'if the team needs a higher limit.',
   );
-  assert.equal(notice('projectNoteSaved', { language: 'mi' })('impact-lab'), 'Kua tuhia ki impact-lab.');
-  assert.equal(notice('projectNoteSaved')('impact-lab'), 'Recorded in impact-lab.');
+  assert.equal(
+    notice('projectNoteSaved', { language: 'mi' })('impact-lab', 142),
+    'Kua tuhia ki impact-lab [#142]. Ka taea e koe te whakahoki i tēnei wā, i tēnei wā mā te ' +
+      'withdraw_project_note mehemea ka hē koe.',
+  );
+  assert.equal(
+    notice('projectNoteSaved')('impact-lab', 142),
+    'Recorded in impact-lab [#142]. Withdraw it any time with withdraw_project_note if you make a mistake.',
+  );
   assert.equal(
     notice('projectListEmpty', { language: 'mi' }),
     'Kāore he kaupapa e watea ana ki a koe i roto i tēnei kōrero.',
   );
   assert.equal(notice('projectListEmpty'), 'You have no project accessible in this conversation.');
+  assert.equal(notice('projectNoteWithdrawn', { language: 'mi' })(142), 'Kua whakahokia te tuhinga #142.');
+  assert.equal(notice('projectNoteWithdrawn')(142), 'Withdrew note #142.');
+  assert.equal(
+    notice('projectNoteWithdrawRefused', { language: 'mi' }),
+    'Kāore tēnā tuhinga e noho ana, kāore rānei nāu i tuhi.',
+  );
+  assert.equal(notice('projectNoteWithdrawRefused'), "That note doesn't exist, or isn't one you recorded.");
 
-  for (const [id, arg] of [
-    ['projectRecallEmpty', undefined],
-    ['projectNoteInvalidProject', undefined],
-    ['projectNoteRateLimited', 50],
-    ['projectNoteSaved', 'impact-lab'],
-    ['projectListEmpty', undefined],
+  for (const [id, args] of [
+    ['projectRecallEmpty', []],
+    ['projectNoteInvalidProject', []],
+    ['projectNoteRateLimited', [50]],
+    ['projectNoteSaved', ['impact-lab', 142]],
+    ['projectListEmpty', []],
+    ['projectNoteWithdrawn', [142]],
+    ['projectNoteWithdrawRefused', []],
   ] as const) {
     const miValue = notice(id, { language: 'mi' });
     const enValue = notice(id);
-    const mi = typeof miValue === 'function' ? miValue(arg as never) : miValue;
-    const en = typeof enValue === 'function' ? enValue(arg as never) : enValue;
+    const mi = typeof miValue === 'function' ? (miValue as (...a: unknown[]) => string)(...args) : miValue;
+    const en = typeof enValue === 'function' ? (enValue as (...a: unknown[]) => string)(...args) : enValue;
     assert.notEqual(mi, en, `${id}'s 'mi' text must actually differ from its English text`);
   }
 });
@@ -25866,8 +25894,16 @@ test(
       project: slug,
       content: enNoteCanary,
     });
-    assert.equal(miSaved.content[0].text, notice('projectNoteSaved', { language: 'mi' })(slug));
-    assert.equal(enSaved.content[0].text, notice('projectNoteSaved')(slug));
+    // The saved note's id is DB-assigned, so pull it back out of each reply
+    // rather than guessing it, then assert the reply is byte-identical to
+    // notice()'s own rendering for that id (issue #1344 acceptance
+    // criterion 4).
+    const miSavedId = Number(miSaved.content[0].text.match(/\[#(\d+)\]/)?.[1]);
+    const enSavedId = Number(enSaved.content[0].text.match(/\[#(\d+)\]/)?.[1]);
+    assert.ok(Number.isInteger(miSavedId), 'the mi reply must carry the new note id');
+    assert.ok(Number.isInteger(enSavedId), 'the en reply must carry the new note id');
+    assert.equal(miSaved.content[0].text, notice('projectNoteSaved', { language: 'mi' })(slug, miSavedId));
+    assert.equal(enSaved.content[0].text, notice('projectNoteSaved')(slug, enSavedId));
     assert.doesNotMatch(miSaved.content[0].text, new RegExp(miNoteCanary));
     assert.doesNotMatch(enSaved.content[0].text, new RegExp(enNoteCanary));
 

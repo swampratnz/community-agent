@@ -128,6 +128,7 @@
   "personas.test.ts": 1,
   "pipelineOutcomes.test.ts": 2,
   "platformRegistry.test.ts": 3,
+  "projectNoteWithdrawal.test.ts": 2,
   "projectScope.test.ts": 16,
   "rateLimitNotice.router.test.ts": 2,
   "rbac.test.ts": 49,
