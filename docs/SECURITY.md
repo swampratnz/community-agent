@@ -3956,17 +3956,23 @@ of them today, so the feature does nothing until it runs under bosun.
   supervisor what it did; nothing bosun returns is executed here). This
   section is about the one credential involved, not a new tool or data
   access.
-- **The token is now covered by the exact-value redaction backstop.** Every
-  other outward credential (Discord bot token, DB URL, WhatsApp Cloud
-  tokens, the dev-team auth token, the GitHub issue-filing token) was already
-  registered with the `runtimeSecrets` seam that `redactSecrets` applies to
-  every adapter send path; `FLEET_SUPERVISOR_TOKEN` was the one exception,
-  read straight off `process.env` by agent-base's own
-  `readFleetHeartbeatConfig` with no module-side registration. `src/module/agentModule.ts`
-  now supplies a getter — `() => process.env.FLEET_SUPERVISOR_TOKEN` — via the
-  manifest's `runtimeSecrets` field, so if this value ever reached a chat
-  surface by accident, the same backstop that already redacts every other
-  credential would catch it too.
+- **The token is now covered by the exact-value redaction backstop.** The
+  backstop is agent-base's `runtimeSecrets()` (`agent/secrets.js`): a
+  hand-written base-side list (`config.llm.oauthToken`, `config.discord.botToken`,
+  `config.db.url`, the WhatsApp Cloud access/verify/app-secret tokens,
+  `config.devTeam.authToken`, `config.github.token`) concatenated with every
+  getter a module registered via the manifest's `runtimeSecrets` field, and
+  read fresh on every adapter send (`filterOutbound(..., runtimeSecrets(), ...)`
+  in the Discord/WhatsApp Cloud/Baileys adapters). So the dev-team auth token
+  and the GitHub issue-filing token were already covered — base-side, not by
+  anything in this repo — before this PR; `FLEET_SUPERVISOR_TOKEN` was the one
+  outward credential with no entry anywhere in that list, read straight off
+  `process.env` by agent-base's own `readFleetHeartbeatConfig` with no
+  registration at all. `src/module/agentModule.ts` now supplies a getter —
+  `() => process.env.FLEET_SUPERVISOR_TOKEN` — via the manifest's
+  `runtimeSecrets` field so it joins that same list, so if this value ever
+  reached a chat surface by accident, the same backstop that already redacts
+  every other credential would catch it too.
 - **Getter, not a captured value.** A rotated token is covered on the next
   send without re-registration, and an unset/empty value is safe — `redactSecrets`
   ignores empty/short values, matching `FleetHeartbeatConfig`'s own
