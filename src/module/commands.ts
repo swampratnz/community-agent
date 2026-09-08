@@ -3,6 +3,7 @@ import { config } from '@swampratnz/agent-base/config.js';
 import { logger } from '@swampratnz/agent-base/logger.js';
 import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 import { buildAdminDigestForAdmin } from './adminDigest.js';
+import { oldestNotMemberAgeDays } from './rosterStaleAlert.js';
 import { listOwnFindHelperRequests } from './storage/findHelperRequests.js';
 import { getWithdrawnSuggestionIds } from './storage/suggestionWithdrawals.js';
 import {
@@ -500,6 +501,16 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
         oldestOpenAppealAgeDays(msg.platform),
         rosterCounts(msg.platform),
       ]);
+      const onboardingQueueCount =
+        config.rbac.accessMode[msg.platform] === 'gated' ? roster.notMembers : null;
+      // Onboarding-queue oldest-age refinement (issue #1330) — only fetched
+      // once the count is already known non-empty, matching review_queue's
+      // own handler (digestsAdmin.ts): unlike the five sibling
+      // `oldest*AgeDays` aggregates, this is a row-fetch of up to 200 rows.
+      const onboardingQueueAgeDays =
+        onboardingQueueCount != null && onboardingQueueCount > 0
+          ? await oldestNotMemberAgeDays(msg.platform)
+          : null;
       // Unreachable in practice — createConfiguredAdapters() binds the
       // WhatsApp adapter before any message can be routed, same as
       // `!admindigest` below — but degrades to omitting the reports line
@@ -514,7 +525,8 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
           candidateAgeDays,
           appealCount,
           appealAgeDays,
-          onboardingQueueCount: config.rbac.accessMode[msg.platform] === 'gated' ? roster.notMembers : null,
+          onboardingQueueCount,
+          onboardingQueueAgeDays,
         });
       }
       const scope =
@@ -537,7 +549,8 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
         reportAgeDays,
         appealCount,
         appealAgeDays,
-        onboardingQueueCount: config.rbac.accessMode[msg.platform] === 'gated' ? roster.notMembers : null,
+        onboardingQueueCount,
+        onboardingQueueAgeDays,
       });
     },
   },

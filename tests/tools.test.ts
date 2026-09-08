@@ -252,6 +252,7 @@ const { superAdminIds } = await import('@swampratnz/agent-base/auth/roles.js');
 const { WhatsAppCloudAdapter, WindowClosedError } =
   await import('@swampratnz/agent-base/platforms/whatsapp/cloudAdapter.js');
 const { buildAdminDigestForAdmin } = await import('../src/module/adminDigest.js');
+const { oldestNotMemberAgeDays } = await import('../src/module/rosterStaleAlert.js');
 const { listAccessRequestResolutionsSince } =
   await import('../src/module/storage/accessRequestResolutions.js');
 const { recordSuggestionWithdrawal, getWithdrawnSuggestionIds } =
@@ -40574,7 +40575,7 @@ test(
       const onboardingLine = out.split('\n').find((l) => l.startsWith('- Onboarding queue:'));
       assert.ok(onboardingLine, "the onboarding-queue line must be present in 'gated' mode");
       const match = onboardingLine.match(
-        /^- Onboarding queue: (\d+) guest\(s\) waiting to be added — run `list_roster` \(filter: not_members\) to review\.$/,
+        /^- Onboarding queue: (\d+) guest\(s\) waiting to be added(?: \(oldest (\d+)d\))? — run `list_roster` \(filter: not_members\) to review\.$/,
       );
       assert.ok(match, `onboarding-queue line matches the expected format: ${onboardingLine}`);
       const expectedCount = (await rosterCounts('discord')).notMembers;
@@ -40584,6 +40585,16 @@ test(
         'the rendered count must equal rosterCounts(caller.platform).notMembers exactly',
       );
       assert.ok(expectedCount >= 1, 'the fixture guest must be reflected');
+      // The fixture guest guarantees at least one not_members row, so the
+      // oldest-age suffix (issue #1330) must be present once the count is
+      // non-empty — never omitted, matching every sibling oldest*AgeDays.
+      assert.ok(match[2] !== undefined, 'the oldest-age suffix must be present once the queue is non-empty');
+      const expectedAgeDays = await oldestNotMemberAgeDays('discord');
+      assert.equal(
+        Number(match[2]),
+        expectedAgeDays,
+        'the rendered age must equal oldestNotMemberAgeDays(caller.platform) exactly',
+      );
     } finally {
       config.rbac.accessMode.discord = wasAccessMode;
       await pool.query(`DELETE FROM server_roster WHERE user_id = $1`, [guestId]);
@@ -40651,8 +40662,8 @@ test(
       assert.ok(onboardingLine);
       assert.match(
         onboardingLine,
-        /^- Onboarding queue: \d+ guest\(s\) waiting to be added — run `list_roster` \(filter: not_members\) to review\.$/,
-        'the onboarding-queue line must be a bare integer count plus the fixed instructional text only',
+        /^- Onboarding queue: \d+ guest\(s\) waiting to be added(?: \(oldest \d+d\))? — run `list_roster` \(filter: not_members\) to review\.$/,
+        'the onboarding-queue line must be a bare integer count plus an optional bare day-count age suffix, plus the fixed instructional text only',
       );
       assert.ok(
         !out.includes(guestId) && !out.includes(guestDisplayName),
@@ -40662,6 +40673,42 @@ test(
       config.rbac.accessMode.discord = wasAccessMode;
       await pool.query(`DELETE FROM server_roster WHERE user_id = $1`, [guestId]);
     }
+  },
+);
+
+test(
+  'SECURITY: oldestNotMemberAgeDays returns a plain number or null only — never an object, array, or anything ' +
+    "containing a guest's userId/displayName — over a fixture with populated not_members rows (issue #1330)",
+  { skip },
+  async () => {
+    const guestId = `${RUN}-oldest-not-member-age-days-privacy-guest`;
+    const guestDisplayName = 'OLDEST-NOT-MEMBER-AGE-DAYS-SENTINEL-NAME';
+    try {
+      await upsertRosterMember({ platform: 'discord', userId: guestId, displayName: guestDisplayName });
+
+      const result = await oldestNotMemberAgeDays('discord');
+      assert.equal(typeof result, 'number', 'a populated not_members set must resolve to a bare number');
+      assert.ok(Number.isFinite(result), 'the age must be a finite whole-day count');
+      const serialized = JSON.stringify(result);
+      assert.ok(
+        !serialized.includes(guestId) && !serialized.includes(guestDisplayName),
+        "SECURITY: oldestNotMemberAgeDays's return value must never carry a guest's user id or display name",
+      );
+    } finally {
+      await pool.query(`DELETE FROM server_roster WHERE user_id = $1`, [guestId]);
+    }
+  },
+);
+
+test(
+  'oldestNotMemberAgeDays resolves to null, never 0, over an empty not_members row set for the platform (issue #1330)',
+  { skip },
+  async () => {
+    // whatsapp's server_roster is always empty in this suite (Discord-only
+    // roster, per adminDigest.ts's own doc comment) — a guaranteed-empty
+    // not_members set with no fixture cleanup required.
+    const result = await oldestNotMemberAgeDays('whatsapp');
+    assert.equal(result, null, 'an empty not_members set must resolve to null, never a fabricated 0');
   },
 );
 

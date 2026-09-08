@@ -3,6 +3,7 @@ import { logger } from '@swampratnz/agent-base/logger.js';
 import { startTrackedJob } from '@swampratnz/agent-base/jobs/trackedJob.js';
 import { untrustedEntryContent } from '@swampratnz/agent-base/agent/systemPrompt.js';
 import { WindowClosedError } from '@swampratnz/agent-base/platforms/types.js';
+import { oldestNotMemberAgeDays } from './rosterStaleAlert.js';
 import {
   answerFeedbackOriginSummary,
   answerFeedbackWeeklySummary,
@@ -1000,6 +1001,17 @@ export function buildAdminDigestMessage(
   approvedAccessRequestsCount: number = 0,
   declinedAccessRequestsCount: number = 0,
   accessRequestMedianResolutionHours: number | null = null,
+  // Whole-day age of the oldest `not_members` row (`oldestNotMemberAgeDays`,
+  // issue #1330) — the onboarding-queue line's own refinement, the sixth and
+  // last of `review_queue`'s six queues to get one, same append-only
+  // trailing-param, non-null-only shape as `oldestOpenAppealAgeDays`/
+  // `oldestPendingCandidateAgeDays` above. Only ever decorates the
+  // already-nonzero `notMembersCount > 0` line and only when non-null (an
+  // empty not_members set has no meaningful age), so the quiet case and
+  // every caller that hasn't wired this through are byte-identical to the
+  // pre-#1330 form. Bare integer only, same privacy convention as every
+  // signal above.
+  onboardingQueueAgeDays: number | null = null,
 ): string | null {
   if (
     clusters.length === 0 &&
@@ -1261,8 +1273,13 @@ export function buildAdminDigestMessage(
   }
   if (notMembersCount > 0) {
     // Bare integer only — no display name, user id, or joined_at ever reaches the DM (#460).
+    // Oldest-age fragment only when the aggregate resolved to a real day
+    // count — an empty not_members set (or a caller that hasn't wired the
+    // new param through) renders the line exactly as before #1330 (issue
+    // #1330).
+    const ageFragment = onboardingQueueAgeDays !== null ? `, oldest ${onboardingQueueAgeDays}d` : '';
     sections.push(
-      `🆕 ${notMembersCount} guest(s) joined but haven't been added as a member yet — run ` +
+      `🆕 ${notMembersCount} guest(s) joined but haven't been added as a member yet${ageFragment} — run ` +
         '`list_roster` (filter: not_members) to review.' +
         trendSuffix('notMembersCount', notMembersCount, previousCounts),
     );
@@ -1708,6 +1725,12 @@ export async function buildAdminDigestForAdmin(
   // (router.ts's guest-vs-member gate), so it's suppressed to 0 (line
   // omitted) rather than nagged (issue #460).
   const notMembersCount = config.rbac.accessMode[platform] === 'gated' ? roster.notMembers : 0;
+  // Onboarding-queue oldest-age refinement (issue #1330) — only fetched once
+  // notMembersCount is already known non-empty, matching review_queue's own
+  // handler (digestsAdmin.ts): unlike every sibling `oldest*AgeDays`
+  // aggregate above, this is a row-fetch of up to 200 rows, not a free
+  // MIN().
+  const onboardingQueueAgeDays = notMembersCount > 0 ? await oldestNotMemberAgeDays(platform) : null;
   // Every signal that can carry a trend suffix (issue #497) — the exact same
   // values just computed above, nothing re-derived. Returned to the caller on
   // every code path (including a quiet week where `message` is null) so the
@@ -1871,6 +1894,7 @@ export async function buildAdminDigestForAdmin(
     accessRequestBreakdown.approved,
     accessRequestBreakdown.declined,
     accessRequestBreakdown.medianResolutionHours,
+    onboardingQueueAgeDays,
   );
   return { message, currentCounts };
 }
