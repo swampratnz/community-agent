@@ -1143,7 +1143,10 @@ export function formatEngagementStats(s: Awaited<ReturnType<typeof engagementSta
  * rather than ever rendering a structurally meaningless "0 guests waiting"
  * on an `'open'`-mode platform. Callers must decide gating themselves via
  * `config.rbac.accessMode[platform] === 'gated'` and pass `null` otherwise —
- * this function never inspects platform or config.
+ * this function never inspects platform or config. `onboardingQueueAgeDays`
+ * (issue #1330) is that line's own oldest-age refinement — the same
+ * `ageSuffix` treatment as every other line, `null`/absent rendering no
+ * suffix (an empty queue, or a caller that hasn't wired it through).
  */
 export function formatReviewQueueSummary(counts: {
   accessRequestCount: number;
@@ -1157,6 +1160,7 @@ export function formatReviewQueueSummary(counts: {
   appealCount: number;
   appealAgeDays: number | null;
   onboardingQueueCount?: number | null;
+  onboardingQueueAgeDays?: number | null;
 }): string {
   const ageSuffix = (ageDays: number | null) => (ageDays !== null ? ` (oldest ${ageDays}d)` : '');
   const lines = [
@@ -1168,7 +1172,8 @@ export function formatReviewQueueSummary(counts: {
   ];
   if (counts.onboardingQueueCount != null) {
     lines.push(
-      `- Onboarding queue: ${counts.onboardingQueueCount} guest(s) waiting to be added — run \`list_roster\` (filter: not_members) to review.`,
+      `- Onboarding queue: ${counts.onboardingQueueCount} guest(s) waiting to be added` +
+        `${ageSuffix(counts.onboardingQueueAgeDays ?? null)} — run \`list_roster\` (filter: not_members) to review.`,
     );
   }
   // No trailing "see list_reports" note here: the reports line above now
@@ -1197,6 +1202,7 @@ export function formatReviewQueueSummaryWithoutReports(counts: {
   appealCount: number;
   appealAgeDays: number | null;
   onboardingQueueCount?: number | null;
+  onboardingQueueAgeDays?: number | null;
 }): string {
   const ageSuffix = (ageDays: number | null) => (ageDays !== null ? ` (oldest ${ageDays}d)` : '');
   const lines = [
@@ -1207,7 +1213,8 @@ export function formatReviewQueueSummaryWithoutReports(counts: {
   ];
   if (counts.onboardingQueueCount != null) {
     lines.push(
-      `- Onboarding queue: ${counts.onboardingQueueCount} guest(s) waiting to be added — run \`list_roster\` (filter: not_members) to review.`,
+      `- Onboarding queue: ${counts.onboardingQueueCount} guest(s) waiting to be added` +
+        `${ageSuffix(counts.onboardingQueueAgeDays ?? null)} — run \`list_roster\` (filter: not_members) to review.`,
     );
   }
   return (

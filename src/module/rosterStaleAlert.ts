@@ -75,6 +75,34 @@ function staleNotMembers(rows: readonly RosterEntry[], now: number): RosterEntry
 }
 
 /**
+ * Whole-day age of the oldest `not_members` row for `platform` (issue #1330
+ * — the onboarding queue's own `oldest*AgeDays`, the last of `review_queue`'s
+ * six queues to get one). Every sibling `oldest*AgeDays` is a framework
+ * `MIN(created_at)`-style aggregate imported from
+ * `@swampratnz/agent-base/storage/repository.js`; adding a sixth of that
+ * shape would be an agent-base change this repo cannot make, so this reuses
+ * the same `listRoster('not_members', ...)` scan `makeDefaultRosterStaleAlertRun`
+ * already runs above, reduced over `joinedAt` instead of filtered by
+ * threshold. Same accepted scan-limit tradeoff as that job: up to
+ * `ROSTER_STALE_ALERT_SCAN_LIMIT` (200) rows, the widest `listRoster` allows,
+ * so with more than 200 guests waiting the true oldest could be missed and
+ * the age understated — acceptable at this community's scale, not a bug to
+ * fix here. `null` over an empty row set, never `0`, matching every sibling
+ * `oldest*AgeDays`'s convention.
+ */
+export async function oldestNotMemberAgeDays(platform: Platform): Promise<number | null> {
+  const rows = await listRoster(
+    platform,
+    'not_members',
+    ROSTER_STALE_ALERT_SCAN_DAYS,
+    ROSTER_STALE_ALERT_SCAN_LIMIT,
+  );
+  if (rows.length === 0) return null;
+  const oldestMs = Math.min(...rows.map((row) => row.joinedAt.getTime()));
+  return Math.floor((Date.now() - oldestMs) / 86_400_000);
+}
+
+/**
  * The platforms this staleness signal means anything on — reusing
  * `adminDigest.ts:1252`'s exact condition (`config.rbac.accessMode[platform]
  * === 'gated'`): an `'open'`-mode `not_members` row already has full

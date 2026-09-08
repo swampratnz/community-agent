@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
 import { config } from '@swampratnz/agent-base/config.js';
 import { buildAdminDigestForAdmin } from '../../adminDigest.js';
+import { oldestNotMemberAgeDays } from '../../rosterStaleAlert.js';
 import {
   countAccessRequests,
   countOpenAppeals,
@@ -91,7 +92,7 @@ export const digestsAdminTools = [
       'reports, appeals, and the onboarding queue (guests present who were never added as a member) — each ' +
       'with its current pending/open count, so triage starts with one glance instead of polling five separate ' +
       "list_* tools plus list_roster in turn. Every line also shows the oldest item's age in whole days once " +
-      'that queue is non-empty (the onboarding-queue line never does). Reports reflect only your own ' +
+      'that queue is non-empty, including the onboarding-queue line. Reports reflect only your own ' +
       'conversation scope, same as list_reports (never a guild-wide total); appeals reflect only your own ' +
       "platform, same as list_appeals; the onboarding-queue line only appears when your platform's access mode " +
       "is 'gated' (an 'open'-mode not_members row already has full member-tool access, so the count is " +
@@ -150,8 +151,14 @@ export const digestsAdminTools = [
       // meaningless nag there and the line is omitted entirely, never shown
       // as a zero.
       if (config.rbac.accessMode[caller.platform] === 'gated') {
+        // The onboarding queue's own oldest-age line (issue #1330, the sixth
+        // and last queue to get one) — only fetched once we already know the
+        // queue is non-empty, since unlike the five sibling `oldest*AgeDays`
+        // aggregates this is a row-fetch of up to 200 rows, not a free MIN().
+        const onboardingQueueAgeDays =
+          roster.notMembers > 0 ? await oldestNotMemberAgeDays(caller.platform) : null;
         lines.push(
-          `- Onboarding queue: ${roster.notMembers} guest(s) waiting to be added — run \`list_roster\` (filter: not_members) to review.`,
+          `- Onboarding queue: ${roster.notMembers} guest(s) waiting to be added${ageSuffix(onboardingQueueAgeDays)} — run \`list_roster\` (filter: not_members) to review.`,
         );
       }
       return text(`📋 Review queue\n${lines.join('\n')}`);

@@ -77,6 +77,7 @@ const {
   medianReportResolutionHours,
   FRESHNESS_DAYS,
 } = await import('../src/module/adminDigest.js');
+const { oldestNotMemberAgeDays } = await import('../src/module/rosterStaleAlert.js');
 const { recordAccessRequestResolution, listAccessRequestResolutionsSince } =
   await import('../src/module/storage/accessRequestResolutions.js');
 const { readFileSync } = await import('node:fs');
@@ -7707,12 +7708,25 @@ test(
       const line = sent[0].text.split('\n').find((l) => l.includes('🆕'));
       assert.ok(line, "the onboarding-queue line is present in 'gated' mode");
       const match = line.match(
-        /^🆕 (\d+) guest\(s\) joined but haven't been added as a member yet — run `list_roster` \(filter: not_members\) to review\.$/,
+        /^🆕 (\d+) guest\(s\) joined but haven't been added as a member yet(?:, oldest (\d+)d)? — run `list_roster` \(filter: not_members\) to review\.$/,
       );
       assert.ok(match, `onboarding-queue line matches the expected format: ${line}`);
       assert.ok(
         Number(match[1]) >= 1,
         'notMembersCount reflects at least the one fixture just inserted via rosterCounts(admin.platform)',
+      );
+      // The fixture guest guarantees at least one not_members row, so the
+      // oldest-age fragment (issue #1330) must be present once the count is
+      // non-empty — never omitted, matching every sibling oldest*AgeDays.
+      assert.ok(
+        match[2] !== undefined,
+        'the oldest-age fragment must be present once the queue is non-empty',
+      );
+      const expectedAgeDays = await oldestNotMemberAgeDays('discord');
+      assert.equal(
+        Number(match[2]),
+        expectedAgeDays,
+        'the rendered age must equal oldestNotMemberAgeDays(admin.platform) exactly',
       );
     } finally {
       config.rbac.accessMode.discord = wasAccessMode;

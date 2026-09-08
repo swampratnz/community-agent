@@ -27,6 +27,19 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 
 ## 2026-09-08
 
+### Added
+- **The onboarding-queue line in `review_queue`, `admin_digest`, and their
+  `!reviewqueue`/`/reviewqueue`/`!admindigest`/`/admindigest` shortcuts now
+  shows the oldest waiting guest's age, matching the other five review
+  queues.** (#1330) Access requests, suggestions, knowledge candidates,
+  reports, and appeals have all shown an "oldest Nd" figure alongside their
+  count for a while now — the onboarding queue (guests present but never
+  added as a member) was the one line left showing a bare count, with no way
+  to tell a guest who joined three hours ago from one who's been waiting
+  three weeks. It now renders the same age suffix as its five siblings,
+  still only on a `'gated'`-access-mode community and only once at least one
+  guest is waiting.
+
 ### Fixed
 - **An admin can no longer kick, ban, or timeout another admin (or a super
   admin) on Discord with just their own CONFIRM reply.** (#1323) `block_user`

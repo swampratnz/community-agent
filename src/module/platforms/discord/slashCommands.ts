@@ -10,6 +10,7 @@ import { getWithdrawnSuggestionIds } from '../../storage/suggestionWithdrawals.j
 import { notice } from '../../strings/notices.js';
 import { buildMemberDigestContent } from '../../memberDigest.js';
 import { buildAdminDigestForAdmin } from '../../adminDigest.js';
+import { oldestNotMemberAgeDays } from '../../rosterStaleAlert.js';
 import { formatStatusMessage, getStatusCache } from '../../status/anthropicStatus.js';
 import {
   formatMyDataText,
@@ -724,6 +725,12 @@ async function handleReviewQueue(
     rosterCounts('discord'),
   ]);
   const onboardingQueueCount = config.rbac.accessMode.discord === 'gated' ? roster.notMembers : null;
+  // Onboarding-queue oldest-age refinement (issue #1330) — only fetched once
+  // the count is already known non-empty, matching review_queue's own
+  // handler (digestsAdmin.ts): unlike the five sibling `oldest*AgeDays`
+  // aggregates, this is a row-fetch of up to 200 rows.
+  const onboardingQueueAgeDays =
+    onboardingQueueCount != null && onboardingQueueCount > 0 ? await oldestNotMemberAgeDays('discord') : null;
   let message: string;
   // Unreachable in practice — `bindCommunitySlashCommands` binds the
   // adapter before any interaction can be dispatched, same as
@@ -740,6 +747,7 @@ async function handleReviewQueue(
       appealCount,
       appealAgeDays,
       onboardingQueueCount,
+      onboardingQueueAgeDays,
     });
   } else {
     const scope =
@@ -768,6 +776,7 @@ async function handleReviewQueue(
       appealCount,
       appealAgeDays,
       onboardingQueueCount,
+      onboardingQueueAgeDays,
     });
   }
   recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));

@@ -2780,6 +2780,8 @@ function mockPoolRoleAndReviewQueue(
     appealAgeDays?: number | null;
     linkedIdentityRows?: Array<{ platform: string; platform_user_id: string }>;
     notMembers?: number;
+    /** `listRoster(..., 'not_members', ...)` rows behind `oldestNotMemberAgeDays` (issue #1330), raw snake_case DB shape — distinct from the `rosterCounts` aggregate above. */
+    notMemberRows?: Array<{ joined_at: Date }>;
   } = {},
 ): Array<{ sql: string; params: unknown[] }> {
   const {
@@ -2795,6 +2797,7 @@ function mockPoolRoleAndReviewQueue(
     appealAgeDays = null,
     linkedIdentityRows = [],
     notMembers = 0,
+    notMemberRows = [],
   } = counts;
   const calls: Array<{ sql: string; params: unknown[] }> = [];
   t.mock.method(pool, 'query', (async (sql: string, params: unknown[] = []) => {
@@ -2833,6 +2836,13 @@ function mockPoolRoleAndReviewQueue(
       return sql.includes('age_days')
         ? { rows: [{ age_days: appealAgeDays }], rowCount: 0 }
         : { rows: [{ n: appealCount }], rowCount: 0 };
+    }
+    // listRoster('not_members', ...) — the row-returning onboarding-queue-age
+    // query behind oldestNotMemberAgeDays (issue #1330), told apart from
+    // rosterCounts' aggregate query below by its distinguishing `is_member`
+    // column (specific-first, same discipline as every pair above).
+    if (sql.includes('is_member')) {
+      return { rows: notMemberRows, rowCount: 0 };
     }
     if (sql.includes('FROM server_roster')) {
       return { rows: [{ total: 0, joined_week: 0, left_week: 0, not_members: notMembers }], rowCount: 0 };
@@ -3307,9 +3317,16 @@ test("a successful !reviewqueue invocation calls recordShortcutHit('whatsapp_tex
 
 test(
   "!reviewqueue renders a sixth onboarding-queue line, byte-identical to review_queue's own, when " +
-    "msg.platform's access mode is 'gated' (issue #1216 acceptance criteria 1, 3)",
+    "msg.platform's access mode is 'gated' (issue #1216 acceptance criteria 1, 3; issue #1330 " +
+    'oldest-age refinement)',
   async (t) => {
-    mockPoolRoleAndReviewQueue(t, 'admin', { notMembers: 4 });
+    mockPoolRoleAndReviewQueue(t, 'admin', {
+      notMembers: 4,
+      // Built EAGERLY, before trigger() lets oldestNotMemberAgeDays capture
+      // its own clock — same reasoning as tests/rosterStaleAlert.test.ts's
+      // fixtures (PR #1071's flake).
+      notMemberRows: [{ joined_at: new Date(Date.now() - 5 * 86_400_000) }],
+    });
     const wasAccessMode = config.rbac.accessMode.whatsapp;
     config.rbac.accessMode.whatsapp = 'gated';
     try {
@@ -3321,7 +3338,7 @@ test(
 
       assert.match(
         sent[0].text,
-        /- Onboarding queue: 4 guest\(s\) waiting to be added — run `list_roster` \(filter: not_members\) to review\.$/m,
+        /- Onboarding queue: 4 guest\(s\) waiting to be added \(oldest 5d\) — run `list_roster` \(filter: not_members\) to review\.$/m,
       );
     } finally {
       config.rbac.accessMode.whatsapp = wasAccessMode;

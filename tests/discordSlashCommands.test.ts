@@ -216,6 +216,8 @@ function mockPool(
     linkedIdentityRows?: PoolRow[];
     /** `rosterCounts(...).notMembers` for `/reviewqueue`'s onboarding-queue line (issue #1216). */
     notMembers?: number;
+    /** `listRoster(..., 'not_members', ...)` rows behind `oldestNotMemberAgeDays` (issue #1330), raw snake_case DB shape — distinct from the `rosterCounts` aggregate above. */
+    notMemberRows?: PoolRow[];
     /** `listMutedMembers`' rows for `/mutedlist` (issue #1114), raw snake_case DB shape. */
     mutedMemberRows?: PoolRow[];
     /** `listBlockedUsers`' rows for `/blockedlist` (issue #1145), raw snake_case DB shape. */
@@ -342,10 +344,15 @@ function mockPool(
     if (sql.includes('FROM moderation_appeals')) {
       return { rows: opts.appealRows ?? [], rowCount: 0 };
     }
-    // rosterCounts (issue #1216's /reviewqueue sixth line) — the only query
-    // against this table in this file, so no specific-first disambiguation
-    // is needed, matching countAccessRequests'/listBlockedUsers' single-table
-    // simplicity above.
+    // listRoster('not_members', ...) — the row-returning onboarding-queue-age
+    // query behind oldestNotMemberAgeDays (issue #1330), told apart from
+    // rosterCounts' aggregate query below by its distinguishing `is_member`
+    // column (specific-first, same discipline as every pair above).
+    if (sql.includes('is_member')) {
+      return { rows: opts.notMemberRows ?? [], rowCount: 0 };
+    }
+    // rosterCounts (issue #1216's /reviewqueue sixth line) — the only other
+    // query against this table in this file.
     if (sql.includes('FROM server_roster')) {
       return {
         rows: [{ total: 0, joined_week: 0, left_week: 0, not_members: opts.notMembers ?? 0 }],
@@ -2672,6 +2679,11 @@ test(
       appealCount: 6,
       appealAgeDays: 1,
       notMembers: 8,
+      // Built EAGERLY, before handleInteraction() lets oldestNotMemberAgeDays
+      // capture its own clock — same reasoning as tests/rosterStaleAlert.test.ts's
+      // fixtures (PR #1071's flake): 5 days comfortably clears the sub-second
+      // scheduling noise between fixture construction and the read.
+      notMemberRows: [{ joined_at: new Date(Date.now() - 5 * 86_400_000) }],
     });
     const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
     bindCommunitySlashCommands(adapter);
@@ -2692,12 +2704,26 @@ test(
       (c) =>
         c.sql.includes('FROM moderation_appeals') && (c.sql.includes('AS n') || c.sql.includes('age_days')),
     );
-    const rosterCalls = calls.filter((c) => c.sql.includes('FROM server_roster'));
+    // rosterCounts' aggregate query and listRoster('not_members', ...)'s
+    // row query (behind oldestNotMemberAgeDays, issue #1330) both select
+    // `FROM server_roster` — told apart by listRoster's distinguishing
+    // `is_member` column, same discipline as every other pair above.
+    const rosterCalls = calls.filter(
+      (c) => c.sql.includes('FROM server_roster') && !c.sql.includes('is_member'),
+    );
+    const notMemberRowCalls = calls.filter(
+      (c) => c.sql.includes('FROM server_roster') && c.sql.includes('is_member'),
+    );
     assert.equal(accessCalls.length, 2, 'access requests must use the count+age pair, no arguments');
     assert.equal(suggestionCalls.length, 2, 'suggestions must use the count+age pair, no arguments');
     assert.equal(candidateCalls.length, 2, 'knowledge candidates must use the count+age pair, no arguments');
     assert.equal(appealCalls.length, 2, 'appeals must use the count+age pair, scoped by platform');
     assert.equal(rosterCalls.length, 1, 'rosterCounts must be called exactly once for the onboarding line');
+    assert.equal(
+      notMemberRowCalls.length,
+      1,
+      'oldestNotMemberAgeDays must be called exactly once, since notMembers > 0',
+    );
     for (const c of [...accessCalls, ...suggestionCalls, ...candidateCalls]) {
       assert.deepEqual(c.params, [], 'guild-wide reads must take no arguments, matching review_queue');
     }
@@ -2715,6 +2741,13 @@ test(
         "rosterCounts must be scoped to the command's own platform only",
       );
     }
+    for (const c of notMemberRowCalls) {
+      assert.equal(
+        c.params[0],
+        'discord',
+        "oldestNotMemberAgeDays must be scoped to the command's own platform only",
+      );
+    }
     assert.match(replies[0].content, /Access requests: 7 pending \(oldest 4d\)/);
     assert.match(replies[0].content, /Suggestions: 5 pending \(oldest 2d\)/);
     assert.match(replies[0].content, /Knowledge candidates: 3 pending \(oldest 9d\)/);
@@ -2723,10 +2756,10 @@ test(
     assert.ok(
       replies[0].content.includes(
         stripEmDashes(
-          '- Onboarding queue: 8 guest(s) waiting to be added — run `list_roster` (filter: not_members) to review.',
+          '- Onboarding queue: 8 guest(s) waiting to be added (oldest 5d) — run `list_roster` (filter: not_members) to review.',
         ),
       ),
-      'the onboarding-queue line must be present with the rosterCounts-derived count',
+      'the onboarding-queue line must be present with the rosterCounts-derived count and oldestNotMemberAgeDays-derived age',
     );
   },
 );
