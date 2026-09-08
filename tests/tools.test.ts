@@ -23662,15 +23662,12 @@ test('SECURITY: react_to_message enforces a per-user daily reaction cap (issue #
 });
 
 test(
-  "formatReactToMessageText renders te reo Māori for all six react_to_message outcomes when language is " +
+  'formatReactToMessageText renders te reo Māori for all six react_to_message outcomes when language is ' +
     "'mi', and the exact pre-existing English string for 'auto'/'en' otherwise — emoji/platform/messageId/" +
     'limit interpolations are unchanged in both languages (issue #1328)',
   () => {
     for (const language of ['auto', 'en'] as const) {
-      assert.equal(
-        formatReactToMessageText({ kind: 'success', emoji: '✅' }, language),
-        'Reacted ✅.',
-      );
+      assert.equal(formatReactToMessageText({ kind: 'success', emoji: '✅' }, language), 'Reacted ✅.');
       assert.equal(
         formatReactToMessageText({ kind: 'platform_unavailable', platform: 'whatsapp' }, language),
         "Reactions aren't available on whatsapp.",
@@ -23697,10 +23694,7 @@ test(
     assert.notEqual(miSuccess, formatReactToMessageText({ kind: 'success', emoji: '✅' }, 'en'));
     assert.match(miSuccess, /✅/);
 
-    const miPlatform = formatReactToMessageText(
-      { kind: 'platform_unavailable', platform: 'whatsapp' },
-      'mi',
-    );
+    const miPlatform = formatReactToMessageText({ kind: 'platform_unavailable', platform: 'whatsapp' }, 'mi');
     assert.notEqual(
       miPlatform,
       formatReactToMessageText({ kind: 'platform_unavailable', platform: 'whatsapp' }, 'en'),
@@ -23770,10 +23764,7 @@ test(
     const enNoId = await reactToMessageHandler(adapter, { userId: enUser, conversationId: conv }).handler({
       emoji: '✅',
     });
-    assert.equal(
-      enNoId.content[0]?.text,
-      'No message to react to — the current message has no visible id.',
-    );
+    assert.equal(enNoId.content[0]?.text, 'No message to react to — the current message has no visible id.');
 
     // unknown_message: a messageId the bot has never seen in this conversation.
     const unseenId = `${conv}-never-seen`;

@@ -43,6 +43,13 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   caveats, so it could hand back a flagged-unhelpful or conflicting entry
   with no warning at all. It now carries the same low-rated and conflict
   notes as the rest of the knowledge base.
+- **Reacting to a message with `react_to_message` now replies in te reo Māori
+  for members who've set that language preference.** (#1328) Two earlier
+  sweeps (#1147, #1176) each claimed to have covered every member tool's
+  replies, but both missed this one — all six of its replies (reacted,
+  reaction limit hit, message not found, and so on) were English-only
+  regardless of your preference. They now honour it, the same as every other
+  member tool.
 
 ## 2026-09-07
 

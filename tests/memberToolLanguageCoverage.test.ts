@@ -57,7 +57,7 @@ test(
     assert.deepEqual(
       uncovered,
       [],
-      'these minTier: \'member\' tool files have no getLanguagePreference call and are not on the ' +
+      "these minTier: 'member' tool files have no getLanguagePreference call and are not on the " +
         `explicit allowlist: ${uncovered.join(', ')} — every member-tool reply must honour a standing ` +
         'language preference, or be added to ALLOWLIST here with a documented reason',
     );
