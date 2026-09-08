@@ -83,13 +83,14 @@ test('SECURITY: AC2 — AGENT_SKILLS_ENABLED=true adds Skill to tools and loads 
         'tool-use-and-structured-output-design',
         'agent-security-and-untrusted-input-design',
         'multi-agent-and-subagent-orchestration-design',
+        'claude-build-surface-selection',
       ],
       `${role}: skills must be exactly ['prompt-review', 'model-and-plan-selection', ` +
         `'agent-architecture-review', 'project-showcase', 'claude-code-setup', 'getting-started', ` +
         `'knowledge-contribution', 'debug-claude-api-error', 'member-connection', 'api-cost-and-latency', ` +
         `'rag-and-retrieval-design', 'mcp-server-design', 'eval-and-testing-design', ` +
         `'tool-use-and-structured-output-design', 'agent-security-and-untrusted-input-design', ` +
-        `'multi-agent-and-subagent-orchestration-design']`,
+        `'multi-agent-and-subagent-orchestration-design', 'claude-build-surface-selection']`,
     );
   }
 });
@@ -114,6 +115,7 @@ test("SECURITY: AC6/AC7 (#755) — skills is always the literal ENABLED_SKILLS a
       'tool-use-and-structured-output-design',
       'agent-security-and-untrusted-input-design',
       'multi-agent-and-subagent-orchestration-design',
+      'claude-build-surface-selection',
     ]);
     assert.notEqual(opts.skills, 'all');
   }
@@ -950,6 +952,85 @@ test(
       body,
       /out of scope/i,
       'SKILL.md must state hand-off concerns are out of scope for this skill',
+    );
+  },
+);
+
+test(
+  'SECURITY: issue #1338 — claude-build-surface-selection resolves to the bundled SKILL.md, grants no ' +
+    "new tool access, and changes no role's disallowedTools",
+  async () => {
+    const { toolsForRole } = await import('@swampratnz/agent-base/auth/rbac.js');
+    const skillPath = join(
+      dirname(fileURLToPath(import.meta.url)),
+      '../src/module/agent/skills/claude-build-surface-selection/SKILL.md',
+    );
+    const body = readFileSync(skillPath, 'utf8');
+    assert.match(
+      body,
+      /^---\nname: claude-build-surface-selection\n/,
+      'SKILL.md must carry valid claude-build-surface-selection front-matter',
+    );
+    for (const role of ['guest', 'member', 'admin', 'super_admin'] as const) {
+      const opts = buildQueryOptions(role, 'prompt', {}, null, 'conv-1', 'discord');
+      assert.ok(
+        opts.skills?.includes('claude-build-surface-selection'),
+        `${role}: skills must include claude-build-surface-selection when the flag is on`,
+      );
+      const webSearch = role === 'admin' || role === 'super_admin';
+      assert.deepEqual(
+        opts.disallowedTools,
+        ['Task', 'WebFetch', ...(webSearch ? [] : ['WebSearch'])],
+        `${role}: disallowedTools must be unaffected by adding claude-build-surface-selection to ENABLED_SKILLS`,
+      );
+      const expected = [...toolsForRole(role, 'discord'), ...(webSearch ? ['WebSearch'] : [])].filter(
+        (t) => !(FEATURE_FLAGGED_TOOLS as readonly string[]).includes(t),
+      );
+      assert.deepEqual(
+        [...opts.allowedTools].sort(),
+        [...expected].sort(),
+        `${role}: allowedTools must be unaffected by claude-build-surface-selection — no new MCP tool surface`,
+      );
+    }
+  },
+);
+
+test(
+  'SECURITY: issue #1338 AC #4 — claude-build-surface-selection SKILL.md contains no reference to this ' +
+    "deployment's own internal tool names, RBAC tier names, table names, or infrastructure",
+  () => {
+    const skillPath = join(
+      dirname(fileURLToPath(import.meta.url)),
+      '../src/module/agent/skills/claude-build-surface-selection/SKILL.md',
+    );
+    const body = readFileSync(skillPath, 'utf8');
+    assert.doesNotMatch(
+      body,
+      /systemPrompt\.ts|tool registry|RBAC internals|src\/module|community_users|guest\/member\/admin|super_admin/i,
+      "SKILL.md must not reference this deployment's own internal tool/tier/table names or infrastructure",
+    );
+  },
+);
+
+test(
+  'issue #1338 AC #1 — claude-build-surface-selection SKILL.md hands off to claude-code-setup, ' +
+    'getting-started, and model-and-plan-selection rather than restating their guidance',
+  () => {
+    const skillPath = join(
+      dirname(fileURLToPath(import.meta.url)),
+      '../src/module/agent/skills/claude-build-surface-selection/SKILL.md',
+    );
+    const body = readFileSync(skillPath, 'utf8');
+    assert.match(
+      body,
+      /claude-code-setup/,
+      'SKILL.md must hand off Claude-Code-specific install/auth questions to claude-code-setup',
+    );
+    assert.match(body, /getting-started/, 'SKILL.md must hand off sequencing questions to getting-started');
+    assert.match(
+      body,
+      /model-and-plan-selection/,
+      'SKILL.md must hand off billing/plan-inclusion questions to model-and-plan-selection',
     );
   },
 );

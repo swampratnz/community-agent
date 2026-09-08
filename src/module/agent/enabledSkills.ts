@@ -39,6 +39,7 @@ export const ENABLED_SKILLS = [
   'tool-use-and-structured-output-design',
   'agent-security-and-untrusted-input-design',
   'multi-agent-and-subagent-orchestration-design',
+  'claude-build-surface-selection',
 ] as const;
 
 /**
