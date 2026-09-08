@@ -43,6 +43,7 @@
     "tests/knowledgeForMe.test.ts",
     "tests/knowledgeSourceCheckTool.test.ts",
     "tests/memberDigest.test.ts",
+    "tests/memberToolLanguageCoverage.test.ts",
     "tests/noticeDebounce.test.ts",
     "tests/platformRegistry.test.ts",
     "tests/projectScope.test.ts",
