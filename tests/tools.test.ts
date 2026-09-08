@@ -133,6 +133,7 @@ const {
   POLL_END_RATE_LIMIT_PER_HOUR,
   ALLOWED_REACTION_EMOJI,
   REACTION_RATE_LIMIT_PER_DAY,
+  formatReactToMessageText,
   THREAD_NAME_MAX_CHARS,
   THREAD_CREATE_RATE_LIMIT_PER_HOUR,
   WARN_USER_RATE_LIMIT_PER_HOUR,
@@ -24211,6 +24212,159 @@ test('SECURITY: react_to_message enforces a per-user daily reaction cap (issue #
     'a rate-limited attempt must not reach the adapter',
   );
 });
+
+test(
+  'formatReactToMessageText renders te reo Māori for all six react_to_message outcomes when language is ' +
+    "'mi', and the exact pre-existing English string for 'auto'/'en' otherwise — emoji/platform/messageId/" +
+    'limit interpolations are unchanged in both languages (issue #1328)',
+  () => {
+    for (const language of ['auto', 'en'] as const) {
+      assert.equal(formatReactToMessageText({ kind: 'success', emoji: '✅' }, language), 'Reacted ✅.');
+      assert.equal(
+        formatReactToMessageText({ kind: 'platform_unavailable', platform: 'whatsapp' }, language),
+        "Reactions aren't available on whatsapp.",
+      );
+      assert.equal(
+        formatReactToMessageText({ kind: 'no_message_id' }, language),
+        'No message to react to — the current message has no visible id.',
+      );
+      assert.equal(
+        formatReactToMessageText({ kind: 'unknown_message', messageId: 'msg-42' }, language),
+        'Refusing: message "msg-42" has never been seen in this conversation.',
+      );
+      assert.equal(
+        formatReactToMessageText({ kind: 'rate_limited', limit: REACTION_RATE_LIMIT_PER_DAY }, language),
+        `You've hit today's reaction limit (${REACTION_RATE_LIMIT_PER_DAY}). Try again tomorrow.`,
+      );
+      assert.equal(
+        formatReactToMessageText({ kind: 'failure' }, language),
+        'Failed to react to that message.',
+      );
+    }
+
+    const miSuccess = formatReactToMessageText({ kind: 'success', emoji: '✅' }, 'mi');
+    assert.notEqual(miSuccess, formatReactToMessageText({ kind: 'success', emoji: '✅' }, 'en'));
+    assert.match(miSuccess, /✅/);
+
+    const miPlatform = formatReactToMessageText({ kind: 'platform_unavailable', platform: 'whatsapp' }, 'mi');
+    assert.notEqual(
+      miPlatform,
+      formatReactToMessageText({ kind: 'platform_unavailable', platform: 'whatsapp' }, 'en'),
+    );
+    assert.match(miPlatform, /whatsapp/);
+
+    const miNoMessageId = formatReactToMessageText({ kind: 'no_message_id' }, 'mi');
+    assert.notEqual(miNoMessageId, formatReactToMessageText({ kind: 'no_message_id' }, 'en'));
+
+    const miUnknown = formatReactToMessageText({ kind: 'unknown_message', messageId: 'msg-42' }, 'mi');
+    assert.notEqual(
+      miUnknown,
+      formatReactToMessageText({ kind: 'unknown_message', messageId: 'msg-42' }, 'en'),
+    );
+    assert.match(miUnknown, /msg-42/);
+
+    const miRateLimited = formatReactToMessageText(
+      { kind: 'rate_limited', limit: REACTION_RATE_LIMIT_PER_DAY },
+      'mi',
+    );
+    assert.notEqual(
+      miRateLimited,
+      formatReactToMessageText({ kind: 'rate_limited', limit: REACTION_RATE_LIMIT_PER_DAY }, 'en'),
+    );
+    assert.match(miRateLimited, new RegExp(String(REACTION_RATE_LIMIT_PER_DAY)));
+
+    const miFailure = formatReactToMessageText({ kind: 'failure' }, 'mi');
+    assert.notEqual(miFailure, formatReactToMessageText({ kind: 'failure' }, 'en'));
+  },
+);
+
+test(
+  "react_to_message's replies reflect the caller's OWN getLanguagePreference across all six outcomes — te " +
+    "reo Māori when it resolves to 'mi', byte-identical English for a caller with no stored preference " +
+    '(issue #1328 acceptance criteria 1, 2, 3)',
+  { skip },
+  async () => {
+    const conv = `${REACT_TO_MESSAGE_HANDLER_CONVO}-lang`;
+    const miUser = `${conv}-mi-user`;
+    const enUser = `${conv}-en-user`;
+    await setLanguagePreference('discord', miUser, 'mi');
+    // enUser deliberately has NO stored preference — proves the default
+    // (not just an explicit 'en') renders the exact English string too.
+
+    // platform_unavailable: no adapter.reactToMessage capability at all.
+    const noCapAdapter = stubAdapter(async () => {});
+    const miNoCap = await reactToMessageHandler(noCapAdapter, {
+      userId: miUser,
+      conversationId: conv,
+    }).handler({ emoji: '✅', messageId: 'unused' });
+    assert.equal(
+      miNoCap.content[0]?.text,
+      formatReactToMessageText({ kind: 'platform_unavailable', platform: 'discord' }, 'mi'),
+    );
+    const enNoCap = await reactToMessageHandler(noCapAdapter, {
+      userId: enUser,
+      conversationId: conv,
+    }).handler({ emoji: '✅', messageId: 'unused' });
+    assert.equal(enNoCap.content[0]?.text, "Reactions aren't available on discord.");
+
+    // no_message_id: no messageId argument and no caller.messageId either.
+    const adapter = stubReactAdapter();
+    const miNoId = await reactToMessageHandler(adapter, { userId: miUser, conversationId: conv }).handler({
+      emoji: '✅',
+    });
+    assert.equal(miNoId.content[0]?.text, formatReactToMessageText({ kind: 'no_message_id' }, 'mi'));
+    const enNoId = await reactToMessageHandler(adapter, { userId: enUser, conversationId: conv }).handler({
+      emoji: '✅',
+    });
+    assert.equal(enNoId.content[0]?.text, 'No message to react to — the current message has no visible id.');
+
+    // unknown_message: a messageId the bot has never seen in this conversation.
+    const unseenId = `${conv}-never-seen`;
+    const miUnknown = await reactToMessageHandler(adapter, {
+      userId: miUser,
+      conversationId: conv,
+    }).handler({ emoji: '✅', messageId: unseenId });
+    assert.equal(
+      miUnknown.content[0]?.text,
+      formatReactToMessageText({ kind: 'unknown_message', messageId: unseenId }, 'mi'),
+    );
+    const enUnknown = await reactToMessageHandler(adapter, {
+      userId: enUser,
+      conversationId: conv,
+    }).handler({ emoji: '✅', messageId: unseenId });
+    assert.equal(
+      enUnknown.content[0]?.text,
+      `Refusing: message "${unseenId}" has never been seen in this conversation.`,
+    );
+
+    // success: a messageId the bot HAS seen in this conversation.
+    const seenId = `${conv}-seen`;
+    await recordInteraction({
+      platform: 'discord',
+      conversationId: conv,
+      userId: `${conv}-author`,
+      role: 'member',
+      direction: 'inbound',
+      content: 'react to this',
+      messageId: seenId,
+    });
+    const miSuccess = await reactToMessageHandler(adapter, {
+      userId: miUser,
+      conversationId: conv,
+    }).handler({ emoji: '👍', messageId: seenId });
+    assert.equal(
+      miSuccess.content[0]?.text,
+      formatReactToMessageText({ kind: 'success', emoji: '👍' }, 'mi'),
+    );
+    const enSuccess = await reactToMessageHandler(adapter, {
+      userId: enUser,
+      conversationId: conv,
+    }).handler({ emoji: '👍', messageId: seenId });
+    assert.equal(enSuccess.content[0]?.text, 'Reacted 👍.');
+
+    await pool.query(`DELETE FROM language_prefs WHERE platform = 'discord' AND user_id = $1`, [miUser]);
+  },
+);
 
 // set_my_interests / who_is_into (issue #634): member-to-member discovery
 // over self-declared, opt-in-published interests — the self-declared-member-
