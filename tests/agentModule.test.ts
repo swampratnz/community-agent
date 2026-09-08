@@ -61,6 +61,7 @@ test('the manifest claims every extension point this deployment fills', () => {
     'personas',
     'turnStateFinalizers',
     'policyKeys',
+    'runtimeSecrets',
     'migrations',
   ] as const) {
     assert.notEqual(nzCommunityModule[field], undefined, `manifest is missing '${field}'`);
@@ -74,6 +75,34 @@ test('the manifest contributes this deployment’s own schema fragments (base sh
   for (const fragment of fragments) {
     assert.match(fragment.name, /^nz-community\//, 'fragment names are attributable in a failed migration');
     assert.ok(fragment.sql.trim().length > 0, `${fragment.name} is empty`);
+  }
+});
+
+test('SECURITY: runtimeSecrets registers a getter that reads the live FLEET_SUPERVISOR_TOKEN — set/unset/empty-string', () => {
+  // A getter, not a captured value: registered once, but redactSecrets calls it
+  // on every outbound send, so a rotated (or since-cleared) token must be
+  // reflected without re-registration. unset/empty are both safe-to-ignore per
+  // redactSecrets — asserted here as the getter's contract, not that filter's.
+  const getters = nzCommunityModule.runtimeSecrets ?? [];
+  assert.equal(getters.length, 1, 'exactly one getter for FLEET_SUPERVISOR_TOKEN');
+  const [getter] = getters;
+
+  const original = process.env.FLEET_SUPERVISOR_TOKEN;
+  try {
+    delete process.env.FLEET_SUPERVISOR_TOKEN;
+    assert.equal(getter(), undefined, 'unset must read as undefined');
+
+    process.env.FLEET_SUPERVISOR_TOKEN = '';
+    assert.equal(getter(), '', 'empty string must be read back exactly');
+
+    process.env.FLEET_SUPERVISOR_TOKEN = 'test-fleet-token-fixture';
+    assert.equal(getter(), 'test-fleet-token-fixture', 'a set value must be read back exactly');
+
+    process.env.FLEET_SUPERVISOR_TOKEN = 'rotated-fleet-token-fixture';
+    assert.equal(getter(), 'rotated-fleet-token-fixture', 'a rotated value must be reflected without re-registration');
+  } finally {
+    if (original === undefined) delete process.env.FLEET_SUPERVISOR_TOKEN;
+    else process.env.FLEET_SUPERVISOR_TOKEN = original;
   }
 });
 

@@ -3943,6 +3943,39 @@ to six more days with no admin lever at all.
   so it is a read/probe-and-record action, the same non-destructive shape as
   the job itself, not an in-place content overwrite like `update_knowledge`.
 
+### 31. Fleet-heartbeat bearer token folded into the redaction backstop (`FLEET_SUPERVISOR_TOKEN`, issue #1294/#1340)
+
+agent-base's fleet-heartbeat module (`FLEET_AGENT_ID`/`FLEET_AGENT_TYPE`/
+`FLEET_SUPERVISOR_URL`, optionally `FLEET_SUPERVISOR_TOKEN`) lets a bosun
+supervisor track this process's liveness and per-model spend over HTTP. It is
+inert unless all three identity variables are set — this deployment sets none
+of them today, so the feature does nothing until it runs under bosun.
+
+- **Not a new egress path.** The reporter posts only to the operator-supplied
+  `FLEET_SUPERVISOR_URL`, one-directionally (this process tells the
+  supervisor what it did; nothing bosun returns is executed here). This
+  section is about the one credential involved, not a new tool or data
+  access.
+- **The token is now covered by the exact-value redaction backstop.** Every
+  other outward credential (Discord bot token, DB URL, WhatsApp Cloud
+  tokens, the dev-team auth token, the GitHub issue-filing token) was already
+  registered with the `runtimeSecrets` seam that `redactSecrets` applies to
+  every adapter send path; `FLEET_SUPERVISOR_TOKEN` was the one exception,
+  read straight off `process.env` by agent-base's own
+  `readFleetHeartbeatConfig` with no module-side registration. `src/module/agentModule.ts`
+  now supplies a getter — `() => process.env.FLEET_SUPERVISOR_TOKEN` — via the
+  manifest's `runtimeSecrets` field, so if this value ever reached a chat
+  surface by accident, the same backstop that already redacts every other
+  credential would catch it too.
+- **Getter, not a captured value.** A rotated token is covered on the next
+  send without re-registration, and an unset/empty value is safe — `redactSecrets`
+  ignores empty/short values, matching `FleetHeartbeatConfig`'s own
+  optional-`token` contract.
+- **No new env var, no `config`-schema change.** `FLEET_SUPERVISOR_TOKEN` is
+  deliberately not added to `.env.example` or the `config` schema; this
+  section documents an existing agent-base-owned variable, not one this
+  deployment introduces.
+
 ## Platform-specific notes
 
 ### WhatsApp / Baileys ToS risk
