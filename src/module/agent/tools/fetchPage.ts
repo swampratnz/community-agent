@@ -50,6 +50,16 @@ import { text, untrusted } from './helpers.js';
 /** Per-caller daily cap; `config.fetchPage.dailyLimit` of 0 means unlimited. */
 const reserveFetchDaily = makeSlidingWindowReserver(24 * 60 * 60 * 1000);
 
+/**
+ * Per-caller-per-URL dedup window: refuses an identical repeat before the
+ * daily quota is spent, before any outbound request, and before a second
+ * up-to-12k-char quarantined block re-enters the same turn's context. Process
+ * memory only, same class as `reserveFetchDaily` above — cleared on restart,
+ * nothing persisted.
+ */
+const DEDUP_WINDOW_MS = 5 * 60 * 1000;
+const reserveFetchDedup = makeSlidingWindowReserver(DEDUP_WINDOW_MS);
+
 /** Trim the quarantined body so one page cannot dominate the turn's context. */
 const MAX_RETURNED_CHARS = 12_000;
 
@@ -92,6 +102,20 @@ export const fetchPageTools = [
       }
       if (parsed.protocol !== 'https:') {
         return text('Refusing: only https URLs can be fetched.', true);
+      }
+
+      // Checked before the daily quota so a caught duplicate costs nothing.
+      // Keyed per caller (platform-qualified, per issue #732) and per
+      // normalized URL, so a different URL or a different caller is
+      // unaffected. A plain pre-flight refusal, like the checks above — never
+      // `audited()`, so a blocked duplicate writes no admin_audit row and
+      // sends no misleading success DM.
+      const dedupKey = `${caller.platform}:${caller.userId}:${parsed.toString()}`;
+      if (!reserveFetchDedup(dedupKey, 1)) {
+        return text(
+          'Refusing: you already fetched that exact URL moments ago — reuse that result instead of fetching it again.',
+          true,
+        );
       }
 
       // Reserved here, immediately before the request is issued, so a slot is
