@@ -39,6 +39,22 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   three weeks. It now renders the same age suffix as its five siblings,
   still only on a `'gated'`-access-mode community and only once at least one
   guest is waiting.
+- **New Agent Skill: `claude-build-surface-selection`, for members deciding
+  which Claude product to even build with.** (#1338) "Should I use Claude
+  Code or the API?", "what's the difference between Claude Code and the
+  Agent SDK?", "can I just use claude.ai for this?", "I want to automate
+  something with Claude, where do I start?" sit upstream of every one of the
+  sixteen existing skills — you can't reach `mcp-server-design`,
+  `tool-use-and-structured-output-design`, or even `claude-code-setup`
+  without first deciding whether Claude Code is even the right tool for the
+  job. The new skill asks one clarifying question about what the member is
+  actually trying to do, then branches across the four surfaces — Claude
+  Code, the Claude Agent SDK, the raw Messages API, and claude.ai — in
+  general terms only, and hands off to `claude-code-setup`,
+  `getting-started`, the design-focused skills, or `model-and-plan-selection`
+  the moment the fork resolves. Same bundled-markdown shape as every other
+  skill: no new tool, tier, or data access, and reachable only behind the
+  existing off-by-default `AGENT_SKILLS_ENABLED` gate.
 - **A removed member now hears about it.** (#1334) `remove_member` revokes a
   member's bot access in gated mode, but until now it never told the person
   it removed — the bot just went quiet on their next message, indistinguishable
