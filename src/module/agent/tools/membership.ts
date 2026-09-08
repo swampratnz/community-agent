@@ -16,7 +16,7 @@ import {
 import { ACCESS_REQUEST_STALE_ALERT_SCAN_LIMIT } from '../../accessRequestStaleAlert.js';
 import { recordAccessRequestResolution } from '../../storage/accessRequestResolutions.js';
 import { platformArg, resolveSanitizedLabel, text } from './helpers.js';
-import { notifyMemberApproved } from './notify.js';
+import { notifyMemberApproved, notifyMemberRemoved } from './notify.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 /**
@@ -28,6 +28,14 @@ import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
  * exactly two hardcoded strings, the other being `ADMIN_DM_FAILED_NOTE`.
  */
 const MEMBER_DM_FAILED_NOTE = " (Couldn't DM them the welcome message — they may not know yet.)";
+
+/**
+ * Fixed, static note appended to `remove_member`'s reply when
+ * `notifyMemberRemoved` reports the removal DM did not land (issue #1334) —
+ * mirrors `MEMBER_DM_FAILED_NOTE`'s rationale exactly, with its own wording
+ * since this is a removal, not a fresh membership.
+ */
+const MEMBER_REMOVED_DM_FAILED_NOTE = " (Couldn't DM them about the removal — they may not know yet.)";
 
 export const membershipTools = [
   defineTool({
@@ -107,7 +115,7 @@ export const membershipTools = [
     minTier: 'admin',
     readOnlyHint: false,
     schema: { userId: z.string().min(1).describe('Platform user id to remove'), platform: platformArg },
-    handler: async (args, { caller, requireConfirm, audited, resolveMemberTarget }) => {
+    handler: async (args, { caller, requireConfirm, audited, adapterFor, resolveMemberTarget }) => {
       assertAtLeast(caller.role, 'admin', 'remove_member');
       const { platform, userId } = await resolveMemberTarget(args.userId, args.platform);
       // Resolve the name before the row is deleted (roster still has it after).
@@ -127,9 +135,15 @@ export const membershipTools = [
             return 'membership removed';
           },
         });
-        return result === 'membership removed'
-          ? `Removed ${label} from ${platform} members.`
-          : `Failed: ${result}`;
+        if (result !== 'membership removed') return `Failed: ${result}`;
+        // Removal DM (issue #1334), mirroring add_member's approval-DM
+        // routing above: the TARGET's platform adapter, not the acting
+        // admin's current-turn one. An unregistered target attempts
+        // nothing, so it counts as delivered (no failure note).
+        const memberTarget = adapterFor(platform);
+        const dmDelivered = memberTarget ? await notifyMemberRemoved(memberTarget, userId, platform) : true;
+        const note = dmDelivered ? '' : MEMBER_REMOVED_DM_FAILED_NOTE;
+        return `Removed ${label} from ${platform} members.${note}`;
       });
     },
   }),

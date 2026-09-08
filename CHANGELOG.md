@@ -39,6 +39,13 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   three weeks. It now renders the same age suffix as its five siblings,
   still only on a `'gated'`-access-mode community and only once at least one
   guest is waiting.
+- **A removed member now hears about it.** (#1334) `remove_member` revokes a
+  member's bot access in gated mode, but until now it never told the person
+  it removed — the bot just went quiet on their next message, indistinguishable
+  from an outage. It now sends a short, fixed DM (no reason, no admin
+  identity — just that their membership ended and to contact an admin if it
+  was a mistake), mirroring the demotion DM `revoke_admin` already sends one
+  tier up.
 
 ### Fixed
 - **An admin can no longer kick, ban, or timeout another admin (or a super

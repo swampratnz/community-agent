@@ -70,6 +70,7 @@ const skip = hasDb
 await import('./support/registerToolRegistry.js');
 const {
   notifyMemberApproved,
+  notifyMemberRemoved,
   notifyAdminApproved,
   notifyAdminRevoked,
   notifyAccessRequestDeclined,
@@ -1726,6 +1727,186 @@ test('SECURITY: notifyAdminRevoked queues via queueForWindowReopen at "low" prio
   assert.equal(queued[0]?.priority, 'low');
   assert.equal(delivered, true);
 });
+
+// notifyMemberRemoved holds all of remove_member's new (issue #1334)
+// notification behaviour — the membership-tier mirror of notifyAdminRevoked
+// above, the one previously-silent half of a grant/revoke pair one tier down.
+test('notifyMemberRemoved sends exactly one removal DM, and resolves true (issue #1334)', async () => {
+  const calls: Array<[string, string]> = [];
+  const adapter = stubAdapter(async (userId, message) => {
+    calls.push([userId, message]);
+  });
+
+  const delivered = await notifyMemberRemoved(adapter, 'user-1', 'discord');
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'user-1');
+  assert.match(calls[0][1], /no longer a registered member/i);
+  assert.equal(delivered, true);
+});
+
+test('notifyMemberRemoved swallows a DM failure rather than throwing, and resolves false (issue #1334)', async () => {
+  const adapter = stubAdapter(async () => {
+    throw new Error('DMs closed');
+  });
+
+  const delivered = await notifyMemberRemoved(adapter, 'user-1', 'discord');
+
+  assert.equal(delivered, false);
+});
+
+test("notifyMemberRemoved sends the te reo Māori variant for a caller with a stored 'mi' preference (issue #1334)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyMemberRemoved(adapter, 'user-1', 'discord', async () => 'mi');
+
+  assert.match(calls[0], /Kāore koe e noho mema rēhita anō/);
+  assert.doesNotMatch(calls[0], /no longer a registered member/);
+});
+
+test("notifyMemberRemoved sends the English default for the default 'auto' preference (issue #1334)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyMemberRemoved(adapter, 'user-1', 'discord', async () => 'auto');
+
+  assert.match(calls[0], /no longer a registered member/);
+});
+
+test("SECURITY: notifyMemberRemoved degrades to the English default, rather than throwing or dropping the DM, when the language-preference lookup fails (issue #52's invariant extended to issue #1334)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyMemberRemoved(adapter, 'user-1', 'discord', async () => {
+    throw new Error('DB unreachable');
+  });
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /no longer a registered member/);
+});
+
+test("notifyMemberRemoved sends the plain-language variant for a caller with a stored 'plain' response style (issue #1334)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyMemberRemoved(
+    adapter,
+    'user-1',
+    'discord',
+    async () => 'auto',
+    async () => 'plain',
+  );
+
+  assert.match(calls[0], /You're no longer a member of NZ Claude Community\./);
+});
+
+test("SECURITY: notifyMemberRemoved degrades to the English default, rather than throwing or dropping the DM, when the response-style lookup fails (issue #52's invariant extended to issue #1334)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyMemberRemoved(
+    adapter,
+    'user-1',
+    'discord',
+    async () => 'auto',
+    async () => {
+      throw new Error('DB unreachable');
+    },
+  );
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /no longer a registered member/);
+});
+
+test("SECURITY: notifyMemberRemoved never consults the response-style lookup once language has resolved to 'mi' (issue #1334)", async () => {
+  let respStyleCalls = 0;
+  const adapter = stubAdapter(async () => {});
+
+  await notifyMemberRemoved(
+    adapter,
+    'user-1',
+    'discord',
+    async () => 'mi',
+    async () => {
+      respStyleCalls += 1;
+      throw new Error('must never be reached when lang is mi');
+    },
+  );
+
+  assert.equal(respStyleCalls, 0);
+});
+
+test('SECURITY: notifyMemberRemoved queues via queueForWindowReopen at "low" priority on a WindowClosedError, rather than dropping the DM (issue #1334, #644 recovery extended)', async () => {
+  const queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }> = [];
+  const adapter: PlatformAdapter = {
+    ...stubAdapter(async () => {
+      throw new WindowClosedError('user-1');
+    }),
+    queueForWindowReopen(userId: string, message: string, priority: 'system' | 'low') {
+      queued.push({ userId, message, priority });
+    },
+  };
+
+  const delivered = await notifyMemberRemoved(adapter, 'user-1', 'discord');
+
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0]?.userId, 'user-1');
+  assert.equal(queued[0]?.priority, 'low');
+  assert.equal(delivered, true);
+});
+
+test(
+  'SECURITY: notifyMemberRemoved renders no acting-admin identity, free-text reason, or audit/removal ' +
+    'metadata in any language/style variant — each variant is byte-identical fixed copy, never interpolated ' +
+    "with the target's own userId or any caller-supplied value (issue #1334)",
+  async () => {
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (_userId, message) => {
+      calls.push(message);
+    });
+
+    await notifyMemberRemoved(adapter, 'user-1', 'discord', async () => 'auto');
+    await notifyMemberRemoved(adapter, 'user-1', 'discord', async () => 'mi');
+    await notifyMemberRemoved(
+      adapter,
+      'user-1',
+      'discord',
+      async () => 'auto',
+      async () => 'plain',
+    );
+
+    assert.equal(calls.length, 3);
+    assert.equal(
+      calls[0],
+      "You're no longer a registered member of NZ Claude Community — the bot won't respond to you here " +
+        'anymore. If this was a mistake, contact an admin.',
+    );
+    assert.equal(
+      calls[1],
+      'Kāore koe e noho mema rēhita anō o NZ Claude Community — kāore te pouaka e whakautu ki a koe i ' +
+        'konei anō. Mēnā he hapa tēnei, whakapā atu ki tētahi kaiwhakahaere.',
+    );
+    assert.equal(
+      calls[2],
+      "You're no longer a member of NZ Claude Community. The bot won't reply to you here anymore. " +
+        'If this is a mistake, contact an admin.',
+    );
+    for (const message of calls) {
+      assert.doesNotMatch(message, /user-1/);
+    }
+  },
+);
 
 // notifyAccessRequestDeclined holds all of decline_access_request's new
 // (issue #1126) notification behaviour — the last member of the review-queue
@@ -14746,6 +14927,123 @@ test("remove_member's tool description states it requires confirmation (issue #1
   )._registeredTools['remove_member'].description;
   assert.match(description ?? '', /requires confirmation/i);
 });
+
+test(
+  'SECURITY: remove_member never calls notifyMemberRemoved on the isSuperAdmin refusal path, the "no member ' +
+    'row removed" failure path, or before requireConfirm executes (issue #1334)',
+  { skip },
+  async () => {
+    const dmCalls: string[] = [];
+    const adapter = stubAdapter(async (userId) => {
+      dmCalls.push(userId);
+    });
+    const targetUserId = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    const conversationId = `convo-remove-member-no-dm-${targetUserId}`;
+    const adminUserId = 'admin-remove-member-no-dm';
+    const caller = {
+      platform: 'discord' as const,
+      userId: adminUserId,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId,
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          {
+            handler: (
+              args: object,
+            ) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+          }
+        >;
+      }
+    )._registeredTools['remove_member'];
+
+    // 1. isSuperAdmin refusal path.
+    const wasSupers = config.rbac.superAdminDiscordIds;
+    config.rbac.superAdminDiscordIds = [targetUserId];
+    let refusalResult: { content: Array<{ type: string; text: string }>; isError?: boolean };
+    try {
+      refusalResult = await registeredTool.handler({ userId: targetUserId, platform: 'discord' });
+    } finally {
+      config.rbac.superAdminDiscordIds = wasSupers;
+    }
+    assert.equal(refusalResult.isError, true);
+    assert.match(refusalResult.content[0].text, /Refusing.*super admin/i);
+
+    // 2. First call registers the pending CONFIRM action — never fires the DM
+    // before an explicit confirmation.
+    const notAlreadyMemberId = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    const pendingResult = await registeredTool.handler({ userId: notAlreadyMemberId, platform: 'discord' });
+    assert.match(pendingResult.content[0].text, /CONFIRM/);
+    const pending = takePendingAction('discord', conversationId, adminUserId);
+    assert.ok(pending, 'remove_member must register a pending action before any DM can fire');
+
+    // 3. Execute the pending action against a target that isn't a member —
+    // the "no member row removed" failure path.
+    const failedReply = await pending?.execute();
+    assert.match(failedReply ?? '', /^Failed:/);
+
+    assert.equal(
+      dmCalls.length,
+      0,
+      'no removal DM was ever sent on the refusal path, the failure path, or before CONFIRM executed',
+    );
+  },
+);
+
+test(
+  "SECURITY: a notifyMemberRemoved delivery failure never changes remove_member's reported success and never " +
+    'reverses the already-committed removeMember write, and appends MEMBER_REMOVED_DM_FAILED_NOTE (issue #1334)',
+  { skip },
+  async () => {
+    const targetUserId = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    const conversationId = `convo-remove-member-dm-failed-${targetUserId}`;
+    const adminUserId = 'admin-remove-member-dm-failed';
+    await upsertMember({ platform: 'discord', userId: targetUserId, role: 'member', addedBy: adminUserId });
+    const adapter = stubAdapter(async () => {
+      throw new Error('DMs closed');
+    });
+    const caller = {
+      platform: 'discord' as const,
+      userId: adminUserId,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId,
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['remove_member'];
+
+    try {
+      await registeredTool.handler({ userId: targetUserId, platform: 'discord' });
+      const pending = takePendingAction('discord', conversationId, adminUserId);
+      assert.ok(pending);
+      const reply = await pending?.execute();
+      assert.equal(
+        reply,
+        `Removed ${targetUserId} from discord members. (Couldn't DM them about the removal — they may not know yet.)`,
+      );
+      assert.equal(
+        await getMemberRole('discord', targetUserId),
+        null,
+        'the removeMember write must stay committed regardless of DM delivery',
+      );
+    } finally {
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        targetUserId,
+      ]);
+    }
+  },
+);
 
 test(
   "SECURITY: grant_admin routes the promotion DM through the target's cross-platform adapter, never the acting admin's own (issue #548)",

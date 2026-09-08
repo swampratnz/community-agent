@@ -387,6 +387,27 @@ const NOTICE_ENTRIES = {
       plain: "You're no longer an admin on NZ Claude Community. Your admin tools are no longer available.",
     },
   },
+  // --- remove_member removal DM (agent/tools/notify.ts, issue #1334) ---
+  /**
+   * The membership-tier counterpart to `adminRevokedMessage` above — static,
+   * no per-row content to interpolate (no acting admin identity, no removal
+   * reason, no audit detail), same base/mi/plain triple shape.
+   */
+  memberRemovedMessage: {
+    base:
+      "You're no longer a registered member of NZ Claude Community — the bot won't respond to you here " +
+      'anymore. If this was a mistake, contact an admin.',
+    language: {
+      mi:
+        'Kāore koe e noho mema rēhita anō o NZ Claude Community — kāore te pouaka e whakautu ki a koe i ' +
+        'konei anō. Mēnā he hapa tēnei, whakapā atu ki tētahi kaiwhakahaere.',
+    },
+    style: {
+      plain:
+        "You're no longer a member of NZ Claude Community. The bot won't reply to you here anymore. " +
+        'If this is a mistake, contact an admin.',
+    },
+  },
   // --- decline_access_request resolution DM (agent/tools/notify.ts, issue #1126) ---
   /**
    * The neutral decline DM for `decline_access_request` — static/templated,
