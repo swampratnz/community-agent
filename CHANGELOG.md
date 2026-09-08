@@ -62,6 +62,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   identity — just that their membership ended and to contact an admin if it
   was a mistake), mirroring the demotion DM `revoke_admin` already sends one
   tier up.
+- **`!accessrequests`/`/accessrequests`: a zero-model shortcut for
+  `list_access_requests`.** (#1346) Admins can now see who's waiting for
+  access — identity and wait time, not just the count `reviewqueue`/
+  `admindigest` already show — without a full agent turn, the same
+  zero-wait-shortcut pattern already shipped for `reviewqueue`/`mutedlist`/
+  `blockedlist`/`topknowledge`/`featureflags`/`admindigest`/`adminlist`, and
+  the last member of that family to get it. Renders the exact same list
+  `list_access_requests` already returns.
 
 ### Fixed
 - **An admin can no longer kick, ban, or timeout another admin (or a super

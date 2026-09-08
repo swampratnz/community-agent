@@ -52,6 +52,7 @@ export {
   formatBlockedMembersList,
   formatTopKnowledgeList,
   formatAdminRoster,
+  formatAccessRequestsList,
 } from './tools/helpers.js';
 export {
   notifyAdmins,

@@ -38,6 +38,7 @@ import {
   hasConflictAmongIds,
   type KnowledgeSearchHit,
   type LanguagePreference,
+  listAccessRequests,
   listAdminRoster,
   listBlockedUsers,
   listKnowledge,
@@ -68,6 +69,7 @@ import {
   searchProjects,
 } from '@swampratnz/agent-base/storage/repository.js';
 import {
+  formatAccessRequestsList,
   formatAdminRoster,
   formatBlockedMembersList,
   formatCommunityInfoText,
@@ -973,6 +975,35 @@ async function handleAdminList(
 }
 
 /**
+ * `list_access_requests` is the eighth shortcut in this file (issue #1346) —
+ * the last of the seven admin review-queue tools (reviewqueue, mutedlist,
+ * blockedlist, topknowledge, featureflags, admindigest, adminlist) to reach
+ * one, closing out the family. Same `admin`-floor double-check shape as
+ * `handleMutedList`/`handleBlockedList` above. Calls the exact same
+ * `listAccessRequests(50)` + `formatAccessRequestsList()` pair
+ * `list_access_requests`'s own tool handler now delegates to (helpers.ts),
+ * so the two can never drift.
+ */
+async function handleAccessRequests(
+  interaction: ChatInputCommandInteraction,
+  deps: SlashCommandDeps,
+): Promise<void> {
+  await deferEphemeral(interaction);
+  const role = await resolveRole('discord', interaction.user.id);
+  if (
+    !toolsForRole(role, 'discord').includes('mcp__community__list_access_requests') ||
+    !atLeast(role, 'admin')
+  ) {
+    await replyEphemeral(interaction, NOT_AUTHORIZED_TEXT, deps);
+    return;
+  }
+  const rows = await listAccessRequests(50);
+  const message = formatAccessRequestsList(rows);
+  recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
+  await replyEphemeral(interaction, message, deps);
+}
+
+/**
  * `list_events` is structurally in MEMBER_TOOLS with no extra runtime floor
  * beyond `toolsForRole` (unlike `/warnings`/`/whois`/`/projects`/`/digest`
  * above) — mirrored here exactly like `/kb`'s gate (issue #1004). Takes no
@@ -1222,6 +1253,14 @@ export function bindCommunitySlashCommands(adapter: PlatformAdapter): void {
         .setDescription('Super admin: list who currently holds bot-admin privilege.')
         .toJSON(),
     handle: handleAdminList,
+  });
+  bindDiscordCommand('accessrequests', {
+    build: () =>
+      new SlashCommandBuilder()
+        .setName('accessrequests')
+        .setDescription('Admin: enumerate guests currently waiting for access, identity and wait time.')
+        .toJSON(),
+    handle: handleAccessRequests,
   });
   bindDiscordCommand('events', {
     build: () =>
