@@ -6756,7 +6756,8 @@ const MEMBER_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__list_projects', /browse what others have shared/i],
   ['mcp__community__set_my_interests', /who's into RAG/i],
   ['mcp__community__who_is_into', /who's working on Discord bots/i],
-  ['mcp__community__set_helper_availability', /opt in\/out of being notified/i],
+  ['mcp__community__set_helper_availability', /opt in\/out of being notified for other members' requests/i],
+  ['mcp__community__set_interest_match_alerts', /other members' requests or matches/i],
   ['mcp__community__find_helper', /can someone help with/i],
   ['mcp__community__request_project_connection', /looking for collaborators/i],
   ['mcp__community__community_digest', /community digest on demand/i],
@@ -6841,7 +6842,7 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
     '- Publish your own interests so other members can find you, or find members into a topic ("add me to ' +
     'who\'s into RAG", "who\'s working on Discord bots?")\n' +
     '- Ask if someone in the community can help with something you\'re stuck on ("can someone help with ' +
-    'X?"), or opt in/out of being notified for other members\' requests\n' +
+    'X?"), or opt in/out of being notified for other members\' requests or matches\n' +
     '- Pull the community digest on demand\n' +
     "- Record decisions in a project you're part of and search that project's shared memory later, or " +
     'list your projects\n' +
@@ -6859,7 +6860,8 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
       'the suggest_knowledge line, issue #927 added the project_note/project_recall/project_list line, ' +
       'issue #1070 added the most_helpful_knowledge line, issue #1243 added the withdraw_suggestion clause ' +
       'to the suggest_improvement line, issue #1278 added the withdraw_appeal clause to the ' +
-      'appeal_moderation line, issue #1287 added the knowledge_for_me line; otherwise unchanged since #367)',
+      'appeal_moderation line, issue #1287 added the knowledge_for_me line, issue #1332 added the ' +
+      '"or matches" clause to the find_helper line; otherwise unchanged since #367)',
   );
 });
 

@@ -102,6 +102,7 @@
   "imageInputSystemPromptBothEnabled.test.ts": 1,
   "imageInputSystemPromptEnabled.test.ts": 1,
   "injectionCorpus.test.ts": 7,
+  "interestMatchAlert.test.ts": 6,
   "jobsRegistry.test.ts": 1,
   "knowledgeCandidateStaleAlert.test.ts": 4,
   "knowledgeEntryIdRouter.test.ts": 1,

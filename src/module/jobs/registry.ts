@@ -22,6 +22,7 @@ import { appealStaleAlertJob } from '../appealStaleAlert.js';
 import { departedAdminAlertJob } from '../departedAdminAlert.js';
 import { engagementAlertJob } from '../engagementAlert.js';
 import { adminLeverageAlertJob } from '../adminLeverageAlert.js';
+import { interestMatchAlertJob } from '../interestMatchAlert.js';
 import { knowledgeCandidateStaleAlertJob } from '../knowledgeCandidateStaleAlert.js';
 import { memberDigestJob } from '../memberDigest.js';
 import { reportStaleAlertJob } from '../reportStaleAlert.js';
@@ -68,4 +69,5 @@ export const JOB_REGISTRY: readonly JobSpec[] = [
   suggestionStaleAlertJob,
   accessRequestStaleAlertJob,
   rosterStaleAlertJob,
+  interestMatchAlertJob,
 ];

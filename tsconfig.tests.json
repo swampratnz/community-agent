@@ -39,6 +39,7 @@
     "tests/fetchPageTool.test.ts",
     "tests/imageGenAudit.test.ts",
     "tests/importDirection.test.ts",
+    "tests/interestMatchAlert.test.ts",
     "tests/jobsRegistry.test.ts",
     "tests/knowledgeForMe.test.ts",
     "tests/knowledgeSourceCheckTool.test.ts",

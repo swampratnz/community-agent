@@ -42,10 +42,11 @@ test('registry names are unique, exactly 121 defs, and every def is registered o
   // #1070's most_helpful_knowledge, +1 for issue #1185's remove_project, +1
   // for issue #1188's check_knowledge_source, +1 for issue #1230's
   // remove_interests, +1 for issue #1243's withdraw_suggestion, +1 for issue
-  // #1278's withdraw_appeal, +1 for issue #1287's knowledge_for_me. A change
-  // here must be a conscious tool addition/removal, never a domain file
-  // falling out of the registry.
-  assert.equal(names.length, 129);
+  // #1278's withdraw_appeal, +1 for issue #1287's knowledge_for_me, +1 for
+  // issue #1332's set_interest_match_alerts. A change here must be a
+  // conscious tool addition/removal, never a domain file falling out of the
+  // registry.
+  assert.equal(names.length, 130);
 
   const adapter = {
     platform: 'discord',

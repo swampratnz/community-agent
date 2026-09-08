@@ -552,6 +552,25 @@ const NOTICE_ENTRIES = {
         `${requesterLabel} wants to collaborate on ${quarantinedProjectName}. Reach out if you can.`,
     },
   },
+  /**
+   * `interestMatchAlert.ts`'s crossing-latch push (issue #1332) — the ONLY
+   * self-DM in this pack sent to the SAME identity that opted in, never to a
+   * different member, so unlike the peer-DM templates above (which append
+   * quarantined free text after this shell) this is a fixed, argument-free
+   * string in every branch: no match count, no interest text, no other
+   * member's id/handle, matching every `*StaleAlertMessage` admin nudge's
+   * "bare copy only" convention (`reportStaleAlert.ts` et al.) even though
+   * this alert has no admin count to omit in the first place.
+   */
+  interestMatchAlertMessage: {
+    base: 'You have new interest matches on the community — run who_is_into to see who.',
+    language: {
+      mi: 'He taunekeneke hou ōu i te hapori — karangahia te who_is_into ki te tiro.',
+    },
+    style: {
+      plain: 'You have new matches on the community. Run who_is_into to see who.',
+    },
+  },
   // --- community_info member capabilities rundown (agent/tools/info.ts) ---
   /**
    * The member-tier segment of `community_info`/`/help`/`!help`'s capability
@@ -597,7 +616,7 @@ const NOTICE_ENTRIES = {
       '- Publish your own interests so other members can find you, or find members into a topic ("add me to ' +
       'who\'s into RAG", "who\'s working on Discord bots?")\n' +
       '- Ask if someone in the community can help with something you\'re stuck on ("can someone help with ' +
-      'X?"), or opt in/out of being notified for other members\' requests\n' +
+      'X?"), or opt in/out of being notified for other members\' requests or matches\n' +
       '- Pull the community digest on demand\n' +
       "- Record decisions in a project you're part of and search that project's shared memory later, or " +
       'list your projects\n' +
@@ -640,8 +659,8 @@ const NOTICE_ENTRIES = {
         '- Whakaputa i ō ake hiahia kia kitea koe e ētahi atu mema, rapu rānei i ngā mema e pā ana ki ' +
         'tētahi kaupapa ("add me to who\'s into RAG", "who\'s working on Discord bots?")\n' +
         '- Pātai mehemea ka taea e tētahi o te hapori te āwhina i a koe ki tētahi mea e raru ana koe ("can ' +
-        'someone help with X?"), whakauru rānei/waiho rānei kia kaua e whakamōhiotia mō ngā tono a ētahi ' +
-        'atu mema\n' +
+        'someone help with X?"), whakauru rānei/waiho rānei kia kaua e whakamōhiotia mō ngā tono a ētahi atu ' +
+        'mema, mō ngā taunekeneke hou hoki mō ō hiahia\n' +
         '- Tiki i te whakarāpopototanga hapori ā-tono\n' +
         '- Tuhi whakatau i roto i tētahi kaupapa e uru ana koe, rapu anō i ngā mahara tiritahi o taua ' +
         'kaupapa ā muri ake, rārangi rānei i ō kaupapa\n' +

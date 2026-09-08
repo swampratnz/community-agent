@@ -28,6 +28,18 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-09-08
 
 ### Added
+- **`who_is_into` (no-topic self-match) now has a push complement: opt in
+  with the new `set_interest_match_alerts` to get a DM the moment you have a
+  new match.** (#1332) Every admin review queue (appeals, suggestions,
+  knowledge candidates, access requests, roster, reports) already nudges
+  admins when a backlog first appears; `who_is_into`'s "find members like me"
+  self-match was the one member-facing discovery view where you'd only find
+  out by remembering to ask again. `set_interest_match_alerts(enabled: true)`
+  (requires published interests via `set_my_interests`) now sends a bare
+  "you have new matches — run who_is_into" DM once when your self-match count
+  first goes from none to some, and stays quiet until it drops back to zero.
+  The DM never carries a match count, any interest text, or another member's
+  identity — run `who_is_into` yourself to see who.
 - **The onboarding-queue line in `review_queue`, `admin_digest`, and their
   `!reviewqueue`/`/reviewqueue`/`!admindigest`/`/admindigest` shortcuts now
   shows the oldest waiting guest's age, matching the other five review

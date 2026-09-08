@@ -32,8 +32,8 @@ const BASE_ENV: NodeJS.ProcessEnv = {
  *
  * `on` is the env that turns the job's gate on (numeric gates use their
  * config minimums; dev-team's flag refinement requires its endpoint+token);
- * `null` marks the always-on jobs that have no enable flag by design (eight
- * as of the roster-stale-alert job, issue #1136).
+ * `null` marks the always-on jobs that have no enable flag by design (nine
+ * as of the interest-match-alert job, issue #1332).
  */
 const JOBS: ReadonlyArray<{ name: string; on: NodeJS.ProcessEnv | null }> = [
   { name: 'interaction-retention-purge', on: { INTERACTION_RETENTION_DAYS: '7' } },
@@ -77,6 +77,7 @@ const JOBS: ReadonlyArray<{ name: string; on: NodeJS.ProcessEnv | null }> = [
   { name: 'suggestion-stale-alert', on: null },
   { name: 'access-request-stale-alert', on: null },
   { name: 'roster-stale-alert', on: null },
+  { name: 'interest-match-alert', on: null },
 ];
 
 test('registry: every JobSpec name is unique', () => {
