@@ -99,7 +99,11 @@ test('SECURITY: runtimeSecrets registers a getter that reads the live FLEET_SUPE
     assert.equal(getter(), 'test-fleet-token-fixture', 'a set value must be read back exactly');
 
     process.env.FLEET_SUPERVISOR_TOKEN = 'rotated-fleet-token-fixture';
-    assert.equal(getter(), 'rotated-fleet-token-fixture', 'a rotated value must be reflected without re-registration');
+    assert.equal(
+      getter(),
+      'rotated-fleet-token-fixture',
+      'a rotated value must be reflected without re-registration',
+    );
   } finally {
     if (original === undefined) delete process.env.FLEET_SUPERVISOR_TOKEN;
     else process.env.FLEET_SUPERVISOR_TOKEN = original;

@@ -23,7 +23,7 @@
   "agentCoreUsageLimitAlert.test.ts": 3,
   "agentModelFallback.test.ts": 1,
   "agentModelTiering.test.ts": 1,
-  "agentModule.test.ts": 1,
+  "agentModule.test.ts": 2,
   "agentOptions.test.ts": 13,
   "agentRunActions.test.ts": 3,
   "agentSkillsEnabled.test.ts": 30,
