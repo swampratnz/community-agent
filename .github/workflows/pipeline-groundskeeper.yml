@@ -40,11 +40,21 @@ on:
 permissions:
   issues: write
   # `write` (was `read`) so the CI-never-executed sweep below can label and
-  # comment on the PR it finds; `actions: read` so it can see run state at all.
+  # comment on the PR it finds; `actions: read` so it can see run state at all;
+  # `contents: read` for the head-commit date lookup (`gh api
+  # repos/{repo}/commits/{sha}`). That last one is not optional and its absence
+  # is SILENT: Actions permissions are additive, so naming any key sets every
+  # unnamed one to `none` rather than the repo default, and the 403 would land
+  # in this script's own `|| echo ''` fallback — "could not read head commit
+  # date, skipping" for every PR, every run, forever. The feature would never
+  # fire and nothing would say so, which is #1348's failure mode one level up.
+  # pipeline-pr-automerge.yml makes the same commits call and declares
+  # `contents` for the same reason.
   # Same trust class as before: deterministic shell reading API fields as jq
   # data, running no PR-controlled code.
   pull-requests: write
   actions: read
+  contents: read
 
 concurrency:
   group: pipeline-groundskeeper
@@ -195,6 +205,15 @@ jobs:
             # A real verdict exists. `failure` is deliberately treated as
             # healthy HERE: autofix owns red CI, and two loops escalating the
             # same PR would double-label it.
+            #
+            # Scope note: this counts a verdict from ANY workflow on the SHA,
+            # not specifically `CI`. That is exact for the wedge this targets
+            # (a GITHUB_TOKEN push triggers NO workflow, so there is nothing to
+            # mask it), but it would miss a CI-specific failure-to-trigger that
+            # happened alongside some other workflow succeeding on the same
+            # commit. Narrowing to `CI` by name would trade that for a
+            # dependence on the workflow's display name; the wedge is what this
+            # exists for.
             verdicts="$(jq '[.[] | select(.conclusion == "success" or .conclusion == "failure")] | length' <<<"${runs}")"
             if [ "${verdicts}" -gt 0 ]; then
               echo "#${num}: CI reached a verdict — healthy, skipping."

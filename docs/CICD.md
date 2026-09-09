@@ -85,7 +85,7 @@ pool.
 | `pipeline-pr-revise.yml` ⚡ | `workflow_dispatch` (`pr_number`) | per-PR | as autofix | 45 min | the secret |
 | `pipeline-pr-conflict.yml` ⚡ | push `main`, PR opened/ready, hourly, `workflow_dispatch` (`resolve_matrix`) | per-run / per-PR | **discover** (job override): `contents`,`pull-requests`:read + `actions:write`; **resolve** (inherits): `contents`,`issues`,`pull-requests`:write, `id-token:write` | 10 min (discover) / 45 min (resolve) | the secret |
 | `pipeline-pr-automerge.yml` | `*/15 * * * *`, `workflow_run` [CI, PR review], dispatch | single group | `contents`,`issues`,`pull-requests`:write, `actions:write` | 10 min | secret **and** `vars.AUTOMERGE_MODE` |
-| `pipeline-groundskeeper.yml` | `17 * * * *`, dispatch | single group | `issues:write`, `pull-requests:write`, `actions:read` | 10 min | always |
+| `pipeline-groundskeeper.yml` | `17 * * * *`, dispatch | single group | `issues:write`, `pull-requests:write`, `actions:read`, `contents:read` | 10 min | always |
 | `pipeline-outcomes.yml` | `23 20 * * 1`, dispatch (`window_days`) | single, cancel | `contents:read`, `issues:write`, `pull-requests:read` | 10 min | always |
 | `changelog-coverage.yml` | `17 19 * * *`, dispatch | single, cancel | `contents:read`, `issues:write`, `pull-requests:read` | 10 min | always |
 | `changelog-autofill.yml` ⚡ | `47 19 * * *`, dispatch | single group | `contents`,`pull-requests`:write, `id-token:write` | 30 min | the secret |

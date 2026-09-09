@@ -152,6 +152,40 @@ test(
   },
 );
 
+test('the groundskeeper declares every permission scope its gh calls need', () => {
+  // Actions permissions are ADDITIVE: naming any key sets every unnamed one to
+  // `none`, not to the repo default. So a missing scope here is not a loud
+  // 403 in the logs of a step that then fails — every one of these calls has a
+  // fallback, so the sweep would quietly decide there is nothing to do, for
+  // every PR, on every run, forever. That is exactly the invisible-failure
+  // shape issue #1348 exists to remove, one level up, and it is precisely what
+  // the jq tests above cannot see: they exercise the filters against synthetic
+  // data and never touch the workflow's actual grant.
+  // Comment lines are stripped, not merely skipped over. The first version of
+  // this test sliced the raw block, and the block's own comment explains why
+  // `contents: read` is needed — so deleting the actual grant left the phrase
+  // in the comment and the test happily passed. A guard satisfied by the prose
+  // describing it is not a guard.
+  const block = yaml.slice(yaml.indexOf('\npermissions:'), yaml.indexOf('\nconcurrency:'));
+  assert.notEqual(block.length, 0, 'permissions block not found — workflow restructured?');
+  const perms = block
+    .split('\n')
+    .filter((l) => !l.trim().startsWith('#'))
+    .join('\n');
+
+  // Each entry is (scope, the call that needs it), so a future reader can tell
+  // whether a scope is still required by looking for that call.
+  const NEEDED: Array<[string, string]> = [
+    ['issues: write', 'gh issue edit / gh issue comment (first sweep)'],
+    ['pull-requests: write', 'gh pr edit / gh pr comment (second sweep)'],
+    ['actions: read', 'gh api repos/.../actions/runs'],
+    ['contents: read', 'gh api repos/.../commits/<sha> for the head-commit date'],
+  ];
+  for (const [scope, why] of NEEDED) {
+    assert.ok(perms.includes(scope), `the permissions block is missing \`${scope}\`, needed for: ${why}`);
+  }
+});
+
 test('SECURITY: a failed CI-run lookup skips the PR instead of reading as "confirmed zero runs"', () => {
   // `|| echo '[]'` here would make an API failure indistinguishable from a
   // genuinely un-CI'd head, and the two are not symmetric: the PR-selection
