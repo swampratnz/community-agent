@@ -183,6 +183,10 @@ function mockPool(
     connectionRequestRows?: PoolRow[];
     /** `listOwnFindHelperRequests`' rows (issue #1313), raw snake_case DB shape. */
     findHelperRequestRows?: PoolRow[];
+    /** `isInterestMatchAlertOptedIn`'s verdict (issue #1363) — `true` returns a row, `false`/unset none. */
+    interestMatchAlertOptedIn?: boolean;
+    /** `countOwnProjectNoteAuthorships`'s count (issue #1363). */
+    projectNoteAuthorCount?: number;
     /** `countRepliesToUser`'s count for `/mydata`'s daily-reply-budget line (issue #1018). */
     repliesUsed?: number;
     /** `listKnowledgeTopics`' titles for `/kbtopics` (issue #1036), raw already-string rows. */
@@ -375,6 +379,12 @@ function mockPool(
     }
     if (sql.includes('FROM find_helper_requests')) {
       return { rows: opts.findHelperRequestRows ?? [], rowCount: 0 };
+    }
+    if (sql.includes('FROM interest_match_alert_optins')) {
+      return { rows: opts.interestMatchAlertOptedIn ? [{ '?column?': 1 }] : [], rowCount: 0 };
+    }
+    if (sql.includes('FROM project_note_authors')) {
+      return { rows: [{ count: String(opts.projectNoteAuthorCount ?? 0) }], rowCount: 0 };
     }
     // getMyDataSummary's own interactions read (own_messages/replies_to_them)
     // is distinguished from countRepliesToUser's budget count below by its
@@ -1953,7 +1963,10 @@ test('/mydata returns the same content the shared formatter renders for a caller
     interestsPublished: 0,
     responseStyle: 'standard' as const,
   };
-  assert.equal(replies[0].content, formatMyDataText(zeroSummary, 'member', 5, 2, 'auto', 0, 0, 0));
+  assert.equal(
+    replies[0].content,
+    formatMyDataText(zeroSummary, 'member', 5, 2, 'auto', 0, 0, 0, 0, false, 0),
+  );
   assert.match(replies[0].content, /Replies in the last 24h: 2 \/ 5/);
 });
 

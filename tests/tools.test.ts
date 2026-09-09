@@ -234,7 +234,7 @@ const {
   purgeUserData,
   recordProjectConnectionIfUnderCap,
 } = await import('@swampratnz/agent-base/storage/repository.js');
-const { setInterestMatchAlertOptIn, listInterestMatchAlertOptIns } =
+const { setInterestMatchAlertOptIn, listInterestMatchAlertOptIns, isInterestMatchAlertOptedIn } =
   await import('../src/module/storage/interestMatchAlertOptIns.js');
 const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
 const { logger } = await import('@swampratnz/agent-base/logger.js');
@@ -267,6 +267,8 @@ const { recordAppealWithdrawal, getWithdrawnAppealIds } =
   await import('../src/module/storage/appealWithdrawals.js');
 const { recordFindHelperRequest, listOwnFindHelperRequests } =
   await import('../src/module/storage/findHelperRequests.js');
+const { recordProjectNoteAuthor, countOwnProjectNoteAuthorships } =
+  await import('../src/module/storage/projectNoteRecords.js');
 const { formatStatusMessage, getStatusCache, resetStatusCacheForTests } =
   await import('../src/module/status/anthropicStatus.js');
 const { buildMemberDigestContent } = await import('../src/module/memberDigest.js');
@@ -39092,6 +39094,9 @@ test(
     assert.match(output, /Appeals filed: 0/);
     assert.match(output, /Knowledge tips filed: 0/);
     assert.match(output, /Connection requests sent: 0/);
+    assert.match(output, /Help requests sent: 0/);
+    assert.match(output, /Interest match alerts: off/);
+    assert.match(output, /Project notes authored: 0/);
     assert.match(output, /Projects you've shared: 0/);
     assert.match(output, /Response style preference: standard \(default\)/);
     assert.match(output, /my_warnings/, 'points to my_warnings for active-warning status');
@@ -39106,13 +39111,26 @@ test(
   { skip },
   async () => {
     const userId = `${MY_DATA_HANDLER_USER}-formatter-parity`;
-    const [handlerResult, summary, language, appeals, knowledgeTips, connectionRequests] = await Promise.all([
+    const [
+      handlerResult,
+      summary,
+      language,
+      appeals,
+      knowledgeTips,
+      connectionRequests,
+      findHelperRequests,
+      alertOptedIn,
+      noteAuthorships,
+    ] = await Promise.all([
       myDataHandler(userId).handler(),
       getMyDataSummary('whatsapp', userId),
       getLanguagePreference('whatsapp', userId),
       listOwnAppeals('whatsapp', userId, MY_DATA_SUMMARY_FETCH_CAP),
       listOwnKnowledgeCandidates('whatsapp', userId, MY_DATA_SUMMARY_FETCH_CAP),
       listOwnProjectConnectionRequests('whatsapp', userId, MY_DATA_SUMMARY_FETCH_CAP),
+      listOwnFindHelperRequests('whatsapp', userId, MY_DATA_SUMMARY_FETCH_CAP),
+      isInterestMatchAlertOptedIn('whatsapp', userId),
+      countOwnProjectNoteAuthorships('whatsapp', userId),
     ]);
     const limit = config.behaviour.dailyReplyLimitPerUser;
     const used = limit !== 0 ? await countRepliesToUser('whatsapp', userId) : null;
@@ -39128,6 +39146,9 @@ test(
         appeals.length,
         knowledgeTips.length,
         connectionRequests.length,
+        findHelperRequests.length,
+        alertOptedIn,
+        noteAuthorships,
       ),
     );
   },
@@ -39378,10 +39399,123 @@ test(
   },
 );
 
+// Three more purge-coherent record kinds shipped after #1311 (find_helper_requests
+// #1313, interest_match_alert_optins #1332, project_note_authors #1344) and were
+// never folded into my_data's counts — the identical gap #1311 fixed once already,
+// recurring because these three didn't exist yet when it shipped (issue #1363).
+// project_note_authors has no FK to project_notes (schema comment in
+// 85-project-note-records.sql), so these tests seed it directly with a synthetic
+// noteId, the same "seeded directly rather than driving the tool's own logic"
+// discipline the find_helper_requests tests above already use.
+function syntheticNoteId(): number {
+  return 1_000_000_000 + Math.floor(Math.random() * 1_000_000_000);
+}
+
 test(
-  'formatMyDataText renders a truncated appeals/knowledge-tips/connection-requests count as ' +
-    "'${MY_DATA_SUMMARY_FETCH_CAP}+' rather than the possibly-short raw fetch length, so a fetch that hit the " +
-    'cap is never presented as a definitive total (issue #1311 acceptance criterion 2)',
+  "my_data reports the caller's own find_helper requests sent, interest-match-alert opt-in state, and " +
+    'authored project-notes count — three more record kinds forget_me/purge_user_data erase, previously ' +
+    'missing from this summary (issue #1363 acceptance criterion 1)',
+  { skip },
+  async () => {
+    const userId = `${MY_DATA_HANDLER_USER}-helpreq-alert-notes`;
+    const noteId = syntheticNoteId();
+
+    await recordFindHelperRequest('whatsapp', userId, 'need help with pgvector tuning', true);
+    await setInterestMatchAlertOptIn('whatsapp', userId, true);
+    await recordProjectNoteAuthor(noteId, 'whatsapp', userId);
+
+    const result = await myDataHandler(userId).handler();
+    const output = result.content[0]?.text ?? '';
+
+    assert.equal(result.isError, false);
+    assert.match(output, /Help requests sent: 1/);
+    assert.match(output, /Interest match alerts: on/);
+    assert.match(output, /Project notes authored: 1/);
+
+    await pool.query(`DELETE FROM find_helper_requests WHERE requester_user_id = $1`, [userId]);
+    await setInterestMatchAlertOptIn('whatsapp', userId, false);
+    await pool.query(`DELETE FROM project_note_authors WHERE note_id = $1`, [noteId]);
+  },
+);
+
+test(
+  "SECURITY: my_data's help-requests/interest-match-alert/project-notes-authored fields reflect only the " +
+    "caller's OWN (platform, userId) — never another member's find_helper requests, opt-in state, or " +
+    'authored notes, scoped identically to every other field my_data renders (issue #1363 SECURITY criterion)',
+  { skip },
+  async () => {
+    const caller = `${MY_DATA_HANDLER_USER}-helpreq-alert-notes-scoping-caller`;
+    const otherUser = `${MY_DATA_HANDLER_USER}-helpreq-alert-notes-scoping-other`;
+    const otherNoteId = syntheticNoteId();
+
+    await recordFindHelperRequest('whatsapp', otherUser, "someone else's help request", false);
+    await setInterestMatchAlertOptIn('whatsapp', otherUser, true);
+    await recordProjectNoteAuthor(otherNoteId, 'whatsapp', otherUser);
+
+    // The tool takes no arguments (pinned above) — there is no identifier a
+    // model could supply to redirect the read, so the caller sees only their
+    // own (zero/off) state, never the other user's fixtures just created.
+    const output = (await myDataHandler(caller).handler()).content[0]?.text ?? '';
+    assert.match(output, /Help requests sent: 0/);
+    assert.match(output, /Interest match alerts: off/);
+    assert.match(output, /Project notes authored: 0/);
+
+    await pool.query(`DELETE FROM find_helper_requests WHERE requester_user_id = $1`, [otherUser]);
+    await setInterestMatchAlertOptIn('whatsapp', otherUser, false);
+    await pool.query(`DELETE FROM project_note_authors WHERE note_id = $1`, [otherNoteId]);
+  },
+);
+
+test(
+  "SECURITY: my_data's help-requests/interest-match-alert/project-notes-authored fields are aggregated " +
+    "across every identity linked via link_member, matching getMyDataSummary's own five fields and #1311's " +
+    'own three — a caller who files from a linked identity must see it counted from EITHER identity, the ' +
+    "same completeness my_data's tool description promises for every other field it renders (issue #1363 " +
+    'acceptance criterion 2, the same undercount PR review on #1311 caught for its own three fields)',
+  { skip },
+  async () => {
+    const discordUser = `${MY_DATA_HANDLER_USER}-helpreq-alert-notes-linked-d`;
+    const whatsappUser = `${MY_DATA_HANDLER_USER}-helpreq-alert-notes-linked-w`;
+    const noteId = syntheticNoteId();
+
+    await upsertMember({
+      platform: 'discord',
+      userId: discordUser,
+      role: 'member',
+      addedBy: `${MY_DATA_HANDLER_USER}-helpreq-alert-notes-linked-admin`,
+    });
+    await upsertMember({
+      platform: 'whatsapp',
+      userId: whatsappUser,
+      role: 'member',
+      addedBy: `${MY_DATA_HANDLER_USER}-helpreq-alert-notes-linked-admin`,
+    });
+    await linkMembers('discord', discordUser, 'whatsapp', whatsappUser);
+
+    // Every fixture is filed from the DISCORD identity only.
+    await recordFindHelperRequest('discord', discordUser, 'need a mentor for a side project', true);
+    await setInterestMatchAlertOptIn('discord', discordUser, true);
+    await recordProjectNoteAuthor(noteId, 'discord', discordUser);
+
+    // Read via the WHATSAPP identity — my_data must still see the discord
+    // identity's fixtures, exactly like getMyDataSummary's other fields (and
+    // #1311's three) already do for a linked caller.
+    const output = (await myDataHandler(whatsappUser).handler()).content[0]?.text ?? '';
+    assert.match(output, /Help requests sent: 1/);
+    assert.match(output, /Interest match alerts: on/);
+    assert.match(output, /Project notes authored: 1/);
+
+    await pool.query(`DELETE FROM find_helper_requests WHERE requester_user_id = $1`, [discordUser]);
+    await setInterestMatchAlertOptIn('discord', discordUser, false);
+    await pool.query(`DELETE FROM project_note_authors WHERE note_id = $1`, [noteId]);
+  },
+);
+
+test(
+  'formatMyDataText renders a truncated appeals/knowledge-tips/connection-requests/help-requests/project-notes ' +
+    "count as '${MY_DATA_SUMMARY_FETCH_CAP}+' rather than the possibly-short raw fetch length, so a fetch that " +
+    'hit the cap is never presented as a definitive total (issue #1311 acceptance criterion 2, issue #1363 ' +
+    'acceptance criterion 3)',
   () => {
     const zeroSummary = {
       ownMessages: 0,
@@ -39402,10 +39536,16 @@ test(
       MY_DATA_SUMMARY_FETCH_CAP,
       MY_DATA_SUMMARY_FETCH_CAP,
       MY_DATA_SUMMARY_FETCH_CAP,
+      MY_DATA_SUMMARY_FETCH_CAP,
+      true,
+      MY_DATA_SUMMARY_FETCH_CAP,
     );
     assert.match(output, new RegExp(`Appeals filed: ${MY_DATA_SUMMARY_FETCH_CAP}\\+`));
     assert.match(output, new RegExp(`Knowledge tips filed: ${MY_DATA_SUMMARY_FETCH_CAP}\\+`));
     assert.match(output, new RegExp(`Connection requests sent: ${MY_DATA_SUMMARY_FETCH_CAP}\\+`));
+    assert.match(output, new RegExp(`Help requests sent: ${MY_DATA_SUMMARY_FETCH_CAP}\\+`));
+    assert.match(output, /Interest match alerts: on/);
+    assert.match(output, new RegExp(`Project notes authored: ${MY_DATA_SUMMARY_FETCH_CAP}\\+`));
   },
 );
 
@@ -39477,10 +39617,18 @@ test(
       new RegExp(marker),
       'SECURITY: an admin note about the caller must never appear in my_data output',
     );
-    assert.doesNotMatch(
-      output,
-      /note/i,
-      'SECURITY: my_data must not even mention notes exist — issue #45 gives members no self-access path to them',
+    // Issue #1363 legitimately added a "Project notes authored:" line (the
+    // caller's OWN project_note_authors count — an unrelated table to the
+    // admin-only member_notes this test guards), so the check narrows from a
+    // blanket "no line may mention 'note'" to "every line mentioning 'note'
+    // must be that one caller-scoped line" — still catching any hint that an
+    // admin member_notes entry exists.
+    const noteLines = output.split('\n').filter((line) => /note/i.test(line));
+    assert.deepEqual(
+      noteLines,
+      [`Project notes authored: 0`],
+      'SECURITY: the only line mentioning "note" must be the caller\'s own project-notes-authored count — ' +
+        'issue #45 gives members no self-access path to member_notes, so nothing may hint one exists',
     );
   },
 );

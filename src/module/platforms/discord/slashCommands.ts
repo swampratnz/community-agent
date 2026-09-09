@@ -567,10 +567,14 @@ async function handleMyData(interaction: ChatInputCommandInteraction, deps: Slas
   const used =
     role !== 'super_admin' && limit !== 0 ? await countRepliesToUser('discord', interaction.user.id) : null;
   const language = await getLanguagePreference('discord', interaction.user.id);
-  const { appealsFiled, knowledgeTipsFiled, connectionRequestsSent } = await getMyDataSupplementalCounts(
-    'discord',
-    interaction.user.id,
-  );
+  const {
+    appealsFiled,
+    knowledgeTipsFiled,
+    connectionRequestsSent,
+    helpRequestsSent,
+    interestMatchAlertsEnabled,
+    projectNotesAuthored,
+  } = await getMyDataSupplementalCounts('discord', interaction.user.id);
   const message = formatMyDataText(
     summary,
     role,
@@ -580,6 +584,9 @@ async function handleMyData(interaction: ChatInputCommandInteraction, deps: Slas
     appealsFiled,
     knowledgeTipsFiled,
     connectionRequestsSent,
+    helpRequestsSent,
+    interestMatchAlertsEnabled,
+    projectNotesAuthored,
   );
   recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
   await replyEphemeral(interaction, message, deps);
