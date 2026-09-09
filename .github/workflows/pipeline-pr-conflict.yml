@@ -674,9 +674,14 @@ jobs:
           escalate-marker: ${{ env.ESCALATE_MARKER }}
           success-message: Resolver pushed a merge commit; CI will re-run on the new commit.
           error-message: Conflict resolver produced no new commit on ${{ steps.precheck.outputs.branch }}.
+          # Outcome, not cause (issue #1349). The old wording asserted the
+          # two sides were "semantically incompatible"; #609's supposedly
+          # unresolvable conflict was a clean merge a human finished in
+          # minutes, after the agent had merely stalled waiting on a Monitor
+          # task. The summary below, and the shared action's derived note,
+          # carry whatever the run actually established.
           escalation-body: >-
-            🤖 Could not automatically resolve this PR's conflict with `main` — the two sides are
-            semantically incompatible, or the fix needs a `.github/workflows/` change I can't push.
-            Labelled `needs-human` for a maintainer. Run:
+            🤖 This PR's conflict with `main` was not resolved automatically. Labelled
+            `needs-human` for a maintainer. Run:
             ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           summary-title: Conflict resolver's final summary (what it says blocked it)

@@ -83,6 +83,7 @@
   "docsIngest.test.ts": 2,
   "embeddingHealthCheck.test.ts": 2,
   "engagementAlert.test.ts": 2,
+  "escalationHonesty.test.ts": 5,
   "escalationRouter.test.ts": 9,
   "evalAnswersOffCi.test.ts": 2,
   "evalAnswersScopeSafety.test.ts": 2,

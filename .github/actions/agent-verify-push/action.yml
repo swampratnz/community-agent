@@ -122,8 +122,9 @@ runs:
         # Surface the agent's OWN final message (best-effort) so a maintainer
         # sees the blocker instead of reverse-engineering it from run logs —
         # the transparency the build worker got in #251. A silent stop leaves
-        # no summary, which is itself diagnostic: it usually means a gate the
-        # agent could not make green, or a change it is not allowed to push.
+        # no summary, which is itself worth saying — but only as an absence of
+        # evidence: the caller's `no-summary-note` must not name a cause the
+        # run did not establish (issue #1349).
         summary=""
         exec_file="${EXECUTION_FILE}"
         if [ -z "${exec_file}" ]; then exec_file="${FALLBACK_EXECUTION_FILE}"; fi
@@ -131,12 +132,56 @@ runs:
           summary="$(jq -r '[.. | objects | select(.type? == "result") | .result?] | map(select(. != null)) | last // empty' "${exec_file}" 2>/dev/null | head -c 1500 || true)"
         fi
 
-        # printf '%s' throughout: the body and the captured summary are data,
-        # never format strings (the summary is agent-authored text that can
-        # contain % sequences).
+        # --- State what is KNOWN, never a guessed cause (issue #1349) ---
+        # The autofix escalation used to assert "the cause needs a
+        # workflow-file change I can't push, or it was not safely fixable".
+        # On PR #1270 both halves were false: the agent had ended its turn
+        # waiting on a background command, so the flake-vs-defect triage
+        # CLAUDE.md requires of it never ran at all, and the real fix was a
+        # test-file change squarely inside its own push scope. A maintainer
+        # read that sentence, believed it, and the PR sat for 7 days.
+        #
+        # What this step knows is that the tip did not move. Everything past
+        # that is inference, so it is derived from the execution log and
+        # labelled as inference — never asserted in the loop's fixed prose.
+        stop_reason=""
+        turns=""
+        if [ -n "${exec_file}" ] && [ -f "${exec_file}" ]; then
+          stop_reason="$(jq -r '[.. | objects | select(.type? == "result") | .subtype?] | map(select(. != null)) | last // empty' "${exec_file}" 2>/dev/null || true)"
+          turns="$(jq -r '[.. | objects | select(.type? == "result") | .num_turns?] | map(select(. != null)) | last // empty' "${exec_file}" 2>/dev/null || true)"
+        fi
+
+        outcome_note=""
+        case "${stop_reason}" in
+          '' | success) ;;
+          error_max_turns)
+            outcome_note="⚠️ The agent **ran out of turns**${turns:+ after ${turns}} rather than finishing (\`${stop_reason}\`). The summary below is a partial state, not a verdict on this PR."
+            ;;
+          *)
+            outcome_note="⚠️ The agent's run **ended in an error** (\`${stop_reason}\`). Draw no conclusion about this PR from the summary below."
+            ;;
+        esac
+
+        # The stall signature (#606, #609, #1270): a clean stop whose last
+        # words are about waiting for something else to finish. Every one of
+        # those agents had already been instructed to run commands
+        # synchronously and never end a turn waiting, so the instruction is
+        # demonstrably not the control — this note is. Reaching this code at
+        # all means nothing was pushed, so a summary about waiting is
+        # suspicious by construction rather than merely unusual.
+        if [ -z "${outcome_note}" ] && [ -n "${summary}" ] && printf '%s' "${summary}" | grep -qiE "(wait|waiting|hold off|stand by|check back)[^.]{0,40}\b(for|on|until)\b|once (the|that|this)[^.]{0,40}\b(finish|complet|return|land)"; then
+          outcome_note="⚠️ **This looks like a stall, not a diagnosis.** The agent ended its turn waiting for something to finish (its own words below), so the triage it is instructed to run may never have happened. Read this as \"nobody has looked yet\", NOT as \"the code cannot be fixed\" — re-queue by removing \`${ESCALATION_LABEL}\`."
+        fi
+
+        # printf '%s' throughout: the body, the captured summary and the
+        # derived note are data, never format strings (the summary is
+        # agent-authored text that can contain % sequences).
         {
           printf '%s\n' "${ESCALATE_MARKER}"
           printf '%s\n' "${ESCALATION_BODY}"
+          if [ -n "${outcome_note}" ]; then
+            printf '\n%s\n' "${outcome_note}"
+          fi
           if [ -n "${summary}" ]; then
             printf '\n<details><summary>%s</summary>\n\n' "${SUMMARY_TITLE}"
             printf '%s\n' "${summary}"

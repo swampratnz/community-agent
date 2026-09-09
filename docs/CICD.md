@@ -307,6 +307,23 @@ the build worker keeps its own, because its version asserts a *PR exists* rather
 than a commit landing and additionally owns the lane labels, the resume pointer
 and the recovery-PR path — a different contract that merely shares a name.
 
+The escalation comment it writes states the **outcome only**. The loops' fixed
+prose used to name a cause: autofix's said "the cause needs a workflow-file
+change I can't push, or it was not safely fixable", the conflict resolver's said
+the two sides were "semantically incompatible". Both were false where it
+mattered — #1270's agent had stalled waiting on a background command so no
+diagnosis had run at all, and #609's "unresolvable" conflict was a clean merge a
+human finished in minutes — and a confident wrong sentence is worse than none,
+because a maintainer reads it and deprioritises the PR (#1270 sat seven days).
+Anything about *why* is now derived by the action from the execution log and
+labelled as inference: a non-`success` `subtype` is reported as the fact it is,
+and a clean stop whose final message is about waiting for something to finish is
+flagged as a probable stall, explicitly not as a verdict on the code.
+`tests/escalationHonesty.test.ts` extracts the detector's ERE from the action
+and runs it through the real `grep -E` against the three actual stall
+transcripts plus four principled refusals, and separately asserts the loops'
+escalation prose has not re-acquired a cause claim (issue #1349).
+
 Note that M7 and M8 stay **separate steps** even though they always run
 together: a checkpoint may legitimately publish work *and* the verify still
 escalate, because checkpointed work never cleared the agent's own gate. Folding
