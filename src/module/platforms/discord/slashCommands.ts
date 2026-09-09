@@ -443,7 +443,8 @@ async function handleDigest(interaction: ChatInputCommandInteraction, deps: Slas
  */
 async function handleStatus(interaction: ChatInputCommandInteraction, deps: SlashCommandDeps): Promise<void> {
   await deferEphemeral(interaction);
-  const message = formatStatusMessage(getStatusCache(), Date.now());
+  const language = await getLanguagePreference('discord', interaction.user.id);
+  const message = formatStatusMessage(getStatusCache(), Date.now(), language);
   recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
   await replyEphemeral(interaction, message, deps);
 }

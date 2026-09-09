@@ -267,6 +267,8 @@ const { recordAppealWithdrawal, getWithdrawnAppealIds } =
   await import('../src/module/storage/appealWithdrawals.js');
 const { recordFindHelperRequest, listOwnFindHelperRequests } =
   await import('../src/module/storage/findHelperRequests.js');
+const { formatStatusMessage, getStatusCache, resetStatusCacheForTests } =
+  await import('../src/module/status/anthropicStatus.js');
 const { buildMemberDigestContent } = await import('../src/module/memberDigest.js');
 const { formatMyDataText, formatMySubmissionsText, formatMyWarningsText, MY_DATA_SUMMARY_FETCH_CAP } =
   await import('../src/module/agent/tools/selfService.js');
@@ -30524,6 +30526,77 @@ test(
     assert.equal(
       enNoAdapterResult.content[0]?.text,
       formatListEventsEmptyText('noAdapter', 'auto', 'discord'),
+    );
+
+    await pool.query(`DELETE FROM language_prefs WHERE platform = 'discord' AND user_id = $1`, [miUser]);
+  },
+);
+
+// --- issue #1361: check_status honours a standing 'mi' language preference,
+// the fourth and last tool in info.ts's four-tool family (community_info,
+// community_guidelines, list_events already did) to gain it. -----------------
+
+function checkStatusHandler(userId = 'status-caller') {
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId,
+      userName: 'Status Caller',
+      role: 'member' as const,
+      conversationId: 'status-convo',
+    },
+    stubAdapter(async () => {}),
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        { handler: () => Promise<{ content: Array<{ type: string; text: string }> }> }
+      >;
+    }
+  )._registeredTools['check_status'];
+}
+
+test(
+  "check_status renders the te reo Māori variant for a caller with a standing 'mi' language preference, " +
+    "byte-identical to formatStatusMessage(getStatusCache(), now, 'mi') (issue #1361 acceptance criterion 3)",
+  { skip },
+  async () => {
+    resetStatusCacheForTests();
+    const miUser = `${RUN}-check-status-mi`;
+    await setLanguagePreferenceHandler({ platform: 'discord', userId: miUser }).handler({ language: 'mi' });
+
+    const result = await checkStatusHandler(miUser).handler();
+
+    assert.equal(result.content[0]?.text, formatStatusMessage(getStatusCache(), Date.now(), 'mi'));
+    assert.match(result.content[0]?.text ?? '', /Kāore anō/);
+
+    await pool.query(`DELETE FROM language_prefs WHERE platform = 'discord' AND user_id = $1`, [miUser]);
+  },
+);
+
+test(
+  "SECURITY: check_status threads the caller's OWN stored language_preference " +
+    '(getLanguagePreference(caller.platform, caller.userId)) into formatStatusMessage — a distinct caller ' +
+    "with no stored preference never inherits another caller's 'mi' preference (issue #1361 SECURITY " +
+    'criterion 6)',
+  { skip },
+  async () => {
+    resetStatusCacheForTests();
+    const miUser = `${RUN}-check-status-mi-2`;
+    const enUser = `${RUN}-check-status-en`;
+    await setLanguagePreferenceHandler({ platform: 'discord', userId: miUser }).handler({ language: 'mi' });
+    // enUser deliberately has NO stored preference at all.
+
+    const miResult = await checkStatusHandler(miUser).handler();
+    assert.equal(miResult.content[0]?.text, formatStatusMessage(getStatusCache(), Date.now(), 'mi'));
+
+    const enResult = await checkStatusHandler(enUser).handler();
+    assert.equal(enResult.content[0]?.text, formatStatusMessage(getStatusCache(), Date.now(), 'auto'));
+    assert.notEqual(
+      enResult.content[0]?.text,
+      miResult.content[0]?.text,
+      "a caller with no stored preference must never receive miUser's 'mi' rendering",
     );
 
     await pool.query(`DELETE FROM language_prefs WHERE platform = 'discord' AND user_id = $1`, [miUser]);

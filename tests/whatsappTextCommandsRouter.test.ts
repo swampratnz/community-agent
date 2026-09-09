@@ -1554,6 +1554,60 @@ test('a bare "!statusx" (no space, unrecognised) is not matched as the !status c
   assert.equal(sent[0].text, REAL_TURN_REPLY);
 });
 
+test(
+  "!status renders the te reo Māori variant when the caller's stored language_preference is 'mi', " +
+    'byte-identical to formatStatusMessage(getStatusCache(), now, language) (issue #1361 acceptance ' +
+    'criterion 4)',
+  async (t) => {
+    resetStatusCacheForTests();
+    t.after(() => resetStatusCacheForTests());
+    await pollAnthropicStatus(async () =>
+      JSON.stringify({
+        page: { id: 'abc' },
+        status: { indicator: 'none', description: 'All Systems Operational' },
+        incidents: [],
+      }),
+    );
+    mockPoolRole(t, 'member');
+    const router = makeRouter({ runTurn: throwingRunTurn, getLangPref: async () => 'mi' });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!status', userId: 'member-1' }));
+
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].text, formatStatusMessage(getStatusCache(), Date.now(), 'mi'));
+    assert.match(sent[0].text, /Kāore he raru/);
+  },
+);
+
+test(
+  'SECURITY: "!status mi"/any trailing argument is never matched — the anchored matcher rejects it, so ' +
+    "no message-supplied text can select the mi rendering; the language rendered is always the caller's " +
+    'own getLangPref(msg.platform, msg.userId) result, never taken from the message text (issue #1361 ' +
+    'SECURITY criterion 6)',
+  async (t) => {
+    resetStatusCacheForTests();
+    t.after(() => resetStatusCacheForTests());
+    mockPoolRole(t, 'member');
+    let langPrefCalls = 0;
+    const router = makeRouter({
+      runTurn: async () => ({ text: REAL_TURN_REPLY }),
+      getLangPref: async () => {
+        langPrefCalls += 1;
+        return 'en';
+      },
+    });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!status mi', userId: 'member-1' }));
+
+    assert.equal(sent[0].text, REAL_TURN_REPLY, 'an argument must fall through to a normal turn');
+    assert.equal(langPrefCalls, 0, 'getLangPref must never run when an argument is present');
+  },
+);
+
 // --- !warnings (issue #1000) --------------------------------------------------
 
 test(

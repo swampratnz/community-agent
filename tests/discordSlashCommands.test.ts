@@ -1585,6 +1585,55 @@ test(
   },
 );
 
+test(
+  "/status renders the te reo Māori variant when the caller's stored language_preference is 'mi', " +
+    'byte-identical to formatStatusMessage(getStatusCache(), now, "mi") (issue #1361 acceptance criterion 4)',
+  async (t) => {
+    resetStatusCacheForTests();
+    t.after(() => resetStatusCacheForTests());
+    await pollAnthropicStatus(async () =>
+      JSON.stringify({
+        page: { id: 'abc' },
+        status: { indicator: 'none', description: 'All Systems Operational' },
+        incidents: [],
+      }),
+    );
+    mockPool(t, { memberRole: null, languagePref: 'mi' });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'status', userId: 'guest-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    const expected = stripEmDashes(formatStatusMessage(getStatusCache(), Date.now(), 'mi'));
+    assert.equal(replies[0].content, expected);
+    assert.match(replies[0].content, /Kāore he raru/);
+  },
+);
+
+test(
+  "SECURITY: /status's language is derived only from the invoking user's own stored language_preference " +
+    "(via getLanguagePreference('discord', interaction.user.id)), never from another caller's identity — " +
+    '/status takes no options at all, so there is no message-supplied text to source it from either ' +
+    '(issue #1361 SECURITY criterion 6)',
+  async (t) => {
+    resetStatusCacheForTests();
+    t.after(() => resetStatusCacheForTests());
+    const calls = mockPool(t, { memberRole: null, languagePref: 'mi' });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction } = fakeInteraction({ commandName: 'status', userId: 'caller-scoped' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    const languageQuery = calls.find((c) => c.sql.includes('FROM language_prefs'));
+    assert.ok(languageQuery, '/status must read the language preference');
+    assert.deepEqual(
+      languageQuery?.params,
+      ['discord', 'caller-scoped'],
+      "the language_prefs read must be keyed on the caller's own platform/userId",
+    );
+  },
+);
+
 // --- Issue #1000: /warnings ---------------------------------------------
 
 test(
