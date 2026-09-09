@@ -1,5 +1,6 @@
 import { config } from '@swampratnz/agent-base/config.js';
 import { logger } from '@swampratnz/agent-base/logger.js';
+import type { LanguagePreference } from '@swampratnz/agent-base/storage/repository.js';
 
 /**
  * Anthropic status check (issue #206): "is this me, or is Anthropic having
@@ -149,44 +150,66 @@ export async function pollAnthropicStatus(
   }
 }
 
-function formatAge(ms: number): string {
+function formatAge(ms: number, language: LanguagePreference): string {
+  const mi = language === 'mi';
   const minutes = Math.max(0, Math.round(ms / 60_000));
-  if (minutes < 1) return 'less than a minute';
-  if (minutes === 1) return '1 minute';
-  if (minutes < 60) return `${minutes} minutes`;
+  if (minutes < 1) return mi ? 'iti iho i te meneti kotahi' : 'less than a minute';
+  if (minutes === 1) return mi ? '1 meneti' : '1 minute';
+  if (minutes < 60) return mi ? `${minutes} meneti` : `${minutes} minutes`;
   const hours = Math.round(minutes / 60);
-  return hours === 1 ? '1 hour' : `${hours} hours`;
+  if (hours === 1) return mi ? '1 haora' : '1 hour';
+  return mi ? `${hours} haora` : `${hours} hours`;
 }
 
 /**
- * The member-facing string check_status returns. Pure (takes the cache state
- * and "now" as arguments) so it's trivially unit-testable without touching
- * module state or the clock. Deliberately never asserts "all operational"
- * means the member's own problem is on their end — only that there's no
- * KNOWN Anthropic incident (adversarial review tightening on issue #206:
- * Statuspage can lag or omit partial/region/model-specific degradations).
+ * The member-facing string check_status returns. Pure (takes the cache state,
+ * "now", and the caller's own standing language preference as arguments) so
+ * it's trivially unit-testable without touching module state or the clock.
+ * Deliberately never asserts "all operational" means the member's own problem
+ * is on their end — only that there's no KNOWN Anthropic incident
+ * (adversarial review tightening on issue #206: Statuspage can lag or omit
+ * partial/region/model-specific degradations).
+ *
+ * `language` defaults to `'en'` so every existing call site that omits it
+ * (the super-admin alert DMs below) stays byte-identical (issue #1361). Only
+ * the four FIXED templates and formatAge's relative-time phrasing get a `mi`
+ * variant — the Anthropic-supplied `name`/`impact`/`status` dynamic values
+ * stay untranslated, same boundary this file's own doc comments already draw
+ * for `formatStatusIncidentAlert`/`formatStatusResolvedAlert`.
  */
-export function formatStatusMessage(state: StatusCacheState | null, now: number): string {
+export function formatStatusMessage(
+  state: StatusCacheState | null,
+  now: number,
+  language: LanguagePreference = 'en',
+): string {
+  const mi = language === 'mi';
   if (!state) {
-    return "I haven't been able to check Anthropic's status yet — try again shortly.";
+    return mi
+      ? 'Kāore anō i taea e au te tirotiro i te tūnga o Anthropic — ngana anō ā muri tata ake nei.'
+      : "I haven't been able to check Anthropic's status yet — try again shortly.";
   }
-  const age = formatAge(now - state.fetchedAt.getTime());
+  const age = formatAge(now - state.fetchedAt.getTime(), language);
   const { incidents } = state.summary;
   if (incidents.length === 0) {
-    return (
-      `No known Anthropic incidents right now (checked ${age} ago). ` +
-      "That's Anthropic's own status page, not a diagnosis of your specific issue — " +
-      "worth double-checking your own request/setup too if something's still not working."
-    );
+    return mi
+      ? `Kāore he raru e mōhiotia ana mō Anthropic i tēnei wā (i tirohia ${age} kua hipa). ` +
+          'Nō Anthropic tonu tēnei whārangi tūnga, ehara i te tātaritanga o tāu raru ake — ' +
+          'me tiro anō hoki i tāu tono/whirihoranga mehemea kāore tonu e mahi pai ana.'
+      : `No known Anthropic incidents right now (checked ${age} ago). ` +
+          "That's Anthropic's own status page, not a diagnosis of your specific issue — " +
+          "worth double-checking your own request/setup too if something's still not working.";
   }
-  const lines = incidents.map(
-    (i) =>
-      `- ${i.name} (${i.impact} impact, ${i.status}, updated ${formatAge(now - Date.parse(i.updatedAt))} ago)`,
-  );
-  return (
-    `⚠️ Anthropic has ${incidents.length} active incident${incidents.length === 1 ? '' : 's'} ` +
-    `(checked ${age} ago):\n${lines.join('\n')}`
-  );
+  const lines = incidents.map((i) => {
+    const incidentAge = formatAge(now - Date.parse(i.updatedAt), language);
+    return mi
+      ? `- ${i.name} (pānga: ${i.impact}, tūnga: ${i.status}, i whakahōutia ${incidentAge} kua hipa)`
+      : `- ${i.name} (${i.impact} impact, ${i.status}, updated ${incidentAge} ago)`;
+  });
+  return mi
+    ? `⚠️ E ${incidents.length} ngā raru e mahi tonu ana mō Anthropic ` +
+        `(i tirohia ${age} kua hipa):\n${lines.join('\n')}`
+    : `⚠️ Anthropic has ${incidents.length} active incident${incidents.length === 1 ? '' : 's'} ` +
+        `(checked ${age} ago):\n${lines.join('\n')}`;
 }
 
 /**

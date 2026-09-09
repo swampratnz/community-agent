@@ -177,7 +177,10 @@ export const infoTools = [
     minTier: 'member',
     readOnlyHint: true,
     schema: {},
-    handler: async () => text(formatStatusMessage(getStatusCache(), Date.now())),
+    handler: async (_args, { caller }) => {
+      const language = await getLanguagePreference(caller.platform, caller.userId);
+      return text(formatStatusMessage(getStatusCache(), Date.now(), language));
+    },
   }),
 
   // Read-only, no arguments, no CONFIRM (issue #388) — the read counterpart

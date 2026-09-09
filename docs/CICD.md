@@ -85,7 +85,7 @@ pool.
 | `pipeline-pr-revise.yml` ⚡ | `workflow_dispatch` (`pr_number`) | per-PR | as autofix | 45 min | the secret |
 | `pipeline-pr-conflict.yml` ⚡ | push `main`, PR opened/ready, hourly, `workflow_dispatch` (`resolve_matrix`) | per-run / per-PR | **discover** (job override): `contents`,`pull-requests`:read + `actions:write`; **resolve** (inherits): `contents`,`issues`,`pull-requests`:write, `id-token:write` | 10 min (discover) / 45 min (resolve) | the secret |
 | `pipeline-pr-automerge.yml` | `*/15 * * * *`, `workflow_run` [CI, PR review], dispatch | single group | `contents`,`issues`,`pull-requests`:write, `actions:write` | 10 min | secret **and** `vars.AUTOMERGE_MODE` |
-| `pipeline-groundskeeper.yml` | `17 * * * *`, dispatch | single group | `issues:write`, `pull-requests:read` | 10 min | always |
+| `pipeline-groundskeeper.yml` | `17 * * * *`, dispatch | single group | `issues:write`, `pull-requests:write`, `actions:read`, `contents:read` | 10 min | always |
 | `pipeline-outcomes.yml` | `23 20 * * 1`, dispatch (`window_days`) | single, cancel | `contents:read`, `issues:write`, `pull-requests:read` | 10 min | always |
 | `changelog-coverage.yml` | `17 19 * * *`, dispatch | single, cancel | `contents:read`, `issues:write`, `pull-requests:read` | 10 min | always |
 | `changelog-autofill.yml` ⚡ | `47 19 * * *`, dispatch | single group | `contents`,`pull-requests`:write, `id-token:write` | 30 min | the secret |
@@ -307,6 +307,27 @@ the build worker keeps its own, because its version asserts a *PR exists* rather
 than a commit landing and additionally owns the lane labels, the resume pointer
 and the recovery-PR path — a different contract that merely shares a name.
 
+The escalation comment it writes states the **outcome only**. The loops' fixed
+prose used to name a cause: autofix's said "the cause needs a workflow-file
+change I can't push, or it was not safely fixable", the conflict resolver's said
+the two sides were "semantically incompatible". Both were false where it
+mattered — #1270's agent had stalled waiting on a background command so no
+diagnosis had run at all, and #609's "unresolvable" conflict was a clean merge a
+human finished in minutes — and a confident wrong sentence is worse than none,
+because a maintainer reads it and deprioritises the PR (#1270 sat seven days).
+Anything about *why* is now derived by the action from the execution log and
+labelled as inference: a non-`success` `subtype` is reported as the fact it is,
+and a clean stop whose final message is about waiting for something to finish is
+flagged as a probable stall, explicitly not as a verdict on the code.
+`tests/escalationHonesty.test.ts` extracts the detector's ERE from the action
+and runs it through the real `grep -E` against the three actual stall
+transcripts plus four principled refusals, and separately asserts the loops'
+escalation prose has not re-acquired a cause claim (issue #1349). That last
+guard is keyed on `usually means`, not on the longer phrase autofix happened to
+use: its first version required the literal "which usually means" and walked
+straight past revise's "That usually means a gate it could not make green …" —
+the same guess, one word apart, in a loop the test already enumerated.
+
 Note that M7 and M8 stay **separate steps** even though they always run
 together: a checkpoint may legitimately publish work *and* the verify still
 escalate, because checkpointed work never cleared the agent's own gate. Folding
@@ -394,6 +415,7 @@ What happens when each thing fails, in order of who gets there first:
 | CI red on any PR | `ci-retry.yml` — one blind machine rerun (`run_attempt < 2`), with a staleness guard so a superseded commit is not re-run | `pipeline-pr-autofix.yml` from attempt 2, ≤2 agent attempts | `needs-human` |
 | Build run **fails** | `pipeline-build-retry.yml` — rerun, ≤3 attempts total | build worker escalates on its **final** attempt only, clearing both `status:building` *and* `status:approved` | `needs-human` |
 | Build run **times out** (reports `cancelled`, invisible to the retry loop) | — | `pipeline-groundskeeper.yml` hourly: `status:building` + no open PR + 4h idle | `needs-human` |
+| CI **never executed** on a PR head (no run, or `action_required` with zero jobs — what a `GITHUB_TOKEN`-authored push produces) | — | `pipeline-groundskeeper.yml` hourly: open same-repo PR + head 45min+ old + no success/failure run (issue #1348) | `needs-human` |
 | Build pushed a branch but skipped `gh pr create` | the build workflow's own verify step opens a **draft** recovery PR and sets `status:built` | never overrides a deliberate refusal, never touches a branch that ever had a PR | CI + review adjudicate |
 | Agent committed but never pushed | the checkpoint step (M7) | recovery comment states the work never cleared the gate | CI adjudicates |
 | PR goes CONFLICTING | `pipeline-pr-conflict.yml`, one attempt (deterministic fast path for a `security-floor.json`-only conflict) | `needs-human` | human merges `main` |
@@ -582,9 +604,9 @@ list for the reusable version.
 
 | Coupling | Current value |
 |---|---|
-| governance paths (never auto-merged) — the literal matcher | `^(\.github/\|scripts/\|CLAUDE\.md$\|docs/PIPELINE\.md$\|docs/SECURITY\.md$\|docs/VISION\.md$\|src/module/agentModule\.ts$\|package(-lock)?\.json$\|tsconfig([.-].*)?\.json$\|eslint\.config\.\|\.prettier)` |
+| governance paths (never auto-merged) — the literal matcher | `^(\.github/\|scripts/\|CLAUDE\.md$\|docs/PIPELINE\.md$\|docs/VISION\.md$\|src/module/agentModule\.ts$\|package(-lock)?\.json$\|tsconfig([.-].*)?\.json$\|eslint\.config\.\|\.prettier)` (`docs/SECURITY.md` is deliberately **not** on it — see `pipeline-pr-automerge.yml`'s own note and CLAUDE.md) |
 | attempt caps | 2 (agent loops), 3 (build reruns), 2 (CI reruns) |
-| staleness threshold | 4h (groundskeeper) |
+| staleness threshold | 4h (groundskeeper, zombie `status:building`); 45min (groundskeeper, PR head with no executed CI run) |
 | schedules | hourly / 15-min / daily 19:17+19:47 UTC / weekly Mon |
 | model + turns | Sonnet; 300/200/60/30 |
 | timeouts | 180/45/30/20/15/10/5 min |
