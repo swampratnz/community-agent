@@ -6025,8 +6025,14 @@ test("SECURITY: formatFoundKnowledge's low-rated (per-hit) and conflict (result-
   };
   const output = formatFoundKnowledge([hit], undefined, undefined, new Set([99]), true);
   assert.doesNotMatch(output, /source:/, 'an auto-generated entry must never render a source: clause');
-  assert.ok(output.includes(KNOWLEDGE_LOW_RATED_CAVEAT_TEXT), 'the per-hit low-rated caveat must still render');
-  assert.ok(output.includes(KNOWLEDGE_CONFLICT_CAVEAT_TEXT), 'the result-wide conflict caveat must still render');
+  assert.ok(
+    output.includes(KNOWLEDGE_LOW_RATED_CAVEAT_TEXT),
+    'the per-hit low-rated caveat must still render',
+  );
+  assert.ok(
+    output.includes(KNOWLEDGE_CONFLICT_CAVEAT_TEXT),
+    'the result-wide conflict caveat must still render',
+  );
   const escapedCaveat = KNOWLEDGE_CONFLICT_CAVEAT_TEXT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   assert.equal(
     (output.match(new RegExp(escapedCaveat, 'g')) ?? []).length,
