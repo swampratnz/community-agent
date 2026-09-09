@@ -206,6 +206,28 @@ ownership rules:
   genuinely can't fix something, its escalation comment now carries the agent's
   own final summary (the same diagnosability the build worker got in #251) so a
   maintainer isn't reverse-engineering it from run logs.
+- **An escalation comment states the OUTCOME, never a guessed CAUSE** (issue
+  #1349). All three PR-repair loops share
+  `.github/actions/agent-verify-push/action.yml`, which knows exactly one
+  thing: the PR's tip did not move. Autofix used to add "the cause needs a
+  workflow-file change I can't push, or it was not safely fixable" — on #1270
+  both halves were false (the agent had ended its turn waiting on a background
+  command, so its own flake-vs-defect triage never ran, and the fix was a
+  test-file change well inside its push scope), a maintainer believed it, and
+  the PR sat for a week. The conflict resolver made the same shape of claim
+  about #609, which a human then merged cleanly in minutes. Any statement about
+  WHY is now derived from the execution log by the shared action and labelled
+  as inference. That covers all three loops: revise's "no summary" note made
+  the same guess as autofix's ("a gate it could not make green, a
+  `.github/workflows/` change it cannot push"), one word away from the phrase
+  the first version of the guard keyed on. A non-`success` stop reason is
+  reported as the fact it is, and
+  a clean stop whose last words are about waiting for something to finish is
+  flagged as a probable stall — read as "nobody has looked yet", explicitly NOT
+  as "the code cannot be fixed". `tests/escalationHonesty.test.ts` pins both
+  halves: the loops' fixed prose must not re-acquire a cause claim, and the
+  detector must fire on the three real stall transcripts without mislabelling a
+  principled refusal.
 - The **conflict-resolver loop** (`pipeline-pr-conflict.yml`) may push a
   `main`-merge to an existing PR branch when that PR is
   CONFLICTING. It is two-hop: a `discover` job (triggered on every push to

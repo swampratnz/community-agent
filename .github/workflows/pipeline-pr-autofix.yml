@@ -344,11 +344,19 @@ jobs:
           escalate-marker: ${{ env.ESCALATE_MARKER }}
           success-message: Autofix pushed a change; CI will re-run on the new commit.
           error-message: Autofix produced no new commit on ${{ env.HEAD_BRANCH }}.
+          # States the OUTCOME only. It used to add "the cause needs a
+          # workflow-file change I can't push, or it was not safely fixable",
+          # which on #1270 was false on both counts — the agent had stalled
+          # and no diagnosis had run — and cost that PR a week because a
+          # maintainer reasonably believed it (issue #1349). Any inference
+          # about WHY is derived from the execution log by the shared action
+          # and labelled as inference.
           escalation-body: >-
-            🤖 Autofix attempt ${{ steps.mark.outputs.attempt }} pushed no fix — the cause needs a
-            workflow-file change I can't push, or it was not safely fixable. Labelled `needs-human`.
-          summary-title: Autofix agent's final summary (what it says blocked it)
+            🤖 Autofix attempt ${{ steps.mark.outputs.attempt }} ended without pushing a fix.
+            Labelled `needs-human`. Run:
+            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ env.RUN_ID }}
+          summary-title: Autofix agent's final summary (its own last words)
           no-summary-note: >-
-            _No agent summary was captured — it stopped without explaining, which usually means a CI
-            gate it could not make green. Check the run log:
-            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ env.RUN_ID }}_
+            _No agent summary was captured, so this escalation says nothing about whether the
+            failure is fixable — only that the agent stopped without pushing and without
+            explaining. Check the run log above._
