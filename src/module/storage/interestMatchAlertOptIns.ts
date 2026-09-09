@@ -42,6 +42,15 @@ export interface InterestMatchAlertOptInKey {
   userId: string;
 }
 
+/** Whether `platform`/`userId` currently has this row — `my_data`'s (issue #1363) self-scoped read. */
+export async function isInterestMatchAlertOptedIn(platform: Platform, userId: string): Promise<boolean> {
+  const { rows } = await pool.query(
+    'SELECT 1 FROM interest_match_alert_optins WHERE platform = $1 AND user_id = $2',
+    [platform, userId],
+  );
+  return rows.length > 0;
+}
+
 /** Every opted-in identity — `interestMatchAlert.ts`'s per-tick scan set. */
 export async function listInterestMatchAlertOptIns(): Promise<InterestMatchAlertOptInKey[]> {
   const { rows } = await pool.query<{ platform: Platform; user_id: string }>(

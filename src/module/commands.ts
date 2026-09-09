@@ -348,10 +348,14 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
       const used =
         role !== 'super_admin' && limit !== 0 ? await countRepliesToUser(msg.platform, msg.userId) : null;
       const language = await getLanguagePreference(msg.platform, msg.userId);
-      const { appealsFiled, knowledgeTipsFiled, connectionRequestsSent } = await getMyDataSupplementalCounts(
-        msg.platform,
-        msg.userId,
-      );
+      const {
+        appealsFiled,
+        knowledgeTipsFiled,
+        connectionRequestsSent,
+        helpRequestsSent,
+        interestMatchAlertsEnabled,
+        projectNotesAuthored,
+      } = await getMyDataSupplementalCounts(msg.platform, msg.userId);
       return formatMyDataText(
         summary,
         role,
@@ -361,6 +365,9 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
         appealsFiled,
         knowledgeTipsFiled,
         connectionRequestsSent,
+        helpRequestsSent,
+        interestMatchAlertsEnabled,
+        projectNotesAuthored,
       );
     },
   },

@@ -1939,6 +1939,8 @@ test(
       if (sql.includes('own_messages'))
         return { rows: [{ own_messages: 0, replies_to_them: 0 }], rowCount: 0 };
       if (sql.includes('FROM interactions')) return { rows: [{ n: 2 }], rowCount: 0 };
+      if (sql.includes('FROM interest_match_alert_optins')) return { rows: [], rowCount: 0 };
+      if (sql.includes('FROM project_note_authors')) return { rows: [{ count: '0' }], rowCount: 0 };
       return { rows: [], rowCount: 0 };
     }) as typeof pool.query);
     const router = makeRouter({ runTurn: throwingRunTurn });
@@ -1957,7 +1959,7 @@ test(
       interestsPublished: 0,
       responseStyle: 'standard' as const,
     };
-    assert.equal(sent[0].text, formatMyDataText(zeroSummary, 'member', 5, 2, 'auto', 0, 0, 0));
+    assert.equal(sent[0].text, formatMyDataText(zeroSummary, 'member', 5, 2, 'auto', 0, 0, 0, 0, false, 0));
   },
 );
 
