@@ -3962,17 +3962,29 @@ of them today, so the feature does nothing until it runs under bosun.
   `config.db.url`, the WhatsApp Cloud access/verify/app-secret tokens,
   `config.devTeam.authToken`, `config.github.token`) concatenated with every
   getter a module registered via the manifest's `runtimeSecrets` field, and
-  read fresh on every adapter send (`filterOutbound(..., runtimeSecrets(), ...)`
-  in the Discord/WhatsApp Cloud/Baileys adapters). So the dev-team auth token
-  and the GitHub issue-filing token were already covered — base-side, not by
-  anything in this repo — before this PR; `FLEET_SUPERVISOR_TOKEN` was the one
-  outward credential with no entry anywhere in that list, read straight off
+  read fresh on every adapter send. So the dev-team auth token and the GitHub
+  issue-filing token were already covered — base-side, not by anything in this
+  repo — before this PR; `FLEET_SUPERVISOR_TOKEN` was the one outward
+  credential with no entry anywhere in that list, read straight off
   `process.env` by agent-base's own `readFleetHeartbeatConfig` with no
   registration at all. `src/module/agentModule.ts` now supplies a getter —
   `() => process.env.FLEET_SUPERVISOR_TOKEN` — via the manifest's
   `runtimeSecrets` field so it joins that same list, so if this value ever
   reached a chat surface by accident, the same backstop that already redacts
   every other credential would catch it too.
+- **That list is not taken on trust — it is pinned.** The framework is a
+  package, so the paragraph above describes code that does not live in this
+  repo, and a reviewer reading only this repo cannot check it (two review
+  rounds on #1341 said exactly that). `tests/runtimeSecretsBackstop.test.ts`
+  therefore reads the **installed** package's own source — resolved through
+  its export map, not a hardcoded `dist/` path — and asserts that every entry
+  above is really there, that the module-getter spread this manifest field
+  depends on is really there, and that agent-base still reads the token from
+  `FLEET_SUPERVISOR_TOKEN` (a rename upstream would make this registration a
+  silent no-op forever, and an invisible one, since the feature is inert here
+  today). The package is exact-pinned (#1308), so a framework bump is always a
+  reviewed diff — and one that drops an entry, or moves the file, reddens CI
+  rather than quietly un-covering a credential.
 - **Getter, not a captured value.** A rotated token is covered on the next
   send without re-registration, and an unset/empty value is safe — `redactSecrets`
   ignores empty/short values, matching `FleetHeartbeatConfig`'s own

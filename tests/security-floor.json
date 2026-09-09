@@ -146,6 +146,7 @@
   "rosterStaleAlertOpenMode.test.ts": 1,
   "router.test.ts": 9,
   "routerInterceptChain.test.ts": 4,
+  "runtimeSecretsBackstop.test.ts": 3,
   "securityDocSections.test.ts": 1,
   "securityGateCanary.test.ts": 1,
   "securityGateWrite.test.ts": 7,
