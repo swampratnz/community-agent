@@ -254,6 +254,13 @@ function mockPoolRole(
     if (sql.includes('SELECT role FROM community_users')) {
       return { rows: role ? [{ role }] : [], rowCount: 0 };
     }
+    // countOwnProjectNoteAuthorships (issue #1363) is a bare COUNT(*), which
+    // real Postgres always returns exactly one row for — unlike this
+    // fallback's empty rows, which would otherwise crash the my_data/!mydata
+    // path's `rows[0].count` read for every test sharing this generic helper.
+    if (sql.includes('FROM project_note_authors')) {
+      return { rows: [{ count: '0' }], rowCount: 0 };
+    }
     return { rows: [], rowCount: 0 };
   }) as typeof pool.query);
 }
@@ -1980,6 +1987,7 @@ test(
           return { rows: [{ own_messages: 0, replies_to_them: 0 }], rowCount: 0 };
         if (sql.includes('FROM language_prefs'))
           return { rows: languagePref ? [{ language: languagePref }] : [], rowCount: 0 };
+        if (sql.includes('FROM project_note_authors')) return { rows: [{ count: '0' }], rowCount: 0 };
         return { rows: [], rowCount: 0 };
       }) as typeof pool.query);
       const router = makeRouter({ runTurn: throwingRunTurn });
@@ -2005,6 +2013,7 @@ test(
       if (sql.includes('own_messages'))
         return { rows: [{ own_messages: 0, replies_to_them: 0 }], rowCount: 0 };
       if (sql.includes('FROM language_prefs')) return { rows: [{ language: 'mi' }], rowCount: 0 };
+      if (sql.includes('FROM project_note_authors')) return { rows: [{ count: '0' }], rowCount: 0 };
       return { rows: [], rowCount: 0 };
     }) as typeof pool.query);
     const router = makeRouter({ runTurn: throwingRunTurn });

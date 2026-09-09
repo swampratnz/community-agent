@@ -39617,10 +39617,18 @@ test(
       new RegExp(marker),
       'SECURITY: an admin note about the caller must never appear in my_data output',
     );
-    assert.doesNotMatch(
-      output,
-      /note/i,
-      'SECURITY: my_data must not even mention notes exist — issue #45 gives members no self-access path to them',
+    // Issue #1363 legitimately added a "Project notes authored:" line (the
+    // caller's OWN project_note_authors count — an unrelated table to the
+    // admin-only member_notes this test guards), so the check narrows from a
+    // blanket "no line may mention 'note'" to "every line mentioning 'note'
+    // must be that one caller-scoped line" — still catching any hint that an
+    // admin member_notes entry exists.
+    const noteLines = output.split('\n').filter((line) => /note/i.test(line));
+    assert.deepEqual(
+      noteLines,
+      [`Project notes authored: 0`],
+      "SECURITY: the only line mentioning \"note\" must be the caller's own project-notes-authored count — " +
+        "issue #45 gives members no self-access path to member_notes, so nothing may hint one exists",
     );
   },
 );
