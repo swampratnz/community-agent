@@ -260,9 +260,10 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
     // so it must never be gated tighter than the tool it fronts (issue #995).
     name: 'status',
     platforms: ['discord', 'whatsapp'],
-    whatsapp: async (text) => {
+    whatsapp: async (text, msg, _role, deps) => {
       if (!/^!status$/i.test(text)) return TEXT_COMMAND_UNMATCHED;
-      return formatStatusMessage(getStatusCache(), Date.now());
+      const language = await deps.getLangPref(msg.platform, msg.userId);
+      return formatStatusMessage(getStatusCache(), Date.now(), language);
     },
   },
   {

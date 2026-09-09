@@ -161,6 +161,90 @@ test('formatStatusMessage names an active incident with its impact, status, and 
   assert.match(msg, /checked 1 minute ago/);
 });
 
+// --- formatStatusMessage: language threading (issue #1361) ------------------
+
+test('formatStatusMessage is byte-identical whether language is omitted or explicitly "en" (acceptance criterion 1)', () => {
+  const now = Date.parse('2026-07-07T00:05:00.000Z');
+  const state = {
+    fetchedAt: new Date('2026-07-07T00:02:00.000Z'),
+    summary: { indicator: 'none' as const, description: 'ok', incidents: [] },
+  };
+  assert.equal(formatStatusMessage(state, now), formatStatusMessage(state, now, 'en'));
+  assert.equal(formatStatusMessage(null, now), formatStatusMessage(null, now, 'en'));
+});
+
+test('formatStatusMessage renders the te reo Māori "not yet checked" variant for language "mi"', () => {
+  const msg = formatStatusMessage(null, Date.now(), 'mi');
+  assert.match(msg, /Kāore anō/);
+  assert.doesNotMatch(msg, /haven't been able to check/i);
+});
+
+test('formatStatusMessage renders the te reo Māori "no known incidents" variant, with age, for language "mi"', () => {
+  const now = Date.parse('2026-07-07T00:05:00.000Z');
+  const msg = formatStatusMessage(
+    {
+      fetchedAt: new Date('2026-07-07T00:02:00.000Z'),
+      summary: { indicator: 'none', description: 'ok', incidents: [] },
+    },
+    now,
+    'mi',
+  );
+  assert.match(msg, /Kāore he raru/);
+  assert.match(msg, /3 meneti/);
+  assert.doesNotMatch(msg, /No known Anthropic incidents/);
+});
+
+test(
+  'formatStatusMessage renders the te reo Māori incident-count header and per-incident scaffolding for ' +
+    'language "mi", leaving the Anthropic-supplied name/impact/status values untranslated',
+  () => {
+    const now = Date.parse('2026-07-07T00:15:00.000Z');
+    const msg = formatStatusMessage(
+      {
+        fetchedAt: new Date('2026-07-07T00:14:00.000Z'),
+        summary: {
+          indicator: 'major',
+          description: 'Major System Outage',
+          incidents: [
+            {
+              name: 'Elevated errors on the Messages API',
+              impact: 'major',
+              status: 'investigating',
+              updatedAt: '2026-07-07T00:03:00.000Z',
+            },
+          ],
+        },
+      },
+      now,
+      'mi',
+    );
+    assert.match(msg, /E 1 ngā raru e mahi tonu ana mō Anthropic/);
+    assert.match(msg, /Elevated errors on the Messages API/, 'dynamic incident name stays untranslated');
+    assert.match(msg, /major/, 'dynamic impact value stays untranslated');
+    assert.match(msg, /investigating/, 'dynamic status value stays untranslated');
+    assert.match(msg, /12 meneti/);
+    assert.match(msg, /1 meneti/);
+    assert.doesNotMatch(msg, /active incident/i);
+  },
+);
+
+test(
+  'SECURITY: formatStatusMessage never renders any te reo Māori text for a language other than exactly ' +
+    "'mi' — an arbitrary/message-influenced value degrades to the English default rather than partially " +
+    'matching',
+  () => {
+    const now = Date.now();
+    for (const language of ['auto', 'en', 'MI', 'mi ', ' mi', 'Mi', 'other']) {
+      const msg = formatStatusMessage(null, now, language);
+      assert.equal(
+        msg,
+        "I haven't been able to check Anthropic's status yet — try again shortly.",
+        `language ${JSON.stringify(language)} must not select the mi variant`,
+      );
+    }
+  },
+);
+
 // --- formatStatusIncidentAlert (pure) ----------------------------------------
 
 test('formatStatusIncidentAlert wraps the existing formatStatusMessage rendering with a fixed proactive-alert prefix', () => {
@@ -251,5 +335,44 @@ test(
       'the resolved alert must contain the member-facing rendering verbatim, with no additional ' +
         'interpolation of summary fields',
     );
+  },
+);
+
+test(
+  'formatStatusIncidentAlert/formatStatusResolvedAlert (the super-admin proactive DMs) stay always ' +
+    "English, regardless of any member's language preference — neither function takes a language " +
+    'argument, so there is nothing a caller-supplied preference could influence (issue #1361 ' +
+    'acceptance criterion 4)',
+  () => {
+    const now = Date.parse('2026-07-30T00:05:00.000Z');
+    const incidentState = {
+      fetchedAt: new Date('2026-07-30T00:02:00.000Z'),
+      summary: {
+        indicator: 'major' as const,
+        description: 'Major System Outage',
+        incidents: [
+          {
+            name: 'Test incident',
+            impact: 'major' as const,
+            status: 'investigating',
+            updatedAt: '2026-07-30T00:00:00.000Z',
+          },
+        ],
+      },
+    };
+    const resolvedState = {
+      fetchedAt: new Date('2026-07-30T00:02:00.000Z'),
+      summary: { indicator: 'none' as const, description: 'All Systems Operational', incidents: [] },
+    };
+    assert.equal(
+      formatStatusIncidentAlert(incidentState, now),
+      `🔔 Proactive alert (Anthropic status changed): ${formatStatusMessage(incidentState, now, 'en')}`,
+    );
+    assert.equal(
+      formatStatusResolvedAlert(resolvedState, now),
+      `✅ Proactive alert (Anthropic status resolved): ${formatStatusMessage(resolvedState, now, 'en')}`,
+    );
+    assert.doesNotMatch(formatStatusIncidentAlert(incidentState, now), /Kāore|kua hipa|meneti|haora/);
+    assert.doesNotMatch(formatStatusResolvedAlert(resolvedState, now), /Kāore|kua hipa|meneti|haora/);
   },
 );
