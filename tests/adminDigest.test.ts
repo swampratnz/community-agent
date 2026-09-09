@@ -80,6 +80,7 @@ const {
 const { oldestNotMemberAgeDays } = await import('../src/module/rosterStaleAlert.js');
 const { recordAccessRequestResolution, listAccessRequestResolutionsSince } =
   await import('../src/module/storage/accessRequestResolutions.js');
+const { countHumanHelpRequestsSince } = await import('../src/module/storage/humanHelpRequestLog.js');
 const { readFileSync } = await import('node:fs');
 const pgvector = (await import('pgvector/pg')).default;
 const { config } = await import('@swampratnz/agent-base/config.js');
@@ -6839,27 +6840,33 @@ test(
     const sent: Array<{ userId: string; text: string }> = [];
     // A conversation id unique to this test guarantees zero clusters and zero
     // open reports in scope. countAccessRequests/countPendingSuggestions/
-    // countPendingKnowledgeCandidates are guild-wide by design (issue #133,
-    // #193, #284) and so are NOT test-isolated by a unique id — snapshot them
-    // immediately beforehand so this assertion holds even if another test
-    // file concurrently has a pending access request, suggestion, or
-    // knowledge candidate in flight.
+    // countPendingKnowledgeCandidates/countHumanHelpRequestsSince are
+    // guild-wide by design (issue #133, #193, #284, #1364) and so are NOT
+    // test-isolated by a unique id — snapshot them immediately beforehand so
+    // this assertion holds even if another test file concurrently has a
+    // pending access request, suggestion, or knowledge candidate in flight,
+    // or fires a genuine request_human_help call inside the digest's own
+    // FRESHNESS_DAYS window.
     const adapter = fakeAdapter({ platform: 'discord', conversationIds: [`${RUN}-c-empty`], sent });
     const pendingAccessRequestsBefore = await countAccessRequests();
     const pendingSuggestionsBefore = await countPendingSuggestions();
     const pendingCandidatesBefore = await countPendingKnowledgeCandidates();
+    const humanHelpRequestsBefore = await countHumanHelpRequestsSince(
+      new Date(Date.now() - FRESHNESS_DAYS * 24 * 3_600_000),
+    );
 
     await runAdminDigestOnce([adapter]);
 
     if (
       pendingAccessRequestsBefore === 0 &&
       pendingSuggestionsBefore === 0 &&
-      pendingCandidatesBefore === 0
+      pendingCandidatesBefore === 0 &&
+      humanHelpRequestsBefore === 0
     ) {
       assert.equal(
         sent.length,
         0,
-        'zero clusters, zero pending requests, zero open reports, zero pending suggestions, zero pending candidates — no DM sent',
+        'zero clusters, zero pending requests, zero open reports, zero pending suggestions, zero pending candidates, zero human-help asks — no DM sent',
       );
       assert.equal(
         await wasAdminDigestSentRecently('discord', adminId, 7),
@@ -6868,14 +6875,15 @@ test(
       );
     } else {
       // Extremely rare in practice, but countAccessRequests/countPendingSuggestions/
-      // countPendingKnowledgeCandidates are intentionally unscoped — a
-      // concurrently-running test file's pending access request, suggestion,
-      // or knowledge candidate legitimately makes this a non-quiet week, so
+      // countPendingKnowledgeCandidates/countHumanHelpRequestsSince are
+      // intentionally unscoped — a concurrently-running test file's pending
+      // access request, suggestion, knowledge candidate, or genuine
+      // request_human_help call legitimately makes this a non-quiet week, so
       // the digest correctly sends.
       assert.equal(
         sent.length,
         1,
-        'a pre-existing pending access request, suggestion, or knowledge candidate still legitimately triggers a digest',
+        'a pre-existing pending access request, suggestion, knowledge candidate, or human-help ask still legitimately triggers a digest',
       );
       assert.ok(!sent[0].text.includes('🔔'), 'no cluster line — this admin has zero clusters in scope');
       assert.ok(!sent[0].text.includes('🚩'), 'no report line — this admin has zero open reports in scope');
@@ -7016,11 +7024,16 @@ test(
     });
     assert.ok(created);
 
-    // countAccessRequests is guild-wide by design (issue #133) and so is NOT
-    // test-isolated by a unique id — snapshot it beforehand, same pattern as
-    // the "all four signals at zero" test above, so this assertion holds
-    // even if another test file concurrently has a pending access request.
+    // countAccessRequests/countHumanHelpRequestsSince are guild-wide by
+    // design (issue #133, #1364) and so are NOT test-isolated by a unique id
+    // — snapshot them beforehand, same pattern as the "all four signals at
+    // zero" test above, so this assertion holds even if another test file
+    // concurrently has a pending access request, or fires a genuine
+    // request_human_help call inside the digest's own FRESHNESS_DAYS window.
     const pendingAccessRequestsBefore = await countAccessRequests();
+    const humanHelpRequestsBefore = await countHumanHelpRequestsSince(
+      new Date(Date.now() - FRESHNESS_DAYS * 24 * 3_600_000),
+    );
 
     const sent: Array<{ userId: string; text: string }> = [];
     const adapter = fakeAdapter({
@@ -7039,6 +7052,12 @@ test(
     assert.ok(!sent[0].text.includes('🔔'), 'no cluster line — this admin has zero clusters in scope');
     if (pendingAccessRequestsBefore === 0) {
       assert.ok(!sent[0].text.includes('⏳'), 'no pending-request line — zero pending access requests');
+    }
+    if (humanHelpRequestsBefore === 0) {
+      assert.ok(
+        !sent[0].text.includes('🙋'),
+        'no human-help line — zero human-help asks in the freshness window',
+      );
     }
     assert.match(
       sent[0].text,
@@ -7431,21 +7450,27 @@ test(
     const sent: Array<{ userId: string; text: string }> = [];
     const adapter = fakeAdapter({ platform: 'discord', conversationIds: [inScopeConvo], sent });
 
-    // countAccessRequests/countPendingSuggestions/countPendingKnowledgeCandidates
-    // are guild-wide by design (issues #133, #193, #284) and so are NOT
-    // test-isolated by a unique id — snapshot them immediately beforehand,
-    // same pattern as the "all four signals at zero" test above, so this
-    // assertion holds even if another test file concurrently has one in flight.
+    // countAccessRequests/countPendingSuggestions/countPendingKnowledgeCandidates/
+    // countHumanHelpRequestsSince are guild-wide by design (issues #133,
+    // #193, #284, #1364) and so are NOT test-isolated by a unique id —
+    // snapshot them immediately beforehand, same pattern as the "all four
+    // signals at zero" test above, so this assertion holds even if another
+    // test file concurrently has one in flight, or fires a genuine
+    // request_human_help call inside the digest's own FRESHNESS_DAYS window.
     const pendingAccessRequestsBefore = await countAccessRequests();
     const pendingSuggestionsBefore = await countPendingSuggestions();
     const pendingCandidatesBefore = await countPendingKnowledgeCandidates();
+    const humanHelpRequestsBefore = await countHumanHelpRequestsSince(
+      new Date(Date.now() - FRESHNESS_DAYS * 24 * 3_600_000),
+    );
 
     await runAdminDigestOnce([adapter]);
 
     if (
       pendingAccessRequestsBefore === 0 &&
       pendingSuggestionsBefore === 0 &&
-      pendingCandidatesBefore === 0
+      pendingCandidatesBefore === 0 &&
+      humanHelpRequestsBefore === 0
     ) {
       assert.equal(
         sent.length,
@@ -7459,10 +7484,11 @@ test(
       );
     } else {
       // Extremely rare in practice, but a concurrently-running test file's
-      // pending access request, suggestion, or knowledge candidate legitimately
-      // makes this a non-quiet week — the digest correctly sends, but must
-      // still never carry the low-rated-knowledge line (its only source is the
-      // out-of-scope conversation).
+      // pending access request, suggestion, knowledge candidate, or genuine
+      // request_human_help call legitimately makes this a non-quiet week —
+      // the digest correctly sends, but must still never carry the
+      // low-rated-knowledge line (its only source is the out-of-scope
+      // conversation).
       assert.ok(
         !sent[0]?.text.includes('👎'),
         'SECURITY: still no low-rated-knowledge line — it is out of scope',
@@ -9513,17 +9539,23 @@ test(
     });
     // Guild-wide signals (see the analogous #133/#193 quiet-week test above)
     // aren't test-isolated — snapshot them first so the assertion holds even
-    // if another concurrently-running test file has one in flight.
+    // if another concurrently-running test file has one in flight, or fires a
+    // genuine request_human_help call inside the digest's own FRESHNESS_DAYS
+    // window (issue #1364).
     const pendingAccessRequestsBefore = await countAccessRequests();
     const pendingSuggestionsBefore = await countPendingSuggestions();
     const pendingCandidatesBefore = await countPendingKnowledgeCandidates();
+    const humanHelpRequestsBefore = await countHumanHelpRequestsSince(
+      new Date(Date.now() - FRESHNESS_DAYS * 24 * 3_600_000),
+    );
 
     await runAdminDigestOnce([adapter]);
 
     if (
       pendingAccessRequestsBefore === 0 &&
       pendingSuggestionsBefore === 0 &&
-      pendingCandidatesBefore === 0
+      pendingCandidatesBefore === 0 &&
+      humanHelpRequestsBefore === 0
     ) {
       assert.equal(sent.length, 0, 'a genuinely quiet week sends nothing');
       assert.equal(

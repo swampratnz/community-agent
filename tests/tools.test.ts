@@ -257,10 +257,11 @@ const { MEMBER_TOOLS, ADMIN_TOOLS, SUPER_ADMIN_TOOLS } = await import('@swamprat
 const { superAdminIds } = await import('@swampratnz/agent-base/auth/roles.js');
 const { WhatsAppCloudAdapter, WindowClosedError } =
   await import('@swampratnz/agent-base/platforms/whatsapp/cloudAdapter.js');
-const { buildAdminDigestForAdmin } = await import('../src/module/adminDigest.js');
+const { buildAdminDigestForAdmin, FRESHNESS_DAYS } = await import('../src/module/adminDigest.js');
 const { oldestNotMemberAgeDays } = await import('../src/module/rosterStaleAlert.js');
 const { listAccessRequestResolutionsSince } =
   await import('../src/module/storage/accessRequestResolutions.js');
+const { countHumanHelpRequestsSince } = await import('../src/module/storage/humanHelpRequestLog.js');
 const { recordSuggestionWithdrawal, getWithdrawnSuggestionIds } =
   await import('../src/module/storage/suggestionWithdrawals.js');
 const { recordAppealWithdrawal, getWithdrawnAppealIds } =
@@ -41029,12 +41030,18 @@ test(
     try {
       await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
 
-      // countAccessRequests/countPendingSuggestions/countPendingKnowledgeCandidates
-      // etc. are guild-wide, not scoped to this test's unique ids — snapshot
-      // them first so this assertion holds even if another concurrently-running
-      // test file has one of these pending, mirroring the same defensive
-      // pattern tests/adminDigest.test.ts already uses for the quiet-week case.
+      // countAccessRequests/countPendingSuggestions/countPendingKnowledgeCandidates/
+      // countHumanHelpRequestsSince etc. are guild-wide, not scoped to this
+      // test's unique ids — snapshot them first so this assertion holds even
+      // if another concurrently-running test file has one of these pending
+      // (or, for human-help asks, fires a genuine request_human_help call
+      // inside the digest's own FRESHNESS_DAYS window — issue #1364), mirroring
+      // the same defensive pattern tests/adminDigest.test.ts already uses for
+      // the quiet-week case.
       const pendingAccessRequestsBefore = await countAccessRequests();
+      const humanHelpRequestsBefore = await countHumanHelpRequestsSince(
+        new Date(Date.now() - FRESHNESS_DAYS * 24 * 3_600_000),
+      );
 
       const adapter: PlatformAdapter = {
         platform: 'discord',
@@ -41072,14 +41079,19 @@ test(
       const result = await registeredTool.handler({});
       const out = result.content[0]?.text ?? '';
 
-      if (pendingAccessRequestsBefore === 0) {
+      if (pendingAccessRequestsBefore === 0 && humanHelpRequestsBefore === 0) {
         assert.equal(out, 'Nothing to report right now.');
-      } else {
+      } else if (pendingAccessRequestsBefore > 0) {
         // Extremely rare in practice — a concurrently-running test file has a
         // pending access request in flight, which legitimately makes this a
         // non-quiet snapshot (same caveat the runAdminDigestOnce quiet-week
         // test documents).
         assert.match(out, /⏳ \d+ pending access request\(s\)/);
+      } else {
+        // Same caveat, for a concurrently-running test file's genuine
+        // request_human_help call landing inside the freshness window
+        // instead (issue #1364).
+        assert.match(out, /🙋 Human-help asks: \d+ in the last \d+ days/);
       }
     } finally {
       // A stray admin row left behind by a thrown assertion would otherwise
