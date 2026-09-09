@@ -26,6 +26,19 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #1355 #1356 #1357
 -->
 
+## 2026-09-10
+
+### Added
+- **`my_project_notes`: find a project note you filed earlier.** (#1366)
+  `project_note`'s confirmation echoes a new note's id only once, at save
+  time, so a member wanting to `withdraw_project_note` a note filed days
+  earlier had no way to find its id short of scrolling back through chat
+  history. `my_project_notes` lists everything YOU recorded across every
+  project — id, project slug, a preview of what you wrote, how long ago,
+  and whether it's since been withdrawn (a withdrawn note is marked, not
+  hidden, so you can confirm a withdrawal took effect). Never shows another
+  member's notes.
+
 ## 2026-09-09
 
 ### Added

@@ -7074,8 +7074,9 @@ test('community_info reply stays concise, not a wall of text (issue #92)', async
   // (folded into the existing appeal_moderation line, not a new one), and
   // again for issue #1287's knowledge_for_me line, and again for issue
   // #1344's withdraw_project_note clause (folded into the existing project
-  // line, not a new one).
-  assert.ok(replyText.length < 2510, `reply should stay short; was ${replyText.length} chars`);
+  // line, not a new one), and again for issue #1366's my_project_notes
+  // clause (same project line again, not a new bullet).
+  assert.ok(replyText.length < 2560, `reply should stay short; was ${replyText.length} chars`);
 });
 
 test('community_info appends the full ADMIN_CAPABILITIES_TEXT rundown for admin/super_admin callers, on top of the member content (issue #367)', async () => {
@@ -7172,6 +7173,7 @@ const MEMBER_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__project_note', /Record decisions in a project/i],
   ['mcp__community__project_list', /list your projects/i],
   ['mcp__community__withdraw_project_note', /withdraw a project note you recorded by mistake/i],
+  ['mcp__community__my_project_notes', /list the project notes you've recorded yourself/i],
   ['mcp__community__community_guidelines', /guideline|rule/i],
   ['mcp__community__check_status', /known Anthropic outage/i],
   ['mcp__community__knowledge_search', /knowledge/i],
@@ -7291,7 +7293,8 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
     'X?"), or opt in/out of being notified for other members\' requests or matches\n' +
     '- Pull the community digest on demand\n' +
     "- Record decisions in a project you're part of and search that project's shared memory later, or " +
-    'list your projects, or withdraw a project note you recorded by mistake\n' +
+    'list your projects, or withdraw a project note you recorded by mistake, or list the project notes ' +
+    "you've recorded yourself\n" +
     '- Erase all your stored data any time ("forget me")';
 
   assert.equal(
@@ -7308,7 +7311,8 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
       'to the suggest_improvement line, issue #1278 added the withdraw_appeal clause to the ' +
       'appeal_moderation line, issue #1287 added the knowledge_for_me line, issue #1344 added the ' +
       'withdraw_project_note clause to the project_note/project_recall/project_list line, issue #1332 ' +
-      'added the "or matches" clause to the find_helper line; otherwise unchanged since #367)',
+      'added the "or matches" clause to the find_helper line, issue #1366 added the my_project_notes ' +
+      'clause to the project_note/project_recall/project_list line; otherwise unchanged since #367)',
   );
 });
 
@@ -7483,8 +7487,10 @@ test('community_info: admin reply stays under a hard char cap, not a wall of tex
   // member segment, so a member-segment addition grows this reply too);
   // bumped once more alongside the member cap for issue #1287's
   // knowledge_for_me line (same reason); bumped once more alongside the
-  // member cap for issue #1344's withdraw_project_note clause (same reason).
-  assert.ok(adminReply.length < 5060, `admin reply should stay short; was ${adminReply.length} chars`);
+  // member cap for issue #1344's withdraw_project_note clause (same reason);
+  // bumped once more alongside the member cap for issue #1366's
+  // my_project_notes clause (same reason).
+  assert.ok(adminReply.length < 5110, `admin reply should stay short; was ${adminReply.length} chars`);
 });
 
 test('SECURITY: community_info member-tier and guest-tier replies never name an admin/super_admin-only tool or contain any ADMIN_CAPABILITIES_TEXT-unique line (issue #367, issue #311)', async () => {
@@ -7636,9 +7642,10 @@ test('community_info: super_admin reply stays under a hard char cap, not a wall 
   // more alongside the member cap for issue #1278's withdraw_appeal clause;
   // bumped once more alongside the member cap for issue #1287's
   // knowledge_for_me line; bumped once more alongside the member cap for
-  // issue #1344's withdraw_project_note clause.
+  // issue #1344's withdraw_project_note clause; bumped once more alongside
+  // the member cap for issue #1366's my_project_notes clause.
   assert.ok(
-    superAdminReply.length < 5710,
+    superAdminReply.length < 5760,
     `super_admin reply should stay short; was ${superAdminReply.length} chars`,
   );
 });

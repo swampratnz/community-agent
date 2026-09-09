@@ -51,6 +51,7 @@ const EXPECTED: Record<string, readonly string[]> = {
     'list_projects',
     'most_helpful_knowledge',
     'my_data',
+    'my_project_notes',
     'my_submissions',
     'my_warnings',
     'project_list',

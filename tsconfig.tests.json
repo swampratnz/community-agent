@@ -47,6 +47,7 @@
     "tests/knowledgeSourceCheckTool.test.ts",
     "tests/memberDigest.test.ts",
     "tests/memberToolLanguageCoverage.test.ts",
+    "tests/myProjectNotes.test.ts",
     "tests/noticeDebounce.test.ts",
     "tests/pipelineWorkflowAllowlist.test.ts",
     "tests/platformRegistry.test.ts",

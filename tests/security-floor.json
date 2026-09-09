@@ -123,6 +123,7 @@
   "modelAndPlanSelectionSkill.test.ts": 1,
   "modelUsageRouter.test.ts": 2,
   "moderation.test.ts": 15,
+  "myProjectNotes.test.ts": 2,
   "notifyAdminsAccessRequestUnqueued.test.ts": 13,
   "notifyAdminsWindowReopenQueue.test.ts": 3,
   "notifyMemberWindowReopenQueue.test.ts": 2,

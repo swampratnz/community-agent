@@ -640,7 +640,8 @@ const NOTICE_ENTRIES = {
       'X?"), or opt in/out of being notified for other members\' requests or matches\n' +
       '- Pull the community digest on demand\n' +
       "- Record decisions in a project you're part of and search that project's shared memory later, or " +
-      'list your projects, or withdraw a project note you recorded by mistake\n' +
+      'list your projects, or withdraw a project note you recorded by mistake, or list the project notes ' +
+      "you've recorded yourself\n" +
       '- Erase all your stored data any time ("forget me")',
     language: {
       mi:
@@ -685,7 +686,7 @@ const NOTICE_ENTRIES = {
         '- Tiki i te whakarāpopototanga hapori ā-tono\n' +
         '- Tuhi whakatau i roto i tētahi kaupapa e uru ana koe, rapu anō i ngā mahara tiritahi o taua ' +
         'kaupapa ā muri ake, rārangi rānei i ō kaupapa, tango rānei i tētahi tuhinga kaupapa i tukuna ' +
-        'pōhēhē e koe\n' +
+        'pōhēhē e koe, rārangi rānei i ngā tuhinga kaupapa kua tuhia e koe ake\n' +
         '- Muku i katoa āu raraunga kua rongoātia i ngā wā katoa ("forget me")',
     },
   },
@@ -1059,6 +1060,12 @@ const NOTICE_ENTRIES = {
     base: 'You have no project accessible in this conversation.',
     language: {
       mi: 'Kāore he kaupapa e watea ana ki a koe i roto i tēnei kōrero.',
+    },
+  },
+  myProjectNotesEmpty: {
+    base: "You haven't recorded any project notes yet.",
+    language: {
+      mi: 'Kāore anō koe kia tuhi tētahi tuhinga kaupapa.',
     },
   },
   // --- knowledge citation-note fragments (agent/tools/helpers.ts) ----------

@@ -13,16 +13,19 @@ import {
   saveProjectNote,
   searchProjectNotes,
 } from '@swampratnz/agent-base/storage/repository.js';
-import { resolveSanitizedLabel, text, untrusted } from './helpers.js';
+import { formatRelativeAge, resolveSanitizedLabel, text, truncateForEcho, untrusted } from './helpers.js';
 import { notice } from '../../strings/notices.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 import { untrustedEntryContent } from '@swampratnz/agent-base/agent/systemPrompt.js';
 import {
   getWithdrawnProjectNoteIds,
   isOwnProjectNote,
+  listOwnProjectNotePreviews,
   recordProjectNoteAuthor,
+  recordProjectNotePreview,
   recordProjectNoteWithdrawal,
 } from '../../storage/projectNoteRecords.js';
+import { MY_DATA_SUMMARY_FETCH_CAP } from './selfService.js';
 
 // --- Project tools (issue #927) --------------------------------------------
 //
@@ -173,6 +176,22 @@ export const projectNotesTools = [
       } catch (err) {
         logger.warn({ err }, 'Project note author record failed');
       }
+      // Best-effort content-preview capture for my_project_notes (issue
+      // #1366) — same discipline and same "right after the author record"
+      // placement as recordProjectNoteAuthor above; a failure here must
+      // never turn a successfully-saved note into a reported failure, and
+      // must not block the author record above from having already been
+      // attempted (hence its own try/catch rather than being folded into
+      // the one above).
+      try {
+        await recordProjectNotePreview(
+          saved.id,
+          args.project,
+          truncateForEcho(args.title ? `${args.title}: ${args.content}` : args.content),
+        );
+      } catch (err) {
+        logger.warn({ err }, 'Project note preview record failed');
+      }
       const language = await getLanguagePreference(caller.platform, caller.userId);
       return text(notice('projectNoteSaved', { language })(args.project, saved.id));
     },
@@ -305,6 +324,64 @@ export const projectNotesTools = [
       }
       await recordProjectNoteWithdrawal(args.noteId);
       return text(notice('projectNoteWithdrawn', { language })(args.noteId));
+    },
+  }),
+
+  // Self-service listing (issue #1366), the v2 growth path #1344 explicitly
+  // deferred: project_note's own success reply is the ONLY moment a member
+  // ever sees a note's id, so a member wanting to withdraw_project_note a
+  // note filed days ago previously had no way to find it short of scrolling
+  // chat history. Self-scoped by construction — listOwnProjectNotePreviews
+  // joins project_note_previews through project_note_authors on the
+  // caller's OWN platform/userId, so no argument can widen it to another
+  // member's notes (there are no arguments at all, matching my_data/
+  // my_submissions' schema {} shape).
+  defineTool({
+    name: 'my_project_notes',
+    description:
+      'List the project notes YOU recorded with project_note, across every project — id, project slug, a ' +
+      "truncated preview of what you wrote, how long ago, and whether it's since been withdrawn. Use this " +
+      'when a member wants to find the id of a note they filed earlier (needed by withdraw_project_note), or ' +
+      "just wants to review what they've recorded. Never returns another member's notes. A withdrawn note " +
+      'still appears here (marked withdrawn) so you can confirm a withdrawal took effect, even though ' +
+      'withdraw_project_note fully quarantines it from project_recall.',
+    minTier: 'member',
+    readOnlyHint: true,
+    schema: {},
+    handler: async (_args, { caller }) => {
+      // SECURITY: re-check member tier in the handler, the same discipline
+      // every other tool in this file uses.
+      assertAtLeast(caller.role, 'member', 'my_project_notes');
+      const language = await getLanguagePreference(caller.platform, caller.userId);
+      const notes = await listOwnProjectNotePreviews(
+        caller.platform,
+        caller.userId,
+        MY_DATA_SUMMARY_FETCH_CAP,
+      );
+      if (notes.length === 0) {
+        return text(notice('myProjectNotesEmpty', { language }));
+      }
+      // Withdrawn/active marker (issue #1344's withdrawal side-table),
+      // consulted the same way project_recall's filter step does — except
+      // here a withdrawn note is ANNOTATED, never filtered out, so a member
+      // can see their own withdrawal took effect (deliberately unlike
+      // project_recall's full quarantine of the same note for every reader
+      // including its author).
+      const withdrawnIds = await getWithdrawnProjectNoteIds(notes.map((n) => n.id));
+      // Previews are member-authored free text re-entering the model's
+      // context, so they are quarantined exactly as project_recall
+      // quarantines the same underlying content.
+      return text(
+        untrusted(
+          'Your project notes',
+          notes
+            .map((n) => {
+              const marker = withdrawnIds.has(n.id) ? ' (withdrawn)' : '';
+              return `- [#${n.id}, ${n.projectSlug}, ${formatRelativeAge(n.createdAt)}] ${n.preview}${marker}`;
+            })
+            .join('\n'),
+        ),
+      );
     },
   }),
 ];
