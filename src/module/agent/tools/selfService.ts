@@ -17,6 +17,8 @@ import {
 } from '@swampratnz/agent-base/storage/repository.js';
 import { getWithdrawnAppealIds } from '../../storage/appealWithdrawals.js';
 import { listOwnFindHelperRequests } from '../../storage/findHelperRequests.js';
+import { isInterestMatchAlertOptedIn } from '../../storage/interestMatchAlertOptIns.js';
+import { countOwnProjectNoteAuthorships } from '../../storage/projectNoteRecords.js';
 import { getWithdrawnSuggestionIds } from '../../storage/suggestionWithdrawals.js';
 import { formatRelativeAge, PROJECT_NOTE_RETENTION_NOTICE, text, truncateForEcho } from './helpers.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
@@ -233,43 +235,71 @@ function formatCappedCount(n: number, cap: number): string {
 }
 
 /**
- * `my_data`'s appeals/knowledge-tips/connection-requests counts (issue
- * #1311), aggregated across every identity linked via `link_member` —
- * `getMyDataSummary` (base-owned) already does this for its own five fields
- * via `resolveLinkedIdentities`, and `my_data`'s own tool description
- * promises the same "own identity plus any identity linked via link_member"
- * scope, so these three module-side counts must match it too (PR review on
- * #1311's first attempt: a member who files from a linked identity B and
- * runs `my_data` from identity A must not see an undercount just because the
- * fetch happens to live in this module rather than in base's summary). Each
- * identity's `listOwn*` reads are independently bounded at
+ * `my_data`'s appeals/knowledge-tips/connection-requests/help-requests/
+ * project-notes-authored counts plus its interest-match-alert opt-in flag
+ * (issues #1311 and #1363), aggregated across every identity linked via
+ * `link_member` — `getMyDataSummary` (base-owned) already does this for its
+ * own five fields via `resolveLinkedIdentities`, and `my_data`'s own tool
+ * description promises the same "own identity plus any identity linked via
+ * link_member" scope, so these module-side fields must match it too (PR
+ * review on #1311's first attempt: a member who files from a linked identity
+ * B and runs `my_data` from identity A must not see an undercount just
+ * because the fetch happens to live in this module rather than in base's
+ * summary). Each identity's `listOwn*` reads are independently bounded at
  * `MY_DATA_SUMMARY_FETCH_CAP`, then summed; `formatCappedCount` still renders
  * `${cap}+` once the summed total reaches the cap, so a sum built from
  * several uncapped identity-level reads can still never present a truncated
- * grand total as definitive. Shared by all three call sites (the tool
- * handler below, and the `/mydata`/`!mydata` commands) rather than
- * duplicated, since the linked-identity resolution makes each call site's
- * inline version noticeably more than the one-line-per-field it used to be.
+ * grand total as definitive. `interestMatchAlertsEnabled` is `true` if ANY
+ * linked identity has the opt-in on, matching the same "aggregate across
+ * link_member identities" discipline as every other field here. Shared by
+ * all three call sites (the tool handler below, and the `/mydata`/`!mydata`
+ * commands) rather than duplicated, since the linked-identity resolution
+ * makes each call site's inline version noticeably more than the
+ * one-line-per-field it used to be.
  */
 export async function getMyDataSupplementalCounts(
   platform: Platform,
   userId: string,
-): Promise<{ appealsFiled: number; knowledgeTipsFiled: number; connectionRequestsSent: number }> {
+): Promise<{
+  appealsFiled: number;
+  knowledgeTipsFiled: number;
+  connectionRequestsSent: number;
+  helpRequestsSent: number;
+  interestMatchAlertsEnabled: boolean;
+  projectNotesAuthored: number;
+}> {
   const identities = await resolveLinkedIdentities(platform, userId);
   let appealsFiled = 0;
   let knowledgeTipsFiled = 0;
   let connectionRequestsSent = 0;
+  let helpRequestsSent = 0;
+  let interestMatchAlertsEnabled = false;
+  let projectNotesAuthored = 0;
   for (const identity of identities) {
-    const [appeals, knowledgeTips, connectionRequests] = await Promise.all([
-      listOwnAppeals(identity.platform, identity.userId, MY_DATA_SUMMARY_FETCH_CAP),
-      listOwnKnowledgeCandidates(identity.platform, identity.userId, MY_DATA_SUMMARY_FETCH_CAP),
-      listOwnProjectConnectionRequests(identity.platform, identity.userId, MY_DATA_SUMMARY_FETCH_CAP),
-    ]);
+    const [appeals, knowledgeTips, connectionRequests, helpRequests, alertOptedIn, noteCount] =
+      await Promise.all([
+        listOwnAppeals(identity.platform, identity.userId, MY_DATA_SUMMARY_FETCH_CAP),
+        listOwnKnowledgeCandidates(identity.platform, identity.userId, MY_DATA_SUMMARY_FETCH_CAP),
+        listOwnProjectConnectionRequests(identity.platform, identity.userId, MY_DATA_SUMMARY_FETCH_CAP),
+        listOwnFindHelperRequests(identity.platform, identity.userId, MY_DATA_SUMMARY_FETCH_CAP),
+        isInterestMatchAlertOptedIn(identity.platform, identity.userId),
+        countOwnProjectNoteAuthorships(identity.platform, identity.userId),
+      ]);
     appealsFiled += appeals.length;
     knowledgeTipsFiled += knowledgeTips.length;
     connectionRequestsSent += connectionRequests.length;
+    helpRequestsSent += helpRequests.length;
+    interestMatchAlertsEnabled = interestMatchAlertsEnabled || alertOptedIn;
+    projectNotesAuthored += noteCount;
   }
-  return { appealsFiled, knowledgeTipsFiled, connectionRequestsSent };
+  return {
+    appealsFiled,
+    knowledgeTipsFiled,
+    connectionRequestsSent,
+    helpRequestsSent,
+    interestMatchAlertsEnabled,
+    projectNotesAuthored,
+  };
 }
 
 /**
@@ -288,7 +318,12 @@ export async function getMyDataSupplementalCounts(
  * are raw `.length` counts of a `MY_DATA_SUMMARY_FETCH_CAP`-bounded fetch —
  * the same three record kinds `forget_me`/`purge_user_data` also erase, and
  * the same three `listOwn*` reads `my_submissions` already performs in this
- * file, just counted here instead of listed.
+ * file, just counted here instead of listed. `helpRequestsSent`/
+ * `projectNotesAuthored` (issue #1363) are the same shape of capped count,
+ * for the two purge-registered record kinds (`find_helper_requests`,
+ * `project_note_authors`) that shipped after #1311; `interestMatchAlertsEnabled`
+ * is a plain boolean (`interest_match_alert_optins` has no meaningful count,
+ * only on/off).
  */
 export function formatMyDataText(
   summary: Awaited<ReturnType<typeof getMyDataSummary>>,
@@ -299,6 +334,9 @@ export function formatMyDataText(
   appealsFiled: number,
   knowledgeTipsFiled: number,
   connectionRequestsSent: number,
+  helpRequestsSent: number,
+  interestMatchAlertsEnabled: boolean,
+  projectNotesAuthored: number,
 ): string {
   const lines = [
     `Messages you've sent: ${summary.ownMessages}`,
@@ -309,6 +347,9 @@ export function formatMyDataText(
     `Appeals filed: ${formatCappedCount(appealsFiled, MY_DATA_SUMMARY_FETCH_CAP)}`,
     `Knowledge tips filed: ${formatCappedCount(knowledgeTipsFiled, MY_DATA_SUMMARY_FETCH_CAP)}`,
     `Connection requests sent: ${formatCappedCount(connectionRequestsSent, MY_DATA_SUMMARY_FETCH_CAP)}`,
+    `Help requests sent: ${formatCappedCount(helpRequestsSent, MY_DATA_SUMMARY_FETCH_CAP)}`,
+    `Interest match alerts: ${interestMatchAlertsEnabled ? 'on' : 'off'}`,
+    `Project notes authored: ${formatCappedCount(projectNotesAuthored, MY_DATA_SUMMARY_FETCH_CAP)}`,
     `Projects you've shared: ${summary.projectsShared}`,
     `Interests published (who_is_into): ${summary.interestsPublished > 0 ? 'yes' : 'no'}`,
     `Response style preference: ${summary.responseStyle === 'plain' ? 'plain' : 'standard (default)'}`,
@@ -475,7 +516,8 @@ export const selfServiceTools = [
     description:
       'Summarize what the bot has stored about the caller: their own message count, replies the bot has ' +
       'sent them, knowledge entries sourced from them, content reports and suggestions they filed, moderation ' +
-      'appeals filed, knowledge tips filed via suggest_knowledge, project-connection requests sent, whether ' +
+      'appeals filed, knowledge tips filed via suggest_knowledge, project-connection requests sent, ' +
+      'find_helper requests sent, whether interest-match alerts are on, project notes authored, whether ' +
       "they've published interests for member discovery, their standing response-style and language " +
       "preferences, and where they stand against today's daily reply budget. Use " +
       'this when a member asks what the bot knows about them, wants to see what forget_me would erase ' +
@@ -501,13 +543,19 @@ export const selfServiceTools = [
       // as info.ts/notify.ts, read a second time here rather than folded
       // into getMyDataSummary's (base-owned) return shape.
       const language = await getLanguagePreference(caller.platform, caller.userId);
-      // Appeals/knowledge-tips/connection-requests counts (issue #1311),
-      // linked-identity-aggregated the same way getMyDataSummary's own five
-      // fields are (module-side since getMyDataSummary is base-owned).
-      const { appealsFiled, knowledgeTipsFiled, connectionRequestsSent } = await getMyDataSupplementalCounts(
-        caller.platform,
-        caller.userId,
-      );
+      // Appeals/knowledge-tips/connection-requests/help-requests/project-
+      // notes-authored counts plus the interest-match-alert opt-in flag
+      // (issues #1311, #1363), linked-identity-aggregated the same way
+      // getMyDataSummary's own five fields are (module-side since
+      // getMyDataSummary is base-owned).
+      const {
+        appealsFiled,
+        knowledgeTipsFiled,
+        connectionRequestsSent,
+        helpRequestsSent,
+        interestMatchAlertsEnabled,
+        projectNotesAuthored,
+      } = await getMyDataSupplementalCounts(caller.platform, caller.userId);
       return text(
         formatMyDataText(
           summary,
@@ -518,6 +566,9 @@ export const selfServiceTools = [
           appealsFiled,
           knowledgeTipsFiled,
           connectionRequestsSent,
+          helpRequestsSent,
+          interestMatchAlertsEnabled,
+          projectNotesAuthored,
         ),
       );
     },

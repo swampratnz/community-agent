@@ -49,6 +49,19 @@ export async function isOwnProjectNote(noteId: number, platform: Platform, userI
 }
 
 /**
+ * Count of notes `platform`/`userId` is the recorded author of — `my_data`'s
+ * (issue #1363) own self-scoped read, counting instead of checking one id
+ * like `isOwnProjectNote` above.
+ */
+export async function countOwnProjectNoteAuthorships(platform: Platform, userId: string): Promise<number> {
+  const { rows } = await pool.query<{ n: number }>(
+    'SELECT COUNT(*)::int AS n FROM project_note_authors WHERE author_platform = $1 AND author_user_id = $2',
+    [platform, userId],
+  );
+  return rows[0]?.n ?? 0;
+}
+
+/**
  * Record one note's withdrawal. `ON CONFLICT DO NOTHING` makes a repeated
  * withdrawal of the same id idempotent — no duplicate row, no error — since
  * `withdraw_project_note` may be called more than once against a note it

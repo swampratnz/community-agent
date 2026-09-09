@@ -46,6 +46,18 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   disproportionate fix for one typo. An unknown or not-yours note id gets
   the identical refusal either way, so this can't be used to fish for
   another member's notes.
+- **`my_data` now also shows your `find_helper` requests sent, whether
+  interest-match alerts are on, and how many project notes you've
+  authored.** (#1363) `my_data` exists specifically to preview what
+  `forget_me` would erase, and #1311 already closed this same gap once for
+  appeals/knowledge-tips/connection-requests — but `find_helper_requests`,
+  `interest_match_alert_optins`, and `project_note_authors` all shipped
+  since then, each already erased by `forget_me`/`purge_user_data`, none of
+  them reflected in the summary. `my_data` now shows `Help requests sent:`,
+  `Interest match alerts: on/off`, and `Project notes authored:` alongside
+  its existing fields, aggregated across every identity linked via
+  `link_member` the same way the rest of the summary already is. `/mydata`
+  and `!mydata` render the same three lines.
 
 ## 2026-09-08
 

@@ -50,6 +50,19 @@ export async function listInterestMatchAlertOptIns(): Promise<InterestMatchAlert
   return rows.map((r) => ({ platform: r.platform, userId: r.user_id }));
 }
 
+/**
+ * Whether `platform`/`userId` currently has the opt-in on — `my_data`'s
+ * (issue #1363) own self-scoped read, mirroring `setInterestMatchAlertOptIn`'s
+ * exact key.
+ */
+export async function isInterestMatchAlertOptedIn(platform: Platform, userId: string): Promise<boolean> {
+  const { rows } = await pool.query(
+    'SELECT 1 FROM interest_match_alert_optins WHERE platform = $1 AND user_id = $2',
+    [platform, userId],
+  );
+  return rows.length > 0;
+}
+
 // --- Lifecycle registration (storage/lifecycle.ts) --------------------------
 registerPurgeContributor({
   name: 'interest_match_alert_optins',
