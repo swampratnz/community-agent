@@ -51,6 +51,10 @@ import {
   type QuestionCluster,
 } from '@swampratnz/agent-base/storage/repository.js';
 import { listAccessRequestResolutionsSince } from './storage/accessRequestResolutions.js';
+import {
+  countHumanHelpRequestsSince,
+  mostRecentHumanHelpRequestAt,
+} from './storage/humanHelpRequestLog.js';
 import type { JobSpec } from '@swampratnz/agent-base/jobs/types.js';
 import type { Platform, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
@@ -1012,6 +1016,24 @@ export function buildAdminDigestMessage(
   // pre-#1330 form. Bare integer only, same privacy convention as every
   // signal above.
   onboardingQueueAgeDays: number | null = null,
+  // Count of genuine (under-cap) `request_human_help` asks in the last
+  // FRESHNESS_DAYS days, from `countHumanHelpRequestsSince`
+  // (`human_help_request_log`, issue #1364) — the frequency/recency signal
+  // for a member ask that otherwise leaves zero trace if the one live
+  // `notifyAdmins` DM it also fires is missed. No `trendSuffix` call — the
+  // underlying table has no upstream `ADMIN_DIGEST_SIGNAL_KEYS` allowlist
+  // entry (an agent-base change, out of scope here per the approved
+  // proposal's own scope guardrail), same "renders bare, no arrow" posture
+  // as `responseLatencyCount`/`accessRequestBreakdown`'s median above. Two
+  // append-only trailing params, default 0/null, so every existing call
+  // site is unaffected and the quiet case (count 0) is byte-identical to
+  // the pre-#1364 form.
+  humanHelpRequestsCount: number = 0,
+  // Whole-hour age of the most recent ask (`mostRecentHumanHelpRequestAt`,
+  // issue #1364) — only ever rendered alongside the already-nonzero
+  // `humanHelpRequestsCount > 0` line, same non-null-only refinement shape
+  // as every sibling `oldest*AgeDays`/median field above.
+  mostRecentHumanHelpRequestHoursAgo: number | null = null,
 ): string | null {
   if (
     clusters.length === 0 &&
@@ -1051,7 +1073,8 @@ export function buildAdminDigestMessage(
     autoAnswerLatencyCount === 0 &&
     mentionLatencyCount === 0 &&
     approvedAccessRequestsCount === 0 &&
-    declinedAccessRequestsCount === 0
+    declinedAccessRequestsCount === 0 &&
+    humanHelpRequestsCount === 0
   )
     return null;
 
@@ -1463,6 +1486,23 @@ export function buildAdminDigestMessage(
         ' this week — the community is contributing back.',
     );
   }
+  if (humanHelpRequestsCount > 0) {
+    // Bare integer plus a rounded hours/days-ago fragment only — no caller
+    // identity, conversation, or platform ever reaches the DM (issue #1364).
+    // No trend suffix — see this param's own doc comment on the function
+    // signature above.
+    const recencyFragment =
+      mostRecentHumanHelpRequestHoursAgo !== null
+        ? ` (most recent ${
+            mostRecentHumanHelpRequestHoursAgo < 24
+              ? `~${Math.round(mostRecentHumanHelpRequestHoursAgo)}h`
+              : `~${Math.round(mostRecentHumanHelpRequestHoursAgo / 24)}d`
+          } ago)`
+        : '';
+    sections.push(
+      `🙋 Human-help asks: ${humanHelpRequestsCount} in the last ${FRESHNESS_DAYS} days${recencyFragment}.`,
+    );
+  }
   return sections.join('\n');
 }
 
@@ -1543,6 +1583,8 @@ export async function buildAdminDigestForAdmin(
     autoAnswerLatencyStats,
     mentionLatencyStats,
     accessRequestBreakdown,
+    humanHelpRequestsCount,
+    mostRecentHumanHelpRequestTimestamp,
   ] = await Promise.all([
     recentQuestionClusters(scope, FRESHNESS_DAYS, CLUSTER_LIMIT),
     countAccessRequests(),
@@ -1719,6 +1761,15 @@ export async function buildAdminDigestForAdmin(
     // pendingAccessRequests above — access_request_resolutions carries no
     // conversation/channel column.
     accessRequestResolutionBreakdown(FRESHNESS_DAYS),
+    // Frequency signal for request_human_help asks over the same
+    // FRESHNESS_DAYS window as every other rolling-window trend line here —
+    // guild-wide, unscoped like pendingSuggestions above
+    // (human_help_request_log carries no conversation/channel column),
+    // issue #1364.
+    countHumanHelpRequestsSince(since),
+    // Recency companion, unbounded by `since` on purpose — see
+    // mostRecentHumanHelpRequestAt's own doc comment (issue #1364).
+    mostRecentHumanHelpRequestAt(),
   ]);
   // Onboarding-queue count only means anything in 'gated' mode — an
   // 'open'-mode not_members row already has full member-tool access
@@ -1731,6 +1782,14 @@ export async function buildAdminDigestForAdmin(
   // aggregate above, this is a row-fetch of up to 200 rows, not a free
   // MIN().
   const onboardingQueueAgeDays = notMembersCount > 0 ? await oldestNotMemberAgeDays(platform) : null;
+  // Whole-hour age of the most recent request_human_help ask (issue #1364) —
+  // only meaningful once humanHelpRequestsCount is already known non-empty,
+  // same "only compute once the count is nonzero" discipline
+  // onboardingQueueAgeDays just above follows.
+  const mostRecentHumanHelpRequestHoursAgo =
+    humanHelpRequestsCount > 0 && mostRecentHumanHelpRequestTimestamp !== null
+      ? (Date.now() - mostRecentHumanHelpRequestTimestamp.getTime()) / 3_600_000
+      : null;
   // Every signal that can carry a trend suffix (issue #497) — the exact same
   // values just computed above, nothing re-derived. Returned to the caller on
   // every code path (including a quiet week where `message` is null) so the
@@ -1815,6 +1874,11 @@ export async function buildAdminDigestForAdmin(
     // rendered line still fire, but render bare with no persisted `previous`
     // entry — the same "renders bare" first-ever-digest behaviour every
     // excluded signal above has.
+    // `humanHelpRequestsCount`/`mostRecentHumanHelpRequestHoursAgo`
+    // (issue #1364) are excluded for the identical reason `responseLatency*`
+    // above is: no upstream `ADMIN_DIGEST_SIGNAL_KEYS` allowlist entry, and
+    // the rendered line calls no `trendSuffix` at all — see the param's own
+    // doc comment on `buildAdminDigestMessage`.
   };
   // Only added when there's at least one auto-answer rating this week (issue
   // #629) — mirrors the render block's own `autoAnswerHelpful +
@@ -1895,6 +1959,8 @@ export async function buildAdminDigestForAdmin(
     accessRequestBreakdown.declined,
     accessRequestBreakdown.medianResolutionHours,
     onboardingQueueAgeDays,
+    humanHelpRequestsCount,
+    mostRecentHumanHelpRequestHoursAgo,
   );
   return { message, currentCounts };
 }
