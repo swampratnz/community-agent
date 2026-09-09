@@ -80,10 +80,17 @@ test("SECURITY: no PR-repair loop's escalation prose asserts the conflict is unr
 });
 
 test('SECURITY: no PR-repair loop guesses a cause from the absence of an agent summary', () => {
+  // Deliberately keyed on `usually means` rather than the full phrase autofix
+  // happened to use. The first version of this guard required the literal
+  // "which usually means" and so walked straight past revise.yml's "That
+  // usually means a gate it could not make green, a `.github/workflows/`
+  // change it cannot push, …" — the same cause-guess, one word apart, in a
+  // loop this very LOOPS array already listed. A guard that only catches the
+  // wording you already removed catches nothing.
   for (const loop of LOOPS) {
     assert.doesNotMatch(
       escalationProse(loop.file),
-      /which usually means/i,
+      /\busually means\b/i,
       `${loop.label}: a missing summary is an absence of evidence, not evidence of a cause`,
     );
   }

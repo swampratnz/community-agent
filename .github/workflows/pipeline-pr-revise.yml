@@ -409,7 +409,6 @@ jobs:
             ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           summary-title: Revise worker's final summary (what it says stopped it)
           no-summary-note: >-
-            _No agent summary was captured — it ended without pushing **and** without writing
-            `refusal.md`. That usually means a gate it could not make green, a
-            `.github/workflows/` change it cannot push, or a disagreement with the review it did not
-            voice. Check the run log above._
+            _No agent summary was captured, so this escalation says nothing about whether the review
+            can be answered — only that the agent stopped without pushing **and** without writing
+            `refusal.md`. Check the run log above._

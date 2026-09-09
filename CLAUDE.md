@@ -217,7 +217,11 @@ ownership rules:
   the PR sat for a week. The conflict resolver made the same shape of claim
   about #609, which a human then merged cleanly in minutes. Any statement about
   WHY is now derived from the execution log by the shared action and labelled
-  as inference: a non-`success` stop reason is reported as the fact it is, and
+  as inference. That covers all three loops: revise's "no summary" note made
+  the same guess as autofix's ("a gate it could not make green, a
+  `.github/workflows/` change it cannot push"), one word away from the phrase
+  the first version of the guard keyed on. A non-`success` stop reason is
+  reported as the fact it is, and
   a clean stop whose last words are about waiting for something to finish is
   flagged as a probable stall — read as "nobody has looked yet", explicitly NOT
   as "the code cannot be fixed". `tests/escalationHonesty.test.ts` pins both

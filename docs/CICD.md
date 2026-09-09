@@ -322,7 +322,11 @@ flagged as a probable stall, explicitly not as a verdict on the code.
 `tests/escalationHonesty.test.ts` extracts the detector's ERE from the action
 and runs it through the real `grep -E` against the three actual stall
 transcripts plus four principled refusals, and separately asserts the loops'
-escalation prose has not re-acquired a cause claim (issue #1349).
+escalation prose has not re-acquired a cause claim (issue #1349). That last
+guard is keyed on `usually means`, not on the longer phrase autofix happened to
+use: its first version required the literal "which usually means" and walked
+straight past revise's "That usually means a gate it could not make green …" —
+the same guess, one word apart, in a loop the test already enumerated.
 
 Note that M7 and M8 stay **separate steps** even though they always run
 together: a checkpoint may legitimately publish work *and* the verify still
