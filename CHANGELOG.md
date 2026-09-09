@@ -40,6 +40,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   happened recently, with roughly how long ago the most recent one was. It's
   a bare frequency signal by design — no admin can see who asked or what
   about, matching this deployment's other anonymous-log signals.
+- **`list_member_warnings` can now show a member's warning history oldest
+  first, not just newest first.** (#1371) Deciding whether to escalate
+  (warn → timeout → kick/mute) often comes down to telling a slow-building
+  pattern (warnings months apart, now accelerating) from a single recent
+  flare-up — something newest-first-only ordering couldn't answer once a
+  member had more warnings than the default limit. A new optional
+  `oldestFirst` flag reorders the same data ascending by date, matching the
+  `oldestFirst` option already on `list_muted_members`/`list_blocked_members`.
 
 ## 2026-09-09
 

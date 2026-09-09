@@ -64,6 +64,13 @@ const LIST_MUTED_MEMBERS_SCAN_LIMIT = 200;
  */
 const LIST_BLOCKED_MEMBERS_SCAN_LIMIT = 200;
 
+/**
+ * Same reasoning as LIST_MUTED_MEMBERS_SCAN_LIMIT above, for
+ * `listMemberWarnings` (always newest-first, no ordering parameter) — the
+ * per-member sibling #1267's own title scoped out (issue #1371).
+ */
+const LIST_MEMBER_WARNINGS_SCAN_LIMIT = 200;
+
 export const moderationTools = [
   defineTool({
     name: 'moderate',
@@ -342,14 +349,48 @@ export const moderationTools = [
     schema: {
       targetUserId: z.string().describe('Platform user id whose warning history to show'),
       limit: z.number().optional().describe('Max entries (default 20)'),
+      oldestFirst: z
+        .boolean()
+        .optional()
+        .describe(
+          'Order by createdAt ascending (earliest warning first) instead of the default newest-first — ' +
+            'use this to tell a slow-building pattern (several warnings months apart, now accelerating) ' +
+            'from a single recent flare-up. Approximate for a member with a long history: only scans the ' +
+            `${LIST_MEMBER_WARNINGS_SCAN_LIMIT} most recent warnings before sorting, so if that member has ` +
+            'that many or more, the true earliest may fall outside what was scanned — the response says so ' +
+            'explicitly when this happens.',
+        ),
     },
     handler: async (args, { caller }) => {
       assertAtLeast(caller.role, 'admin', 'list_member_warnings');
       if (!(await isKnownUser(caller.platform, args.targetUserId))) {
         return text(`Refusing: user "${args.targetUserId}" has never been seen on ${caller.platform}.`, true);
       }
-      const rows = await listMemberWarnings(caller.platform, args.targetUserId, args.limit ?? 20);
+      // oldestFirst: true takes exactly one bounded read (never a second
+      // call) and sorts/slices in JS — see LIST_MEMBER_WARNINGS_SCAN_LIMIT
+      // above. False/omitted stays byte-identical to before this field
+      // existed, using the identical single-call shape as before.
+      const scanned = args.oldestFirst
+        ? await listMemberWarnings(caller.platform, args.targetUserId, LIST_MEMBER_WARNINGS_SCAN_LIMIT)
+        : null;
+      const rows = scanned
+        ? [...scanned]
+            .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+            .slice(0, args.limit ?? 20)
+        : await listMemberWarnings(caller.platform, args.targetUserId, args.limit ?? 20);
       if (rows.length === 0) return text(`No warnings on record for ${args.targetUserId}.`);
+      // Truncation caveat (mirrors list_muted_members'/list_blocked_members'
+      // above): `scanned` hitting exactly LIST_MEMBER_WARNINGS_SCAN_LIMIT
+      // means this member may have more warnings on record than the single
+      // bounded scan could see, so the "oldest" rows below only ever come
+      // from the most recent LIST_MEMBER_WARNINGS_SCAN_LIMIT ones — the
+      // genuine earliest could be outside that window and missing here.
+      const truncationCaveat =
+        scanned && scanned.length === LIST_MEMBER_WARNINGS_SCAN_LIMIT
+          ? ` ⚠️ oldestFirst caveat: list_member_warnings found ${LIST_MEMBER_WARNINGS_SCAN_LIMIT}+ warnings ` +
+            `on record for this member, so only the ${LIST_MEMBER_WARNINGS_SCAN_LIMIT} most recent ones were ` +
+            'scanned before sorting — the true oldest may not be shown above.'
+          : '';
       return text(
         rows
           .map((r) => {
@@ -359,7 +400,7 @@ export const moderationTools = [
             const excerptText = r.excerpt != null ? `\n  ${untrusted('excerpt', r.excerpt)}` : '';
             return `[${r.createdAt.toISOString()}] ${r.source}${issuer}${cleared}:${reasonText}${excerptText}`;
           })
-          .join('\n'),
+          .join('\n') + truncationCaveat,
       );
     },
   }),
