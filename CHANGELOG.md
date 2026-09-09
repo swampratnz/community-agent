@@ -26,6 +26,21 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #1355 #1356 #1357
 -->
 
+## 2026-09-10
+
+### Added
+- **`admin_digest` (and its weekly DM) now shows how often members ask to
+  talk to a human, so a missed live notification isn't the only trace.**
+  (#1364) `request_human_help` either declined a request (daily cap) or
+  fired a single live DM to admins and then discarded the fact it happened —
+  if that one DM was missed (an admin asleep or muted, WhatsApp's 24h window
+  shut, or live escalation notifications turned off), nobody could ever tell
+  the ask happened at all. A new "Human-help asks: N in the last 7 days"
+  line now appears (only when N > 0) whenever at least one genuine ask
+  happened recently, with roughly how long ago the most recent one was. It's
+  a bare frequency signal by design — no admin can see who asked or what
+  about, matching this deployment's other anonymous-log signals.
+
 ## 2026-09-09
 
 ### Added
