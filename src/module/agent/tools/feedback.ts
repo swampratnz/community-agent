@@ -19,6 +19,7 @@ import {
   type LanguagePreference,
 } from '@swampratnz/agent-base/storage/repository.js';
 import { makeSlidingWindowReserver } from '@swampratnz/agent-base/util/rateReservation.js';
+import { recordHumanHelpRequest } from '../../storage/humanHelpRequestLog.js';
 import {
   getWithdrawnSuggestionIds,
   recordSuggestionWithdrawal,
@@ -389,6 +390,14 @@ export const feedbackTools = [
       if (turnState) {
         turnState.humanHelpRequested = true;
       }
+      // Anonymous frequency/recency log (issue #1364), so admins have SOME
+      // trace of this ask even if the live notifyAdmins DM above is missed
+      // (admin asleep/muted, WhatsApp's 24h window shut, or
+      // ESCALATION_TO_ADMIN_ENABLED off). Best-effort and non-blocking by
+      // design — a logging failure must never change this tool's reply or
+      // stop the flag set above from reaching the router's live escalation
+      // (SECURITY, issue #1364 criterion 4).
+      recordHumanHelpRequest().catch((err) => logger.warn({ err }, 'recordHumanHelpRequest failed'));
       const language = await getLanguagePreference(caller.platform, caller.userId);
       return text(formatRequestHumanHelpText('recorded', HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER, language));
     },

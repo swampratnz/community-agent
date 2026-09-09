@@ -257,10 +257,11 @@ const { MEMBER_TOOLS, ADMIN_TOOLS, SUPER_ADMIN_TOOLS } = await import('@swamprat
 const { superAdminIds } = await import('@swampratnz/agent-base/auth/roles.js');
 const { WhatsAppCloudAdapter, WindowClosedError } =
   await import('@swampratnz/agent-base/platforms/whatsapp/cloudAdapter.js');
-const { buildAdminDigestForAdmin } = await import('../src/module/adminDigest.js');
+const { buildAdminDigestForAdmin, FRESHNESS_DAYS } = await import('../src/module/adminDigest.js');
 const { oldestNotMemberAgeDays } = await import('../src/module/rosterStaleAlert.js');
 const { listAccessRequestResolutionsSince } =
   await import('../src/module/storage/accessRequestResolutions.js');
+const { countHumanHelpRequestsSince } = await import('../src/module/storage/humanHelpRequestLog.js');
 const { recordSuggestionWithdrawal, getWithdrawnSuggestionIds } =
   await import('../src/module/storage/suggestionWithdrawals.js');
 const { recordAppealWithdrawal, getWithdrawnAppealIds } =
@@ -282,6 +283,13 @@ const { COMMUNITY_COMMANDS } = await import('../src/module/commands.js');
 // row never collides across runs, mirroring the RUN-tag convention in
 // tests/repository.test.ts and tests/knowledgeEval.test.ts.
 const RUN = `t${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+// human_help_request_log carries no identity column by design (issue #1364),
+// so unlike every other guild-wide table this file's tests write to, a
+// polluting row can't be cleaned up by an owning id — captured here, before
+// any test in this file runs, so the cleanup step alongside the
+// request_human_help tests below can delete every row THIS FILE inserted
+// (never a row inserted before this file's process started).
+const HUMAN_HELP_LOG_TESTS_STARTED_AT = new Date();
 const KNOWLEDGE_SEARCH_HANDLER_SCOPE = `${RUN}-knowledge-search-handler`;
 const KNOWLEDGE_GAP_HANDLER_SCOPE = `${RUN}-knowledge-gap-handler`;
 const KB_KNOWLEDGE_GAP_PURGE_USER = `${RUN}-kb-knowledge-gap-purge`;
@@ -31984,8 +31992,11 @@ test(
 // request_human_help (issue #808): a zero-argument member+ tool that sets a
 // turn-scoped flag only — router.ts reads it back post-turn to direct-fire
 // the same notifyAdmins path rate_answer's thumbs-down uses (see
-// tests/humanHelpRequestRouter.test.ts for that side). Purely in-memory, no
-// DB, so unlike rate_answer's tests above these never need `{ skip }`.
+// tests/humanHelpRequestRouter.test.ts for that side). The handler itself
+// stays purely in-memory/synchronous (never `{ skip }`), but a genuine call
+// ALSO fires a fire-and-forget write into human_help_request_log (issue
+// #1364) — the DB-touching tests further below that observe that write are
+// `{ skip }`-gated like every other DB-integration test in this file.
 function requestHumanHelpHandler(
   userId: string,
   turnState: { lastKnowledgeHitId: number | null; humanHelpRequested?: boolean } = {
@@ -32067,6 +32078,140 @@ test('request_human_help: the per-caller daily cap is scoped per platform:userId
   assert.notEqual(result.isError, true, 'a different caller must have its own, unexhausted cap');
   assert.equal(freshState.humanHelpRequested, true);
 });
+
+// Issue #1364: request_human_help also fires a fire-and-forget write into
+// human_help_request_log so admins have SOME trace of the ask even if the
+// live notifyAdmins DM is missed. The table stores no caller identity by
+// design (see tests/humanHelpRequestLog.test.ts), so unlike every other
+// DB-backed assertion in this file there is no column to filter a real read
+// back by — reading global table state here would be exactly the cross-file
+// DB race CLAUDE.md documents (tests/agentCoreHumanHelpRequested.test.ts
+// also drives this same handler against the same real table). Instead these
+// tests spy on pool.query and count INSERTs at the call site, which is
+// race-free and exercises the exact same code path.
+test(
+  'request_human_help: a genuine (under-cap) call issues exactly one INSERT into human_help_request_log; a call declined by the daily cap issues no additional INSERT (issue #1364 acceptance criterion 1)',
+  { skip },
+  async (t) => {
+    let inserts = 0;
+    const originalQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', (async (sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && sql.includes('INSERT INTO human_help_request_log')) inserts += 1;
+      return (originalQuery as (...args: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+
+    const userId = `${RUN}-log-genuine`;
+    const { registeredTool } = requestHumanHelpHandler(userId);
+    await registeredTool.handler();
+    assert.equal(inserts, 1, 'a genuine call must issue exactly one INSERT');
+
+    for (let i = 1; i < HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER; i++) {
+      const { registeredTool: tool } = requestHumanHelpHandler(userId);
+      await tool.handler();
+    }
+    assert.equal(
+      inserts,
+      HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER,
+      'every under-cap call must issue exactly one INSERT of its own',
+    );
+
+    const { registeredTool: overCapTool } = requestHumanHelpHandler(userId);
+    const overCap = await overCapTool.handler();
+    assert.equal(overCap.isError, true);
+    assert.equal(
+      inserts,
+      HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER,
+      'a declined-by-cap call must issue no additional INSERT',
+    );
+  },
+);
+
+test(
+  "request_human_help: the human_help_request_log write fires regardless of config.behaviour.escalationToAdminEnabled's value, and the reply text stays byte-identical to formatRequestHumanHelpText('recorded', ...) either way (issue #1364 acceptance criterion 2)",
+  { skip },
+  async (t) => {
+    const originalFlag = config.behaviour.escalationToAdminEnabled;
+    (config.behaviour as { escalationToAdminEnabled: boolean }).escalationToAdminEnabled = false;
+    try {
+      let inserts = 0;
+      const originalQuery = pool.query.bind(pool);
+      t.mock.method(pool, 'query', (async (sql: unknown, ...rest: unknown[]) => {
+        if (typeof sql === 'string' && sql.includes('INSERT INTO human_help_request_log')) inserts += 1;
+        return (originalQuery as (...args: unknown[]) => unknown)(sql, ...rest);
+      }) as typeof pool.query);
+
+      const userId = `${RUN}-log-flag-off`;
+      const { registeredTool } = requestHumanHelpHandler(userId);
+      const result = await registeredTool.handler();
+      assert.equal(inserts, 1, 'persistence must occur even with escalationToAdminEnabled false');
+      assert.equal(
+        result.content[0]?.text,
+        formatRequestHumanHelpText('recorded', HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER, 'auto'),
+      );
+    } finally {
+      (config.behaviour as { escalationToAdminEnabled: boolean }).escalationToAdminEnabled = originalFlag;
+    }
+  },
+);
+
+test(
+  'SECURITY: request_human_help: a forced failure of the human_help_request_log INSERT never changes the reply text and never blocks turnState.humanHelpRequested from being set (issue #1364 acceptance criterion 4)',
+  { skip },
+  async (t) => {
+    const originalQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', (async (sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && sql.includes('INSERT INTO human_help_request_log')) {
+        throw new Error('simulated human_help_request_log insert failure');
+      }
+      return (originalQuery as (...args: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+    const warnSpy = t.mock.method(logger, 'warn');
+
+    const userId = `${RUN}-log-insert-fails`;
+    const { registeredTool, turnState } = requestHumanHelpHandler(userId);
+    const result = await registeredTool.handler();
+
+    assert.notEqual(result.isError, true, 'the forced insert failure must never surface as a tool error');
+    assert.equal(
+      result.content[0]?.text,
+      formatRequestHumanHelpText('recorded', HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER, 'auto'),
+      'the reply text must be byte-identical to the write-hook-absent form',
+    );
+    assert.equal(
+      turnState.humanHelpRequested,
+      true,
+      "the router's live notifyAdmins escalation flag must still be set despite the logging failure",
+    );
+    // Give the fire-and-forget rejection a moment to be caught, so a bug that
+    // dropped the .catch() would surface as an unhandled rejection rather
+    // than this assertion racing it.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.ok(warnSpy.mock.calls.length >= 1, 'the failure must be logged, not silently swallowed');
+  },
+);
+
+// Cleanup for every genuine request_human_help call made by this file's
+// tests above (this cluster and the two earlier ones — the mi/en render
+// test and the fail-open block, both further up this file) — the table
+// carries no identity to filter a targeted delete by (issue #1364), and a
+// leftover row would make a LATER test in this same file (e.g.
+// admin_digest's "Nothing to report right now." assertion) see a nonzero
+// Human-help-asks count it never expected. Runs last in the cluster so
+// every earlier genuine call in this file is covered by the one delete.
+test(
+  "cleanup: remove every human_help_request_log row this file's request_human_help tests inserted (issue #1364)",
+  { skip },
+  async () => {
+    // A short grace period for the LAST test's fire-and-forget write — the
+    // handler never awaits recordHumanHelpRequest(), so its own test body
+    // can resolve (and node:test move on to this one) slightly before the
+    // INSERT lands.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await pool.query('DELETE FROM human_help_request_log WHERE created_at >= $1', [
+      HUMAN_HELP_LOG_TESTS_STARTED_AT,
+    ]);
+  },
+);
 
 // rate_answer -> implicit knowledge-candidate drafting (issue #726,
 // CAPABILITY-IDEAS.md §D2): a genuinely helpful, UNGROUNDED answer silently
@@ -41136,12 +41281,18 @@ test(
     try {
       await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
 
-      // countAccessRequests/countPendingSuggestions/countPendingKnowledgeCandidates
-      // etc. are guild-wide, not scoped to this test's unique ids — snapshot
-      // them first so this assertion holds even if another concurrently-running
-      // test file has one of these pending, mirroring the same defensive
-      // pattern tests/adminDigest.test.ts already uses for the quiet-week case.
+      // countAccessRequests/countPendingSuggestions/countPendingKnowledgeCandidates/
+      // countHumanHelpRequestsSince etc. are guild-wide, not scoped to this
+      // test's unique ids — snapshot them first so this assertion holds even
+      // if another concurrently-running test file has one of these pending
+      // (or, for human-help asks, fires a genuine request_human_help call
+      // inside the digest's own FRESHNESS_DAYS window — issue #1364), mirroring
+      // the same defensive pattern tests/adminDigest.test.ts already uses for
+      // the quiet-week case.
       const pendingAccessRequestsBefore = await countAccessRequests();
+      const humanHelpRequestsBefore = await countHumanHelpRequestsSince(
+        new Date(Date.now() - FRESHNESS_DAYS * 24 * 3_600_000),
+      );
 
       const adapter: PlatformAdapter = {
         platform: 'discord',
@@ -41179,14 +41330,19 @@ test(
       const result = await registeredTool.handler({});
       const out = result.content[0]?.text ?? '';
 
-      if (pendingAccessRequestsBefore === 0) {
+      if (pendingAccessRequestsBefore === 0 && humanHelpRequestsBefore === 0) {
         assert.equal(out, 'Nothing to report right now.');
-      } else {
+      } else if (pendingAccessRequestsBefore > 0) {
         // Extremely rare in practice — a concurrently-running test file has a
         // pending access request in flight, which legitimately makes this a
         // non-quiet snapshot (same caveat the runAdminDigestOnce quiet-week
         // test documents).
         assert.match(out, /⏳ \d+ pending access request\(s\)/);
+      } else {
+        // Same caveat, for a concurrently-running test file's genuine
+        // request_human_help call landing inside the freshness window
+        // instead (issue #1364).
+        assert.match(out, /🙋 Human-help asks: \d+ in the last \d+ days/);
       }
     } finally {
       // A stray admin row left behind by a thrown assertion would otherwise
