@@ -10,6 +10,8 @@ import {
 } from '@swampratnz/agent-base/storage/repository.js';
 import { persistedPerKeyCrossingLatch, type CrossingLatchDeps } from './crossingLatch.js';
 import { REPORT_STALE_ALERT_POLICY_KEY } from './storage/policies.js';
+import { recordReporterStaleNotice as recordReporterStaleNoticeDefault } from './storage/reportReporterStaleNotices.js';
+import { notifyReportStale } from './agent/tools/notify.js';
 import type { JobSpec } from '@swampratnz/agent-base/jobs/types.js';
 import type { Platform, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
@@ -97,6 +99,23 @@ function staleOpenReports(reports: readonly ContentReport[], now: number): Conte
  * safety-sensitive queue, one admin's transient read failure (a DB blip, a
  * disconnected-adapter quirk) must never suppress the signal to every other
  * admin for the tick.
+ *
+ * Also sends the REPORTER their own one-time "still being reviewed" DM
+ * (issue #1375) for each report in `stale` — evaluated right after `stale`
+ * is computed, unconditionally, INDEPENDENT of this admin's own crossing
+ * latch below: an admin whose own stale count is already latched open (so
+ * `step.shouldAlert` is false) must not silently suppress the signal to the
+ * reporter, who has never been notified about this particular report before.
+ * Idempotency is `recordReporterStaleNotice`'s `INSERT ... ON CONFLICT DO
+ * NOTHING` alone — no second latch — so a report already flagged (by an
+ * earlier tick, or by another admin sharing this same conversation earlier
+ * in this same tick) is a no-op. Reuses this admin's own already-resolved
+ * `adapter` rather than re-resolving by `report.platform`: a report only
+ * ever appears in an admin's own per-platform `conversationsForUser` scope,
+ * so the two are always the same platform. A failure recording or sending
+ * one reporter's notice is caught per-report so it can never suppress the
+ * notice to any other stale report's reporter, nor this admin's own alert
+ * below.
  */
 export function makeDefaultReportStaleAlertRun(
   adapters: readonly PlatformAdapter[],
@@ -111,6 +130,12 @@ export function makeDefaultReportStaleAlertRun(
     platformUserId,
   ) => (await resolveLinkedIdentities(platform, platformUserId)).map((identity) => identity.userId),
   latchDeps?: CrossingLatchDeps,
+  recordReporterStaleNotice: (reportId: number) => Promise<boolean> = recordReporterStaleNoticeDefault,
+  notifyStale: (
+    adapter: PlatformAdapter,
+    reporterUserId: string,
+    platform: Platform,
+  ) => Promise<void> = notifyReportStale,
 ): () => Promise<void> {
   const latch = persistedPerKeyCrossingLatch(REPORT_STALE_ALERT_POLICY_KEY, latchDeps);
   return async () => {
@@ -128,6 +153,23 @@ export function makeDefaultReportStaleAlertRun(
         const viewerIds = await resolveViewerIds(admin.platform, admin.platformUserId);
         const reports = await listOpenReportsForAdmin(scope, viewerIds);
         const stale = staleOpenReports(reports, now);
+
+        // Reporter-side mid-flight notice (issue #1375) — independent of
+        // this admin's own crossing latch below (see the function doc
+        // comment): every still-stale report is offered a one-time notice
+        // every tick, gated only by the ON CONFLICT DO NOTHING insert.
+        for (const staleReport of stale) {
+          try {
+            const isFirstNotice = await recordReporterStaleNotice(staleReport.id);
+            if (!isFirstNotice) continue;
+            await notifyStale(adapter, staleReport.reporterUserId, staleReport.platform);
+          } catch (err) {
+            logger.warn(
+              { err, platform: staleReport.platform, reportId: staleReport.id },
+              'Report stale alert: reporter notice failed',
+            );
+          }
+        }
 
         const key = `${admin.platform}:${admin.platformUserId}`;
         const step = await latch.step(key, stale.length);

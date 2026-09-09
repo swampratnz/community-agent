@@ -66,6 +66,7 @@ export {
   notifyProjectMemberRemoved,
   notifySuggestionResolved,
   notifyReportResolved,
+  notifyReportStale,
   notifyReportFiled,
   notifyReportWithdrawn,
   notifyAppealFiled,

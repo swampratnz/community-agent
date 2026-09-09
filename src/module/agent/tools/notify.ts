@@ -946,6 +946,61 @@ export async function notifyReportResolved(
 }
 
 /**
+ * Best-effort, one-time "still being reviewed" DM to a report's reporter
+ * while it sits open past the admin-side staleness threshold — the
+ * mid-flight signal issue #1375 adds between `notifyReportFiled`'s
+ * immediate ack and `notifyReportResolved`'s end-of-lifecycle DM, so
+ * silence in between is never indistinguishable from being ignored.
+ * Content-free BY CONSTRUCTION (SECURITY): unlike every sibling in this
+ * file, the signature accepts no report id, reason, target, or reporter
+ * name — only the recipient identity — so there is nothing for the message
+ * body to leak even by accident. The caller (`reportStaleAlert.ts`) is
+ * solely responsible for deciding WHICH reports are stale and for the
+ * once-ever idempotency (`report_reporter_stale_notices`, `INSERT ... ON
+ * CONFLICT DO NOTHING`); this function only ever sends.
+ *
+ * `userId`/`platform` are the two inputs (SECURITY): both come from the
+ * `ContentReport` row's own `reporterUserId`/`platform` at the one call
+ * site, never from model or admin input, matching `notifyReportResolved`'s
+ * (and `withdraw_report`'s) reporter-scoping.
+ *
+ * Same failure shape as every sibling: honours a standing `'mi'` language
+ * preference (degrading to `'auto'`/English on lookup failure, issue #52's
+ * invariant), and a `WindowClosedError` rejection is queued via
+ * `queueForWindowReopen` at `'low'` priority instead of logged-and-dropped
+ * (issue #602) — any other rejection is logged and swallowed, never thrown,
+ * so one recipient's failure can never abort the stale-alert tick.
+ */
+export async function notifyReportStale(
+  adapter: PlatformAdapter,
+  userId: string,
+  platform: Platform,
+  getLangPref: typeof getLanguagePreference = getLanguagePreference,
+  getRespStyle: typeof getResponseStyle = getResponseStyle,
+): Promise<void> {
+  const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
+  const style: ResponseStyle | undefined =
+    lang === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
+  const message =
+    lang === 'mi'
+      ? 'Kei te arotakehia tonu tō pūrongo — ngā mihi mō tō manawanui e tatari ana.'
+      : style === 'plain'
+        ? 'Your report is still being reviewed. Thanks for your patience.'
+        : 'Your report is still being reviewed — thanks for your patience while we look into it.';
+  await adapter.sendDirectMessage(userId, message).catch((err) => {
+    if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+      adapter.queueForWindowReopen(userId, message, 'low');
+      logger.warn(
+        { userId: hashId(userId), platform },
+        "Report stale DM: recipient's window is closed, queued for reopen",
+      );
+      return;
+    }
+    logger.warn({ err, userId: hashId(userId) }, 'Report stale DM failed');
+  });
+}
+
+/**
  * Proactive super-admin alert fired the moment a report is filed, instead of
  * relying on an admin to remember to poll `list_reports` (issue #90) — reuses
  * `notifySuperAdmins`, the exact mechanism `audited()` already uses for every
