@@ -46,6 +46,7 @@
     "tests/memberToolLanguageCoverage.test.ts",
     "tests/noticeDebounce.test.ts",
     "tests/platformRegistry.test.ts",
+    "tests/projectNoteWithdrawal.test.ts",
     "tests/projectScope.test.ts",
     "tests/repeatQuestionShortcutRouter.test.ts",
     "tests/reusableWorkflows.test.ts",

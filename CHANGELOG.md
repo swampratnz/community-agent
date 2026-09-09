@@ -25,6 +25,27 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #1122 #1123 #1132 #1232 #1236 #1248 #1281 #1284 #1304 #1308 #1310
 -->
 
+## 2026-09-09
+
+### Added
+- **`withdraw_project_note`: fix a mistake in a team project's shared
+  memory.** (#1344) `project_note` had no correction path — no edit, no
+  delete, no withdraw — so a typo, a wrong date, or a note filed in the
+  wrong project stuck around forever, for the whole team, with nobody able
+  to touch it (project notes are deliberately invisible even to admins).
+  Every other member-authored content type already got a self-service
+  retraction tool (`withdraw_report`, `withdraw_knowledge_tip`,
+  `withdraw_suggestion`, `withdraw_appeal`) — this is project notes'.
+  `project_note`'s confirmation now echoes the new note's id, and
+  `withdraw_project_note(noteId)` retracts it: the note is kept on record
+  but never appears in `project_recall` again for anyone, including its own
+  author. Scoped to one note per call (not bulk, unlike its siblings) —
+  project notes accumulate for the life of a long-running project with no
+  review cutoff, so "withdraw everything I ever wrote" would be a
+  disproportionate fix for one typo. An unknown or not-yours note id gets
+  the identical refusal either way, so this can't be used to fish for
+  another member's notes.
+
 ## 2026-09-08
 
 ### Added

@@ -72,6 +72,7 @@ const EXPECTED: Record<string, readonly string[]> = {
     'who_is_into',
     'withdraw_appeal',
     'withdraw_knowledge_tip',
+    'withdraw_project_note',
     'withdraw_report',
     'withdraw_suggestion',
   ],
