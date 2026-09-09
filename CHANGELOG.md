@@ -28,6 +28,15 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-09-09
 
 ### Added
+- **`!whatsnew`/`/whatsnew`: a zero-model shortcut for `whats_new`.** (#1353)
+  Admins can now pull the bot's own recent changelog updates without a full
+  agent turn, the same zero-wait-shortcut pattern already shipped for
+  `reviewqueue`/`mutedlist`/`blockedlist`/`topknowledge`/`featureflags`/
+  `admindigest`/`adminlist`/`accessrequests` — `whats_new` was the last
+  zero-required-arg admin-tier tool that sweep hadn't reached, since it
+  does no database call at all (just a cached changelog read), it's the
+  cheapest of the family to shortcut. Renders the exact same text
+  `whats_new` already returns when called with no arguments.
 - **`withdraw_project_note`: fix a mistake in a team project's shared
   memory.** (#1344) `project_note` had no correction path — no edit, no
   delete, no withdraw — so a typo, a wrong date, or a note filed in the
