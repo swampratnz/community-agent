@@ -621,7 +621,7 @@ const NOTICE_ENTRIES = {
       'X?"), or opt in/out of being notified for other members\' requests\n' +
       '- Pull the community digest on demand\n' +
       "- Record decisions in a project you're part of and search that project's shared memory later, or " +
-      'list your projects\n' +
+      'list your projects, or withdraw a project note you recorded by mistake\n' +
       '- Erase all your stored data any time ("forget me")',
     language: {
       mi:
@@ -665,7 +665,8 @@ const NOTICE_ENTRIES = {
         'atu mema\n' +
         '- Tiki i te whakarāpopototanga hapori ā-tono\n' +
         '- Tuhi whakatau i roto i tētahi kaupapa e uru ana koe, rapu anō i ngā mahara tiritahi o taua ' +
-        'kaupapa ā muri ake, rārangi rānei i ō kaupapa\n' +
+        'kaupapa ā muri ake, rārangi rānei i ō kaupapa, tango rānei i tētahi tuhinga kaupapa i tukuna ' +
+        'pōhēhē e koe\n' +
         '- Muku i katoa āu raraunga kua rongoātia i ngā wā katoa ("forget me")',
     },
   },
@@ -869,6 +870,8 @@ const NOTICE_ENTRIES = {
    * `!topknowledge` (issue #1165) is the fourth, appended in the SAME diff
    * for the same reason. `!admindigest` (issue #1194) is the fifth,
    * appended in the SAME diff that shipped it, for the same reason.
+   * `!accessrequests` (issue #1346) is the sixth, appended in the SAME diff
+   * that shipped it, for the same reason.
    */
   whatsappAdminTextCommands: {
     base:
@@ -876,7 +879,8 @@ const NOTICE_ENTRIES = {
       '- `!mutedlist` — currently muted members, by identity\n' +
       '- `!blockedlist` — currently blocked users, by identity\n' +
       '- `!topknowledge` — knowledge entries ranked by retrieval count, most relied-on first\n' +
-      '- `!admindigest` — your own admin-digest snapshot, on demand',
+      '- `!admindigest` — your own admin-digest snapshot, on demand\n' +
+      '- `!accessrequests` — guests currently waiting for access, by identity and wait time',
     language: {
       mi:
         '- `!reviewqueue` — te whakarāpopototanga o ngā ratonga arotake e rima i te tirohanga kotahi\n' +
@@ -884,7 +888,8 @@ const NOTICE_ENTRIES = {
         '- `!blockedlist` — ngā kaiwhakamahi kua ārairia i tēnei wā, mā te tuakiri\n' +
         '- `!topknowledge` — ngā whiwhinga mōhiotanga kua raupapatia mā te tatauranga tikiake, ko te mea ' +
         'whakawhirinaki nuitia i mua\n' +
-        '- `!admindigest` — tō ake whakarāpopototanga whakahaere, i te wā e hiahiatia ana',
+        '- `!admindigest` — tō ake whakarāpopototanga whakahaere, i te wā e hiahiatia ana\n' +
+        '- `!accessrequests` — ngā manuhiri e tatari ana ki te urunga, mā te tuakiri me te wā tatari',
     },
   },
   /**
@@ -1003,9 +1008,32 @@ const NOTICE_ENTRIES = {
     },
   },
   projectNoteSaved: {
-    base: (project: string) => `Recorded in ${project}.`,
+    // Carries the new note's id (issue #1344) — the only way a member can
+    // ever learn the id withdraw_project_note needs, since project_recall
+    // never renders one.
+    base: (project: string, id: number) =>
+      `Recorded in ${project} [#${id}]. Withdraw it any time with ` +
+      'withdraw_project_note if you make a mistake.',
     language: {
-      mi: (project: string) => `Kua tuhia ki ${project}.`,
+      mi: (project: string, id: number) =>
+        `Kua tuhia ki ${project} [#${id}]. Ka taea e koe te whakahoki i tēnei wā, i tēnei wā mā te ` +
+        'withdraw_project_note mehemea ka hē koe.',
+    },
+  },
+  projectNoteWithdrawn: {
+    base: (id: number) => `Withdrew note #${id}.`,
+    language: {
+      mi: (id: number) => `Kua whakahokia te tuhinga #${id}.`,
+    },
+  },
+  // Deliberately the same reply for "no such note" and "exists but not
+  // yours" — the noteId analogue of project_note's own #205 wording rule —
+  // so this can never be used to enumerate note ids or fish for another
+  // member's authorship.
+  projectNoteWithdrawRefused: {
+    base: "That note doesn't exist, or isn't one you recorded.",
+    language: {
+      mi: 'Kāore tēnā tuhinga e noho ana, kāore rānei nāu i tuhi.',
     },
   },
   projectListEmpty: {

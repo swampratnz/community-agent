@@ -80,6 +80,7 @@ const {
   setLanguagePreference,
 } = await import('@swampratnz/agent-base/storage/repository.js');
 const {
+  formatAccessRequestsList,
   formatAdminRoster,
   formatBlockedMembersList,
   formatFeatureFlags,
@@ -4560,6 +4561,214 @@ test("a successful !adminlist invocation calls recordShortcutHit('whatsapp_text_
   router.register(adapter);
 
   await trigger(makeMessage({ text: '!adminlist', userId: 'super-1' }));
+
+  assert.equal(sent.length, 1);
+  assert.deepEqual(hits, ['whatsapp_text_command']);
+});
+
+// --- !accessrequests (issue #1346) --------------------------------------------
+
+/**
+ * Stubs `pool.query`'s role branch plus `listAccessRequests`'s single query
+ * against `access_requests`, mirroring `mockPoolRoleAndMutedList`'s
+ * single-mock-per-test discipline above. `rows` are raw snake_case DB rows
+ * (`platform`, `user_id`, `user_name`, `first_requested_at`,
+ * `last_requested_at`, `request_count`).
+ */
+function mockPoolRoleAndAccessRequests(
+  t: { mock: { method: typeof import('node:test').mock.method } },
+  role: 'admin' | 'member' | null,
+  rows: Array<{
+    platform: string;
+    user_id: string;
+    user_name: string | null;
+    first_requested_at: Date;
+    last_requested_at: Date;
+    request_count: number;
+  }> = [],
+): void {
+  t.mock.method(pool, 'query', (async (sql: string) => {
+    if (sql.includes('SELECT role FROM community_users')) {
+      return { rows: role ? [{ role }] : [], rowCount: 0 };
+    }
+    if (sql.includes('FROM access_requests')) {
+      return { rows, rowCount: 0 };
+    }
+    return { rows: [], rowCount: 0 };
+  }) as typeof pool.query);
+}
+
+test(
+  "!accessrequests renders formatAccessRequestsList's output for the same rows listAccessRequests returns " +
+    '(issue #1346 acceptance criteria 1, 2)',
+  async (t) => {
+    const firstRequestedAt = new Date('2026-08-01T00:00:00.000Z');
+    const lastRequestedAt = new Date('2026-08-05T00:00:00.000Z');
+    mockPoolRoleAndAccessRequests(t, 'admin', [
+      {
+        platform: 'discord',
+        user_id: 'guest-1',
+        user_name: 'Guest One',
+        first_requested_at: firstRequestedAt,
+        last_requested_at: lastRequestedAt,
+        request_count: 2,
+      },
+    ]);
+    const router = makeRouter({ runTurn: throwingRunTurn });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!accessrequests', userId: 'admin-1' }));
+
+    const expected = formatAccessRequestsList([
+      {
+        platform: 'discord',
+        userId: 'guest-1',
+        userName: 'Guest One',
+        firstRequestedAt,
+        lastRequestedAt,
+        requestCount: 2,
+      },
+    ]);
+    assert.equal(sent[0].text, expected);
+    assert.match(sent[0].text, /guest-1/);
+  },
+);
+
+test(
+  '!accessrequests reports "No pending access requests." when nothing qualifies (issue #1346 acceptance ' +
+    'criterion 1)',
+  async (t) => {
+    mockPoolRoleAndAccessRequests(t, 'admin', []);
+    const router = makeRouter({ runTurn: throwingRunTurn });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!accessrequests', userId: 'admin-1' }));
+
+    assert.equal(sent[0].text, 'No pending access requests.');
+  },
+);
+
+test(
+  'a bare "!accessrequestsx" (no space, unrecognised) is not matched as the !accessrequests command — ' +
+    'anchored matcher (issue #1346 acceptance criterion 5)',
+  async (t) => {
+    mockPoolRole(t, 'admin');
+    const router = makeRouter({});
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!accessrequestsx', userId: 'admin-1' }));
+
+    assert.equal(sent[0].text, REAL_TURN_REPLY);
+  },
+);
+
+test(
+  'SECURITY: "!accessrequests <anything>" is never matched — the anchored matcher rejects any argument, so ' +
+    'no message-supplied text can ever reach an access-requests repository read (issue #1346 acceptance ' +
+    'criterion 5)',
+  async (t) => {
+    let queried = false;
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users')) return { rows: [{ role: 'admin' }], rowCount: 0 };
+      if (sql.includes('FROM access_requests')) queried = true;
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!accessrequests; DROP TABLE access_requests', userId: 'admin-1' }));
+
+    assert.equal(sent[0].text, REAL_TURN_REPLY, 'an argument must fall through to a normal turn');
+    assert.equal(queried, false, 'no access-requests repository read must run when an argument is present');
+  },
+);
+
+test(
+  'SECURITY: a member-tier caller\'s "!accessrequests" falls through to the normal turn — no access-request ' +
+    'list is ever rendered and no access-requests repository read runs (issue #1346 acceptance criterion 4)',
+  async (t) => {
+    let queried = false;
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users'))
+        return { rows: [{ role: 'member' }], rowCount: 0 };
+      if (sql.includes('FROM access_requests')) queried = true;
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!accessrequests', userId: 'member-1' }));
+
+    assert.equal(sent.length, 1);
+    assert.equal(
+      sent[0].text,
+      REAL_TURN_REPLY,
+      'a member gets no distinguishing denial reply, per the family norm',
+    );
+    assert.equal(queried, false, 'no access-requests repository read must run for a member-tier caller');
+  },
+);
+
+test(
+  'SECURITY: a guest caller\'s "!accessrequests" falls through to the normal turn — no access-request list ' +
+    'is ever rendered and no access-requests repository read runs (issue #1346 acceptance criterion 4)',
+  async (t) => {
+    let queried = false;
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users')) return { rows: [], rowCount: 0 };
+      if (sql.includes('FROM access_requests')) queried = true;
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!accessrequests', userId: 'guest-1' }));
+
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].text, REAL_TURN_REPLY);
+    assert.equal(queried, false, 'no access-requests repository read must run for a guest caller');
+  },
+);
+
+test(
+  'config.behaviour.whatsappTextCommandsEnabled === false disables !accessrequests exactly as it does every ' +
+    'other WhatsApp shortcut (issue #1346 acceptance criterion 5)',
+  async (t) => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    config.behaviour.whatsappTextCommandsEnabled = false;
+    t.after(() => {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    });
+    mockPoolRoleAndAccessRequests(t, 'admin', []);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!accessrequests', userId: 'admin-1' }));
+
+    assert.equal(sent[0].text, REAL_TURN_REPLY);
+  },
+);
+
+test("a successful !accessrequests invocation calls recordShortcutHit('whatsapp_text_command') exactly once (issue #1346)", async (t) => {
+  mockPoolRoleAndAccessRequests(t, 'admin', []);
+  const hits: string[] = [];
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    recordShortcutHitFn: async (kind) => {
+      hits.push(kind);
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!accessrequests', userId: 'admin-1' }));
 
   assert.equal(sent.length, 1);
   assert.deepEqual(hits, ['whatsapp_text_command']);

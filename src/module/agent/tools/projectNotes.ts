@@ -17,6 +17,12 @@ import { resolveSanitizedLabel, text, untrusted } from './helpers.js';
 import { notice } from '../../strings/notices.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 import { untrustedEntryContent } from '@swampratnz/agent-base/agent/systemPrompt.js';
+import {
+  getWithdrawnProjectNoteIds,
+  isOwnProjectNote,
+  recordProjectNoteAuthor,
+  recordProjectNoteWithdrawal,
+} from '../../storage/projectNoteRecords.js';
 
 // --- Project tools (issue #927) --------------------------------------------
 //
@@ -49,12 +55,20 @@ export const projectNotesTools = [
       // mechanism behind the removed-member leak fixed in removeMember too
       // (PR #929 review).
       assertAtLeast(caller.role, 'member', 'project_recall');
-      const hits = await searchProjectNotes(args.query, {
+      const rawHits = await searchProjectNotes(args.query, {
         platform: caller.platform,
         userId: caller.userId,
         conversationId: caller.conversationId,
         isDirect: caller.isDirect,
       });
+      // A withdrawn note stays quarantined for EVERY caller, including its
+      // own author (issue #1344 acceptance criterion 3) — filtered here,
+      // before rendering and before recordProjectNoteRetrieval, the same
+      // consult-a-side-table-before-rendering shape list_suggestions/
+      // my_submissions already use for suggestion_withdrawals.
+      const withdrawnIds =
+        rawHits.length > 0 ? await getWithdrawnProjectNoteIds(rawHits.map((h) => h.id)) : new Set<number>();
+      const hits = rawHits.filter((h) => !withdrawnIds.has(h.id));
       if (hits.length === 0) {
         const language = await getLanguagePreference(caller.platform, caller.userId);
         return text(notice('projectRecallEmpty', { language }));
@@ -146,8 +160,21 @@ export const projectNotesTools = [
         const language = await getLanguagePreference(caller.platform, caller.userId);
         return text(notice('projectNoteRateLimited', { language })(PROJECT_NOTE_RATE_LIMIT_PER_DAY), true);
       }
+      // Best-effort authorship record for withdraw_project_note (issue
+      // #1344) — a failure here must never turn a saved note into a
+      // reported failure, the same discipline notifyProjectMemberAdded's
+      // side-effect writes elsewhere in this codebase already use. AWAITED
+      // (unlike project_recall's fire-and-forget recordProjectNoteRetrieval
+      // below, which is pure analytics): the member can call
+      // withdraw_project_note in their very next message, so the row must
+      // exist by the time this reply lands, not merely "eventually".
+      try {
+        await recordProjectNoteAuthor(saved.id, caller.platform, caller.userId);
+      } catch (err) {
+        logger.warn({ err }, 'Project note author record failed');
+      }
       const language = await getLanguagePreference(caller.platform, caller.userId);
-      return text(notice('projectNoteSaved', { language })(args.project));
+      return text(notice('projectNoteSaved', { language })(args.project, saved.id));
     },
   }),
 
@@ -236,6 +263,48 @@ export const projectNotesTools = [
           projects.map((p) => `- ${p.name} [${p.slug}]${p.brief ? `\n  ${p.brief}` : ''}`).join('\n'),
         ),
       );
+    },
+  }),
+
+  // Self-service correction path (issue #1344): the one member-authored
+  // content type in this codebase with no way to retract a mistake before
+  // this. Scoped by noteId, not bulk — unlike withdraw_report/
+  // withdraw_appeal (safe in bulk because those queues are small and
+  // admin-reviewed promptly), project notes accumulate indefinitely with no
+  // review cutoff, so "withdraw everything I ever wrote" would be a
+  // disproportionate blast radius for fixing one typo. No CONFIRM: the base
+  // project_notes row is never touched, so this is reversible in effect —
+  // the same no-CONFIRM precedent every other withdraw_* tool uses.
+  defineTool({
+    name: 'withdraw_project_note',
+    description:
+      'Withdraw a project_note you recorded, by its id (shown when you recorded it). Use this if you made a ' +
+      'mistake — a typo, a wrong date, a note filed in the wrong project. It only ever affects a note YOU ' +
+      "recorded; it cannot touch anyone else's note. The base note is kept on record (not deleted) but is " +
+      'quarantined out of every project_recall result from then on, for every member including you. Calling ' +
+      'it again on an already-withdrawn note is harmless.',
+    minTier: 'member',
+    readOnlyHint: false,
+    schema: {
+      noteId: z.number().int().describe('The note id, shown when you recorded it with project_note'),
+    },
+    handler: async (args, { caller }) => {
+      // SECURITY: re-check member tier in the handler, the same discipline
+      // every other tool in this file uses.
+      assertAtLeast(caller.role, 'member', 'withdraw_project_note');
+      const language = await getLanguagePreference(caller.platform, caller.userId);
+      // SECURITY: an unknown noteId and a real-but-not-mine noteId return
+      // the IDENTICAL refusal (issue #1344 acceptance criterion 6, the
+      // noteId analogue of project_note's own #205 wording rule) — never
+      // confirm another member's note exists or who wrote it. A note
+      // written before this shipped has no author row and refuses here too,
+      // which is expected (no backfill, no guessed authorship).
+      const isOwn = await isOwnProjectNote(args.noteId, caller.platform, caller.userId);
+      if (!isOwn) {
+        return text(notice('projectNoteWithdrawRefused', { language }), true);
+      }
+      await recordProjectNoteWithdrawal(args.noteId);
+      return text(notice('projectNoteWithdrawn', { language })(args.noteId));
     },
   }),
 ];

@@ -310,3 +310,109 @@ test('an oversized page is truncated before it reaches the model', async () => {
   assert.match(textOf(res), /truncated to 12000 chars/);
   assert.ok(textOf(res).length < 13_000, 'the returned body must be clipped, not merely annotated');
 });
+
+test('SECURITY: a second identical-URL call from the same caller within the dedup window is refused before the daily quota is spent and before any fetch is issued', async () => {
+  const cap1 = fresh();
+  const cap2 = fresh();
+  behavior = okOutcome('hello');
+  const userId = `dedup-${Math.random().toString(36).slice(2)}`;
+  const url = 'https://docs.example.test/dedup-a';
+
+  const before = fetchCalls;
+  const first = await tool.handler({ url }, ctxFor('admin', cap1, userId));
+  assert.equal(first.isError, false, 'the first call must succeed');
+  assert.equal(fetchCalls, before + 1, 'the first call must issue exactly one request');
+
+  const second = await tool.handler({ url }, ctxFor('admin', cap2, userId));
+  assert.equal(second.isError, true, 'the duplicate must be refused');
+  assert.match(textOf(second), /already fetched that exact URL/);
+  assert.equal(fetchCalls, before + 1, 'SECURITY: the blocked duplicate must not issue a second request');
+  assert.equal(
+    cap2.ran,
+    false,
+    'SECURITY: the daily reserver (via audited) must not be invoked on the blocked call',
+  );
+});
+
+test('SECURITY: a blocked duplicate is refused via the plain pre-flight path, not audited() — no admin_audit row, no success DM', async () => {
+  const cap1 = fresh();
+  const cap2 = fresh();
+  behavior = okOutcome('hello');
+  const userId = `dedup-${Math.random().toString(36).slice(2)}`;
+  const url = 'https://docs.example.test/dedup-b';
+
+  await tool.handler({ url }, ctxFor('admin', cap1, userId));
+  await tool.handler({ url }, ctxFor('admin', cap2, userId));
+
+  assert.equal(
+    cap2.ran,
+    false,
+    'SECURITY: audited() must never run for a blocked duplicate — no admin_audit row and no DM',
+  );
+  assert.equal(cap2.auditKind, undefined);
+  assert.equal(cap2.auditResult, undefined);
+});
+
+test('a different URL from the same caller, and the same URL from a different caller, are each fetched normally in the same window', async () => {
+  behavior = okOutcome('hello');
+  const userId = `dedup-${Math.random().toString(36).slice(2)}`;
+
+  const capSameUserDiffUrl = fresh();
+  await tool.handler({ url: 'https://docs.example.test/dedup-c1' }, ctxFor('admin', fresh(), userId));
+  const diffUrlRes = await tool.handler(
+    { url: 'https://docs.example.test/dedup-c2' },
+    ctxFor('admin', capSameUserDiffUrl, userId),
+  );
+  assert.equal(diffUrlRes.isError, false, 'a different URL from the same caller must not be blocked');
+
+  const sharedUrl = 'https://docs.example.test/dedup-c3';
+  const capUserA = fresh();
+  const capUserB = fresh();
+  const resA = await tool.handler({ url: sharedUrl }, ctxFor('admin', capUserA, `${userId}-a`));
+  const resB = await tool.handler({ url: sharedUrl }, ctxFor('admin', capUserB, `${userId}-b`));
+  assert.equal(resA.isError, false, 'the first caller must succeed');
+  assert.equal(resB.isError, false, 'a different caller requesting the same URL must not be blocked');
+});
+
+test('after the dedup window elapses, the same caller+URL is fetched normally again', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: 0 });
+  behavior = okOutcome('hello');
+  const userId = `dedup-${Math.random().toString(36).slice(2)}`;
+  const url = 'https://docs.example.test/dedup-d';
+
+  const first = await tool.handler({ url }, ctxFor('admin', fresh(), userId));
+  assert.equal(first.isError, false);
+
+  t.mock.timers.tick(5 * 60 * 1000 - 1);
+  const stillBlocked = await tool.handler({ url }, ctxFor('admin', fresh(), userId));
+  assert.equal(stillBlocked.isError, true, 'still inside the window, the duplicate must still be refused');
+
+  t.mock.timers.tick(2);
+  const afterWindow = await tool.handler({ url }, ctxFor('admin', fresh(), userId));
+  assert.equal(
+    afterWindow.isError,
+    false,
+    'once the window has elapsed, the same caller+URL must fetch normally again',
+  );
+});
+
+test('SECURITY: two distinct callers requesting the identical URL within the window are both fetched — no cross-caller leakage — and the dedup state is process memory only', async () => {
+  behavior = okOutcome('hello');
+  const url = 'https://docs.example.test/dedup-e';
+  const capA = fresh();
+  const capB = fresh();
+
+  const resA = await tool.handler(
+    { url },
+    ctxFor('admin', capA, `leak-a-${Math.random().toString(36).slice(2)}`),
+  );
+  const resB = await tool.handler(
+    { url },
+    ctxFor('admin', capB, `leak-b-${Math.random().toString(36).slice(2)}`),
+  );
+
+  assert.equal(resA.isError, false, 'SECURITY: caller A must not be blocked by caller B');
+  assert.equal(resB.isError, false, 'SECURITY: caller B must not be blocked by caller A');
+  assert.equal(capA.auditKind, 'fetch_page', 'both callers must still be audited independently');
+  assert.equal(capB.auditKind, 'fetch_page');
+});

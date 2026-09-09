@@ -12,7 +12,13 @@ import {
 import { ACCESS_REQUEST_STALE_ALERT_SCAN_LIMIT } from '../../accessRequestStaleAlert.js';
 import { recordAccessRequestResolution } from '../../storage/accessRequestResolutions.js';
 import { getWithdrawnSuggestionIds } from '../../storage/suggestionWithdrawals.js';
-import { platformArg, SUGGESTION_RESOLUTION_ECHO_CHARS, text, untrusted } from './helpers.js';
+import {
+  formatAccessRequestsList,
+  platformArg,
+  SUGGESTION_RESOLUTION_ECHO_CHARS,
+  text,
+  untrusted,
+} from './helpers.js';
 import { notifyAccessRequestDeclined, notifySuggestionResolved } from './notify.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
@@ -74,7 +80,6 @@ export const accessAndSuggestionsTools = [
             .sort((a, b) => a.firstRequestedAt.getTime() - b.firstRequestedAt.getTime())
             .slice(0, args.limit ?? 50)
         : await listAccessRequests(args.limit ?? 50);
-      if (rows.length === 0) return text('No pending access requests.');
       // Truncation caveat (mirrors list_suggestions', issue #1255 review):
       // `scanned` hitting exactly ACCESS_REQUEST_STALE_ALERT_SCAN_LIMIT means
       // more requests may be pending than the single bounded scan could see,
@@ -82,32 +87,11 @@ export const accessAndSuggestionsTools = [
       // requested ACCESS_REQUEST_STALE_ALERT_SCAN_LIMIT rows — the genuine
       // oldest could be outside that window and missing here. Say so rather
       // than silently reporting a mid-recent row as oldest.
-      const truncationCaveat =
-        scanned && scanned.length === ACCESS_REQUEST_STALE_ALERT_SCAN_LIMIT
-          ? ` ⚠️ oldestFirst caveat: ${ACCESS_REQUEST_STALE_ALERT_SCAN_LIMIT}+ access requests are pending, ` +
-            `so only the ${ACCESS_REQUEST_STALE_ALERT_SCAN_LIMIT} most recently requested ones were scanned ` +
-            'before sorting — the true oldest may not be shown above. Resolve some requests to shrink the ' +
-            'backlog if this list looks incomplete.'
-          : '';
-      return text(
-        untrusted(
-          'Access requests',
-          rows
-            .map((r) => {
-              // firstRequestedAt is always the DB-stored insert timestamp for
-              // this (platform, user_id) row (repository.ts's
-              // listAccessRequests) — never sourced from a tool argument, so
-              // it can't be spoofed by a caller-supplied value (issue #515).
-              const waitingDays = Math.floor((Date.now() - r.firstRequestedAt.getTime()) / 86_400_000);
-              return (
-                `${r.platform} ${r.userName ? sanitizeName(r.userName) : r.userId} (${r.userId}) — ` +
-                `${r.requestCount} request(s), first ${r.firstRequestedAt.toISOString()} (waiting ${waitingDays}d), ` +
-                `last ${r.lastRequestedAt.toISOString()}`
-              );
-            })
-            .join('\n') + truncationCaveat,
-        ),
-      );
+      const truncated = scanned != null && scanned.length === ACCESS_REQUEST_STALE_ALERT_SCAN_LIMIT;
+      // Rendering itself is hoisted into the shared formatAccessRequestsList
+      // (helpers.ts, issue #1346) so this tool and the `!accessrequests`/
+      // `/accessrequests` shortcut can never drift.
+      return text(formatAccessRequestsList(rows, truncated));
     },
   }),
 
