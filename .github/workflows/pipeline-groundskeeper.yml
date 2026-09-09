@@ -167,8 +167,23 @@ jobs:
           while read -r num sha; do
             [ -z "${num}" ] && continue
 
-            runs="$(gh api "repos/${REPO}/actions/runs?head_sha=${sha}&per_page=100" \
-              --jq '[.workflow_runs[] | {status, conclusion}]' 2>/dev/null || echo '[]')"
+            # A FAILED lookup must never read as "confirmed zero runs". The
+            # two are one `|| echo '[]'` apart and the consequences are not
+            # symmetric: this sweep skips PRs already labelled `needs-human`,
+            # so a mass false-positive never re-evaluates itself on a later
+            # run — one rate-limited or degraded hourly sweep would label every
+            # open PR over 45 minutes old and a human would have to unpick each
+            # one by hand. Same "skip rather than guess" idiom as the head
+            # commit lookup below.
+            if ! runs="$(gh api "repos/${REPO}/actions/runs?head_sha=${sha}&per_page=100" \
+              --jq '[.workflow_runs[] | {status, conclusion}]')"; then
+              echo "#${num}: could not read CI runs for ${sha} — skipping rather than guessing."
+              continue
+            fi
+            if [ -z "${runs}" ]; then
+              echo "#${num}: empty CI run response for ${sha} — skipping rather than guessing."
+              continue
+            fi
 
             # In flight — CI is doing its job, leave it alone.
             live="$(jq '[.[] | select(.status != "completed")] | length' <<<"${runs}")"
@@ -214,12 +229,19 @@ jobs:
             echo "#${num}: head ${sha} is $(( age / 60 ))m old with no executed CI run — escalating to needs-human."
             gh pr edit "${num}" -R "${REPO}" --add-label needs-human || true
             if [ "${already}" -eq 0 ]; then
-              gh pr comment "${num}" -R "${REPO}" --body \
-                "${CI_STUCK_MARKER}
-          🧹 Groundskeeper: this PR's head commit (\`${sha}\`) is over ${CI_STUCK_MINUTES} minutes old and **no CI run ever executed on it** — there is either no run at all, or one recorded \`action_required\` with zero jobs.
-
-          That happens when the head commit was pushed by a job's own \`GITHUB_TOKEN\` (the conflict-resolver's checkpoint, or a merge commit landing on the branch): such pushes cannot trigger workflows. No loop catches it — \`ci-retry\`/\`autofix\` key on \`failure\`, and auto-merge just declines quietly because the checks are not green. Left alone the PR sits invisible indefinitely (issue #1348).
-
-          **This is not auto-recoverable from inside Actions**: the run is terminal, re-running a zero-job run produces another one, and any push from here would be \`GITHUB_TOKEN\`-authored too. To clear it, push any commit to this branch under a normal user or App identity (for example merging \`main\` in) and CI will run properly. Then remove \`needs-human\`." || true
+              # Built with printf, one argument per line, rather than a
+              # multi-line double-quoted string: the shell would keep this
+              # block's ~10 spaces of YAML indentation inside the string, and
+              # GFM renders a paragraph indented 4+ spaces as a code block —
+              # the whole comment would arrive preformatted, with the bold and
+              # the backticks shown literally.
+              printf '%s\n' \
+                "${CI_STUCK_MARKER}" \
+                "🧹 Groundskeeper: this PR's head commit (\`${sha}\`) is over ${CI_STUCK_MINUTES} minutes old and **no CI run ever executed on it** — there is either no run at all, or one recorded \`action_required\` with zero jobs." \
+                "" \
+                "That happens when the head commit was pushed by a job's own \`GITHUB_TOKEN\` (the conflict-resolver's checkpoint, or a merge commit landing on the branch): such pushes cannot trigger workflows. No loop catches it — \`ci-retry\`/\`autofix\` key on \`failure\`, and auto-merge just declines quietly because the checks are not green. Left alone the PR sits invisible indefinitely (issue #1348)." \
+                "" \
+                "**This is not auto-recoverable from inside Actions**: the run is terminal, re-running a zero-job run produces another one, and any push from here would be \`GITHUB_TOKEN\`-authored too. To clear it, push any commit to this branch under a normal user or App identity (for example merging \`main\` in) and CI will run properly. Then remove \`needs-human\`." \
+                | gh pr comment "${num}" -R "${REPO}" --body-file - || true
             fi
           done <<< "${prs}"

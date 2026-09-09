@@ -152,6 +152,48 @@ test(
   },
 );
 
+test('SECURITY: a failed CI-run lookup skips the PR instead of reading as "confirmed zero runs"', () => {
+  // `|| echo '[]'` here would make an API failure indistinguishable from a
+  // genuinely un-CI'd head, and the two are not symmetric: the PR-selection
+  // filter excludes anything already labelled `needs-human`, so a mass false
+  // positive never re-evaluates itself. One rate-limited or degraded hourly
+  // sweep would label EVERY open PR over 45 minutes old, and a human would
+  // unpick each one by hand. Same skip-rather-than-guess idiom the head-commit
+  // lookup a few lines further down already uses.
+  const step = yaml.slice(yaml.indexOf('Escalate PRs whose CI never executed'));
+  const lookup = step.slice(step.indexOf('actions/runs?head_sha='));
+  assert.doesNotMatch(
+    lookup.slice(0, lookup.indexOf('live=')),
+    /\|\|\s*echo\s*'\[\]'/,
+    'an empty-array fallback on a failed runs lookup escalates on missing evidence',
+  );
+  assert.match(step, /if ! runs="\$\(gh api/, 'the runs lookup must branch on its own exit status');
+  assert.match(step, /could not read CI runs for \$\{sha\} — skipping rather than guessing/);
+});
+
+test('the groundskeeper CI-stuck comment is built without the shell indentation that would render it as a code block', () => {
+  // A multi-line double-quoted bash string keeps this block's ~10 spaces of
+  // YAML indentation inside the string, and GFM renders a paragraph indented
+  // 4+ spaces as preformatted text — the escalation would arrive with its
+  // bold and backticks shown literally. printf with one argument per line
+  // keeps the indentation outside the quotes.
+  const step = yaml.slice(yaml.indexOf('Escalate PRs whose CI never executed'));
+  const comment = step.slice(step.indexOf('gh pr edit'));
+  assert.match(comment, /printf '%s\\n' \\/, 'the body must be built argument-per-line');
+  assert.match(comment, /\| gh pr comment "\$\{num\}" -R "\$\{REPO\}" --body-file -/);
+  // Every argument line of the printf starts its content at the quote, so no
+  // line of the posted body can carry leading whitespace.
+  const args = comment
+    .slice(comment.indexOf("printf '%s"))
+    .split('\n')
+    .slice(1)
+    .filter((l) => l.trim().startsWith('"'));
+  assert.ok(args.length >= 5, `expected the full body, got ${args.length} argument lines`);
+  for (const line of args) {
+    assert.doesNotMatch(line, /^\s*"\s/, `body line begins with whitespace inside the quotes: ${line}`);
+  }
+});
+
 test("SECURITY: the groundskeeper CI-stuck marker is counted only on github-actions[bot]'s own comments, so no commenter can suppress an escalation", () => {
   // audit 2026-07-28 N3: an unauthenticated marker count lets any commenter
   // suppress an escalation. This one filters to github-actions[bot] in both
