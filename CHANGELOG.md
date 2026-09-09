@@ -22,8 +22,29 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #775 #784 #804 #807 #809 #810 #812 #814 #816 #817 #818 #819 #821 #824 #825
 #868 #896 #899 #904 #949 #950 #951 #952 #953 #954 #955 #956 #957 #958 #961
 #963 #964 #965 #968 #971 #983 #988 #989 #991 #992 #994 #1017 #1071 #1086
-#1122 #1123 #1132 #1232 #1236
+#1122 #1123 #1132 #1232 #1236 #1248 #1281 #1284 #1304 #1308 #1310
 -->
+
+## 2026-09-09
+
+### Added
+- **`withdraw_project_note`: fix a mistake in a team project's shared
+  memory.** (#1344) `project_note` had no correction path — no edit, no
+  delete, no withdraw — so a typo, a wrong date, or a note filed in the
+  wrong project stuck around forever, for the whole team, with nobody able
+  to touch it (project notes are deliberately invisible even to admins).
+  Every other member-authored content type already got a self-service
+  retraction tool (`withdraw_report`, `withdraw_knowledge_tip`,
+  `withdraw_suggestion`, `withdraw_appeal`) — this is project notes'.
+  `project_note`'s confirmation now echoes the new note's id, and
+  `withdraw_project_note(noteId)` retracts it: the note is kept on record
+  but never appears in `project_recall` again for anyone, including its own
+  author. Scoped to one note per call (not bulk, unlike its siblings) —
+  project notes accumulate for the life of a long-running project with no
+  review cutoff, so "withdraw everything I ever wrote" would be a
+  disproportionate fix for one typo. An unknown or not-yours note id gets
+  the identical refusal either way, so this can't be used to fish for
+  another member's notes.
 
 ## 2026-09-08
 
@@ -51,6 +72,37 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   three weeks. It now renders the same age suffix as its five siblings,
   still only on a `'gated'`-access-mode community and only once at least one
   guest is waiting.
+- **New Agent Skill: `claude-build-surface-selection`, for members deciding
+  which Claude product to even build with.** (#1338) "Should I use Claude
+  Code or the API?", "what's the difference between Claude Code and the
+  Agent SDK?", "can I just use claude.ai for this?", "I want to automate
+  something with Claude, where do I start?" sit upstream of every one of the
+  sixteen existing skills — you can't reach `mcp-server-design`,
+  `tool-use-and-structured-output-design`, or even `claude-code-setup`
+  without first deciding whether Claude Code is even the right tool for the
+  job. The new skill asks one clarifying question about what the member is
+  actually trying to do, then branches across the four surfaces — Claude
+  Code, the Claude Agent SDK, the raw Messages API, and claude.ai — in
+  general terms only, and hands off to `claude-code-setup`,
+  `getting-started`, the design-focused skills, or `model-and-plan-selection`
+  the moment the fork resolves. Same bundled-markdown shape as every other
+  skill: no new tool, tier, or data access, and reachable only behind the
+  existing off-by-default `AGENT_SKILLS_ENABLED` gate.
+- **A removed member now hears about it.** (#1334) `remove_member` revokes a
+  member's bot access in gated mode, but until now it never told the person
+  it removed — the bot just went quiet on their next message, indistinguishable
+  from an outage. It now sends a short, fixed DM (no reason, no admin
+  identity — just that their membership ended and to contact an admin if it
+  was a mistake), mirroring the demotion DM `revoke_admin` already sends one
+  tier up.
+- **`!accessrequests`/`/accessrequests`: a zero-model shortcut for
+  `list_access_requests`.** (#1346) Admins can now see who's waiting for
+  access — identity and wait time, not just the count `reviewqueue`/
+  `admindigest` already show — without a full agent turn, the same
+  zero-wait-shortcut pattern already shipped for `reviewqueue`/`mutedlist`/
+  `blockedlist`/`topknowledge`/`featureflags`/`admindigest`/`adminlist`, and
+  the last member of that family to get it. Renders the exact same list
+  `list_access_requests` already returns.
 
 ### Fixed
 - **An admin can no longer kick, ban, or timeout another admin (or a super
@@ -68,6 +120,13 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   caveats, so it could hand back a flagged-unhelpful or conflicting entry
   with no warning at all. It now carries the same low-rated and conflict
   notes as the rest of the knowledge base.
+- **Reacting to a message with `react_to_message` now replies in te reo Māori
+  for members who've set that language preference.** (#1328) Two earlier
+  sweeps (#1147, #1176) each claimed to have covered every member tool's
+  replies, but both missed this one — all six of its replies (reacted,
+  reaction limit hit, message not found, and so on) were English-only
+  regardless of your preference. They now honour it, the same as every other
+  member tool.
 
 ## 2026-09-07
 

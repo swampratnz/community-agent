@@ -5,6 +5,7 @@ import { config } from '@swampratnz/agent-base/config.js';
 import { logger } from '@swampratnz/agent-base/logger.js';
 import {
   acceptKnowledgeCandidate,
+  areKnowledgeEntriesLowRated,
   declineKnowledgeCandidate,
   deleteKnowledge,
   getKnowledgeContentById,
@@ -368,7 +369,21 @@ export const knowledgeAdminTools = [
           return [];
         });
       }
-      return text(formatFoundKnowledge(hits));
+      // Low-rated caveat (issue #1336, the growth #1206 deferred): identical
+      // gate/query/fail-safe shape as knowledgeMember.ts's knowledge_search/
+      // most_helpful_knowledge/knowledge_for_me call sites, computed over the
+      // hit set actually returned (post lexical-fallback if triggered).
+      const lowRatedIds =
+        config.behaviour.knowledgeLowRatedCaveatMinUnhelpful > 0 && hits.length > 0
+          ? await areKnowledgeEntriesLowRated(
+              hits.map((h) => h.id),
+              config.behaviour.knowledgeLowRatedCaveatMinUnhelpful,
+            ).catch((err) => {
+              logger.warn({ err }, 'Knowledge low-rated caveat lookup failed; omitting the caveat');
+              return new Set<number>();
+            })
+          : new Set<number>();
+      return text(formatFoundKnowledge(hits, undefined, undefined, lowRatedIds));
     },
   }),
 

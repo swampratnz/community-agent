@@ -19,6 +19,7 @@ import {
   getMyDataSummary,
   getPublishedInterestsForOwners,
   hasConflictAmongIds,
+  listAccessRequests,
   listAdminRoster,
   listBlockedUsers,
   listKnowledge,
@@ -39,6 +40,7 @@ import {
   rosterCounts,
 } from '@swampratnz/agent-base/storage/repository.js';
 import {
+  formatAccessRequestsList,
   formatAdminRoster,
   formatBlockedMembersList,
   formatCommunityInfoText,
@@ -86,9 +88,10 @@ import { notice } from './strings/notices.js';
  * (issue #1145, the third), `topknowledge` (issue #1165, the fourth),
  * `featureflags` (issue #1183, the fifth — and the first at the
  * `super_admin` floor rather than `admin`), `admindigest` (issue #1194, the
- * sixth), and `adminlist` (issue #1218, the seventh, and the second at the
- * `super_admin` floor) appended — also safe for the WhatsApp side because
- * every `!` matcher is anchored and mutually exclusive.
+ * sixth), `adminlist` (issue #1218, the seventh, and the second at the
+ * `super_admin` floor), and `accessrequests` (issue #1346, the eighth)
+ * appended — also safe for the WhatsApp side because every `!` matcher is
+ * anchored and mutually exclusive.
  *
  * The Discord halves are BOUND by `bindCommunitySlashCommands()`
  * (slashCommands.ts), which `createConfiguredAdapters()` calls — never at
@@ -696,6 +699,29 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
       if (!atLeast(role, 'super_admin')) return null;
       const roster = await listAdminRoster();
       return formatAdminRoster(roster);
+    },
+  },
+  {
+    // Eighth entry (issue #1346), same shape as `reviewqueue`/`mutedlist`/
+    // `blockedlist`/`topknowledge`/`admindigest`/`adminlist` above — the last
+    // of the seven admin review-queue tools (reviewqueue, mutedlist,
+    // blockedlist, topknowledge, featureflags, admindigest, adminlist) to
+    // reach it, closing out the family. Anchored, argument-rejecting
+    // matcher: `!accessrequests anything` falls through to
+    // TEXT_COMMAND_UNMATCHED rather than matching, so no message-supplied
+    // text ever reaches a repository read. Calls listAccessRequests with the
+    // exact same byte-identical default limit (50, no oldestFirst)
+    // list_access_requests's own handler uses when called with no
+    // arguments, and renders through the SAME shared formatAccessRequestsList
+    // (tools/helpers.ts) that handler now uses too, so the two can never
+    // drift.
+    name: 'accessrequests',
+    platforms: ['discord', 'whatsapp'],
+    whatsapp: async (text, _msg, role) => {
+      if (!/^!accessrequests$/i.test(text)) return TEXT_COMMAND_UNMATCHED;
+      if (!atLeast(role, 'admin')) return null;
+      const rows = await listAccessRequests(50);
+      return formatAccessRequestsList(rows);
     },
   },
 ];

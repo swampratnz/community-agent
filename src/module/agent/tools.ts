@@ -52,10 +52,12 @@ export {
   formatBlockedMembersList,
   formatTopKnowledgeList,
   formatAdminRoster,
+  formatAccessRequestsList,
 } from './tools/helpers.js';
 export {
   notifyAdmins,
   notifyMemberApproved,
+  notifyMemberRemoved,
   notifyAdminApproved,
   notifyAdminRevoked,
   notifyAccessRequestDeclined,
@@ -94,7 +96,11 @@ export {
   formatSuggestImprovementText,
   formatWithdrawSuggestionText,
 } from './tools/feedback.js';
-export { ALLOWED_REACTION_EMOJI, REACTION_RATE_LIMIT_PER_DAY } from './tools/reactions.js';
+export {
+  ALLOWED_REACTION_EMOJI,
+  REACTION_RATE_LIMIT_PER_DAY,
+  formatReactToMessageText,
+} from './tools/reactions.js';
 export {
   FIND_HELPER_PROJECT_SUGGESTION_FETCH_LIMIT,
   FIND_HELPER_PROJECT_SUGGESTION_LIMIT,

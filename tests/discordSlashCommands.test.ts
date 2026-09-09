@@ -67,6 +67,7 @@ await import('./support/registerPolicyKeys.js');
 // `createAgent`, after imports). Same catalogue entries, same selection — the
 // assertions below pin exactly what they did before.
 const {
+  formatAccessRequestsList,
   formatAdminRoster,
   formatBlockedMembersList,
   formatFeatureFlags,
@@ -224,6 +225,8 @@ function mockPool(
     blockedUserRows?: PoolRow[];
     /** `listAdminRoster`'s rows for `/adminlist` (issue #1218), raw snake_case DB shape. */
     adminRosterRows?: PoolRow[];
+    /** `listAccessRequests`' rows for `/accessrequests` (issue #1346), raw snake_case DB shape — distinct from the `accessRequestCount`/`accessRequestAgeDays` aggregates above. */
+    accessRequestRows?: PoolRow[];
   } = {},
 ): Array<{ sql: string; params: unknown[] }> {
   const calls: Array<{ sql: string; params: unknown[] }> = [];
@@ -240,8 +243,16 @@ function mockPool(
     if (sql.includes('platform_user_id FROM community_users')) {
       return { rows: opts.linkedIdentityRows ?? [], rowCount: 0 };
     }
+    // listAccessRequests' row-returning read (issue #1346's /accessrequests),
+    // told apart from the count/age aggregate pair below by its
+    // distinguishing 'request_count' select column — checked first, same
+    // specific-first discipline as every other multi-query table in this
+    // file.
+    if (sql.includes('FROM access_requests') && sql.includes('request_count')) {
+      return { rows: opts.accessRequestRows ?? [], rowCount: 0 };
+    }
     // countAccessRequests/oldestAccessRequestAgeDays (issue #1095's
-    // /reviewqueue) — the only two queries against this table in this file,
+    // /reviewqueue) — the other two queries against this table in this file,
     // told apart by the distinguishing 'age_days' column, same convention as
     // every count/age pair below.
     if (sql.includes('FROM access_requests')) {
@@ -647,6 +658,7 @@ test('with DISCORD_SLASH_COMMANDS_ENABLED=true, all commands are registered guil
   );
   const names = (commands as Array<{ name: string }>).map((c) => c.name).sort();
   assert.deepEqual(names, [
+    'accessrequests',
     'admindigest',
     'adminlist',
     'blockedlist',
@@ -685,10 +697,11 @@ test("a slash-command registration failure is caught and logged, never thrown, m
   assert.ok(warnLog.mock.calls.length >= 1, 'a registration failure must be logged, not swallowed silently');
 });
 
-test('buildSlashCommands defines exactly the twenty approved read-only commands, each with its expected required-ness', () => {
+test('buildSlashCommands defines exactly the twenty-one approved read-only commands, each with its expected required-ness', () => {
   const commands = buildSlashCommands();
   const byName = new Map(commands.map((c) => [c.name, c]));
   assert.deepEqual([...byName.keys()].sort(), [
+    'accessrequests',
     'admindigest',
     'adminlist',
     'blockedlist',
@@ -828,6 +841,12 @@ test('buildSlashCommands defines exactly the twenty approved read-only commands,
     (byName.get('adminlist') as { options?: unknown[] }).options ?? [],
     [],
     '/adminlist takes no options — always listAdminRoster() with no filter, super_admin-tier only (issue #1218)',
+  );
+  assert.deepEqual(
+    (byName.get('accessrequests') as { options?: unknown[] }).options ?? [],
+    [],
+    '/accessrequests takes no options — always listAccessRequests(50), the same byte-identical default ' +
+      "list_access_requests's own handler uses when called with no arguments, admin-tier only (issue #1346)",
   );
 });
 
@@ -3751,6 +3770,152 @@ test('/adminlist replies ephemerally, deferring before its DB round trip', async
   const { interaction, replies, order } = fakeInteraction({
     commandName: 'adminlist',
     userId: 'super-1',
+  });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies[0].ephemeral, true);
+  assert.deepEqual(order, ['deferReply', 'editReply']);
+});
+
+// --- Issue #1346: /accessrequests (the eighth slash command, closing out ---
+// --- the admin review-queue shortcut family) --------------------------------
+
+test(
+  "/accessrequests renders formatAccessRequestsList's output for the same rows listAccessRequests returns " +
+    '(issue #1346 acceptance criteria 1, 3)',
+  async (t) => {
+    const firstRequestedAt = new Date('2026-08-01T00:00:00.000Z');
+    const lastRequestedAt = new Date('2026-08-05T00:00:00.000Z');
+    mockPool(t, {
+      memberRole: 'admin',
+      accessRequestRows: [
+        {
+          platform: 'discord',
+          user_id: 'guest-1',
+          user_name: 'Guest One',
+          first_requested_at: firstRequestedAt,
+          last_requested_at: lastRequestedAt,
+          request_count: 2,
+        },
+      ],
+    });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'accessrequests', userId: 'admin-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    const expected = formatAccessRequestsList([
+      {
+        platform: 'discord',
+        userId: 'guest-1',
+        userName: 'Guest One',
+        firstRequestedAt,
+        lastRequestedAt,
+        requestCount: 2,
+      },
+    ]);
+    assert.equal(replies[0].content, stripEmDashes(expected));
+    assert.match(replies[0].content, /guest-1/);
+  },
+);
+
+test(
+  '/accessrequests renders "No pending access requests." when nothing qualifies (issue #1346 acceptance ' +
+    'criterion 1)',
+  async (t) => {
+    mockPool(t, { memberRole: 'admin', accessRequestRows: [] });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'accessrequests', userId: 'admin-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies[0].content, 'No pending access requests.');
+  },
+);
+
+test(
+  'SECURITY: a guest caller is rejected on /accessrequests without any access-requests repository read ever ' +
+    'being invoked (issue #1346 acceptance criterion 4)',
+  async (t) => {
+    const calls = mockPool(t, {
+      memberRole: null,
+      accessRequestRows: [{ platform: 'discord', user_id: 'leak-1', request_count: 1 }],
+    });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'accessrequests', userId: 'guest-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].ephemeral, true);
+    assert.match(replies[0].content, /don't have access/i);
+    assert.ok(
+      !calls.some((c) => c.sql.includes('FROM access_requests') && c.sql.includes('request_count')),
+      'no access-requests repository read must run for a rejected caller',
+    );
+  },
+);
+
+test(
+  "SECURITY: a member-tier caller is rejected on /accessrequests — the same atLeast(role, 'admin') gate as " +
+    '/reviewqueue/mutedlist/blockedlist, not just the member-tier toolsForRole check every other command ' +
+    'uses (issue #1346 acceptance criterion 4)',
+  async (t) => {
+    const calls = mockPool(t, {
+      memberRole: 'member',
+      accessRequestRows: [{ platform: 'discord', user_id: 'leak-1', request_count: 1 }],
+    });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'accessrequests', userId: 'member-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].ephemeral, true);
+    assert.match(
+      replies[0].content,
+      /don't have access/i,
+      'a member-tier caller must be denied, not just a guest',
+    );
+    assert.ok(
+      !calls.some((c) => c.sql.includes('FROM access_requests') && c.sql.includes('request_count')),
+      'no access-requests repository read must run for a member-tier caller',
+    );
+  },
+);
+
+test("a successful /accessrequests invocation calls recordShortcutHit('slash_command') exactly once (issue #1346)", async (t) => {
+  const calls = mockPool(t, { memberRole: 'admin', accessRequestRows: [] });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction } = fakeInteraction({ commandName: 'accessrequests', userId: 'admin-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(
+    shortcutHitCalls(calls).length,
+    1,
+    '/accessrequests must record exactly one slash_command hit',
+  );
+});
+
+test('SECURITY: recordShortcutHit is never called on the NOT_AUTHORIZED_TEXT branch for /accessrequests (issue #1346)', async (t) => {
+  const calls = mockPool(t, { memberRole: null });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({ commandName: 'accessrequests', userId: 'guest-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.match(replies[0].content, /don't have access/i, 'sanity check: /accessrequests was actually denied');
+  assert.equal(shortcutHitCalls(calls).length, 0, 'an auth-denied reply must never record a shortcut hit');
+});
+
+test('/accessrequests replies ephemerally, deferring before its DB round trip', async (t) => {
+  mockPool(t, { memberRole: 'admin', accessRequestRows: [] });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies, order } = fakeInteraction({
+    commandName: 'accessrequests',
+    userId: 'admin-1',
   });
 
   await handleInteraction(interaction as never, adapterDeps(adapter));

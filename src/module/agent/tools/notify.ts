@@ -455,6 +455,55 @@ export async function notifyAdminRevoked(
 }
 
 /**
+ * Best-effort removal DM for `remove_member` (issue #1334) — the
+ * membership-tier mirror of `notifyAdminRevoked` above, the one
+ * membership/standing-change action in this family that stayed silent toward
+ * the person it changed. Same shape as `notifyAdminRevoked`: a failed DM
+ * (closed DMs, WhatsApp 24h window, etc.) is logged and swallowed — the
+ * removal itself is the source of truth, never blocked on this — and a
+ * `WindowClosedError` rejection is queued via `queueForWindowReopen` at
+ * `'low'` priority instead of logged-and-dropped, same
+ * #644/#888/#922/#998/#1040/#1317 parity every sibling in this file gets.
+ * Exported separately from the `remove_member` tool so it's unit-testable
+ * without the MCP tool-call transport. Best-effort language/style handling
+ * identically to `notifyAdminRevoked` above: the target's `community_users`
+ * row is already gone by the time this runs, so a preference lookup that no
+ * longer resolves degrades cleanly to the English default rather than
+ * throwing, the same #52 invariant every sibling here relies on.
+ *
+ * Returns `true`/`false` on the same terms as `notifyAdminRevoked` above —
+ * `remove_member` uses this to tell the acting admin the removal DM didn't
+ * land.
+ */
+export async function notifyMemberRemoved(
+  adapter: PlatformAdapter,
+  userId: string,
+  platform: Platform,
+  getLangPref: typeof getLanguagePreference = getLanguagePreference,
+  getRespStyle: typeof getResponseStyle = getResponseStyle,
+): Promise<boolean> {
+  const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
+  const style: ResponseStyle | undefined =
+    lang === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
+  const message = notice('memberRemovedMessage', { language: lang, style });
+  return adapter
+    .sendDirectMessage(userId, message)
+    .then(() => true)
+    .catch((err) => {
+      if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+        adapter.queueForWindowReopen(userId, message, 'low');
+        logger.warn(
+          { userId, platform },
+          "Member removal DM: recipient's window is closed, queued for reopen",
+        );
+        return true;
+      }
+      logger.warn({ err, userId }, 'Member removal DM failed');
+      return false;
+    });
+}
+
+/**
  * Best-effort decline DM for `decline_access_request` (issue #1126) — the
  * last member of the review-queue decline family (`resolve_suggestion`,
  * `resolve_report`, `resolve_appeal`, `decline_knowledge_candidate`) that
