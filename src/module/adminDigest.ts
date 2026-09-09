@@ -51,10 +51,7 @@ import {
   type QuestionCluster,
 } from '@swampratnz/agent-base/storage/repository.js';
 import { listAccessRequestResolutionsSince } from './storage/accessRequestResolutions.js';
-import {
-  countHumanHelpRequestsSince,
-  mostRecentHumanHelpRequestAt,
-} from './storage/humanHelpRequestLog.js';
+import { countHumanHelpRequestsSince, mostRecentHumanHelpRequestAt } from './storage/humanHelpRequestLog.js';
 import type { JobSpec } from '@swampratnz/agent-base/jobs/types.js';
 import type { Platform, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 

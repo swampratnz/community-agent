@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 // Community notice-pack registration — the composition-root contract:
 // src/index.ts registers the pack in production, so a test whose import
@@ -19,11 +19,34 @@ import './support/registerTurnState.js';
 // before importing anything that (transitively) loads it, matching
 // tests/agentCoreUnhelpfulAnswerRated.test.ts, whose turn-scoped-ref pattern
 // this file mirrors for `request_human_help` (issue #808).
+// DATABASE_URL gates the cleanup step at the bottom of this file (skipped
+// cleanly when unset, per CLAUDE.md) — captured before the dummy-env
+// fallback below so it reflects whether a real DB is actually present,
+// matching tests/knowledgeEval.test.ts's own convention.
+const hasDb = Boolean(process.env.DATABASE_URL);
+
 process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
 process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
+
+const skip = hasDb
+  ? false
+  : 'DATABASE_URL not set — skipping DB-integration tests (CLAUDE.md: exercise against a local Postgres 16 + pgvector)';
+// Every 'request'/'request-then-*' script below drives the REAL
+// request_human_help tool handler, which fires a fire-and-forget write into
+// human_help_request_log (issue #1364). That table carries no identity
+// column by design, so unlike every other DB-backed test in this repo there
+// is no owning id to filter a targeted cleanup by — captured here, before
+// any test in this file runs, so the cleanup test at the bottom can delete
+// every row THIS FILE inserted without touching a row from elsewhere.
+const HUMAN_HELP_LOG_TESTS_STARTED_AT = new Date();
+
+const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
+after(async () => {
+  await closeDb();
+});
 
 // The tool registry's module-scope registrations (tool tiers, tool-server
 // parts, feature-flag predicates) — the composition-root contract, matching
@@ -173,3 +196,21 @@ test('SECURITY: runAgentTurn: AgentReply.humanHelpRequested is absent on an erro
     'a max-turns failure must never carry humanHelpRequested, even if a genuine request was recorded before it',
   );
 });
+
+// Cleanup for the genuine calls the three tests above made — see
+// HUMAN_HELP_LOG_TESTS_STARTED_AT's own doc comment for why a targeted
+// per-row delete isn't possible here (issue #1364).
+test(
+  "cleanup: remove every human_help_request_log row this file's genuine request_human_help calls inserted (issue #1364)",
+  { skip },
+  async () => {
+    // A short grace period for the LAST test's fire-and-forget write — the
+    // handler never awaits recordHumanHelpRequest(), so its own test body
+    // can resolve (and node:test move on to this one) slightly before the
+    // INSERT lands.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await pool.query('DELETE FROM human_help_request_log WHERE created_at >= $1', [
+      HUMAN_HELP_LOG_TESTS_STARTED_AT,
+    ]);
+  },
+);
