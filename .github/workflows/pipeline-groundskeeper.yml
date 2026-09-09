@@ -237,11 +237,11 @@ jobs:
               # the backticks shown literally.
               printf '%s\n' \
                 "${CI_STUCK_MARKER}" \
-                "🧹 Groundskeeper: this PR's head commit (\`${sha}\`) is over ${CI_STUCK_MINUTES} minutes old and **no CI run ever executed on it** — there is either no run at all, or one recorded \`action_required\` with zero jobs." \
+                "🧹 Groundskeeper: this PR's head commit (\`${sha}\`) is over ${CI_STUCK_MINUTES} minutes old and **no CI run ever reached a verdict on it** — there is either no run at all, or only runs that never produced one (\`action_required\`, \`cancelled\`, \`skipped\`)." \
                 "" \
-                "That happens when the head commit was pushed by a job's own \`GITHUB_TOKEN\` (the conflict-resolver's checkpoint, or a merge commit landing on the branch): such pushes cannot trigger workflows. No loop catches it — \`ci-retry\`/\`autofix\` key on \`failure\`, and auto-merge just declines quietly because the checks are not green. Left alone the PR sits invisible indefinitely (issue #1348)." \
+                "The usual cause is a run recorded \`action_required\` with zero jobs, which is what GitHub does when the head commit was pushed by a job's own \`GITHUB_TOKEN\` (the conflict-resolver's checkpoint, or a merge commit landing on the branch): such pushes cannot trigger workflows. Nothing else in the pipeline catches that — \`ci-retry\`/\`autofix\` key on \`failure\`, and auto-merge just declines quietly because the checks are not green — so the PR sits invisible indefinitely (issue #1348). A run that was simply cancelled lands here too, and needs only a re-run." \
                 "" \
-                "**This is not auto-recoverable from inside Actions**: the run is terminal, re-running a zero-job run produces another one, and any push from here would be \`GITHUB_TOKEN\`-authored too. To clear it, push any commit to this branch under a normal user or App identity (for example merging \`main\` in) and CI will run properly. Then remove \`needs-human\`." \
+                "**The zero-job case is not auto-recoverable from inside Actions**: the run is terminal, re-running it produces another zero-job run, and any push from here would be \`GITHUB_TOKEN\`-authored too. To clear it, push any commit to this branch under a normal user or App identity (for example merging \`main\` in) and CI will run properly. Then remove \`needs-human\`." \
                 | gh pr comment "${num}" -R "${REPO}" --body-file - || true
             fi
           done <<< "${prs}"
