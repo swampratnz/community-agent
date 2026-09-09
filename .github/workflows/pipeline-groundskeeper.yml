@@ -39,7 +39,22 @@ on:
 
 permissions:
   issues: write
-  pull-requests: read
+  # `write` (was `read`) so the CI-never-executed sweep below can label and
+  # comment on the PR it finds; `actions: read` so it can see run state at all;
+  # `contents: read` for the head-commit date lookup (`gh api
+  # repos/{repo}/commits/{sha}`). That last one is not optional and its absence
+  # is SILENT: Actions permissions are additive, so naming any key sets every
+  # unnamed one to `none` rather than the repo default, and the 403 would land
+  # in this script's own `|| echo ''` fallback — "could not read head commit
+  # date, skipping" for every PR, every run, forever. The feature would never
+  # fire and nothing would say so, which is #1348's failure mode one level up.
+  # pipeline-pr-automerge.yml makes the same commits call and declares
+  # `contents` for the same reason.
+  # Same trust class as before: deterministic shell reading API fields as jq
+  # data, running no PR-controlled code.
+  pull-requests: write
+  actions: read
+  contents: read
 
 concurrency:
   group: pipeline-groundskeeper
@@ -53,6 +68,12 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       REPO: ${{ github.repository }}
       STALE_HOURS: 4
+      # A CI run normally starts within seconds and finishes in ~10-13 min. A
+      # head commit this old with nothing even STARTED is not slow, it is
+      # wedged. Generous on purpose: this sweep only ever escalates to a human,
+      # so a late escalation costs nothing while a premature one is noise.
+      CI_STUCK_MINUTES: 45
+      CI_STUCK_MARKER: '<!-- groundskeeper-ci-never-ran -->'
     steps:
       - name: Escalate zombie status:building issues
         run: |
@@ -106,3 +127,140 @@ jobs:
             gh issue comment "${num}" -R "${REPO}" --body \
               "🧹 Groundskeeper: \`status:building\` for over ${STALE_HOURS}h with no open PR closing this issue — the build died without reaching its own escalation step (a timed-out job reports \`cancelled\`, which the failure-keyed retry loop never re-runs). Moved to \`needs-human\`; re-queue by removing \`needs-human\` and re-adding \`status:approved\`." || true
           done <<< "${issues}"
+
+      # Second sweep (issue #1348): an open PR whose head commit has NO
+      # executed CI run — the wedge that cost #1248 and #1288 several days
+      # each, with no loop noticing.
+      #
+      # How it happens: a push authored by the job's own GITHUB_TOKEN (the
+      # conflict-resolver's checkpoint step, or a merge commit landing on a PR
+      # branch) cannot trigger workflows. GitHub does not simply skip the run —
+      # it records one that is `completed` with `conclusion: action_required`
+      # and ZERO jobs. That state matches nothing:
+      #   - ci-retry.yml and pipeline-pr-autofix.yml key on `failure`;
+      #   - the first sweep above keys on `status:building` ISSUES, and these
+      #     PRs are open and legitimately closing their issue;
+      #   - auto-merge requires all checks green, so it declines — silently,
+      #     because an unvetted PR earns no `human-merge-ready` escalation.
+      # The PR is neither green nor red nor escalated: it is invisible, and
+      # stays that way indefinitely.
+      #
+      # This does NOT try to auto-recover. The run is terminal (`completed`),
+      # so GitHub's approve endpoint does not apply; re-running a zero-job run
+      # produces another zero-job run; and any push this job could make would
+      # be GITHUB_TOKEN-authored — the same trap that caused it. Pushing an
+      # empty commit or reopening the PR to kick CI is forbidden by CLAUDE.md.
+      # So the deliverable is visibility: label `needs-human` and say exactly
+      # what is wrong and what clears it. That is the whole fix — the failure
+      # here was never that it was unrecoverable, only that it was silent.
+      - name: Escalate PRs whose CI never executed
+        run: |
+          set -euo pipefail
+          now="$(date +%s)"
+          stuck_secs="$(( CI_STUCK_MINUTES * 60 ))"
+
+          # isCrossRepository excluded for correctness, not just least-privilege:
+          # `action_required` on a FORK PR is the ordinary, healthy "a maintainer
+          # must approve this run" state. Escalating those would be pure noise
+          # and would train people to ignore this label.
+          prs="$(gh pr list -R "${REPO}" --state open --limit 100 \
+            --json number,headRefOid,isCrossRepository,labels \
+            --jq '.[] | select(.isCrossRepository | not)
+                      | select([.labels[].name] | index("needs-human") | not)
+                      | "\(.number) \(.headRefOid)"')"
+
+          if [ -z "${prs}" ]; then
+            echo "No eligible open PRs — nothing to check."
+            exit 0
+          fi
+
+          while read -r num sha; do
+            [ -z "${num}" ] && continue
+
+            # A FAILED lookup must never read as "confirmed zero runs". The
+            # two are one `|| echo '[]'` apart and the consequences are not
+            # symmetric: this sweep skips PRs already labelled `needs-human`,
+            # so a mass false-positive never re-evaluates itself on a later
+            # run — one rate-limited or degraded hourly sweep would label every
+            # open PR over 45 minutes old and a human would have to unpick each
+            # one by hand. Same "skip rather than guess" idiom as the head
+            # commit lookup below.
+            if ! runs="$(gh api "repos/${REPO}/actions/runs?head_sha=${sha}&per_page=100" \
+              --jq '[.workflow_runs[] | {status, conclusion}]')"; then
+              echo "#${num}: could not read CI runs for ${sha} — skipping rather than guessing."
+              continue
+            fi
+            if [ -z "${runs}" ]; then
+              echo "#${num}: empty CI run response for ${sha} — skipping rather than guessing."
+              continue
+            fi
+
+            # In flight — CI is doing its job, leave it alone.
+            live="$(jq '[.[] | select(.status != "completed")] | length' <<<"${runs}")"
+            if [ "${live}" -gt 0 ]; then
+              echo "#${num}: a run is still in flight — skipping."
+              continue
+            fi
+
+            # A real verdict exists. `failure` is deliberately treated as
+            # healthy HERE: autofix owns red CI, and two loops escalating the
+            # same PR would double-label it.
+            #
+            # Scope note: this counts a verdict from ANY workflow on the SHA,
+            # not specifically `CI`. That is exact for the wedge this targets
+            # (a GITHUB_TOKEN push triggers NO workflow, so there is nothing to
+            # mask it), but it would miss a CI-specific failure-to-trigger that
+            # happened alongside some other workflow succeeding on the same
+            # commit. Narrowing to `CI` by name would trade that for a
+            # dependence on the workflow's display name; the wedge is what this
+            # exists for.
+            verdicts="$(jq '[.[] | select(.conclusion == "success" or .conclusion == "failure")] | length' <<<"${runs}")"
+            if [ "${verdicts}" -gt 0 ]; then
+              echo "#${num}: CI reached a verdict — healthy, skipping."
+              continue
+            fi
+
+            # No verdict: either zero runs, or only non-executing ones
+            # (action_required / cancelled / skipped). Check the head commit is
+            # old enough that this cannot just be a run about to start.
+            pushed="$(gh api "repos/${REPO}/commits/${sha}" \
+              --jq '.commit.committer.date' 2>/dev/null || echo '')"
+            if [ -z "${pushed}" ]; then
+              echo "#${num}: could not read head commit date — skipping rather than guessing."
+              continue
+            fi
+            age=$(( now - $(date -d "${pushed}" +%s) ))
+            if [ "${age}" -lt "${stuck_secs}" ]; then
+              echo "#${num}: no CI verdict yet but head is only $(( age / 60 ))m old — giving it time."
+              continue
+            fi
+
+            # One comment per PR, ever: the marker is checked against
+            # github-actions[bot]'s own comments only, the same author gate
+            # every other marker in this pipeline uses (audit 2026-07-28 N3) so
+            # a hostile comment cannot suppress the escalation.
+            already="$(gh pr view "${num}" -R "${REPO}" --json comments \
+              --jq "[.comments[] | select((.author.login == \"github-actions\" or .author.login == \"github-actions[bot]\") and (.body | contains(\"${CI_STUCK_MARKER}\")))] | length" 2>/dev/null || echo 1)"
+            # Defaults to 1 (= "already commented") on a read failure, so a
+            # transient API error costs a comment rather than duplicating one.
+            [ -z "${already}" ] && already=1
+
+            echo "#${num}: head ${sha} is $(( age / 60 ))m old with no executed CI run — escalating to needs-human."
+            gh pr edit "${num}" -R "${REPO}" --add-label needs-human || true
+            if [ "${already}" -eq 0 ]; then
+              # Built with printf, one argument per line, rather than a
+              # multi-line double-quoted string: the shell would keep this
+              # block's ~10 spaces of YAML indentation inside the string, and
+              # GFM renders a paragraph indented 4+ spaces as a code block —
+              # the whole comment would arrive preformatted, with the bold and
+              # the backticks shown literally.
+              printf '%s\n' \
+                "${CI_STUCK_MARKER}" \
+                "🧹 Groundskeeper: this PR's head commit (\`${sha}\`) is over ${CI_STUCK_MINUTES} minutes old and **no CI run ever reached a verdict on it** — there is either no run at all, or only runs that never produced one (\`action_required\`, \`cancelled\`, \`skipped\`)." \
+                "" \
+                "The usual cause is a run recorded \`action_required\` with zero jobs, which is what GitHub does when the head commit was pushed by a job's own \`GITHUB_TOKEN\` (the conflict-resolver's checkpoint, or a merge commit landing on the branch): such pushes cannot trigger workflows. Nothing else in the pipeline catches that — \`ci-retry\`/\`autofix\` key on \`failure\`, and auto-merge just declines quietly because the checks are not green — so the PR sits invisible indefinitely (issue #1348). A run that was simply cancelled lands here too, and needs only a re-run." \
+                "" \
+                "**The zero-job case is not auto-recoverable from inside Actions**: the run is terminal, re-running it produces another zero-job run, and any push from here would be \`GITHUB_TOKEN\`-authored too. To clear it, push any commit to this branch under a normal user or App identity (for example merging \`main\` in) and CI will run properly. Then remove \`needs-human\`." \
+                | gh pr comment "${num}" -R "${REPO}" --body-file - || true
+            fi
+          done <<< "${prs}"

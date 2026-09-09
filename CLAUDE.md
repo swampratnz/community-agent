@@ -276,6 +276,18 @@ ownership rules:
   at all; either way the issue previously sat `status:building` forever,
   wedging the fallback lane and starving the approved queue. Like auto-merge
   it reads issue/PR fields only as jq data and runs no PR-controlled code.
+  A **second sweep** (issue #1348) covers the PR-side equivalent: an open
+  same-repo PR whose head commit is 45min+ old with NO executed CI run —
+  either no run at all, or one recorded `action_required` with zero jobs,
+  which is what a `GITHUB_TOKEN`-authored push produces, since those cannot
+  trigger workflows. `ci-retry`/`autofix` key on `failure` and auto-merge
+  declines silently, so nothing else saw it and the PR stayed invisible
+  indefinitely (it cost #1248 and #1288 days each). It only labels
+  `needs-human` and explains the fix — deliberately NO auto-recovery,
+  because the run is terminal and any push from inside Actions would be
+  `GITHUB_TOKEN`-authored and hit the same trap. Fork PRs are excluded:
+  `action_required` there is the ordinary "a maintainer must approve this
+  run" state, not a wedge.
 - The **ci-retry loop** (`ci-retry.yml`) gives a failed CI run one blind
   machine rerun (`gh run rerun --failed`, `run_attempt` < 2) before any agent
   engages — transient npm-registry/runner failures recover for zero agent

@@ -819,6 +819,36 @@ sessions:
   previously zombied forever (the 2026-07-20 incident: four zombie
   `status:building` issues, zero open PRs, the approved queue starved behind
   them).
+  A **second sweep** (issue #1348) covers the mirror-image wedge on the PR
+  side: an open same-repo PR whose head commit has **no executed CI run** —
+  either no run at all, or one recorded `completed` with
+  `conclusion: action_required` and zero jobs. That is what GitHub records
+  when the head commit was pushed by a job's own `GITHUB_TOKEN` (the
+  conflict-resolver's or a fix loop's checkpoint step, or a merge commit
+  landing on the branch), because such pushes cannot trigger workflows. No
+  existing loop catches it: `ci-retry` and autofix key on `failure`, the
+  first sweep keys on `status:building` *issues* (these PRs are open and
+  legitimately closing theirs), and auto-merge simply declines because the
+  checks are not green — silently, since an unvetted PR earns no
+  `human-merge-ready` escalation. The PR is neither green nor red nor
+  escalated; #1248 and #1288 each sat days that way. The sweep labels it
+  `needs-human` with one marker-guarded comment saying exactly what is wrong
+  and what clears it. It deliberately does **not** try to auto-recover: the
+  run is terminal so the approve endpoint does not apply, re-running a
+  zero-job run produces another zero-job run, and any push from inside
+  Actions would be `GITHUB_TOKEN`-authored — the same trap. A human pushes
+  any commit under a normal user or App identity and CI runs properly. Fork
+  PRs are excluded for correctness, not just least-privilege:
+  `action_required` on a fork is the ordinary "a maintainer must approve this
+  run" state, and escalating those would train people to ignore the label.
+  The 45-minute head-commit age threshold is generous on purpose — this sweep
+  only ever escalates to a human, so a late escalation costs nothing while a
+  premature one is noise. The sweep's three jq filters (PR selection, "a run
+  is in flight", "CI reached a verdict") are pinned by
+  `tests/groundskeeperCiStuck.test.ts`, which extracts them from the workflow
+  and executes them through real `jq` against real `gh --json` shapes — a
+  string match would happily pass on a filter that parses and selects the
+  wrong set.
 - `.github/workflows/branch-janitor.yml` — deterministic (no model, no Max
   pool) weekly sweep deleting stale branches, same trust class as the
   groundskeeper: a branch is deleted only when its tip is ancestry-merged
