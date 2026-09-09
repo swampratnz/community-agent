@@ -30122,91 +30122,101 @@ function setInterestMatchAlertsHandler(caller: {
   )._registeredTools['set_interest_match_alerts'];
 }
 
+// Deliberately touches NO database, so it runs in ci.yml's `security-invariants`
+// job — which has no postgres service on purpose, to pin the tier gate
+// independently of DB reachability. That is the strongest place for this
+// assertion, and it needs no fixture: `assert.rejects` passes only on a THROW,
+// while the noProfile precondition RETURNS `text(..., true)`. The two outcomes
+// are already distinguishable, so seeding an interests row to "rule out"
+// noProfile would buy nothing and would cost the assertion its place in the
+// no-DB job. Mirrors set_helper_availability's sibling test above exactly.
 test('SECURITY: set_interest_match_alerts refuses a guest-tier caller before any DB read/write (assertAtLeast re-check, issue #1332)', async () => {
-  const guest = `${RUN}-imatch-guest`;
-  // Seeded so the refusal can only be the tier check — a caller with no
-  // interests row would be turned away by the noProfile branch regardless,
-  // which would make this test pass for the wrong reason.
-  await setMemberInterests('discord', guest, 'building a RAG pipeline');
-
-  const tool = setInterestMatchAlertsHandler({ userId: guest, role: 'guest' });
+  const tool = setInterestMatchAlertsHandler({
+    userId: `${RUN}-imatch-guest`,
+    role: 'guest',
+  });
   await assert.rejects(
     () => tool.handler({ enabled: true }),
     /Permission denied/,
     'set_interest_match_alerts must refuse an open-mode guest even though it is in MEMBER_TOOLS',
   );
-
-  const optIns = await listInterestMatchAlertOptIns();
-  assert.equal(
-    optIns.some((k) => k.userId === guest),
-    false,
-    'a refused guest must never reach the opt-in write',
-  );
 });
 
-test('SECURITY: set_interest_match_alerts only ever writes the caller’s own identity — a second member’s opt-in row is untouched (issue #1332)', async () => {
-  const caller = `${RUN}-imatch-self`;
-  const other = `${RUN}-imatch-other`;
-  await setMemberInterests('discord', caller, 'building a RAG pipeline');
-  await setMemberInterests('discord', other, 'building a RAG pipeline');
-  // The other member is already opted in; the caller opting IN then OUT must
-  // move only its own row, never the neighbour's.
-  await setInterestMatchAlertOptIn('discord', other, true);
+test(
+  'SECURITY: set_interest_match_alerts only ever writes the caller’s own identity — a second member’s opt-in row is untouched (issue #1332)',
+  { skip },
+  async () => {
+    const caller = `${RUN}-imatch-self`;
+    const other = `${RUN}-imatch-other`;
+    await setMemberInterests('discord', caller, 'building a RAG pipeline');
+    await setMemberInterests('discord', other, 'building a RAG pipeline');
+    // The other member is already opted in; the caller opting IN then OUT must
+    // move only its own row, never the neighbour's.
+    await setInterestMatchAlertOptIn('discord', other, true);
 
-  const tool = setInterestMatchAlertsHandler({ userId: caller });
-  await tool.handler({ enabled: true });
-  let optIns = await listInterestMatchAlertOptIns();
-  assert.ok(
-    optIns.some((k) => k.userId === caller),
-    'the caller’s own opt-in must be written',
-  );
-  assert.ok(
-    optIns.some((k) => k.userId === other),
-    'another member’s opt-in must be untouched by the caller opting in',
-  );
+    const tool = setInterestMatchAlertsHandler({ userId: caller });
+    await tool.handler({ enabled: true });
+    let optIns = await listInterestMatchAlertOptIns();
+    assert.ok(
+      optIns.some((k) => k.userId === caller),
+      'the caller’s own opt-in must be written',
+    );
+    assert.ok(
+      optIns.some((k) => k.userId === other),
+      'another member’s opt-in must be untouched by the caller opting in',
+    );
 
-  await tool.handler({ enabled: false });
-  optIns = await listInterestMatchAlertOptIns();
-  assert.equal(
-    optIns.some((k) => k.userId === caller),
-    false,
-    'opting out must remove the caller’s own row',
-  );
-  assert.ok(
-    optIns.some((k) => k.userId === other),
-    'another member’s opt-in must survive the caller opting out',
-  );
-});
+    await tool.handler({ enabled: false });
+    optIns = await listInterestMatchAlertOptIns();
+    assert.equal(
+      optIns.some((k) => k.userId === caller),
+      false,
+      'opting out must remove the caller’s own row',
+    );
+    assert.ok(
+      optIns.some((k) => k.userId === other),
+      'another member’s opt-in must survive the caller opting out',
+    );
+  },
+);
 
-test('set_interest_match_alerts refuses with the noProfile guidance, and writes nothing, when the caller has no published interests (issue #1332)', async () => {
-  const noProfile = `${RUN}-imatch-noprofile`;
-  const tool = setInterestMatchAlertsHandler({ userId: noProfile });
+test(
+  'set_interest_match_alerts refuses with the noProfile guidance, and writes nothing, when the caller has no published interests (issue #1332)',
+  { skip },
+  async () => {
+    const noProfile = `${RUN}-imatch-noprofile`;
+    const tool = setInterestMatchAlertsHandler({ userId: noProfile });
 
-  const result = await tool.handler({ enabled: true });
-  assert.equal(result.isError, true, 'the precondition failure is a friendly refusal, not a throw');
-  assert.equal(result.content[0]?.text, formatSetInterestMatchAlertsText('noProfile', 'en'));
+    const result = await tool.handler({ enabled: true });
+    assert.equal(result.isError, true, 'the precondition failure is a friendly refusal, not a throw');
+    assert.equal(result.content[0]?.text, formatSetInterestMatchAlertsText('noProfile', 'en'));
 
-  const optIns = await listInterestMatchAlertOptIns();
-  assert.equal(
-    optIns.some((k) => k.userId === noProfile),
-    false,
-    'a caller with no interests row must never get an opt-in row written',
-  );
-});
+    const optIns = await listInterestMatchAlertOptIns();
+    assert.equal(
+      optIns.some((k) => k.userId === noProfile),
+      false,
+      'a caller with no interests row must never get an opt-in row written',
+    );
+  },
+);
 
-test('set_interest_match_alerts returns the optedIn / optedOut copy matching the flag it just wrote (issue #1332)', async () => {
-  const member = `${RUN}-imatch-copy`;
-  await setMemberInterests('discord', member, 'building a RAG pipeline');
-  const tool = setInterestMatchAlertsHandler({ userId: member });
+test(
+  'set_interest_match_alerts returns the optedIn / optedOut copy matching the flag it just wrote (issue #1332)',
+  { skip },
+  async () => {
+    const member = `${RUN}-imatch-copy`;
+    await setMemberInterests('discord', member, 'building a RAG pipeline');
+    const tool = setInterestMatchAlertsHandler({ userId: member });
 
-  const optedIn = await tool.handler({ enabled: true });
-  assert.equal(optedIn.isError, false);
-  assert.equal(optedIn.content[0]?.text, formatSetInterestMatchAlertsText('optedIn', 'en'));
+    const optedIn = await tool.handler({ enabled: true });
+    assert.equal(optedIn.isError, false);
+    assert.equal(optedIn.content[0]?.text, formatSetInterestMatchAlertsText('optedIn', 'en'));
 
-  const optedOut = await tool.handler({ enabled: false });
-  assert.equal(optedOut.isError, false);
-  assert.equal(optedOut.content[0]?.text, formatSetInterestMatchAlertsText('optedOut', 'en'));
-});
+    const optedOut = await tool.handler({ enabled: false });
+    assert.equal(optedOut.isError, false);
+    assert.equal(optedOut.content[0]?.text, formatSetInterestMatchAlertsText('optedOut', 'en'));
+  },
+);
 
 // list_events tool handler (issue #388): the read counterpart to create_event
 // (issue #230). No arguments, no CONFIRM — the fetch/filter/sort/cache logic
