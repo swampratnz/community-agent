@@ -100,6 +100,7 @@ const {
   formatTopKnowledgeList,
   formatRequestProjectConnectionText,
   formatSetHelperAvailabilityText,
+  formatSetInterestMatchAlertsText,
   formatShareProjectText,
   formatWhoIsIntoEmptyText,
   PROJECT_DUPLICATE_SIMILARITY_THRESHOLD,
@@ -233,6 +234,8 @@ const {
   purgeUserData,
   recordProjectConnectionIfUnderCap,
 } = await import('@swampratnz/agent-base/storage/repository.js');
+const { setInterestMatchAlertOptIn, listInterestMatchAlertOptIns } =
+  await import('../src/module/storage/interestMatchAlertOptIns.js');
 const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
 const { logger } = await import('@swampratnz/agent-base/logger.js');
 const { embed } = await import('@swampratnz/agent-base/storage/embeddings.js');
@@ -7195,7 +7198,8 @@ const MEMBER_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__list_projects', /browse what others have shared/i],
   ['mcp__community__set_my_interests', /who's into RAG/i],
   ['mcp__community__who_is_into', /who's working on Discord bots/i],
-  ['mcp__community__set_helper_availability', /opt in\/out of being notified/i],
+  ['mcp__community__set_helper_availability', /opt in\/out of being notified for other members' requests/i],
+  ['mcp__community__set_interest_match_alerts', /other members' requests or matches/i],
   ['mcp__community__find_helper', /can someone help with/i],
   ['mcp__community__request_project_connection', /looking for collaborators/i],
   ['mcp__community__community_digest', /community digest on demand/i],
@@ -7280,7 +7284,7 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
     '- Publish your own interests so other members can find you, or find members into a topic ("add me to ' +
     'who\'s into RAG", "who\'s working on Discord bots?")\n' +
     '- Ask if someone in the community can help with something you\'re stuck on ("can someone help with ' +
-    'X?"), or opt in/out of being notified for other members\' requests\n' +
+    'X?"), or opt in/out of being notified for other members\' requests or matches\n' +
     '- Pull the community digest on demand\n' +
     "- Record decisions in a project you're part of and search that project's shared memory later, or " +
     'list your projects, or withdraw a project note you recorded by mistake\n' +
@@ -7299,8 +7303,8 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
       'issue #1070 added the most_helpful_knowledge line, issue #1243 added the withdraw_suggestion clause ' +
       'to the suggest_improvement line, issue #1278 added the withdraw_appeal clause to the ' +
       'appeal_moderation line, issue #1287 added the knowledge_for_me line, issue #1344 added the ' +
-      'withdraw_project_note clause to the project_note/project_recall/project_list line; otherwise ' +
-      'unchanged since #367)',
+      'withdraw_project_note clause to the project_note/project_recall/project_list line, issue #1332 ' +
+      'added the "or matches" clause to the find_helper line; otherwise unchanged since #367)',
   );
 });
 
@@ -30082,6 +30086,137 @@ test('set_helper_availability / find_helper return a friendly disabled message (
     'disabled feature must return a friendly message',
   );
 });
+
+// set_interest_match_alerts tool handler (issue #1332). The job half
+// (interestMatchAlert.ts) is covered by tests/interestMatchAlert.test.ts; this
+// block drives the REGISTERED tool through buildToolServer, the same way the
+// set_helper_availability tests above do, because the tool's own guarantees —
+// the assertAtLeast floor re-check, the noProfile precondition, and writing
+// only ever the caller's own identity — live in the handler, not the job.
+function setInterestMatchAlertsHandler(caller: {
+  userId: string;
+  role?: 'member' | 'guest' | 'admin' | 'super_admin';
+}) {
+  const adapter = stubAdapter(async () => {});
+  const server = buildToolServer(
+    {
+      platform: 'discord',
+      userId: caller.userId,
+      userName: 'Member',
+      role: caller.role ?? 'member',
+      conversationId: `convo-interest-match-alerts-${caller.userId}`,
+    },
+    adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: {
+            enabled: boolean;
+          }) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+        }
+      >;
+    }
+  )._registeredTools['set_interest_match_alerts'];
+}
+
+// Deliberately touches NO database, so it runs in ci.yml's `security-invariants`
+// job — which has no postgres service on purpose, to pin the tier gate
+// independently of DB reachability. That is the strongest place for this
+// assertion, and it needs no fixture: `assert.rejects` passes only on a THROW,
+// while the noProfile precondition RETURNS `text(..., true)`. The two outcomes
+// are already distinguishable, so seeding an interests row to "rule out"
+// noProfile would buy nothing and would cost the assertion its place in the
+// no-DB job. Mirrors set_helper_availability's sibling test above exactly.
+test('SECURITY: set_interest_match_alerts refuses a guest-tier caller before any DB read/write (assertAtLeast re-check, issue #1332)', async () => {
+  const tool = setInterestMatchAlertsHandler({
+    userId: `${RUN}-imatch-guest`,
+    role: 'guest',
+  });
+  await assert.rejects(
+    () => tool.handler({ enabled: true }),
+    /Permission denied/,
+    'set_interest_match_alerts must refuse an open-mode guest even though it is in MEMBER_TOOLS',
+  );
+});
+
+test(
+  'SECURITY: set_interest_match_alerts only ever writes the caller’s own identity — a second member’s opt-in row is untouched (issue #1332)',
+  { skip },
+  async () => {
+    const caller = `${RUN}-imatch-self`;
+    const other = `${RUN}-imatch-other`;
+    await setMemberInterests('discord', caller, 'building a RAG pipeline');
+    await setMemberInterests('discord', other, 'building a RAG pipeline');
+    // The other member is already opted in; the caller opting IN then OUT must
+    // move only its own row, never the neighbour's.
+    await setInterestMatchAlertOptIn('discord', other, true);
+
+    const tool = setInterestMatchAlertsHandler({ userId: caller });
+    await tool.handler({ enabled: true });
+    let optIns = await listInterestMatchAlertOptIns();
+    assert.ok(
+      optIns.some((k) => k.userId === caller),
+      'the caller’s own opt-in must be written',
+    );
+    assert.ok(
+      optIns.some((k) => k.userId === other),
+      'another member’s opt-in must be untouched by the caller opting in',
+    );
+
+    await tool.handler({ enabled: false });
+    optIns = await listInterestMatchAlertOptIns();
+    assert.equal(
+      optIns.some((k) => k.userId === caller),
+      false,
+      'opting out must remove the caller’s own row',
+    );
+    assert.ok(
+      optIns.some((k) => k.userId === other),
+      'another member’s opt-in must survive the caller opting out',
+    );
+  },
+);
+
+test(
+  'set_interest_match_alerts refuses with the noProfile guidance, and writes nothing, when the caller has no published interests (issue #1332)',
+  { skip },
+  async () => {
+    const noProfile = `${RUN}-imatch-noprofile`;
+    const tool = setInterestMatchAlertsHandler({ userId: noProfile });
+
+    const result = await tool.handler({ enabled: true });
+    assert.equal(result.isError, true, 'the precondition failure is a friendly refusal, not a throw');
+    assert.equal(result.content[0]?.text, formatSetInterestMatchAlertsText('noProfile', 'en'));
+
+    const optIns = await listInterestMatchAlertOptIns();
+    assert.equal(
+      optIns.some((k) => k.userId === noProfile),
+      false,
+      'a caller with no interests row must never get an opt-in row written',
+    );
+  },
+);
+
+test(
+  'set_interest_match_alerts returns the optedIn / optedOut copy matching the flag it just wrote (issue #1332)',
+  { skip },
+  async () => {
+    const member = `${RUN}-imatch-copy`;
+    await setMemberInterests('discord', member, 'building a RAG pipeline');
+    const tool = setInterestMatchAlertsHandler({ userId: member });
+
+    const optedIn = await tool.handler({ enabled: true });
+    assert.equal(optedIn.isError, false);
+    assert.equal(optedIn.content[0]?.text, formatSetInterestMatchAlertsText('optedIn', 'en'));
+
+    const optedOut = await tool.handler({ enabled: false });
+    assert.equal(optedOut.isError, false);
+    assert.equal(optedOut.content[0]?.text, formatSetInterestMatchAlertsText('optedOut', 'en'));
+  },
+);
 
 // list_events tool handler (issue #388): the read counterpart to create_event
 // (issue #230). No arguments, no CONFIRM — the fetch/filter/sort/cache logic

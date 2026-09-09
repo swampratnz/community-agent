@@ -37,6 +37,18 @@ export const DEPARTED_ADMIN_ALERT_POLICY_KEY = 'departed_admin_alert_active';
  */
 export const REPORT_STALE_ALERT_POLICY_KEY = 'report_stale_alert_active';
 
+/**
+ * `interestMatchAlert.ts`'s per-member crossing-latch active set (issue
+ * #1332), the same `persistedPerKeyCrossingLatch` shape as
+ * `REPORT_STALE_ALERT_POLICY_KEY` above, keyed by
+ * `${platform}:${platformUserId}` for every opted-in member whose own
+ * who_is_into self-match count is currently latched open (already alerted,
+ * not yet re-armed). Never an interest, a match's identity, or a match
+ * count — only the opted-in member's own platform id, already stored in the
+ * opt-in table this key's job scans.
+ */
+export const INTEREST_MATCH_ALERT_POLICY_KEY = 'interest_match_alert_active';
+
 export const COMMUNITY_POLICY_KEYS = {
   community_guidelines: null,
   community_guidelines_mi: null,
@@ -49,6 +61,7 @@ export const COMMUNITY_POLICY_KEYS = {
   [ROSTER_STALE_ALERT_POLICY_KEY]: null,
   [DEPARTED_ADMIN_ALERT_POLICY_KEY]: null,
   [REPORT_STALE_ALERT_POLICY_KEY]: null,
+  [INTEREST_MATCH_ALERT_POLICY_KEY]: null,
 } as const;
 
 /**

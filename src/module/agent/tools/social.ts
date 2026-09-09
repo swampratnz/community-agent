@@ -48,6 +48,7 @@ import {
 } from './helpers.js';
 import { notifyInterestsRemoved, notifyProjectRemoved } from './notify.js';
 import { recordFindHelperRequest } from '../../storage/findHelperRequests.js';
+import { setInterestMatchAlertOptIn } from '../../storage/interestMatchAlertOptIns.js';
 import { notice } from '../../strings/notices.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
@@ -134,6 +135,40 @@ export function formatWhoIsIntoEmptyText(
       return mi
         ? 'Kāore anō ētahi atu mema kua whakaputa i ngā hiahia e ōrite ana ki ōu.'
         : 'No other members have published interests matching yours yet.';
+  }
+}
+
+/**
+ * `set_interest_match_alerts`'s three caller-facing reply strings (issue
+ * #1332), same "language threaded as an explicit parameter" shape as
+ * `formatSetHelperAvailabilityText` immediately below — deliberately a
+ * separate outcome/function rather than folding into that one, since the two
+ * tools flip different, independently-meaning flags (see the tool's own doc
+ * comment for why `set_helper_availability`'s existing boolean was rejected
+ * as a ride-along).
+ */
+export function formatSetInterestMatchAlertsText(
+  outcome: 'noProfile' | 'optedIn' | 'optedOut',
+  language: LanguagePreference,
+): string {
+  const mi = language === 'mi';
+  switch (outcome) {
+    case 'noProfile':
+      return mi
+        ? 'Kāore anō koe kia whakaputa i ō hiahia — karangahia te set_my_interests i te tuatahi, kātahi ka ' +
+            'taea e set_interest_match_alerts te whakahohe i ngā whakamōhiotanga mō ngā taunekeneke hou.'
+        : "You don't have published interests yet — call set_my_interests first, then " +
+            'set_interest_match_alerts can turn on notifications for new matches.';
+    case 'optedIn':
+      return mi
+        ? 'Ka whakamōhiotia koe ināianei ina puta tētahi taunekeneke hou mō ō hiahia kua whakaputaina — ' +
+            'karangahia te who_is_into ki te tiro.'
+        : "You'll now be notified when you have new interest matches on the community — run who_is_into " +
+            'to see who.';
+    case 'optedOut':
+      return mi
+        ? 'Kāore koe e whakamōhiotia anō mō ngā taunekeneke hou.'
+        : "You won't be notified for new interest matches anymore.";
   }
 }
 
@@ -528,6 +563,54 @@ export const socialTools = [
         return text(formatWhoIsIntoEmptyText('selfNoMatch', language));
       }
       return text(await formatInterestResults(selfMatch.hits));
+    },
+  }),
+
+  // Opt-in push complement to who_is_into's self-match path (issue #1332) —
+  // self-scoped, instantly reversible like set_response_style, so no CONFIRM
+  // gate. A separate, module-owned auxiliary table
+  // (interestMatchAlertOptIns.ts) rather than riding set_helper_availability's
+  // existing boolean below: that flag's own meaning is scoped to "notify me
+  // when another member's find_helper topic matches me" — a different,
+  // already-shipped semantic (reactive to someone else's active ask), and
+  // overloading it here would silently change behaviour for every member
+  // already opted into that first meaning. No feature flag (unlike
+  // set_helper_availability/find_helper, which gate the peer-help handoff
+  // system) — this only ever notifies the caller about their OWN self-match
+  // results, the same always-available surface who_is_into itself is.
+  defineTool({
+    name: 'set_interest_match_alerts',
+    description:
+      "Opt in or out of being notified when the caller's own who_is_into self-match (interests published via " +
+      "set_my_interests, matched against everyone else's) first finds a match — the push complement to " +
+      'polling who_is_into with no topic. Requires an existing published interests row — call set_my_interests ' +
+      "first if you haven't. Instantly reversible, same shape as set_response_style. The notification is a " +
+      "bare nudge with no match count, no interest text, and no other member's identity — call who_is_into " +
+      'to see the actual matches.',
+    minTier: 'member',
+    readOnlyHint: false,
+    schema: {
+      enabled: z
+        .boolean()
+        .describe(
+          'true to opt in to being notified when new who_is_into self-matches appear; false to opt out',
+        ),
+    },
+    handler: async (args, { caller }) => {
+      // MEMBER_TOOLS' floor re-check discipline for a self-service write that
+      // reaches other members' discovery surface, same as set_my_interests/
+      // set_helper_availability.
+      assertAtLeast(caller.role, 'member', 'set_interest_match_alerts');
+      const interestsByOwner = await getPublishedInterestsForOwners([
+        { platform: caller.platform, userId: caller.userId },
+      ]);
+      const hasProfile = interestsByOwner.has(`${caller.platform}:${caller.userId}`);
+      const language = await getLanguagePreference(caller.platform, caller.userId);
+      if (!hasProfile) {
+        return text(formatSetInterestMatchAlertsText('noProfile', language), true);
+      }
+      await setInterestMatchAlertOptIn(caller.platform, caller.userId, args.enabled);
+      return text(formatSetInterestMatchAlertsText(args.enabled ? 'optedIn' : 'optedOut', language));
     },
   }),
 

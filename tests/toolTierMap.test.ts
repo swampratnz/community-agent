@@ -63,6 +63,7 @@ const EXPECTED: Record<string, readonly string[]> = {
     'request_human_help',
     'request_project_connection',
     'set_helper_availability',
+    'set_interest_match_alerts',
     'set_language_preference',
     'set_my_interests',
     'set_response_style',
