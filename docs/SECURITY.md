@@ -3943,6 +3943,57 @@ to six more days with no admin lever at all.
   so it is a read/probe-and-record action, the same non-destructive shape as
   the job itself, not an in-place content overwrite like `update_knowledge`.
 
+### 31. Fleet-heartbeat bearer token folded into the redaction backstop (`FLEET_SUPERVISOR_TOKEN`, issue #1294/#1340)
+
+agent-base's fleet-heartbeat module (`FLEET_AGENT_ID`/`FLEET_AGENT_TYPE`/
+`FLEET_SUPERVISOR_URL`, optionally `FLEET_SUPERVISOR_TOKEN`) lets a bosun
+supervisor track this process's liveness and per-model spend over HTTP. It is
+inert unless all three identity variables are set — this deployment sets none
+of them today, so the feature does nothing until it runs under bosun.
+
+- **Not a new egress path.** The reporter posts only to the operator-supplied
+  `FLEET_SUPERVISOR_URL`, one-directionally (this process tells the
+  supervisor what it did; nothing bosun returns is executed here). This
+  section is about the one credential involved, not a new tool or data
+  access.
+- **The token is now covered by the exact-value redaction backstop.** The
+  backstop is agent-base's `runtimeSecrets()` (`agent/secrets.js`): a
+  hand-written base-side list (`config.llm.oauthToken`, `config.discord.botToken`,
+  `config.db.url`, the WhatsApp Cloud access/verify/app-secret tokens,
+  `config.devTeam.authToken`, `config.github.token`) concatenated with every
+  getter a module registered via the manifest's `runtimeSecrets` field, and
+  read fresh on every adapter send. So the dev-team auth token and the GitHub
+  issue-filing token were already covered — base-side, not by anything in this
+  repo — before this PR; `FLEET_SUPERVISOR_TOKEN` was the one outward
+  credential with no entry anywhere in that list, read straight off
+  `process.env` by agent-base's own `readFleetHeartbeatConfig` with no
+  registration at all. `src/module/agentModule.ts` now supplies a getter —
+  `() => process.env.FLEET_SUPERVISOR_TOKEN` — via the manifest's
+  `runtimeSecrets` field so it joins that same list, so if this value ever
+  reached a chat surface by accident, the same backstop that already redacts
+  every other credential would catch it too.
+- **That list is not taken on trust — it is pinned.** The framework is a
+  package, so the paragraph above describes code that does not live in this
+  repo, and a reviewer reading only this repo cannot check it (two review
+  rounds on #1341 said exactly that). `tests/runtimeSecretsBackstop.test.ts`
+  therefore reads the **installed** package's own source — resolved through
+  its export map, not a hardcoded `dist/` path — and asserts that every entry
+  above is really there, that the module-getter spread this manifest field
+  depends on is really there, and that agent-base still reads the token from
+  `FLEET_SUPERVISOR_TOKEN` (a rename upstream would make this registration a
+  silent no-op forever, and an invisible one, since the feature is inert here
+  today). The package is exact-pinned (#1308), so a framework bump is always a
+  reviewed diff — and one that drops an entry, or moves the file, reddens CI
+  rather than quietly un-covering a credential.
+- **Getter, not a captured value.** A rotated token is covered on the next
+  send without re-registration, and an unset/empty value is safe — `redactSecrets`
+  ignores empty/short values, matching `FleetHeartbeatConfig`'s own
+  optional-`token` contract.
+- **No new env var, no `config`-schema change.** `FLEET_SUPERVISOR_TOKEN` is
+  deliberately not added to `.env.example` or the `config` schema; this
+  section documents an existing agent-base-owned variable, not one this
+  deployment introduces.
+
 ## Platform-specific notes
 
 ### WhatsApp / Baileys ToS risk

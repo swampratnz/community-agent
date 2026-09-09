@@ -89,6 +89,11 @@ export const nzCommunityModule: AgentModuleManifest<ToolContext> = {
   personas: COMMUNITY_PERSONAS,
   turnStateFinalizers: [COMMUNITY_TURN_STATE_FINALIZER],
   policyKeys: COMMUNITY_POLICY_KEYS,
+  // A getter, not a captured value: covers a rotated token on the next send
+  // without re-registration. Mirrors how agent-base's own
+  // `readFleetHeartbeatConfig` sources this same variable; it is deliberately
+  // not in the `config` schema. See docs/SECURITY.md §31.
+  runtimeSecrets: [() => process.env.FLEET_SUPERVISOR_TOKEN],
 
   // Schema: base's fragments run first, these after (one atomic query).
   migrations: COMMUNITY_MIGRATIONS,

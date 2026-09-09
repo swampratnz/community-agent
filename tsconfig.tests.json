@@ -52,6 +52,7 @@
     "tests/repeatQuestionShortcutRouter.test.ts",
     "tests/reusableWorkflows.test.ts",
     "tests/routerInterceptChain.test.ts",
+    "tests/runtimeSecretsBackstop.test.ts",
     "tests/schemaConstraintIdempotency.test.ts",
     "tests/securityDocSections.test.ts",
     "tests/statusCheckMemberChannelAlert.test.ts",
