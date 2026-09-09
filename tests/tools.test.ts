@@ -12134,7 +12134,7 @@ function listMemberWarningsHandler(
       _registeredTools: Record<
         string,
         {
-          handler: (args: { targetUserId: string; limit?: number }) => Promise<{
+          handler: (args: { targetUserId: string; limit?: number; oldestFirst?: boolean }) => Promise<{
             content: Array<{ type: string; text: string }>;
             isError?: boolean;
           }>;
@@ -12268,6 +12268,211 @@ test(
     )._registeredTools['my_warnings'].description;
     assert.match(description ?? '', /list_member_warnings/);
     assert.doesNotMatch(description ?? '', /moderation_history/);
+  },
+);
+
+// list_member_warnings oldestFirst (issue #1371) — mirrors list_muted_members'
+// oldestFirst (issue #1267, same file): agent-base's listMemberWarnings has no
+// ordering parameter, so this is implemented module-side as a single bounded
+// fetch + JS sort, using the row's own createdAt.
+test(
+  'list_member_warnings: oldestFirst orders by createdAt ascending, sliced to limit ?? 20; omitted/false ' +
+    'stays byte-identical to the default newest-first order (issue #1371 acceptance criteria 1-2)',
+  { skip },
+  async () => {
+    const target = `${RUN}-list-member-warnings-oldestfirst`;
+    await seedKnownUser('discord', 'convo-seed', target);
+    await addWarning({
+      platform: 'discord',
+      userId: target,
+      reason: 'strike-older',
+      excerpt: null,
+      source: 'auto',
+      issuedBy: null,
+    });
+    await addWarning({
+      platform: 'discord',
+      userId: target,
+      reason: 'strike-newer',
+      excerpt: null,
+      source: 'auto',
+      issuedBy: null,
+    });
+    await pool.query(
+      `UPDATE member_warnings SET created_at = now() - interval '2 days'
+        WHERE platform = 'discord' AND user_id = $1 AND reason = 'strike-older'`,
+      [target],
+    );
+    await pool.query(
+      `UPDATE member_warnings SET created_at = now() - interval '1 days'
+        WHERE platform = 'discord' AND user_id = $1 AND reason = 'strike-newer'`,
+      [target],
+    );
+
+    try {
+      const defaultOrder = await listMemberWarningsHandler('admin').handler({ targetUserId: target });
+      const defaultText = defaultOrder.content[0]?.text ?? '';
+      assert.ok(
+        defaultText.indexOf('strike-newer') < defaultText.indexOf('strike-older'),
+        'default (no oldestFirst) lists the newest warning before the oldest one, unchanged from before ' +
+          'this issue',
+      );
+      const explicitFalse = await listMemberWarningsHandler('admin').handler({
+        targetUserId: target,
+        oldestFirst: false,
+      });
+      assert.equal(
+        explicitFalse.content[0]?.text,
+        defaultText,
+        'oldestFirst: false must render byte-identical to the omitted-field default',
+      );
+
+      const oldestFirstOrder = await listMemberWarningsHandler('admin').handler({
+        targetUserId: target,
+        oldestFirst: true,
+      });
+      const oldestFirstText = oldestFirstOrder.content[0]?.text ?? '';
+      assert.ok(
+        oldestFirstText.indexOf('strike-older') < oldestFirstText.indexOf('strike-newer'),
+        'oldestFirst: true lists the earliest warning before the more recent one',
+      );
+      assert.doesNotMatch(
+        oldestFirstText,
+        /oldestFirst caveat/i,
+        'a scan well under LIST_MEMBER_WARNINGS_SCAN_LIMIT must not carry the "may be incomplete" caveat',
+      );
+    } finally {
+      await pool.query(`DELETE FROM member_warnings WHERE platform = 'discord' AND user_id = $1`, [target]);
+    }
+  },
+);
+
+test(
+  'list_member_warnings: oldestFirst appends an explicit caveat when the scan hits ' +
+    'LIST_MEMBER_WARNINGS_SCAN_LIMIT, since a member with that many warnings on record means the ' +
+    'genuinely earliest one could sit outside the single bounded scan and never surface — the tool must ' +
+    'say so rather than silently reporting a mid-recent row as "oldest" (issue #1371 acceptance criterion 4)',
+  { skip },
+  async (t) => {
+    const target = `${RUN}-list-member-warnings-scanlimit-caveat`;
+    await seedKnownUser('discord', 'convo-seed', target);
+    const scanLimit = 200;
+    const now = Date.now();
+    const syntheticRows = Array.from({ length: scanLimit }, (_, i) => ({
+      created_at: new Date(now - i * 1000),
+      source: 'auto',
+      reason: `strike-${i}`,
+      excerpt: null,
+      issued_by: null,
+      cleared_at: null,
+      cleared_by: null,
+    }));
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && /FROM member_warnings\b/.test(sql)) {
+        return Promise.resolve({ rows: syntheticRows, rowCount: syntheticRows.length });
+      }
+      return (realQuery as (...a: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+    try {
+      const result = await listMemberWarningsHandler('admin').handler({
+        targetUserId: target,
+        oldestFirst: true,
+      });
+      const rendered = result.content[0]?.text ?? '';
+      assert.match(
+        rendered,
+        /oldestFirst caveat/i,
+        'hitting the scan limit must surface an explicit caveat that the true oldest row may not be shown',
+      );
+      assert.match(
+        rendered,
+        /list_member_warnings/,
+        'the caveat should name this tool, same wording pattern as list_muted_members/list_blocked_members',
+      );
+      assert.match(
+        rendered,
+        new RegExp(String(scanLimit)),
+        'the caveat should name the scan-limit constant so an admin understands the bound',
+      );
+    } finally {
+      t.mock.restoreAll();
+    }
+  },
+);
+
+test(
+  'SECURITY: list_member_warnings queries member_warnings exactly once regardless of oldestFirst, binding ' +
+    'the SQL LIMIT to args.limit ?? 20 on the default path and to the module-local scan-limit constant ' +
+    '(200) — never an unbounded scan — only when oldestFirst: true (issue #1371 acceptance criteria 2-3)',
+  { skip },
+  async (t) => {
+    const target = `${RUN}-list-member-warnings-scanlimit-security`;
+    await seedKnownUser('discord', 'convo-seed', target);
+    await addWarning({
+      platform: 'discord',
+      userId: target,
+      reason: 'r',
+      excerpt: null,
+      source: 'auto',
+      issuedBy: null,
+    });
+
+    try {
+      for (const args of [{}, { oldestFirst: false }, { oldestFirst: true }] as const) {
+        const calls: unknown[][] = [];
+        const realQuery = pool.query.bind(pool);
+        t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+          if (typeof sql === 'string' && /FROM member_warnings\b/.test(sql)) calls.push(rest);
+          return (realQuery as (...a: unknown[]) => unknown)(sql, ...rest);
+        }) as typeof pool.query);
+        try {
+          await listMemberWarningsHandler('admin').handler({ targetUserId: target, ...args });
+          assert.equal(
+            calls.length,
+            1,
+            `list_member_warnings must query member_warnings exactly once for ${JSON.stringify(args)}`,
+          );
+          const params = calls[0][0] as unknown[];
+          assert.equal(
+            params[params.length - 1],
+            args.oldestFirst ? 200 : 20,
+            args.oldestFirst
+              ? 'oldestFirst: true must bind the module-local LIST_MEMBER_WARNINGS_SCAN_LIMIT (200) to the ' +
+                  'SQL LIMIT parameter, never an unbounded scan'
+              : 'the default/oldestFirst:false path must bind args.limit ?? 20, never the scan-limit constant',
+          );
+        } finally {
+          t.mock.restoreAll();
+        }
+      }
+    } finally {
+      await pool.query(`DELETE FROM member_warnings WHERE platform = 'discord' AND user_id = $1`, [target]);
+    }
+  },
+);
+
+test(
+  'SECURITY: a member-tier caller invoking list_member_warnings with oldestFirst: true is refused before ' +
+    'any repository read — member_warnings is never queried on the refused path (issue #1371 acceptance ' +
+    'criterion 5)',
+  async (t) => {
+    const calls: unknown[][] = [];
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && /FROM member_warnings\b/.test(sql)) calls.push(rest);
+      return (realQuery as (...a: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+    try {
+      const registeredTool = listMemberWarningsHandler('member');
+      await assert.rejects(
+        () => registeredTool.handler({ targetUserId: 'anyone', oldestFirst: true }),
+        /Permission denied/,
+      );
+      assert.equal(calls.length, 0, 'a refused caller must never reach the member_warnings query');
+    } finally {
+      t.mock.restoreAll();
+    }
   },
 );
 
