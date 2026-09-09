@@ -8,6 +8,7 @@ import { listOwnFindHelperRequests } from '../../storage/findHelperRequests.js';
 import { getCommunityGuidelines, getCommunityGuidelinesMi } from '../../storage/policies.js';
 import { getWithdrawnSuggestionIds } from '../../storage/suggestionWithdrawals.js';
 import { notice } from '../../strings/notices.js';
+import { recentChanges } from '../../agent/changelog.js';
 import { buildMemberDigestContent } from '../../memberDigest.js';
 import { buildAdminDigestForAdmin } from '../../adminDigest.js';
 import { oldestNotMemberAgeDays } from '../../rosterStaleAlert.js';
@@ -1004,6 +1005,27 @@ async function handleAccessRequests(
 }
 
 /**
+ * `whats_new` is the ninth shortcut in this file (issue #1353), and the last
+ * zero-required-arg admin-tier tool to reach one — same `admin`-floor
+ * double-check shape as `handleAccessRequests`/`handleMutedList`/
+ * `handleBlockedList` above. Calls the exact same `recentChanges(2)` call
+ * `whats_new`'s own handler makes with no arguments (activity.ts), so the two
+ * can never drift. No repository read at all, like `handleFeatureFlags`
+ * above — CHANGELOG.md is read once and cached for the process lifetime.
+ */
+async function handleWhatsNew(interaction: ChatInputCommandInteraction, deps: SlashCommandDeps): Promise<void> {
+  await deferEphemeral(interaction);
+  const role = await resolveRole('discord', interaction.user.id);
+  if (!toolsForRole(role, 'discord').includes('mcp__community__whats_new') || !atLeast(role, 'admin')) {
+    await replyEphemeral(interaction, NOT_AUTHORIZED_TEXT, deps);
+    return;
+  }
+  const message = await recentChanges(2);
+  recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
+  await replyEphemeral(interaction, message, deps);
+}
+
+/**
  * `list_events` is structurally in MEMBER_TOOLS with no extra runtime floor
  * beyond `toolsForRole` (unlike `/warnings`/`/whois`/`/projects`/`/digest`
  * above) — mirrored here exactly like `/kb`'s gate (issue #1004). Takes no
@@ -1261,6 +1283,14 @@ export function bindCommunitySlashCommands(adapter: PlatformAdapter): void {
         .setDescription('Admin: enumerate guests currently waiting for access, identity and wait time.')
         .toJSON(),
     handle: handleAccessRequests,
+  });
+  bindDiscordCommand('whatsnew', {
+    build: () =>
+      new SlashCommandBuilder()
+        .setName('whatsnew')
+        .setDescription("Admin: the bot's own recent changelog updates.")
+        .toJSON(),
+    handle: handleWhatsNew,
   });
   bindDiscordCommand('events', {
     build: () =>

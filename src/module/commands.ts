@@ -2,6 +2,7 @@ import { atLeast } from '@swampratnz/agent-base/auth/rbac.js';
 import { config } from '@swampratnz/agent-base/config.js';
 import { logger } from '@swampratnz/agent-base/logger.js';
 import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
+import { recentChanges } from './agent/changelog.js';
 import { buildAdminDigestForAdmin } from './adminDigest.js';
 import { oldestNotMemberAgeDays } from './rosterStaleAlert.js';
 import { listOwnFindHelperRequests } from './storage/findHelperRequests.js';
@@ -89,9 +90,10 @@ import { notice } from './strings/notices.js';
  * `featureflags` (issue #1183, the fifth — and the first at the
  * `super_admin` floor rather than `admin`), `admindigest` (issue #1194, the
  * sixth), `adminlist` (issue #1218, the seventh, and the second at the
- * `super_admin` floor), and `accessrequests` (issue #1346, the eighth)
- * appended — also safe for the WhatsApp side because every `!` matcher is
- * anchored and mutually exclusive.
+ * `super_admin` floor), `accessrequests` (issue #1346, the eighth), and
+ * `whatsnew` (issue #1353, the ninth, and the last zero-required-arg
+ * admin-tier tool to get one) appended — also safe for the WhatsApp side
+ * because every `!` matcher is anchored and mutually exclusive.
  *
  * The Discord halves are BOUND by `bindCommunitySlashCommands()`
  * (slashCommands.ts), which `createConfiguredAdapters()` calls — never at
@@ -722,6 +724,27 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
       if (!atLeast(role, 'admin')) return null;
       const rows = await listAccessRequests(50);
       return formatAccessRequestsList(rows);
+    },
+  },
+  {
+    // Ninth entry (issue #1353) — the last zero-required-arg admin-tier tool
+    // to get a shortcut, closing out the sweep this file's own doc comment
+    // tracks. Anchored, argument-rejecting matcher: `!whatsnew anything`
+    // (including `!whatsnew 5`) falls through to TEXT_COMMAND_UNMATCHED
+    // rather than matching, so no message-supplied text can ever reach
+    // recentChanges()'s `limit` parameter — recentChanges is always called
+    // with the same literal `2` default whats_new's own handler uses with no
+    // arguments (activity.ts). No DB call at all, like `featureflags` above —
+    // renders CHANGELOG.md straight off its process-lifetime cache. Rendered
+    // plain, no `untrusted()` wrapper, matching whats_new's own unwrapped
+    // `text(...)` result: CHANGELOG.md is maintainer-authored repo content,
+    // not member-submitted text, so there's nothing to quarantine.
+    name: 'whatsnew',
+    platforms: ['discord', 'whatsapp'],
+    whatsapp: async (text, _msg, role) => {
+      if (!/^!whatsnew$/i.test(text)) return TEXT_COMMAND_UNMATCHED;
+      if (!atLeast(role, 'admin')) return null;
+      return await recentChanges(2);
     },
   },
 ];
