@@ -155,7 +155,7 @@ runs:
         case "${stop_reason}" in
           '' | success) ;;
           error_max_turns)
-            outcome_note="⚠️ The agent **ran out of turns**${turns:+ after ${turns}} rather than finishing (\`${stop_reason}\`). The summary below is a partial state, not a verdict on this PR."
+            outcome_note="⚠️ The agent **ran out of turns** rather than finishing (\`${stop_reason}\`${turns:+, ${turns} turns}). The summary below is a partial state, not a verdict on this PR."
             ;;
           *)
             outcome_note="⚠️ The agent's run **ended in an error** (\`${stop_reason}\`). Draw no conclusion about this PR from the summary below."
@@ -169,7 +169,13 @@ runs:
         # demonstrably not the control — this note is. Reaching this code at
         # all means nothing was pushed, so a summary about waiting is
         # suspicious by construction rather than merely unusual.
-        if [ -z "${outcome_note}" ] && [ -n "${summary}" ] && printf '%s' "${summary}" | grep -qiE "(wait|waiting|hold off|stand by|check back)[^.]{0,40}\b(for|on|until)\b|once (the|that|this)[^.]{0,40}\b(finish|complet|return|land)"; then
+        # Herestring, not `printf … | grep`: under `set -o pipefail` a pipeline
+        # where grep -q exits early and printf takes SIGPIPE reports 141 even
+        # though grep MATCHED, which would silently disable this note. The
+        # summary is capped at 1500 bytes so it would fit the pipe buffer
+        # today, but that is a property of an unrelated `head -c` and not
+        # something this branch should depend on.
+        if [ -z "${outcome_note}" ] && [ -n "${summary}" ] && grep -qiE "(wait|waiting|hold off|stand by|check back)[^.]{0,40}\b(for|on|until)\b|once (the|that|this)[^.]{0,40}\b(finish|complet|return|land)" <<<"${summary}"; then
           outcome_note="⚠️ **This looks like a stall, not a diagnosis.** The agent ended its turn waiting for something to finish (its own words below), so the triage it is instructed to run may never have happened. Read this as \"nobody has looked yet\", NOT as \"the code cannot be fixed\" — re-queue by removing \`${ESCALATION_LABEL}\`."
         fi
 
