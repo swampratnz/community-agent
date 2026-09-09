@@ -39627,8 +39627,8 @@ test(
     assert.deepEqual(
       noteLines,
       [`Project notes authored: 0`],
-      "SECURITY: the only line mentioning \"note\" must be the caller's own project-notes-authored count — " +
-        "issue #45 gives members no self-access path to member_notes, so nothing may hint one exists",
+      'SECURITY: the only line mentioning "note" must be the caller\'s own project-notes-authored count — ' +
+        'issue #45 gives members no self-access path to member_notes, so nothing may hint one exists',
     );
   },
 );
