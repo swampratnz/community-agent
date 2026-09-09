@@ -97,6 +97,7 @@ const {
 } = await import('../src/module/agent/tools.js');
 const { formatStatusMessage, getStatusCache, pollAnthropicStatus, resetStatusCacheForTests } =
   await import('../src/module/status/anthropicStatus.js');
+const { recentChanges } = await import('../src/module/agent/changelog.js');
 const { formatMyDataText, formatMySubmissionsText, formatMyWarningsText } =
   await import('../src/module/agent/tools/selfService.js');
 // !admindigest (issue #1194) below.
@@ -4769,6 +4770,149 @@ test("a successful !accessrequests invocation calls recordShortcutHit('whatsapp_
   router.register(adapter);
 
   await trigger(makeMessage({ text: '!accessrequests', userId: 'admin-1' }));
+
+  assert.equal(sent.length, 1);
+  assert.deepEqual(hits, ['whatsapp_text_command']);
+});
+
+// --- !whatsnew (issue #1353) -------------------------------------------------
+//
+// The ninth admin-tier shortcut in this file, and the last zero-required-arg
+// admin-tier tool to reach one. Like `!featureflags` above, needs no
+// repository stub at all — `recentChanges` reads CHANGELOG.md off disk once
+// and caches it for the process lifetime, so `mockPoolRole` only ever needs
+// to stub the role-lookup branch.
+
+test(
+  '!whatsnew renders text byte-identical to `await recentChanges(2)` — the exact call and default limit ' +
+    "whats_new's own handler makes with no arguments — for an admin caller, with no agent turn invoked " +
+    '(issue #1353 acceptance criterion 1)',
+  async (t) => {
+    mockPoolRole(t, 'admin');
+    const router = makeRouter({ runTurn: throwingRunTurn });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!whatsnew', userId: 'admin-1' }));
+
+    const expected = await recentChanges(2);
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].text, expected);
+  },
+);
+
+test(
+  '"!whatsnew extra text" is not matched as the !whatsnew command — anchored, argument-rejecting matcher ' +
+    'falls through to the normal agent turn (issue #1353 acceptance criterion 4)',
+  async (t) => {
+    mockPoolRole(t, 'admin');
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!whatsnew 5', userId: 'admin-1' }));
+
+    assert.equal(sent[0].text, REAL_TURN_REPLY);
+  },
+);
+
+test(
+  'SECURITY: "!whatsnew <anything>" is never matched — the anchored matcher rejects any argument, so no ' +
+    "message-supplied text can ever reach recentChanges()'s limit parameter (issue #1353 acceptance " +
+    'criterion 4)',
+  async (t) => {
+    mockPoolRole(t, 'admin');
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!whatsnew -1', userId: 'admin-1' }));
+
+    assert.equal(sent[0].text, REAL_TURN_REPLY, 'an argument must fall through to a normal turn');
+  },
+);
+
+test(
+  'SECURITY: an admin-tier caller\'s "!whatsnew" is served (the tool\'s own floor) — no wider or ' +
+    'super_admin-only content is exposed (issue #1353 acceptance criterion 2)',
+  async (t) => {
+    mockPoolRole(t, 'admin');
+    const router = makeRouter({ runTurn: throwingRunTurn });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!whatsnew', userId: 'admin-1' }));
+
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].text, await recentChanges(2));
+  },
+);
+
+test(
+  'SECURITY: a member-tier caller\'s "!whatsnew" falls through to the normal turn — no changelog text is ' +
+    'ever rendered (issue #1353 acceptance criterion 3)',
+  async (t) => {
+    mockPoolRole(t, 'member');
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!whatsnew', userId: 'member-1' }));
+
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].text, REAL_TURN_REPLY);
+  },
+);
+
+test(
+  'SECURITY: a guest caller\'s "!whatsnew" falls through to the normal turn — no changelog text is ever ' +
+    'rendered (issue #1353 acceptance criterion 3)',
+  async (t) => {
+    mockPoolRole(t, null);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!whatsnew', userId: 'guest-1' }));
+
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].text, REAL_TURN_REPLY);
+  },
+);
+
+test(
+  'config.behaviour.whatsappTextCommandsEnabled === false disables !whatsnew exactly as it does every other ' +
+    'WhatsApp shortcut',
+  async (t) => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    config.behaviour.whatsappTextCommandsEnabled = false;
+    t.after(() => {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    });
+    mockPoolRole(t, 'admin');
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!whatsnew', userId: 'admin-1' }));
+
+    assert.equal(sent[0].text, REAL_TURN_REPLY);
+  },
+);
+
+test("a successful !whatsnew invocation calls recordShortcutHit('whatsapp_text_command') exactly once (issue #1353)", async (t) => {
+  mockPoolRole(t, 'admin');
+  const hits: string[] = [];
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    recordShortcutHitFn: async (kind) => {
+      hits.push(kind);
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!whatsnew', userId: 'admin-1' }));
 
   assert.equal(sent.length, 1);
   assert.deepEqual(hits, ['whatsapp_text_command']);

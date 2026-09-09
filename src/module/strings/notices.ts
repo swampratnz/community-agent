@@ -890,7 +890,8 @@ const NOTICE_ENTRIES = {
    * for the same reason. `!admindigest` (issue #1194) is the fifth,
    * appended in the SAME diff that shipped it, for the same reason.
    * `!accessrequests` (issue #1346) is the sixth, appended in the SAME diff
-   * that shipped it, for the same reason.
+   * that shipped it, for the same reason. `!whatsnew` (issue #1353) is the
+   * seventh, appended in the SAME diff that shipped it, for the same reason.
    */
   whatsappAdminTextCommands: {
     base:
@@ -899,7 +900,8 @@ const NOTICE_ENTRIES = {
       '- `!blockedlist` — currently blocked users, by identity\n' +
       '- `!topknowledge` — knowledge entries ranked by retrieval count, most relied-on first\n' +
       '- `!admindigest` — your own admin-digest snapshot, on demand\n' +
-      '- `!accessrequests` — guests currently waiting for access, by identity and wait time',
+      '- `!accessrequests` — guests currently waiting for access, by identity and wait time\n' +
+      "- `!whatsnew` — the bot's own recent changelog updates",
     language: {
       mi:
         '- `!reviewqueue` — te whakarāpopototanga o ngā ratonga arotake e rima i te tirohanga kotahi\n' +
@@ -908,7 +910,8 @@ const NOTICE_ENTRIES = {
         '- `!topknowledge` — ngā whiwhinga mōhiotanga kua raupapatia mā te tatauranga tikiake, ko te mea ' +
         'whakawhirinaki nuitia i mua\n' +
         '- `!admindigest` — tō ake whakarāpopototanga whakahaere, i te wā e hiahiatia ana\n' +
-        '- `!accessrequests` — ngā manuhiri e tatari ana ki te urunga, mā te tuakiri me te wā tatari',
+        '- `!accessrequests` — ngā manuhiri e tatari ana ki te urunga, mā te tuakiri me te wā tatari\n' +
+        '- `!whatsnew` — ngā whakahoutanga rārangi hurihuri o te pōtī',
     },
   },
   /**

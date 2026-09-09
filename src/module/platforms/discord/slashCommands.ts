@@ -1013,7 +1013,10 @@ async function handleAccessRequests(
  * can never drift. No repository read at all, like `handleFeatureFlags`
  * above — CHANGELOG.md is read once and cached for the process lifetime.
  */
-async function handleWhatsNew(interaction: ChatInputCommandInteraction, deps: SlashCommandDeps): Promise<void> {
+async function handleWhatsNew(
+  interaction: ChatInputCommandInteraction,
+  deps: SlashCommandDeps,
+): Promise<void> {
   await deferEphemeral(interaction);
   const role = await resolveRole('discord', interaction.user.id);
   if (!toolsForRole(role, 'discord').includes('mcp__community__whats_new') || !atLeast(role, 'admin')) {

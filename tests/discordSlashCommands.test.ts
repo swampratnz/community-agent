@@ -56,6 +56,7 @@ bindCommunitySlashCommands(new DiscordAdapter(DISCORD_TEXT_PACK));
 const { handleInteraction, buildSlashCommands, registerSlashCommands } =
   await import('@swampratnz/agent-base/platforms/discord/slashDispatch.js');
 const { buildMemberDigestContent } = await import('../src/module/memberDigest.js');
+const { recentChanges } = await import('../src/module/agent/changelog.js');
 const { logger } = await import('@swampratnz/agent-base/logger.js');
 await import('./support/registerToolRegistry.js');
 // The community policy keys (guidelines/welcome message) — the manifest's
@@ -112,7 +113,7 @@ const KNOWLEDGE_SEARCH_EMPTY_TEXT_MI = notice('knowledgeSearchEmpty', { language
 // comma (stripEmDashes in outbound.ts) before the text ever reaches Discord.
 // So the caveat as actually delivered is this rewritten form, not the raw
 // exported constant.
-const { stripEmDashes } = await import('@swampratnz/agent-base/agent/outbound.js');
+const { stripEmDashes, stripEmDashesOutsideCode } = await import('@swampratnz/agent-base/agent/outbound.js');
 const { formatStatusMessage, getStatusCache, pollAnthropicStatus, resetStatusCacheForTests } =
   await import('../src/module/status/anthropicStatus.js');
 const { formatMyDataText, formatMySubmissionsText, formatMyWarningsText } =
@@ -678,6 +679,7 @@ test('with DISCORD_SLASH_COMMANDS_ENABLED=true, all commands are registered guil
     'status',
     'topknowledge',
     'warnings',
+    'whatsnew',
     'whois',
   ]);
 });
@@ -697,7 +699,7 @@ test("a slash-command registration failure is caught and logged, never thrown, m
   assert.ok(warnLog.mock.calls.length >= 1, 'a registration failure must be logged, not swallowed silently');
 });
 
-test('buildSlashCommands defines exactly the twenty-one approved read-only commands, each with its expected required-ness', () => {
+test('buildSlashCommands defines exactly the twenty-two approved read-only commands, each with its expected required-ness', () => {
   const commands = buildSlashCommands();
   const byName = new Map(commands.map((c) => [c.name, c]));
   assert.deepEqual([...byName.keys()].sort(), [
@@ -721,6 +723,7 @@ test('buildSlashCommands defines exactly the twenty-one approved read-only comma
     'status',
     'topknowledge',
     'warnings',
+    'whatsnew',
     'whois',
   ]);
   const requiredness = (name: string) =>
@@ -847,6 +850,12 @@ test('buildSlashCommands defines exactly the twenty-one approved read-only comma
     [],
     '/accessrequests takes no options — always listAccessRequests(50), the same byte-identical default ' +
       "list_access_requests's own handler uses when called with no arguments, admin-tier only (issue #1346)",
+  );
+  assert.deepEqual(
+    (byName.get('whatsnew') as { options?: unknown[] }).options ?? [],
+    [],
+    "/whatsnew takes no options — always recentChanges(2), the same byte-identical default whats_new's own " +
+      'handler uses when called with no arguments, admin-tier only (issue #1353)',
   );
 });
 
@@ -3922,6 +3931,100 @@ test('/accessrequests replies ephemerally, deferring before its DB round trip', 
 
   assert.equal(replies[0].ephemeral, true);
   assert.deepEqual(order, ['deferReply', 'editReply']);
+});
+
+// --- Issue #1353: /whatsnew (the ninth slash command, and the last -----------
+// --- zero-required-arg admin-tier tool to reach one) -------------------------
+
+test(
+  '/whatsnew renders text byte-identical to `await recentChanges(2)` — the exact call and default limit ' +
+    "whats_new's own handler makes with no arguments — for an admin caller, and calls " +
+    "recordShortcutHit('slash_command') exactly once (issue #1353 acceptance criterion 1)",
+  async (t) => {
+    const calls = mockPool(t, { memberRole: 'admin' });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const result = fakeInteraction({ commandName: 'whatsnew', userId: 'admin-1' });
+
+    await handleInteraction(result.interaction as never, adapterDeps(adapter));
+
+    // Two changelog sections routinely exceed Discord's 2000-char single-message
+    // limit, same as /featureflags above — replyEphemeral chunks it across
+    // editReply + one or more followUp calls, so the full text is only
+    // recoverable via fullReplyText, not replies[0].content alone. Unlike the
+    // shorter siblings' fixed-format text, CHANGELOG.md prose contains em
+    // dashes that sit at a line boundary, so the expected value must run
+    // through the line-anchored stripEmDashesOutsideCode — the whole-string
+    // stripEmDashes used elsewhere in this file would incorrectly match
+    // across the newline and merge two lines into one.
+    const expected = await recentChanges(2);
+    assert.equal(fullReplyText(result), stripEmDashesOutsideCode(expected));
+    assert.equal(shortcutHitCalls(calls).length, 1, '/whatsnew must record exactly one slash_command hit');
+  },
+);
+
+test(
+  "SECURITY: a member-tier caller is rejected on /whatsnew — the same atLeast(role, 'admin') gate as " +
+    '/reviewqueue/mutedlist/blockedlist/accessrequests, not just the member-tier toolsForRole check every ' +
+    'other command uses (issue #1353 acceptance criterion 3)',
+  async (t) => {
+    const calls = mockPool(t, { memberRole: 'member' });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'whatsnew', userId: 'member-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].ephemeral, true);
+    assert.match(replies[0].content, /don't have access/i);
+    assert.equal(shortcutHitCalls(calls).length, 0, 'an auth-denied reply must never record a shortcut hit');
+  },
+);
+
+test(
+  'SECURITY: a guest caller is rejected on /whatsnew without any changelog content ever being rendered ' +
+    '(issue #1353 acceptance criterion 3)',
+  async (t) => {
+    const calls = mockPool(t, { memberRole: null });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'whatsnew', userId: 'guest-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].ephemeral, true);
+    assert.match(replies[0].content, /don't have access/i);
+    assert.equal(shortcutHitCalls(calls).length, 0, 'an auth-denied reply must never record a shortcut hit');
+  },
+);
+
+test('SECURITY: recordShortcutHit is never called on the NOT_AUTHORIZED_TEXT branch for /whatsnew (issue #1353)', async (t) => {
+  const calls = mockPool(t, { memberRole: null });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({ commandName: 'whatsnew', userId: 'guest-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.match(replies[0].content, /don't have access/i, 'sanity check: /whatsnew was actually denied');
+  assert.equal(shortcutHitCalls(calls).length, 0, 'an auth-denied reply must never record a shortcut hit');
+});
+
+test('/whatsnew replies ephemerally, deferring before formatting its output', async (t) => {
+  mockPool(t, { memberRole: 'admin' });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies, order } = fakeInteraction({ commandName: 'whatsnew', userId: 'admin-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies[0].ephemeral, true);
+  // Chunked, same as /featureflags/'admindigest' above: 'deferReply' always
+  // comes first and 'editReply' is always the first answer chunk, with any
+  // remaining length spilling into one or more 'followUp' calls.
+  assert.equal(order[0], 'deferReply');
+  assert.equal(order[1], 'editReply');
+  assert.ok(
+    order.slice(2).every((step) => step === 'followUp'),
+    'every step after the first answer chunk must be a followUp',
+  );
 });
 
 // --- Criterion 7 / SECURITY criterion 14: /kb excludes auto-provenance -------
