@@ -117,8 +117,13 @@ function extractStallPattern(): string {
   const bodyStart = from + marker.length;
   const to = ACTION.indexOf('"', bodyStart);
   assert.notEqual(to, -1, 'unterminated stall pattern — action restructured?');
-  // The YAML holds the shell source, so `\b` is written `\\b` there.
-  return ACTION.slice(bodyStart, to).replace(/\\\\/g, '\\');
+  // Verbatim. The pattern lives in a double-quoted shell string inside a YAML
+  // block scalar, both of which pass `\b` through untouched, so what is read
+  // here is byte-for-byte what `grep -E` receives on the runner. An earlier
+  // version un-doubled backslashes and said the YAML stored them doubled; it
+  // does not, so that was a no-op guarded by a wrong explanation — which is
+  // the same thing this whole file exists to stop shipping.
+  return ACTION.slice(bodyStart, to);
 }
 
 const STALL_PATTERN = extractStallPattern();
