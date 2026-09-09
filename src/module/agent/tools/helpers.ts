@@ -445,6 +445,14 @@ export function formatKnowledgeSearchResults(
  * (issue #432) and `formatKnowledgeEntryLine` already use. The caller computes
  * the set once (via `areKnowledgeEntriesLowRated`) and it is checked per-hit,
  * same as those two sibling formatters.
+ *
+ * Conflict caveat (issue #1368, #1336's own deferred follow-up): `hasConflict`
+ * defaults to `false`, so omitting it leaves output byte-identical to before.
+ * Unlike `lowRatedIds`, which is checked per-hit, this mirrors
+ * `formatKnowledgeSearchResults`'s own `hasConflict` handling exactly — one
+ * trailing `notice('knowledgeConflictCaveat', …)` line appended once after the
+ * full hit list, never per-hit. The caller computes it once (via
+ * `hasConflictAmongIds`, gated on `>= 2` ids) the same way that sibling does.
  */
 export function formatFoundKnowledge(
   hits: ReadonlyArray<
@@ -458,19 +466,21 @@ export function formatFoundKnowledge(
   staleDays = config.adminDigest.knowledgeStaleDays,
   maxAgeDays = config.adminDigest.knowledgeStaleMaxAgeDays,
   lowRatedIds: ReadonlySet<number> = new Set(),
+  hasConflict = false,
 ): string {
   if (hits.length === 0) return 'No knowledge entries found.';
+  const body = hits
+    .map((h) => {
+      const note = formatKnowledgeCitationNote(h, staleDays, lowRatedIds.has(h.id), maxAgeDays);
+      return (
+        `#${h.id} (${(h.similarity * 100).toFixed(0)}% match) ${h.title ? `${h.title}: ` : ''}` +
+        `${h.content.slice(0, 200)} (updated ${h.updatedAt.toISOString()})${note}`
+      );
+    })
+    .join('\n');
   return untrusted(
     'Knowledge search results',
-    hits
-      .map((h) => {
-        const note = formatKnowledgeCitationNote(h, staleDays, lowRatedIds.has(h.id), maxAgeDays);
-        return (
-          `#${h.id} (${(h.similarity * 100).toFixed(0)}% match) ${h.title ? `${h.title}: ` : ''}` +
-          `${h.content.slice(0, 200)} (updated ${h.updatedAt.toISOString()})${note}`
-        );
-      })
-      .join('\n'),
+    hasConflict ? `${body}\n\n(${notice('knowledgeConflictCaveat', {})})` : body,
   );
 }
 
