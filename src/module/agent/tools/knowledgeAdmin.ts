@@ -9,6 +9,7 @@ import {
   declineKnowledgeCandidate,
   deleteKnowledge,
   getKnowledgeContentById,
+  hasConflictAmongIds,
   type KnowledgeCandidate,
   type KnowledgeDuplicateMatch,
   listAnswerFeedback,
@@ -383,7 +384,19 @@ export const knowledgeAdminTools = [
               return new Set<number>();
             })
           : new Set<number>();
-      return text(formatFoundKnowledge(hits, undefined, undefined, lowRatedIds));
+      // Conflict caveat (issue #1368, #1336's own deferred follow-up) — same
+      // gate/query/fail-safe shape as knowledgeMember.ts's three existing
+      // call sites, computed over the hit set actually returned (post
+      // lexical-fallback if triggered).
+      const ids = hits.map((h) => h.id);
+      const hasConflict =
+        ids.length >= 2
+          ? await hasConflictAmongIds(ids).catch((err) => {
+              logger.warn({ err }, 'Knowledge conflict check failed; omitting the conflict note');
+              return false;
+            })
+          : false;
+      return text(formatFoundKnowledge(hits, undefined, undefined, lowRatedIds, hasConflict));
     },
   }),
 
