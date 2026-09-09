@@ -18,6 +18,22 @@ updates:
     directory: /
     schedule:
       interval: monthly
+    ignore:
+      # TypeScript majors are held back deliberately, not neglected: the whole
+      # lint stack runs through typescript-eslint, whose peer range is still
+      # `typescript >=4.8.4 <6.1.0` as of 8.70.0 (the current latest). A group
+      # PR that bumps typescript to 7.x therefore cannot install at all, and
+      # because Dependabot groups every npm update into ONE PR, that single
+      # unsatisfiable dep took the other ten bumps down with it (issue #1283 —
+      # the PR sat red for weeks with nothing an agent or a human could do to
+      # it short of splitting it by hand).
+      #
+      # Drop this entry the moment typescript-eslint's peer range admits the
+      # next major; check with
+      #   npm view typescript-eslint peerDependencies.typescript
+      # Minor/patch TypeScript updates are unaffected and still land here.
+      - dependency-name: typescript
+        update-types: ['version-update:semver-major']
     groups:
       npm-all:
         patterns:
