@@ -50,8 +50,14 @@ const LOOPS: Array<{ file: string; label: string }> = [
  * itself.
  */
 function escalationProse(file: string): string {
+  // `\s{12,}`, not `\s{10,}`: sibling keys in the same `with:` block sit at
+  // exactly 10 spaces, so a 10-space continuation swept straight past this
+  // field's value into `summary-title:` and whatever followed it. Harmless
+  // with today's content, but it made the guard's real scope something other
+  // than what this docstring claims, and a future edit could have tripped it
+  // on a neighbouring field's unrelated wording.
   const bodies = [
-    ...read(file).matchAll(/^\s*(?:escalation-body|no-summary-note):[^\n]*\n((?:\s{10,}[^\n]*\n)+)/gm),
+    ...read(file).matchAll(/^\s*(?:escalation-body|no-summary-note):[^\n]*\n((?:\s{12,}[^\n]*\n)+)/gm),
   ]
     .map((m) => m[1] ?? '')
     .join('\n');
@@ -148,6 +154,21 @@ const STALLS: Array<{ name: string; summary: string }> = [
   },
 ];
 
+/**
+ * Refusals the FIRST version of the detector wrongly flagged. Its second arm
+ * was `once (the|that|this)[^.]{0,40}\b(finish|complet|return|land)` with no
+ * word boundary on the pronouns, so "the" matched as a substring of "they" —
+ * which is also the only reason the check-back fixture above passed. It fired
+ * on all three of these, i.e. it told a maintainer that a fully-reasoned stop
+ * meant "nobody has looked yet". Kept as named cases rather than folded into
+ * REAL_STOPS so a future rewrite of the pattern has to answer for them.
+ */
+const NEAR_MISS_STOPS: string[] = [
+  'I could not finish this once the CI logs landed',
+  'Once these tests land I expect green, but the failure is real and I did not push',
+  'The reviewer asked that this land in a separate PR, so I did not finish here',
+];
+
 test('SECURITY: the escalation flags every known stall shape', { skip }, () => {
   for (const c of STALLS) {
     assert.equal(
@@ -171,7 +192,7 @@ const REAL_STOPS: string[] = [
 ];
 
 test('SECURITY: a principled refusal is never mislabelled as a stall', { skip }, () => {
-  for (const summary of REAL_STOPS) {
+  for (const summary of [...REAL_STOPS, ...NEAR_MISS_STOPS]) {
     assert.equal(matchesStall(summary), false, `wrongly flagged as a stall: ${summary}`);
   }
 });
