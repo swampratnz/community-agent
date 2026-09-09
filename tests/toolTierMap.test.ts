@@ -57,6 +57,7 @@ const EXPECTED: Record<string, readonly string[]> = {
     'project_note',
     'project_recall',
     'rate_answer',
+    'rate_connection_outcome',
     'react_to_message',
     'remember_search',
     'report_content',

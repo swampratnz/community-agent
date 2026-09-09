@@ -47,6 +47,7 @@ import {
   untrusted,
 } from './helpers.js';
 import { notifyInterestsRemoved, notifyProjectRemoved } from './notify.js';
+import { rateConnectionOutcome, recordConnectionOutcome } from '../../storage/connectionOutcomes.js';
 import { recordFindHelperRequest } from '../../storage/findHelperRequests.js';
 import { setInterestMatchAlertOptIn } from '../../storage/interestMatchAlertOptIns.js';
 import { notice } from '../../strings/notices.js';
@@ -442,6 +443,43 @@ export function formatRequestProjectConnectionText(
   }
 }
 
+/**
+ * `rate_connection_outcome`'s three caller-facing reply outcomes (issue
+ * #1354) — the write-once rating the daily outcome follow-up DM
+ * (`connectionOutcomeFollowup.ts`) solicits. `'not_found'` is deliberately
+ * identical whether the id is unknown OR belongs to a different member
+ * (issue #1354 SECURITY criterion 4) — `rateConnectionOutcome`'s own doc
+ * comment (`connectionOutcomes.ts`) covers why. `'already_recorded'` is a
+ * distinct, more specific reply than `'not_found'` because it can only ever
+ * describe the CALLER's own row (the underlying query is scoped to their own
+ * identity either way), so it discloses nothing about anyone else's data.
+ */
+export function formatRateConnectionOutcomeText(
+  outcome: 'recorded' | 'already_recorded' | 'not_found',
+  helpful: boolean,
+  language: LanguagePreference,
+): string {
+  const mi = language === 'mi';
+  switch (outcome) {
+    case 'recorded':
+      return helpful
+        ? mi
+          ? 'Mauruuru — he pai te āwhina o taua hononga!'
+          : 'Thanks — glad that connection helped!'
+        : mi
+          ? 'Mauruuru mō te whakahoki kōrero, kua tuhia.'
+          : 'Thanks for the feedback, noted.';
+    case 'already_recorded':
+      return mi
+        ? 'Kua tuhia kētia tō whakautu mō taua hononga.'
+        : "You've already recorded a response for that one.";
+    case 'not_found':
+      return mi
+        ? 'Kāore i kitea tētahi hononga e taea ana e koe te arotake, e whai ana i taua tuhinga (id).'
+        : "I can't find a connection like that for you to rate.";
+  }
+}
+
 export const socialTools = [
   // Self-scoped write (one row per identity, upsert/clear semantics),
   // instantly reversible ('clear') like set_response_style — no CONFIRM gate.
@@ -758,6 +796,14 @@ export const socialTools = [
         // receipt — never the matched candidate's identity, preserving
         // find_helper's non-disclosure guarantee above.
         await recordFindHelperRequest(caller.platform, caller.userId, args.topic, true);
+        // Issue #1354: a real handoff happened — log it for the daily
+        // outcome follow-up (connectionOutcomeFollowup.ts), which later DMs
+        // the CALLER ONLY asking whether it helped. Never the matched
+        // candidate's identity, same non-disclosure guarantee as the receipt
+        // just above; only reached on this matched branch, never on the
+        // disabled/dailyCap/noMatch early-returns (issue #1354 SECURITY
+        // criterion 1).
+        await recordConnectionOutcome('find_helper', caller.platform, caller.userId);
         return text(formatFindHelperText('matched', FIND_HELPER_REQUESTER_DAILY_LIMIT, language));
       }
       // Issue #1178: no live person matched — before giving up, check
@@ -1157,8 +1203,60 @@ export const socialTools = [
         }
         logger.warn({ err, userId: hashId(project.userId) }, 'request_project_connection DM failed');
       });
+      // Issue #1354: a real handoff happened — log it for the daily outcome
+      // follow-up (connectionOutcomeFollowup.ts), which later DMs the
+      // CALLER ONLY asking whether it helped. Never the project owner's
+      // identity, same non-disclosure guarantee this tool's own DM above
+      // preserves; only reached on this sent branch, never on the
+      // dailyCap/notFound/notSeeking/selfMatch/ownerUnreachable/ownerCapped
+      // early-returns above (issue #1354 SECURITY criterion 1).
+      await recordConnectionOutcome('project_connection', caller.platform, caller.userId);
       const language = await getLanguagePreference(caller.platform, caller.userId);
       return text(formatRequestProjectConnectionText('sent', language));
+    },
+  }),
+
+  // Write-once rating of a real find_helper/request_project_connection
+  // handoff (issue #1354) — the requester-only outcome signal
+  // connectionOutcomeFollowup.ts's daily DM solicits, the connection-quality
+  // analogue of rate_answer's own answer-quality rating. Self-scoped: every
+  // read/write in rateConnectionOutcome (connectionOutcomes.ts) is filtered
+  // to the caller's own identity, so this can never touch another member's
+  // row. No CONFIRM gate — self-scoped and instantly informational, same
+  // posture as rate_answer/set_response_style. No explicit assertAtLeast
+  // re-check (unlike set_my_interests/share_project above): this never
+  // reaches another member's data or DM, the same "self-scoped, no re-check"
+  // posture rate_answer itself uses (feedback.ts).
+  defineTool({
+    name: 'rate_connection_outcome',
+    description:
+      'Record whether a find_helper or request_project_connection connection the caller made actually ' +
+      "helped. Call this ONLY in response to the bot's own follow-up DM asking about a specific connection " +
+      '(which names the outcome id to use) — never inferred from unrelated chat about whether someone was ' +
+      'helpful. Can only ever affect a row the caller themselves owns, and only once — a second call for ' +
+      'the same id is a no-op that reports it was already recorded.',
+    minTier: 'member',
+    readOnlyHint: false,
+    schema: {
+      outcomeId: z
+        .number()
+        .int()
+        .positive()
+        .describe("The connection outcome id named in the bot's own follow-up DM."),
+      helpful: z.boolean().describe('true if the connection ended up helping, false if it did not'),
+    },
+    handler: async (args, { caller }) => {
+      const result = await rateConnectionOutcome(
+        args.outcomeId,
+        caller.platform,
+        caller.userId,
+        args.helpful,
+      );
+      const language = await getLanguagePreference(caller.platform, caller.userId);
+      if (result === 'not_found' || result === 'already_recorded') {
+        return text(formatRateConnectionOutcomeText(result, args.helpful, language), true);
+      }
+      return text(formatRateConnectionOutcomeText(result, args.helpful, language));
     },
   }),
 

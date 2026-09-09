@@ -7070,8 +7070,9 @@ test('community_info reply stays concise, not a wall of text (issue #92)', async
   // (folded into the existing appeal_moderation line, not a new one), and
   // again for issue #1287's knowledge_for_me line, and again for issue
   // #1344's withdraw_project_note clause (folded into the existing project
-  // line, not a new one).
-  assert.ok(replyText.length < 2510, `reply should stay short; was ${replyText.length} chars`);
+  // line, not a new one), and again for issue #1354's rate_connection_outcome
+  // line.
+  assert.ok(replyText.length < 2660, `reply should stay short; was ${replyText.length} chars`);
 });
 
 test('community_info appends the full ADMIN_CAPABILITIES_TEXT rundown for admin/super_admin callers, on top of the member content (issue #367)', async () => {
@@ -7202,6 +7203,10 @@ const MEMBER_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__set_interest_match_alerts', /other members' requests or matches/i],
   ['mcp__community__find_helper', /can someone help with/i],
   ['mcp__community__request_project_connection', /looking for collaborators/i],
+  [
+    'mcp__community__rate_connection_outcome',
+    /whether a find_helper or request_project_connection connection actually helped/i,
+  ],
   ['mcp__community__community_digest', /community digest on demand/i],
 ]);
 // community_info is self-referential — it describes every OTHER member
@@ -7285,6 +7290,8 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
     'who\'s into RAG", "who\'s working on Discord bots?")\n' +
     '- Ask if someone in the community can help with something you\'re stuck on ("can someone help with ' +
     'X?"), or opt in/out of being notified for other members\' requests or matches\n' +
+    '- Tell me whether a find_helper or request_project_connection connection actually helped, when I ' +
+    'follow up to ask\n' +
     '- Pull the community digest on demand\n' +
     "- Record decisions in a project you're part of and search that project's shared memory later, or " +
     'list your projects, or withdraw a project note you recorded by mistake\n' +
@@ -7304,7 +7311,8 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
       'to the suggest_improvement line, issue #1278 added the withdraw_appeal clause to the ' +
       'appeal_moderation line, issue #1287 added the knowledge_for_me line, issue #1344 added the ' +
       'withdraw_project_note clause to the project_note/project_recall/project_list line, issue #1332 ' +
-      'added the "or matches" clause to the find_helper line; otherwise unchanged since #367)',
+      'added the "or matches" clause to the find_helper line, issue #1354 added the ' +
+      'rate_connection_outcome line; otherwise unchanged since #367)',
   );
 });
 
@@ -7479,8 +7487,10 @@ test('community_info: admin reply stays under a hard char cap, not a wall of tex
   // member segment, so a member-segment addition grows this reply too);
   // bumped once more alongside the member cap for issue #1287's
   // knowledge_for_me line (same reason); bumped once more alongside the
-  // member cap for issue #1344's withdraw_project_note clause (same reason).
-  assert.ok(adminReply.length < 5060, `admin reply should stay short; was ${adminReply.length} chars`);
+  // member cap for issue #1344's withdraw_project_note clause (same reason);
+  // bumped once more alongside the member cap for issue #1354's
+  // rate_connection_outcome line (same reason).
+  assert.ok(adminReply.length < 5210, `admin reply should stay short; was ${adminReply.length} chars`);
 });
 
 test('SECURITY: community_info member-tier and guest-tier replies never name an admin/super_admin-only tool or contain any ADMIN_CAPABILITIES_TEXT-unique line (issue #367, issue #311)', async () => {
@@ -7632,9 +7642,10 @@ test('community_info: super_admin reply stays under a hard char cap, not a wall 
   // more alongside the member cap for issue #1278's withdraw_appeal clause;
   // bumped once more alongside the member cap for issue #1287's
   // knowledge_for_me line; bumped once more alongside the member cap for
-  // issue #1344's withdraw_project_note clause.
+  // issue #1344's withdraw_project_note clause; bumped once more alongside
+  // the member cap for issue #1354's rate_connection_outcome line.
   assert.ok(
-    superAdminReply.length < 5710,
+    superAdminReply.length < 5860,
     `super_admin reply should stay short; was ${superAdminReply.length} chars`,
   );
 });
@@ -30086,6 +30097,27 @@ test('set_helper_availability / find_helper return a friendly disabled message (
     'disabled feature must return a friendly message',
   );
 });
+
+test(
+  "SECURITY: find_helper's disabled branch creates zero connection_outcomes rows (issue #1354 acceptance criterion 1)",
+  { skip },
+  async () => {
+    assert.equal(
+      config.findHelper.enabled,
+      false,
+      'precondition: find-helper feature is off in this test process',
+    );
+    const findTool = findHelperHandlerDisabled({});
+    const result = await findTool.handler({ topic: 'irrelevant, refused before any matching' });
+    assert.equal(result.isError, true);
+
+    const { rows } = await pool.query(
+      `SELECT 1 FROM connection_outcomes WHERE requester_platform = 'discord' AND requester_user_id = $1`,
+      ['find-helper-disabled-caller'],
+    );
+    assert.equal(rows.length, 0, 'the disabled branch must never write a connection_outcomes row');
+  },
+);
 
 // set_interest_match_alerts tool handler (issue #1332). The job half
 // (interestMatchAlert.ts) is covered by tests/interestMatchAlert.test.ts; this

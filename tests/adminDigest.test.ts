@@ -9847,3 +9847,76 @@ test(
     }
   },
 );
+
+// --- issue #1354: the connection-outcome aggregate, additive to the flywheel line ---
+
+// Every signal through onboardingQueueAgeDays (the pre-#1354 last trailing
+// param) zero/null. connectionOutcomeTotalCount/connectionOutcomeHelpfulCount/
+// connectionOutcomeRespondedCount are appended by each test below.
+const CONNECTION_OUTCOME_ZERO_PREFIX = [...ACCESS_REQUEST_RESOLUTION_ZERO_PREFIX, 0, 0, null, null] as const;
+
+test('SECURITY: buildAdminDigestMessage: omitting the three new connectionOutcome* params is byte-identical to the pre-#1354 quiet case (issue #1354 acceptance criterion 5)', () => {
+  const withoutNewParams = buildAdminDigestMessage(...CONNECTION_OUTCOME_ZERO_PREFIX);
+  const withExplicitZeros = buildAdminDigestMessage(...CONNECTION_OUTCOME_ZERO_PREFIX, 0, 0, 0);
+  assert.equal(
+    withoutNewParams,
+    withExplicitZeros,
+    'a caller that has not wired the new trailing params through renders byte-identical output',
+  );
+  assert.equal(
+    withExplicitZeros,
+    null,
+    'every other signal already zero, and zero responses, is a quiet week',
+  );
+});
+
+test('buildAdminDigestMessage: a nonzero flywheel sub-signal with zero connection-outcome responses renders the flywheel line unchanged and no connection-outcome line (issue #1354 acceptance criterion 5)', () => {
+  // Reuses the exact PROJECT_CONNECTIONS_ZERO_PREFIX call the pre-#1354
+  // flywheel tests already use (projectConnectionsCount = 5) — every
+  // trailing param through connectionOutcomeRespondedCount is simply
+  // omitted, relying on defaults, the same "byte-identical to omitting"
+  // contract every signal in this file already relies on.
+  const flywheelOnly = buildAdminDigestMessage(...PROJECT_CONNECTIONS_ZERO_PREFIX, 5);
+  assert.ok(flywheelOnly, 'a nonzero projectConnectionsCount alone still produces a DM');
+  assert.match(
+    flywheelOnly,
+    /🌱 0 knowledge candidate\(s\) accepted, 0 project\(s\) shared, 0 member-to-member connection\(s\) made, 5 project connection\(s\) requested this week — the community is contributing back\./,
+    'the flywheel line renders exactly as it did before this issue',
+  );
+  assert.ok(
+    !flywheelOnly.includes('🤝📊'),
+    'zero connection-outcome responses — the new line must not render alongside the flywheel line',
+  );
+});
+
+test('buildAdminDigestMessage: the connection-outcome line renders ONLY when connectionOutcomeRespondedCount > 0, in the documented shape (issue #1354 acceptance criterion 5)', () => {
+  const withResponses = buildAdminDigestMessage(...CONNECTION_OUTCOME_ZERO_PREFIX, 3, 2, 3);
+  assert.ok(withResponses, 'a nonzero connectionOutcomeRespondedCount alone still produces a DM');
+  const line = withResponses.split('\n').find((l) => l.includes('🤝📊'));
+  assert.equal(
+    line,
+    '🤝📊 Of 3 connection(s) made, 2 reported helpful (of 3 who responded).',
+    'the connection-outcome line renders with the three counts in the documented shape',
+  );
+
+  const noResponses = buildAdminDigestMessage(...CONNECTION_OUTCOME_ZERO_PREFIX, 3, 2, 0);
+  assert.equal(
+    noResponses,
+    null,
+    'a nonzero total/helpful count with zero RESPONSES is still a quiet week — responded is the gate, not total',
+  );
+});
+
+test('SECURITY: the connection-outcome line never carries a requester/helper/owner identifier or topic/project content — only the three integer counts and fixed template text (issue #1354)', () => {
+  const secretTopic = 'a very identifiable find_helper topic that must never leak';
+  const secretUserId = 'requester-user-id-135792468';
+
+  const message = buildAdminDigestMessage(...CONNECTION_OUTCOME_ZERO_PREFIX, 4, 1, 4);
+  assert.ok(message);
+  const line = message.split('\n').find((l) => l.includes('🤝📊'));
+  assert.ok(line);
+  for (const secret of [secretTopic, secretUserId]) {
+    assert.ok(!line.includes(secret), `the connection-outcome line must never contain: ${secret}`);
+  }
+  assert.match(line, /^🤝📊 Of \d+ connection\(s\) made, \d+ reported helpful \(of \d+ who responded\)\.$/);
+});

@@ -592,6 +592,33 @@ const NOTICE_ENTRIES = {
       plain: 'You have new matches on the community. Run who_is_into to see who.',
     },
   },
+  /**
+   * `connectionOutcomeFollowup.ts`'s daily follow-up DM (issue #1354) — sent
+   * to the REQUESTER only (never the matched helper/project owner, preserving
+   * find_helper's/request_project_connection's own non-disclosure guarantees)
+   * a fixed window after a real `find_helper`/`request_project_connection`
+   * handoff, asking whether it helped. `id` is the caller's own
+   * `connection_outcomes` row id — not sensitive (an opaque per-row counter,
+   * never derived from or disclosing anything about the matched party), and
+   * it is the ONLY way `rate_connection_outcome` can identify which row to
+   * write, so it is named directly in the DM rather than left for the caller
+   * to guess.
+   */
+  connectionOutcomeFollowupMessage: {
+    base: (id: number) =>
+      `Did the connection from your recent find_helper/request_project_connection ask actually help? Reply ` +
+      `and I'll record it with rate_connection_outcome (outcome id ${id}).`,
+    language: {
+      mi: (id: number) =>
+        `I āwhina te hononga i puta mai i tō tono find_helper/request_project_connection tata nei? ` +
+        `Whakahokia mai, ka tuhia e ahau mā te rate_connection_outcome (id o te putanga ${id}).`,
+    },
+    style: {
+      plain: (id: number) =>
+        `Did the connection from your recent find_helper/request_project_connection ask help? Reply and ` +
+        `I'll record it with rate_connection_outcome (outcome id ${id}).`,
+    },
+  },
   // --- community_info member capabilities rundown (agent/tools/info.ts) ---
   /**
    * The member-tier segment of `community_info`/`/help`/`!help`'s capability
@@ -638,6 +665,8 @@ const NOTICE_ENTRIES = {
       'who\'s into RAG", "who\'s working on Discord bots?")\n' +
       '- Ask if someone in the community can help with something you\'re stuck on ("can someone help with ' +
       'X?"), or opt in/out of being notified for other members\' requests or matches\n' +
+      '- Tell me whether a find_helper or request_project_connection connection actually helped, when I ' +
+      'follow up to ask\n' +
       '- Pull the community digest on demand\n' +
       "- Record decisions in a project you're part of and search that project's shared memory later, or " +
       'list your projects, or withdraw a project note you recorded by mistake\n' +
@@ -682,6 +711,8 @@ const NOTICE_ENTRIES = {
         '- Pātai mehemea ka taea e tētahi o te hapori te āwhina i a koe ki tētahi mea e raru ana koe ("can ' +
         'someone help with X?"), whakauru rānei/waiho rānei kia kaua e whakamōhiotia mō ngā tono a ētahi atu ' +
         'mema, mō ngā taunekeneke hou hoki mō ō hiahia\n' +
+        '- Kōrero mai mehemea i āwhina pū tētahi hononga find_helper, request_project_connection rānei, ina ' +
+        'whai atu ahau ki te pātai\n' +
         '- Tiki i te whakarāpopototanga hapori ā-tono\n' +
         '- Tuhi whakatau i roto i tētahi kaupapa e uru ana koe, rapu anō i ngā mahara tiritahi o taua ' +
         'kaupapa ā muri ake, rārangi rānei i ō kaupapa, tango rānei i tētahi tuhinga kaupapa i tukuna ' +

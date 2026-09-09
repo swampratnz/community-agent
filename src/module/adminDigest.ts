@@ -51,6 +51,7 @@ import {
   type QuestionCluster,
 } from '@swampratnz/agent-base/storage/repository.js';
 import { listAccessRequestResolutionsSince } from './storage/accessRequestResolutions.js';
+import { countConnectionOutcomesSince } from './storage/connectionOutcomes.js';
 import type { JobSpec } from '@swampratnz/agent-base/jobs/types.js';
 import type { Platform, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
@@ -1012,6 +1013,27 @@ export function buildAdminDigestMessage(
   // pre-#1330 form. Bare integer only, same privacy convention as every
   // signal above.
   onboardingQueueAgeDays: number | null = null,
+  // Connection-outcome aggregate from `connection_outcomes` (issue #1354) —
+  // the still-missing OUTCOME signal for find_helper/request_project_connection's
+  // already-counted ACTIVITY (helperMatchesCount/projectConnectionsCount
+  // above): whether a made connection actually helped, not just that a DM
+  // went out. From `countConnectionOutcomesSince`, over the same `since`
+  // window every other rolling-window trend line here uses. Rendered as its
+  // own ADDITIVE line, alongside — never replacing or mutating — the
+  // existing flywheel line above, and ONLY when at least one row has
+  // `responded_at` set; a reporting window with zero responses renders
+  // byte-identical to the pre-#1354 output (pinned by a string-equality
+  // test). Deliberately carries no `trendSuffix`/`currentCounts` entry, for
+  // the identical upstream `ADMIN_DIGEST_SIGNAL_KEYS`-allowlist reason
+  // `responseLatencyCount`'s own doc comment above gives — a new key would
+  // be an agent-base change, out of scope here. Three append-only trailing
+  // params, default 0, so every existing call site is unaffected. Bare
+  // integers only — no requester/helper/owner identifier and no
+  // topic/project content ever reaches the DM, same privacy convention as
+  // helperMatchesCount/projectConnectionsCount.
+  connectionOutcomeTotalCount: number = 0,
+  connectionOutcomeHelpfulCount: number = 0,
+  connectionOutcomeRespondedCount: number = 0,
 ): string | null {
   if (
     clusters.length === 0 &&
@@ -1051,7 +1073,8 @@ export function buildAdminDigestMessage(
     autoAnswerLatencyCount === 0 &&
     mentionLatencyCount === 0 &&
     approvedAccessRequestsCount === 0 &&
-    declinedAccessRequestsCount === 0
+    declinedAccessRequestsCount === 0 &&
+    connectionOutcomeRespondedCount === 0
   )
     return null;
 
@@ -1463,6 +1486,17 @@ export function buildAdminDigestMessage(
         ' this week — the community is contributing back.',
     );
   }
+  if (connectionOutcomeRespondedCount > 0) {
+    // Additive to the flywheel line above (issue #1354) — that line's own
+    // gate/text is unchanged, so a zero-response window renders
+    // byte-identical to before this issue. Bare integers only — no
+    // requester/helper/owner identifier, no topic/project content ever
+    // reaches the DM, same privacy convention as the line above.
+    sections.push(
+      `🤝📊 Of ${connectionOutcomeTotalCount} connection(s) made, ${connectionOutcomeHelpfulCount} reported ` +
+        `helpful (of ${connectionOutcomeRespondedCount} who responded).`,
+    );
+  }
   return sections.join('\n');
 }
 
@@ -1543,6 +1577,7 @@ export async function buildAdminDigestForAdmin(
     autoAnswerLatencyStats,
     mentionLatencyStats,
     accessRequestBreakdown,
+    connectionOutcomeStats,
   ] = await Promise.all([
     recentQuestionClusters(scope, FRESHNESS_DAYS, CLUSTER_LIMIT),
     countAccessRequests(),
@@ -1719,6 +1754,14 @@ export async function buildAdminDigestForAdmin(
     // pendingAccessRequests above — access_request_resolutions carries no
     // conversation/channel column.
     accessRequestResolutionBreakdown(FRESHNESS_DAYS),
+    // The connection-outcome aggregate (issue #1354) — over the same `since`
+    // window as every other rolling-window trend line here. Guild-wide,
+    // unscoped like countHelperMatchesSince/countProjectConnectionsSince
+    // (connection_outcomes has no conversation/channel column), and called
+    // unconditionally like countProjectConnectionsSince: outcomes come from
+    // BOTH source tools, and only one of the two (find_helper) has a feature
+    // flag, so there is no single flag to gate this on.
+    countConnectionOutcomesSince(since),
   ]);
   // Onboarding-queue count only means anything in 'gated' mode — an
   // 'open'-mode not_members row already has full member-tool access
@@ -1815,6 +1858,11 @@ export async function buildAdminDigestForAdmin(
     // rendered line still fire, but render bare with no persisted `previous`
     // entry — the same "renders bare" first-ever-digest behaviour every
     // excluded signal above has.
+    // `connectionOutcomeTotalCount`/`connectionOutcomeHelpfulCount`/
+    // `connectionOutcomeRespondedCount` (issue #1354) are excluded for the
+    // same upstream-allowlist reason as `responseLatencyCount` directly
+    // above, PLUS the rendered line calls no `trendSuffix` at all — see the
+    // params' own doc comment on `buildAdminDigestMessage`.
   };
   // Only added when there's at least one auto-answer rating this week (issue
   // #629) — mirrors the render block's own `autoAnswerHelpful +
@@ -1895,6 +1943,9 @@ export async function buildAdminDigestForAdmin(
     accessRequestBreakdown.declined,
     accessRequestBreakdown.medianResolutionHours,
     onboardingQueueAgeDays,
+    connectionOutcomeStats.total,
+    connectionOutcomeStats.helpful,
+    connectionOutcomeStats.responded,
   );
   return { message, currentCounts };
 }

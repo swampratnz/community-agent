@@ -28,6 +28,21 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-09-09
 
 ### Added
+- **`find_helper`/`request_project_connection` connections now get an outcome
+  signal, not just an activity count.** (#1354) Both member-to-member
+  handoffs were already counted ("N connections made this week" in
+  `admin_digest`/`review_queue`) and receipted to the requester
+  (`my_submissions`), but nothing ever asked whether a connection actually
+  helped — a mechanism could be firing DMs that go nowhere and the weekly
+  count would look identical either way. A few days after a real handoff, the
+  bot now DMs the requester only, asking whether it helped; replying (or
+  calling the new `rate_connection_outcome`) records a one-time
+  helpful/not-helpful rating. `admin_digest`/`review_queue` gains one
+  additive line — "of N connections made, M reported helpful (of K who
+  responded)" — alongside, never replacing, the existing count, and only
+  once at least one member has responded. The matched helper/project owner
+  is never contacted or identified by this follow-up, preserving both tools'
+  existing non-disclosure guarantees.
 - **`withdraw_project_note`: fix a mistake in a team project's shared
   memory.** (#1344) `project_note` had no correction path — no edit, no
   delete, no withdraw — so a typo, a wrong date, or a note filed in the
