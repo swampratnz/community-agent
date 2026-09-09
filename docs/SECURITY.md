@@ -4642,11 +4642,20 @@ number could reach an unrelated person).
       Markers count only from `github-actions`/`github-actions[bot]` (both `gh`
       renderings — GraphQL and REST differ, and matching one makes the gate
       silently match nothing). `claude[bot]` is excluded **on purpose**: every
-      real marker is written by a deterministic `GITHUB_TOKEN` step, while the
-      revise agent uniquely holds `Bash(gh pr comment:*)`, runs under that
-      identity, and reads prompt-injectable PR content — so admitting it would
-      let an injected agent fabricate rows, which is worse than no gate because
-      the gate implies the rows are trustworthy. Pinned by `SECURITY:` tests
+      real marker is written by a deterministic `GITHUB_TOKEN` step, so nothing
+      legitimate is lost by excluding the identity the prompt-injectable agents
+      run under — and admitting it would let an injected agent fabricate rows,
+      which is worse than no gate because the gate implies the rows are
+      trustworthy. The exclusion is deliberately NOT contingent on what those
+      agents can currently do: it was first justified by the revise agent
+      uniquely holding `Bash(gh pr comment:*)`, and issue #1305 has since
+      removed that grant from both the revise and build loops (they now write
+      `refusal.md`/`blocker.md` for a deterministic step to post). That makes
+      this belt-and-braces rather than load-bearing today, but it stays — the
+      identity still carries agent-authored text elsewhere (PR bodies via
+      `gh pr create`), and a future grant must not silently re-open what this
+      gate closes. Do not relax it on the grounds that the agents "can no
+      longer comment". Pinned by `SECURITY:` tests
       (issue #750). The workflow itself is read-only (`contents: read`,
       `issues: write`, `pull-requests: read`), never checks out a PR head, and
       runs no PR-controlled code.

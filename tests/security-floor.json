@@ -127,6 +127,7 @@
   "pauseNotice.router.test.ts": 2,
   "personas.test.ts": 1,
   "pipelineOutcomes.test.ts": 2,
+  "pipelineWorkflowAllowlist.test.ts": 3,
   "platformRegistry.test.ts": 3,
   "projectNoteWithdrawal.test.ts": 2,
   "projectScope.test.ts": 16,

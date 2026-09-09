@@ -110,8 +110,10 @@ Create them once: **Actions → "Setup pipeline labels" → Run workflow**, or
   PR via marker comments, then `needs-human` — the revise push re-triggers
   CI and re-review, so the cap is what stops a reviewer-vs-reviser loop. A
   "Needs a human decision" verdict labels `needs-human` directly. Same push
-  guardrails as autofix (`gh` read-only except `gh pr comment` so a
-  principled refusal is explained on the PR). It never opens or merges PRs.
+  guardrails as autofix (`gh` fully read-only; a principled refusal is written
+  to `refusal.md` and posted by a deterministic step, since the `Bash(...)`
+  matcher cannot pin a comment's target number — issue #1305). It never opens
+  or merges PRs.
   Do not misflag its pushes as an ownership violation either.
 - **All three of the above (autofix, conflict-resolver, revise) also carry the
   build worker's deterministic checkpoint step**, for the same reason it was

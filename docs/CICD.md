@@ -120,7 +120,7 @@ the workflow file (a session's `/model` does not affect them):
 |---|---|---|
 | `pipeline-build.yml` | 300 | broad write set (edit, commit, push, `gh pr create`, `npm`) |
 | `pipeline-pr-autofix.yml` | 200 | write set, push pinned to `git push origin HEAD` |
-| `pipeline-pr-revise.yml` | 200 | as autofix, plus `gh pr comment` |
+| `pipeline-pr-revise.yml` | 200 | as autofix (`gh` read-only; refusal via `refusal.md` + deterministic post) |
 | `pipeline-pr-conflict.yml` | 30 (fast path) / 200 | as autofix |
 | `pipeline-pr-review.yml` | 60 | **read-only** — `gh pr diff/view`, Read, Grep, Glob |
 | `changelog-autofill.yml` | 60 | narrow: edit `CHANGELOG.md`, one pinned push, one pinned `gh pr create` |

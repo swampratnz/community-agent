@@ -252,9 +252,10 @@ ownership rules:
   API before checkout. Bounded to 2 attempts per PR via marker comments,
   then it escalates `needs-human`; a "Needs a human decision" verdict labels
   `needs-human` directly from the review workflow. Same push guardrails as
-  autofix (exact `git push origin HEAD`; `gh` read-only except
-  `gh pr comment` for explaining a principled refusal). It never opens or
-  merges PRs.
+  autofix (exact `git push origin HEAD`; `gh` fully read-only — it explains a
+  principled refusal by writing `refusal.md`, which a deterministic step posts,
+  because the `Bash(...)` matcher cannot pin a comment's target number and the
+  grant therefore reached any PR — issue #1305). It never opens or merges PRs.
 - The **build-retry loop** (`pipeline-build-retry.yml`) auto-re-runs a build
   worker run that failed to produce a PR, via `gh run rerun`, bounded by
   `run_attempt` (≤3 total attempts). The build worker escalates `needs-human`
