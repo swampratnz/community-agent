@@ -33,8 +33,9 @@ name: Pipeline PR revise
 #     `needs-human`. The revise push re-triggers CI AND re-review, so without
 #     this cap a reviewer-vs-reviser disagreement would loop forever on the
 #     shared pool.
-#   * Same push discipline as autofix: the agent's `gh` is read-only except
-#     `gh pr comment` (so it can explain a principled refusal), its ONLY push
+#   * Same push discipline as autofix: the agent's `gh` is fully read-only (it
+#     explains a principled refusal by writing `refusal.md`, which a
+#     deterministic step posts — issue #1305), its ONLY push
 #     tool is the EXACT `git push origin HEAD` (no `:*`), the checkout uses
 #     `persist-credentials: false`, and GH_TOKEN is set per-step on the
 #     deterministic steps only. As everywhere else, branch protection on
@@ -292,9 +293,12 @@ jobs:
             4. If a requested change is genuinely wrong, unsafe, or infeasible
                — or needs a `.github/workflows/` change (you cannot push those
                — the token lacks the `workflows` scope) — do NOT force it:
-               post a short `gh pr comment` explaining exactly why, and STOP
-               without committing/pushing. A later step detects "no new
-               commit" and escalates `needs-human` so a maintainer decides.
+               write a short file `refusal.md` in the repo root explaining
+               exactly why, and STOP without committing/pushing. You cannot post
+               the comment yourself; a later deterministic step posts
+               `refusal.md` to this PR for you, detects "no new commit" and
+               escalates `needs-human` so a maintainer decides. `refusal.md` is
+               git-ignored — write it, do not commit it.
 
             EXECUTION MODEL — READ THIS FIRST: this is a SINGLE, non-interactive
             batch run. There is NO wakeup, NO resume, and NO background
@@ -303,21 +307,58 @@ jobs:
             act on its result; NEVER end your turn to "wait" for a test/command
             to finish or in the expectation of being resumed later. Before you
             stop for ANY reason you must have EITHER pushed a revision with
-            `git push origin HEAD`, OR left the `gh pr comment` above explaining
-            why — ending with neither is exactly the opaque failure this loop
-            exists to avoid.
+            `git push origin HEAD`, OR written the `refusal.md` file above
+            explaining why — ending with neither is exactly the opaque failure
+            this loop exists to avoid.
           # Least-privilege tool surface (mirrors pipeline-pr-autofix.yml).
-          # Differences from autofix, both deliberate: `gh pr comment` is
-          # allowed so a principled refusal is explained on the PR rather
-          # than silent (still no merge/close/create/api), and `git rm` is
-          # allowed because addressing a review can require removing a file
-          # (tracked deletions only — still no bare `rm`). The ONLY push
-          # tool remains the EXACT `git push origin HEAD`; the enforceable
-          # main-push stop is branch protection (see header).
+          # `gh` is READ-ONLY here, as in autofix: the agent explains a
+          # principled refusal by writing `refusal.md`, which a deterministic
+          # step posts (issue #1305). It previously held `Bash(gh pr comment:*)`
+          # for that, but the Bash matcher cannot pin a trailing PR number, so
+          # the grant authorised commenting on ANY pr/issue — the same reasoning
+          # changelog-autofill.yml already documents for withholding it. One
+          # deliberate difference from autofix remains: `git rm` is allowed,
+          # because addressing a review can require removing a file (tracked
+          # deletions only — still no bare `rm`). The ONLY push tool remains the
+          # EXACT `git push origin HEAD`; the enforceable main-push stop is
+          # branch protection (see header).
           claude_args: |
             --max-turns 200
             --model sonnet
-            --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(git add:*),Bash(git commit:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git restore:*),Bash(git rm:*),Bash(git fetch origin:*),Bash(git rev-parse:*),Bash(git push origin HEAD),Bash(gh run view:*),Bash(gh pr checks:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(mkdir:*),Bash(mv:*),Bash(cp:*),Bash(cat:*),Bash(ls:*)"
+            --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(git add:*),Bash(git commit:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git restore:*),Bash(git rm:*),Bash(git fetch origin:*),Bash(git rev-parse:*),Bash(git push origin HEAD),Bash(gh run view:*),Bash(gh pr checks:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(mkdir:*),Bash(mv:*),Bash(cp:*),Bash(cat:*),Bash(ls:*)"
+
+      # DETERMINISTIC REFUSAL COMMENT (issue #1305). The agent explains a
+      # principled refusal by writing `refusal.md`; this step posts it. It used
+      # to hold `Bash(gh pr comment:*)` and post directly, but the Bash matcher
+      # cannot pin a trailing PR number, so that grant authorised commenting on
+      # ANY pr/issue under the trusted bot identity — the same reasoning
+      # changelog-autofill.yml already documents for withholding it, and the
+      # same file-signal shape the build worker uses for `needs-human.md`.
+      # Reading a file the agent wrote, rather than letting it choose a target,
+      # makes the destination un-forgeable: $PR_NUMBER is the workflow's own
+      # re-verified value. Runs on EVERY attempt, before the checkpoint, so a
+      # refusal is visible whether or not anything else follows. Never fails the
+      # job — a missing or unpostable note must not mask the verify step's own
+      # escalation.
+      - name: Post the agent's refusal note, if it left one (deterministic)
+        if: always() && steps.mark.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ env.PR_NUMBER }}
+        run: |
+          set -euo pipefail
+          if [ ! -s refusal.md ]; then
+            echo "No refusal.md — nothing to post."
+            exit 0
+          fi
+          echo "Agent left refusal.md — posting it to PR #${PR_NUMBER}."
+          {
+            printf '🤖 The revise worker declined to make a requested change and left an explanation. It did not push a revision.\n\n'
+            printf '> [!WARNING]\n> Written by the revise agent, which reads untrusted PR and review content. Treat as an unverified account of its reasoning, not as evidence.\n\n'
+            printf '<details><summary>Why the agent declined</summary>\n\n'
+            head -c 4000 refusal.md
+            printf '\n\n</details>\n'
+          } | gh pr comment "${PR_NUMBER}" --repo "${{ github.repository }}" --body-file - || true
 
       # DETERMINISTIC CHECKPOINT — the "agent stalled and lost its work" class.
       # The EXECUTION MODEL block above already tells the agent to run every
@@ -368,7 +409,7 @@ jobs:
             ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           summary-title: Revise worker's final summary (what it says stopped it)
           no-summary-note: >-
-            _No agent summary was captured — it ended without pushing **and** without a
-            `gh pr comment`. That usually means a gate it could not make green, a
+            _No agent summary was captured — it ended without pushing **and** without writing
+            `refusal.md`. That usually means a gate it could not make green, a
             `.github/workflows/` change it cannot push, or a disagreement with the review it did not
             voice. Check the run log above._

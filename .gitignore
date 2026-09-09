@@ -56,6 +56,19 @@ models/
 # reasons as handoff.md.
 /needs-human.md
 
+# The two agent-written explanation notes that replaced live `gh` comment
+# grants (issue #1305): `blocker.md` (build worker — a gate it could not get
+# green, still retryable, distinct from the deliberate refusal above) and
+# `refusal.md` (revise worker — a review change it declined). Both agents used
+# to post these themselves, but the `Bash(...)` allowlist matcher cannot pin a
+# trailing issue/PR number, so `Bash(gh issue comment:*)`/`Bash(gh pr
+# comment:*)` authorised commenting on ANY issue or PR under the trusted bot
+# identity. Each is now written as a file and posted by a deterministic step
+# pinned to the workflow's own number. Untracked for the same reasons as
+# handoff.md.
+/blocker.md
+/refusal.md
+
 # OS / editor
 .DS_Store
 *.swp

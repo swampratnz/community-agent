@@ -45,6 +45,7 @@
     "tests/memberDigest.test.ts",
     "tests/memberToolLanguageCoverage.test.ts",
     "tests/noticeDebounce.test.ts",
+    "tests/pipelineWorkflowAllowlist.test.ts",
     "tests/platformRegistry.test.ts",
     "tests/projectNoteWithdrawal.test.ts",
     "tests/projectScope.test.ts",
