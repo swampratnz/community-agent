@@ -32,7 +32,8 @@ export const COMMUNITY_SCHEMA_FRAGMENTS = [
   '84-find-helper-requests.sql',
   '85-project-note-records.sql',
   '86-interest-match-alert-optins.sql',
-  '87-project-note-previews.sql',
+  '87-human-help-request-log.sql',
+  '88-project-note-previews.sql',
 ] as const;
 
 const schemaDir = dirname(fileURLToPath(import.meta.url));
