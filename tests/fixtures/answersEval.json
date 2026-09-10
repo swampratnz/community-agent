@@ -1,5 +1,5 @@
 {
-  "_comment": "Answer-quality golden set (issue #779, docs/CAPABILITY-IDEAS.md §F1). Unlike tests/fixtures/knowledgeEval.json (retrieval-only), scripts/eval-answers.ts runs each `question` through the REAL runAgentTurn pipeline and grades the model's REPLY, not just which entry was retrieved. Questions are paraphrases of their target knowledgeEntries' content, never verbatim quotes, per the same convention knowledgeEval.json documents. Each case's mustContain names a specific, hard-to-paraphrase-away fact fragment (a number, a proper noun, a channel name) that only appears in ITS target entry, so a grounded reply passes and a hallucinated or wrong-entry reply fails; mustNotContain names a plausible wrong answer (usually a conflicting number) that would indicate the model answered from a different entry or guessed. This file is never read by `npm test`/CI — only by the off-CI scripts/eval-answers.ts, per tests/evalAnswersOffCi.test.ts.",
+  "_comment": "Answer-quality golden set (issue #779, docs/CAPABILITY-IDEAS.md §F1; expectedCitedUrl added by issue #1381). Unlike tests/fixtures/knowledgeEval.json (retrieval-only), scripts/eval-answers.ts runs each `question` through the REAL runAgentTurn pipeline and grades the model's REPLY, not just which entry was retrieved. Questions are paraphrases of their target knowledgeEntries' content, never verbatim quotes, per the same convention knowledgeEval.json documents. Each case's mustContain names a specific, hard-to-paraphrase-away fact fragment (a number, a proper noun, a channel name) that only appears in ITS target entry, so a grounded reply passes and a hallucinated or wrong-entry reply fails; mustNotContain names a plausible wrong answer (usually a conflicting number) that would indicate the model answered from a different entry or guessed. expectedCitedUrl, when set, is the ONLY URL a reply may cite (checked via scripts/eval-answers.ts's checkCitedUrls); when omitted, ANY URL in the reply is a failure, since nothing in that case's target entry is legitimately citable. This file is never read by `npm test`/CI — only by the off-CI scripts/eval-answers.ts, per tests/evalAnswersOffCi.test.ts.",
   "knowledgeEntries": [
     {
       "title": "Community office hours",
@@ -177,7 +177,13 @@
         "months ago",
         "year ago",
         "years ago"
-      ]
+      ],
+      "expectedCitedUrl": "https://github.com/swampratnz/community-agent/issues"
+    },
+    {
+      "question": "what time and channel should I turn up to for a live Q&A with the maintainer",
+      "mustContain": ["Wednesday", "office-hours"],
+      "mustNotContain": ["Tuesday", "Thursday"]
     },
     {
       "question": "is it true the bot might get voice channel support at some point",
