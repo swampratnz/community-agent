@@ -33893,6 +33893,224 @@ test(
   },
 );
 
+// list_answer_feedback oldestFirst (issue #1379) — mirrors list_member_warnings'
+// oldestFirst (issue #1371, moderation.ts): agent-base's listAnswerFeedback has
+// no ordering parameter, so this is implemented module-side as a single
+// bounded fetch + JS sort, using the row's own createdAt.
+test(
+  'list_answer_feedback: oldestFirst orders by createdAt ascending, sliced to limit ?? 50; omitted/false ' +
+    'stays byte-identical to the default newest-first order (issue #1379 acceptance criterion 1, 3)',
+  { skip },
+  async () => {
+    const admin = `${RUN}-list-answer-feedback-oldestfirst-admin`;
+    const conversationId = `${RUN}-list-answer-feedback-oldestfirst-convo`;
+    const olderUser = `${RUN}-list-answer-feedback-oldestfirst-older`;
+    const middleUser = `${RUN}-list-answer-feedback-oldestfirst-middle`;
+    const newerUser = `${RUN}-list-answer-feedback-oldestfirst-newer`;
+
+    for (const [userId, label] of [
+      [olderUser, 'older'],
+      [middleUser, 'middle'],
+      [newerUser, 'newer'],
+    ] as const) {
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: `the ${label} answer text`,
+        meta: { replyToUserId: userId },
+      });
+      const result = await rateAnswerHandler(userId, conversationId).handler({ helpful: true });
+      assert.notEqual(result.isError, true);
+    }
+    await pool.query(`UPDATE answer_feedback SET created_at = now() - interval '3 days' WHERE user_id = $1`, [
+      olderUser,
+    ]);
+    await pool.query(`UPDATE answer_feedback SET created_at = now() - interval '2 days' WHERE user_id = $1`, [
+      middleUser,
+    ]);
+    await pool.query(`UPDATE answer_feedback SET created_at = now() - interval '1 days' WHERE user_id = $1`, [
+      newerUser,
+    ]);
+
+    try {
+      const defaultOrder = await listAnswerFeedbackHandler('admin', admin, conversationId).handler({});
+      const defaultText = defaultOrder.content[0]?.text ?? '';
+      assert.ok(
+        defaultText.indexOf('the newer answer text') < defaultText.indexOf('the older answer text'),
+        'default (no oldestFirst) lists the newest rating before the oldest one, unchanged from before this ' +
+          'issue',
+      );
+      const explicitFalse = await listAnswerFeedbackHandler('admin', admin, conversationId).handler({
+        oldestFirst: false,
+      });
+      assert.equal(
+        explicitFalse.content[0]?.text,
+        defaultText,
+        'oldestFirst: false must render byte-identical to the omitted-field default',
+      );
+
+      const oldestFirstOrder = await listAnswerFeedbackHandler('admin', admin, conversationId).handler({
+        oldestFirst: true,
+      });
+      const oldestFirstText = oldestFirstOrder.content[0]?.text ?? '';
+      assert.ok(
+        oldestFirstText.indexOf('the older answer text') <
+          oldestFirstText.indexOf('the middle answer text') &&
+          oldestFirstText.indexOf('the middle answer text') <
+            oldestFirstText.indexOf('the newer answer text'),
+        'oldestFirst: true lists the earliest rating before the more recent ones, in ascending order',
+      );
+      assert.doesNotMatch(
+        oldestFirstText,
+        /oldestFirst caveat/i,
+        'a scan well under LIST_ANSWER_FEEDBACK_SCAN_LIMIT must not carry the "may be incomplete" caveat',
+      );
+    } finally {
+      await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [
+        [olderUser, middleUser, newerUser],
+      ]);
+      await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    }
+  },
+);
+
+test(
+  'list_answer_feedback: oldestFirst appends an explicit caveat when the scan hits ' +
+    'LIST_ANSWER_FEEDBACK_SCAN_LIMIT, since a scope with that many ratings on record means the genuinely ' +
+    'earliest one could sit outside the single bounded scan and never surface — the tool must say so rather ' +
+    'than silently reporting a mid-recent row as "oldest" (issue #1379 acceptance criterion 4)',
+  { skip },
+  async (t) => {
+    const admin = `${RUN}-list-answer-feedback-scanlimit-caveat-admin`;
+    const conversationId = `${RUN}-list-answer-feedback-scanlimit-caveat-convo`;
+    const scanLimit = 200;
+    const now = Date.now();
+    const syntheticRows = Array.from({ length: scanLimit }, (_, i) => ({
+      id: i + 1,
+      platform: 'discord',
+      conversation_id: conversationId,
+      user_id: `synthetic-${i}`,
+      interaction_id: null,
+      helpful: true,
+      created_at: new Date(now - i * 1000),
+      comment: null,
+      content: `synthetic answer ${i}`,
+      knowledge_entry_id: null,
+    }));
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && /FROM answer_feedback\b/.test(sql)) {
+        return Promise.resolve({ rows: syntheticRows, rowCount: syntheticRows.length });
+      }
+      return (realQuery as (...a: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+    try {
+      const result = await listAnswerFeedbackHandler('admin', admin, conversationId).handler({
+        oldestFirst: true,
+      });
+      const rendered = result.content[0]?.text ?? '';
+      assert.match(
+        rendered,
+        /oldestFirst caveat/i,
+        'hitting the scan limit must surface an explicit caveat that the true oldest row may not be shown',
+      );
+      assert.match(
+        rendered,
+        /list_answer_feedback/,
+        'the caveat should name this tool, same wording pattern as list_member_warnings/list_muted_members',
+      );
+      assert.match(
+        rendered,
+        new RegExp(String(scanLimit)),
+        'the caveat should name the scan-limit constant so an admin understands the bound',
+      );
+    } finally {
+      t.mock.restoreAll();
+    }
+  },
+);
+
+test(
+  "SECURITY: list_answer_feedback's oldestFirst never surfaces a rating outside the caller admin's " +
+    'callerScope(), and the row-id set it returns is a subset of — and drawn only from — the same-scope ' +
+    'unordered scan over the same window, i.e. reordering cannot smuggle in any row the equivalent unordered ' +
+    'scan would not contain (issue #1379 acceptance criterion 5)',
+  { skip },
+  async () => {
+    const inScopeConvo = `${RUN}-list-answer-feedback-oldestfirst-scope-in`;
+    const outOfScopeConvo = `${RUN}-list-answer-feedback-oldestfirst-scope-out`;
+    const raterA = `${RUN}-list-answer-feedback-oldestfirst-scope-a`;
+    const raterB = `${RUN}-list-answer-feedback-oldestfirst-scope-b`;
+    const raterC = `${RUN}-list-answer-feedback-oldestfirst-scope-c`;
+    const outOfScopeRater = `${RUN}-list-answer-feedback-oldestfirst-scope-out-rater`;
+
+    for (const [userId, convo] of [
+      [raterA, inScopeConvo],
+      [raterB, inScopeConvo],
+      [raterC, inScopeConvo],
+      [outOfScopeRater, outOfScopeConvo],
+    ] as const) {
+      await recordInteraction({
+        platform: 'discord',
+        conversationId: convo,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: `answer for ${userId}`,
+        meta: { replyToUserId: userId },
+      });
+      const result = await rateAnswerHandler(userId, convo).handler({ helpful: true });
+      assert.notEqual(result.isError, true);
+    }
+
+    try {
+      const admin = `${RUN}-list-answer-feedback-oldestfirst-scope-admin`;
+      const oldestFirstOut = await listAnswerFeedbackHandler('admin', admin, inScopeConvo).handler({
+        oldestFirst: true,
+        limit: 200,
+      });
+      const unorderedOut = await listAnswerFeedbackHandler('admin', admin, inScopeConvo).handler({
+        limit: 200,
+      });
+      const oldestFirstText = oldestFirstOut.content[0]?.text ?? '';
+      const unorderedText = unorderedOut.content[0]?.text ?? '';
+
+      const idsOf = (text: string) => new Set([...text.matchAll(/^#(\d+) \[/gm)].map((m) => m[1]));
+      const oldestFirstIds = idsOf(oldestFirstText);
+      const unorderedIds = idsOf(unorderedText);
+
+      assert.ok(oldestFirstIds.size >= 3, 'the three in-scope ratings must all be present under oldestFirst');
+      assert.deepEqual(
+        [...oldestFirstIds].sort(),
+        [...unorderedIds].sort(),
+        'SECURITY: reordering must return exactly the same row-id set as the unordered scan over the same ' +
+          'scope + window, never a superset',
+      );
+      assert.doesNotMatch(
+        oldestFirstText,
+        new RegExp(`answer for ${outOfScopeRater}`),
+        'SECURITY: a rating from a conversation outside callerScope() must never appear under oldestFirst',
+      );
+      assert.doesNotMatch(
+        unorderedText,
+        new RegExp(`answer for ${outOfScopeRater}`),
+        'SECURITY: a rating from a conversation outside callerScope() must never appear on the default path ' +
+          'either',
+      );
+    } finally {
+      await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [
+        [raterA, raterB, raterC, outOfScopeRater],
+      ]);
+      await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [
+        [inScopeConvo, outOfScopeConvo],
+      ]);
+    }
+  },
+);
+
 // list_low_rated_knowledge tool (issue #287): the grouped complement to
 // list_answer_feedback, aggregating ratings per knowledge entry. Aggregation
 // correctness (threshold/sort/non-shortcut exclusion) is pinned at the
