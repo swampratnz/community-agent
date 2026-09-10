@@ -16447,13 +16447,16 @@ test('formatUsageStats: shortcutHits.total > 0 appends a per-kind breakdown with
     7,
   );
   // member row: costUsd 1.5 / replies 3 = $0.50/reply avg; 7 * 0.50 = $3.50
+  // percentage: 100 * 7 / outbound(3) = 233% clamped to 100% (fixture's
+  // shortcutHits.total exceeds outbound, which the clamp exists to guard)
   assert.equal(
     out,
     'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
       'Cost by role: member ~$1.50 (3 replies)\n' +
       'Top users:\n- Alice: 2 msgs\n' +
       'Shortcuts fired: 7 (ack 2, knowledge 3, repeat-question 1, repeat-max-turns 1, slash-command 0, ' +
-      'whatsapp-text-command 0) — ~$3.50 avoided at the member-tier average reply cost.',
+      'whatsapp-text-command 0), 100% of replies served without a model call — ' +
+      '~$3.50 avoided at the member-tier average reply cost.',
   );
 });
 
@@ -16475,13 +16478,15 @@ test('formatUsageStats: shortcutHits breakdown includes a slash-command count wh
     7,
   );
   // member row: costUsd 1.5 / replies 3 = $0.50/reply avg; 9 * 0.50 = $4.50
+  // percentage: 100 * 9 / outbound(3) = 300% clamped to 100%
   assert.equal(
     out,
     'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
       'Cost by role: member ~$1.50 (3 replies)\n' +
       'Top users:\n- Alice: 2 msgs\n' +
       'Shortcuts fired: 9 (ack 2, knowledge 3, repeat-question 1, repeat-max-turns 1, slash-command 2, ' +
-      'whatsapp-text-command 0) — ~$4.50 avoided at the member-tier average reply cost.',
+      'whatsapp-text-command 0), 100% of replies served without a model call — ' +
+      '~$4.50 avoided at the member-tier average reply cost.',
   );
 });
 
@@ -16503,13 +16508,15 @@ test('formatUsageStats: shortcutHits breakdown includes a whatsapp-text-command 
     7,
   );
   // member row: costUsd 1.5 / replies 3 = $0.50/reply avg; 8 * 0.50 = $4.00
+  // percentage: 100 * 8 / outbound(3) = 267% clamped to 100%
   assert.equal(
     out,
     'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
       'Cost by role: member ~$1.50 (3 replies)\n' +
       'Top users:\n- Alice: 2 msgs\n' +
       'Shortcuts fired: 8 (ack 2, knowledge 3, repeat-question 1, repeat-max-turns 1, slash-command 0, ' +
-      'whatsapp-text-command 1) — ~$4.00 avoided at the member-tier average reply cost.',
+      'whatsapp-text-command 1), 100% of replies served without a model call — ' +
+      '~$4.00 avoided at the member-tier average reply cost.',
   );
 });
 
@@ -16522,13 +16529,115 @@ test('formatUsageStats: shortcutHits.total > 0 with zero member replies omits th
     },
     7,
   );
+  // percentage: 100 * 4 / outbound(3) = 133% clamped to 100% — independent of
+  // the (here-omitted) dollar clause
   assert.equal(
     out,
     'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
       'Cost by role: none\n' +
       'Top users:\n- Alice: 2 msgs\n' +
       'Shortcuts fired: 4 (ack 4, knowledge 0, repeat-question 0, repeat-max-turns 0, slash-command 0, ' +
-      'whatsapp-text-command 0).',
+      'whatsapp-text-command 0), 100% of replies served without a model call.',
+  );
+});
+
+test('formatUsageStats: a realistic shortcut hit-rate renders the exact rounded percentage clause before the dollar clause (issue #1385 acceptance criterion 1)', () => {
+  const out = formatUsageStats(
+    {
+      ...BASE_USAGE_STATS,
+      outbound: 30,
+      shortcutHits: {
+        total: 7,
+        byKind: [
+          { kind: 'ack', count: 2 },
+          { kind: 'knowledge', count: 3 },
+          { kind: 'repeat_question', count: 1 },
+          { kind: 'repeat_max_turns', count: 1 },
+        ],
+      },
+    },
+    7,
+  );
+  // 100 * 7 / 30 = 23.33... rounds to 23%; member row avg $0.50/reply, 7 * 0.50 = $3.50
+  assert.equal(
+    out,
+    'Last 7 day(s): 5 inbound / 30 replies, ~$1.50 recorded.\n' +
+      'Cost by role: member ~$1.50 (3 replies)\n' +
+      'Top users:\n- Alice: 2 msgs\n' +
+      'Shortcuts fired: 7 (ack 2, knowledge 3, repeat-question 1, repeat-max-turns 1, slash-command 0, ' +
+      'whatsapp-text-command 0), 23% of replies served without a model call — ' +
+      '~$3.50 avoided at the member-tier average reply cost.',
+  );
+  assert.ok(out.includes('23% of replies served without a model call'));
+});
+
+test('formatUsageStats: shortcutHits.total > 0 with outbound === 0 omits the percentage clause entirely — no NaN/Infinity (divide-by-zero/drift guard, issue #1385 acceptance criterion 2)', () => {
+  const out = formatUsageStats(
+    {
+      ...BASE_USAGE_STATS,
+      outbound: 0,
+      shortcutHits: { total: 4, byKind: [{ kind: 'ack', count: 4 }] },
+    },
+    7,
+  );
+  assert.equal(
+    out,
+    'Last 7 day(s): 5 inbound / 0 replies, ~$1.50 recorded.\n' +
+      'Cost by role: member ~$1.50 (3 replies)\n' +
+      'Top users:\n- Alice: 2 msgs\n' +
+      'Shortcuts fired: 4 (ack 4, knowledge 0, repeat-question 0, repeat-max-turns 0, slash-command 0, ' +
+      'whatsapp-text-command 0) — ~$2.00 avoided at the member-tier average reply cost.',
+  );
+  assert.ok(!out.includes('%'), 'no percentage clause when outbound is 0');
+  assert.ok(!/NaN|Infinity/.test(out), 'must never render NaN or Infinity');
+});
+
+test('SECURITY: the new shortcut hit-rate clause renders only the rounded integer and fixed surrounding text — no user id, display name, or field beyond the two aggregate counts already returned to the super_admin-only caller (issue #1385 acceptance criterion 5)', () => {
+  const out = formatUsageStats(
+    {
+      ...BASE_USAGE_STATS,
+      outbound: 30,
+      topUsers: [{ userId: 'secret-user-id', userName: 'Should Not Appear', messages: 2 }],
+      shortcutHits: {
+        total: 7,
+        byKind: [
+          { kind: 'ack', count: 2 },
+          { kind: 'knowledge', count: 3 },
+          { kind: 'repeat_question', count: 1 },
+          { kind: 'repeat_max_turns', count: 1 },
+        ],
+      },
+    },
+    7,
+  );
+  const line = out.split('\n').find((l) => l.startsWith('Shortcuts fired:'));
+  assert.ok(line, 'a shortcuts line is present when shortcutHits.total > 0');
+  assert.match(
+    line,
+    /^Shortcuts fired: \d+ \(ack \d+, knowledge \d+, repeat-question \d+, repeat-max-turns \d+, slash-command \d+, whatsapp-text-command \d+\)(?:, \d+% of replies served without a model call)?(?: — ~\$\d+\.\d{2} avoided at the member-tier average reply cost)?\.$/,
+    'the whole line must match fixed counts/percentage/dollar composition only — no room for an interpolated identity value',
+  );
+  assert.ok(
+    !line.includes('secret-user-id') && !line.includes('Should Not Appear'),
+    'the shortcuts line must never carry a user id or display name from elsewhere in the same usageStats() result',
+  );
+
+  // Structural half: usage_stats' handler still issues exactly one usageStats()
+  // call — the percentage is derived in-memory from a value that call already
+  // fetches (s.outbound), not from a second repository query.
+  const source = readFileSync(new URL('../src/module/agent/tools/superAdmin.ts', import.meta.url), 'utf8');
+  const defStart = source.indexOf("name: 'usage_stats',");
+  assert.notEqual(defStart, -1, 'usage_stats tool definition not found');
+  const handlerMatch = source
+    .slice(defStart)
+    .match(/handler: async \(args, \{ caller \}\) => \{([\s\S]*?)\n {4}\},/);
+  assert.ok(handlerMatch, 'usage_stats handler body not found');
+  const body = handlerMatch[1];
+  const callCount = (body.match(/\busageStats\(/g) ?? []).length;
+  assert.equal(
+    callCount,
+    1,
+    'usage_stats handler must call usageStats() exactly once — no new repository call',
   );
 });
 

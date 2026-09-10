@@ -960,7 +960,7 @@ export function formatUsageStats(
     `Cost by role: ${s.costByRole.map((r) => `${r.role} ~$${r.costUsd.toFixed(2)} (${r.replies} replies)`).join(' · ') || 'none'}\n` +
     `Top users:\n${s.topUsers.map((u) => `- ${u.userName ? sanitizeName(u.userName) : u.userId}: ${u.messages} msgs`).join('\n') || '- none'}` +
     (s.backgroundCostUsd > 0 ? `\nBackground jobs: ${byJob}.` : '') +
-    formatShortcutHitsLine(s.shortcutHits, s.costByRole) +
+    formatShortcutHitsLine(s.shortcutHits, s.costByRole, s.outbound) +
     formatCacheUsageLine(s.cacheUsage) +
     formatAutoAnswerUsageLine(s.autoAnswerUsage, s.costUsd) +
     formatModelUsageLine(s.costByModel)
@@ -1099,15 +1099,31 @@ export function formatAdminRoster(roster: readonly AdminRosterEntry[]): string {
  * (already computed by `usageStats()`, no new pricing constant) and is
  * omitted — count-only — when the member tier has zero replies in the
  * window, to avoid a divide-by-zero.
+ *
+ * The `outbound` param (issue #1385) is the window's total replies count
+ * (`s.outbound`, the same figure `formatUsageStats`'s headline line renders)
+ * — used only to derive a `, N% of replies served without a model call`
+ * clause, appended right after the per-kind breakdown and before the dollar
+ * clause. `shortcutHits.total` is a true subset of `outbound` by construction
+ * (shortcut-served replies are recorded via the same `recordInteraction` path
+ * as any other reply), so `Math.min(100, …)` only guards a future
+ * counting-window drift, not the normal case. Omitted — same
+ * "nothing to show" convention — when `outbound <= 0`, to avoid a
+ * divide-by-zero.
  */
 function formatShortcutHitsLine(
   shortcutHits: Awaited<ReturnType<typeof usageStats>>['shortcutHits'],
   costByRole: Awaited<ReturnType<typeof usageStats>>['costByRole'],
+  outbound: number,
 ): string {
   if (shortcutHits.total === 0) return '';
   const countOf = (kind: string) => shortcutHits.byKind.find((k) => k.kind === kind)?.count ?? 0;
   const memberRow = costByRole.find((r) => r.role === 'member');
   const avgMemberCost = memberRow && memberRow.replies > 0 ? memberRow.costUsd / memberRow.replies : null;
+  const pctClause =
+    outbound > 0
+      ? `, ${Math.min(100, Math.round((100 * shortcutHits.total) / outbound))}% of replies served without a model call`
+      : '';
   const dollarClause =
     avgMemberCost !== null
       ? ` — ~$${(shortcutHits.total * avgMemberCost).toFixed(2)} avoided at the member-tier average reply cost`
@@ -1115,7 +1131,7 @@ function formatShortcutHitsLine(
   return (
     `\nShortcuts fired: ${shortcutHits.total} (ack ${countOf('ack')}, knowledge ${countOf('knowledge')}, ` +
     `repeat-question ${countOf('repeat_question')}, repeat-max-turns ${countOf('repeat_max_turns')}, ` +
-    `slash-command ${countOf('slash_command')}, whatsapp-text-command ${countOf('whatsapp_text_command')})${dollarClause}.`
+    `slash-command ${countOf('slash_command')}, whatsapp-text-command ${countOf('whatsapp_text_command')})${pctClause}${dollarClause}.`
   );
 }
 
