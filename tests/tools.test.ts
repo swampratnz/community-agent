@@ -7533,7 +7533,8 @@ test('community_info: admin-tier reply stays byte-identical, never gains SUPER_A
     '- See who is waiting for access, decline a pending access request without granting it, or see who ' +
     'has joined or left the server\n' +
     "- Add a note about a member, review notes on a member, delete a note, or look up a member's history across conversations\n" +
-    '- Set the community guidelines or the welcome message shown to new members\n' +
+    '- Set the community guidelines or the welcome message shown to new members, or read back the ' +
+    'currently configured welcome message in both languages\n' +
     '- Assign a Discord role, remove a Discord role, or list which roles are available to assign\n' +
     "- Set up team projects: create one, give a member access, take a member's access away, allow or " +
     'stop it being discussed here, review who has access, or archive a finished project and bring it ' +
@@ -7548,7 +7549,8 @@ test('community_info: admin-tier reply stays byte-identical, never gains SUPER_A
     "admin-tier reply must be byte-identical to today's deliberately-updated text (issue #1008 added the " +
       'find_knowledge clause; issue #1024 added the list_top_knowledge clause; issue #1185 added the ' +
       'remove_project clause; issue #1188 added the check_knowledge_source clause; issue #1230 added the ' +
-      'remove_interests clause) — this PR must not change the admin branch beyond that documented addition',
+      'remove_interests clause; issue #1377 added the welcome_message read-back clause) — this PR must not ' +
+      'change the admin branch beyond that documented addition',
   );
   assert.doesNotMatch(
     adminReply,
@@ -7745,6 +7747,7 @@ const ADMIN_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__cancel_event', /cancel an event/i],
   ['mcp__community__set_community_guidelines', /set the community guidelines/i],
   ['mcp__community__set_welcome_message', /welcome message/i],
+  ['mcp__community__welcome_message', /read back the currently configured welcome message/i],
   ['mcp__community__save_knowledge', /save a new knowledge entry/i],
   ['mcp__community__list_knowledge', /browse knowledge entries/i],
   ['mcp__community__find_knowledge', /semantically find a knowledge entry's id/i],
@@ -7879,8 +7882,11 @@ test('community_info: admin reply stays under a hard char cap, not a wall of tex
   // member segment, so a member-segment addition grows this reply too);
   // bumped once more alongside the member cap for issue #1287's
   // knowledge_for_me line (same reason); bumped once more alongside the
-  // member cap for issue #1344's withdraw_project_note clause (same reason).
-  assert.ok(adminReply.length < 5060, `admin reply should stay short; was ${adminReply.length} chars`);
+  // member cap for issue #1344's withdraw_project_note clause (same reason);
+  // bumped once more for issue #1377's welcome_message read-back clause
+  // (consolidated into the existing guidelines/welcome-message bullet, not a
+  // new bullet).
+  assert.ok(adminReply.length < 5170, `admin reply should stay short; was ${adminReply.length} chars`);
 });
 
 test('SECURITY: community_info member-tier and guest-tier replies never name an admin/super_admin-only tool or contain any ADMIN_CAPABILITIES_TEXT-unique line (issue #367, issue #311)', async () => {
@@ -8032,9 +8038,10 @@ test('community_info: super_admin reply stays under a hard char cap, not a wall 
   // more alongside the member cap for issue #1278's withdraw_appeal clause;
   // bumped once more alongside the member cap for issue #1287's
   // knowledge_for_me line; bumped once more alongside the member cap for
-  // issue #1344's withdraw_project_note clause.
+  // issue #1344's withdraw_project_note clause; bumped once more alongside
+  // the admin cap for issue #1377's welcome_message read-back clause.
   assert.ok(
-    superAdminReply.length < 5710,
+    superAdminReply.length < 5820,
     `super_admin reply should stay short; was ${superAdminReply.length} chars`,
   );
 });
@@ -10427,6 +10434,99 @@ test(
       assert.match(clearMi.content[0].text, /cleared/i);
       assert.equal(await getWelcomeMessageMi(), null, 'clearing the mi variant must revert it to null');
     } finally {
+      resetPolicyCacheForTests();
+    }
+  },
+);
+
+// welcome_message (issue #1377): the read counterpart to set_welcome_message
+// that never got built alongside community_guidelines' own read half. Admin
+// tier, no arguments, both language variants at once — see policyText.ts for
+// why (an admin verifying two writes shouldn't have to flip their own
+// set_language_preference to see the mi one).
+function welcomeMessageHandler(role: 'guest' | 'member' | 'admin' | 'super_admin') {
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId: `welcome-message-${role}`,
+      userName: 'Caller',
+      role,
+      conversationId: `convo-welcome-message-${role}`,
+    },
+    stubAdapter(async () => {}),
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        { handler: () => Promise<{ content: Array<{ type: string; text: string }> }> }
+      >;
+    }
+  )._registeredTools['welcome_message'];
+}
+
+test('SECURITY: welcome_message rejects a member-tier and a guest-tier caller, before any policy read (assertAtLeast re-check, issue #1377 acceptance criterion 4)', async () => {
+  for (const role of ['member', 'guest'] as const) {
+    await assert.rejects(
+      () => welcomeMessageHandler(role).handler(),
+      /Permission denied/,
+      `${role} must never reach the policy read — welcome_message is admin-tier`,
+    );
+  }
+  // Structural half of the same guarantee: assertAtLeast is literally the
+  // first statement in the handler body, and getWelcomeMessage/
+  // getWelcomeMessageMi (the only policy reads) are only reached afterwards —
+  // so a refusal can never fall through to a policy read, not merely
+  // "usually doesn't" in practice.
+});
+
+test(
+  'welcome_message returns both language variants verbatim, with distinct byte-for-byte not-set fallbacks that are never conflated with an empty configured value, across all four set/unset combinations (issue #1377 acceptance criteria 1-3)',
+  { skip },
+  async () => {
+    resetPolicyCacheForTests();
+    const readTool = welcomeMessageHandler('admin');
+    const NOT_SET_EN = "Welcome message (en): Not set — falls back to this platform's default welcome text.";
+    const NOT_SET_MI = 'Welcome message (mi): Not set.';
+
+    try {
+      // Both unset.
+      assert.equal(await getWelcomeMessage(), null, 'precondition: welcome message starts unset');
+      assert.equal(await getWelcomeMessageMi(), null, 'precondition: mi variant starts unset');
+      const bothUnset = await readTool.handler();
+      assert.equal(bothUnset.content[0].text, `${NOT_SET_EN}\n${NOT_SET_MI}`);
+
+      // en-only set.
+      const enText = 'Welcome to our community!';
+      await updatePolicy('welcome_message', enText, 'test');
+      const enOnly = await readTool.handler();
+      assert.equal(enOnly.content[0].text, `Welcome message (en): ${enText}\n${NOT_SET_MI}`);
+
+      // Both set.
+      const miText = 'Nau mai ki tō mātou hapori!';
+      await updatePolicy('welcome_message_mi', miText, 'test');
+      const bothSet = await readTool.handler();
+      assert.equal(
+        bothSet.content[0].text,
+        `Welcome message (en): ${enText}\nWelcome message (mi): ${miText}`,
+      );
+
+      // mi-only set (clear en, keep mi) — also exercises the empty-string
+      // clear reverting to the not-set line, never to an empty configured value.
+      await updatePolicy('welcome_message', '', 'test');
+      assert.equal(
+        await getWelcomeMessage(),
+        null,
+        'clearing via empty string must read back as null, never as an empty configured value',
+      );
+      const miOnly = await readTool.handler();
+      assert.equal(miOnly.content[0].text, `${NOT_SET_EN}\nWelcome message (mi): ${miText}`);
+    } finally {
+      // Clear both policy rows back to unset — resetPolicyCacheForTests alone
+      // only clears the in-process cache, not the DB row, and this test is
+      // the only one in this file that leaves welcome_message_mi non-null.
+      await updatePolicy('welcome_message', '', 'test');
+      await updatePolicy('welcome_message_mi', '', 'test');
       resetPolicyCacheForTests();
     }
   },

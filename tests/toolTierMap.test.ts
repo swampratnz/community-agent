@@ -148,6 +148,7 @@ const EXPECTED: Record<string, readonly string[]> = {
     'unlink_member',
     'update_knowledge',
     'user_history',
+    'welcome_message',
     'whats_new',
   ],
   superAdmin: [

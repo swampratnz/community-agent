@@ -58,6 +58,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   content-free "still being reviewed, thanks for your patience" DM the first
   time it crosses that same 48-hour mark — never repeated, and never naming
   the report, its reason, or the person it was filed against.
+- **Admins can now read back the currently configured welcome message.**
+  (#1377) `set_welcome_message` (#253) let an admin set the text new members
+  see on join, but there was no way to check what's actually configured
+  short of a direct database read or waiting for a real join — the sibling
+  `set_community_guidelines`/`community_guidelines` pair (#212) got both
+  halves, and the welcome message never got its read half. The new
+  `welcome_message` admin tool shows both the default and te reo Māori
+  variants at once, each with its own clear "not set" fallback, so an admin
+  can verify a write (including the mi variant) without needing to flip
+  their own language preference first.
 
 ## 2026-09-09
 
