@@ -16975,6 +16975,7 @@ test('formatAdminActivity renders one line per actor sorted by action count desc
         successCount: 10,
         failureCount: 2,
         lastActionAt: new Date('2026-06-01T12:00:00.000Z'),
+        previousActionCount: 12,
       },
       {
         name: 'Bob',
@@ -16983,15 +16984,65 @@ test('formatAdminActivity renders one line per actor sorted by action count desc
         successCount: 3,
         failureCount: 0,
         lastActionAt: new Date('2026-06-02T08:30:00.000Z'),
+        previousActionCount: 3,
       },
     ],
     30,
   );
   assert.equal(
     out,
-    'Alice (discord): 12 actions (10 success / 2 failed), last 2026-06-01T12:00:00.000Z\n' +
-      'Bob (whatsapp): 3 actions (3 success / 0 failed), last 2026-06-02T08:30:00.000Z',
+    'Alice (discord): 12 actions (10 success / 2 failed), last 2026-06-01T12:00:00.000Z No change since previous 30 day(s)\n' +
+      'Bob (whatsapp): 3 actions (3 success / 0 failed), last 2026-06-02T08:30:00.000Z No change since previous 30 day(s)',
   );
+});
+
+test('formatAdminActivity renders a rise, a fall, a flat "No change" and a "new this period" marker per admin (issue #1387 acceptance criterion 5)', () => {
+  const out = formatAdminActivity(
+    [
+      {
+        name: 'Rising',
+        platform: 'discord',
+        actionCount: 10,
+        successCount: 10,
+        failureCount: 0,
+        lastActionAt: new Date('2026-06-01T00:00:00.000Z'),
+        previousActionCount: 4,
+      },
+      {
+        name: 'Falling',
+        platform: 'discord',
+        actionCount: 2,
+        successCount: 2,
+        failureCount: 0,
+        lastActionAt: new Date('2026-06-01T00:00:00.000Z'),
+        previousActionCount: 9,
+      },
+      {
+        name: 'Flat',
+        platform: 'discord',
+        actionCount: 5,
+        successCount: 5,
+        failureCount: 0,
+        lastActionAt: new Date('2026-06-01T00:00:00.000Z'),
+        previousActionCount: 5,
+      },
+      {
+        name: 'NewAdmin',
+        platform: 'discord',
+        actionCount: 3,
+        successCount: 3,
+        failureCount: 0,
+        lastActionAt: new Date('2026-06-01T00:00:00.000Z'),
+        previousActionCount: 0,
+      },
+    ],
+    7,
+  );
+  const lines = out.split('\n');
+  assert.match(lines[0] ?? '', /^Rising \(discord\): 10 actions .* ▲ 6 since previous 7 day\(s\)$/);
+  assert.match(lines[1] ?? '', /^Falling \(discord\): 2 actions .* ▼ 7 since previous 7 day\(s\)$/);
+  assert.match(lines[2] ?? '', /^Flat \(discord\): 5 actions .* No change since previous 7 day\(s\)$/);
+  assert.match(lines[3] ?? '', /^NewAdmin \(discord\): 3 actions .* \(new this period\)$/);
 });
 
 test('SECURITY: formatAdminActivity never renders admin_audit.params content — only actor/count/timestamp fields (issue #488)', () => {
@@ -17005,6 +17056,7 @@ test('SECURITY: formatAdminActivity never renders admin_audit.params content —
         successCount: 1,
         failureCount: 0,
         lastActionAt: new Date('2026-06-01T12:00:00.000Z'),
+        previousActionCount: 0,
       },
     ],
     30,
@@ -42478,7 +42530,7 @@ function adminActivityHandler(caller: { userId: string; adapter: PlatformAdapter
 }
 
 test(
-  'SECURITY: admin_activity rejects an admin caller — super-admin-only via the assertAtLeast re-check (issue #488)',
+  'SECURITY: admin_activity rejects an admin caller — super-admin-only via the assertAtLeast re-check (issue #488; re-verified with a days argument for issue #1387)',
   { skip },
   async () => {
     const adapter = stubAdapter(async () => {});
@@ -42507,6 +42559,16 @@ test(
       () => registeredTool.handler({}),
       /admin/i,
       'an admin (not super_admin) caller must be rejected by the assertAtLeast re-check',
+    );
+    // (issue #1387 acceptance criterion 6): the same re-check must still reject
+    // BEFORE the period-over-period trend's second adminActivitySummary call —
+    // an explicit `days` argument exercises exactly the code path that call
+    // was added to, so the gate is pinned against the new diff, not just the
+    // pre-existing zero-argument shape.
+    await assert.rejects(
+      () => registeredTool.handler({ days: 14 }),
+      /admin/i,
+      'an admin (not super_admin) caller must be rejected even with an explicit days argument',
     );
   },
 );
@@ -44056,9 +44118,126 @@ test(
         'an actor with no resolvable name falls back to the raw platform user id',
       );
       assert.ok(!out.includes(sentinel), 'admin_audit.params content must never appear in the reply');
+      // admin_activity is a global (unscoped) rollup, so `out` also contains
+      // rows from other tests/actors running concurrently — match each of
+      // THIS test's own actor lines specifically rather than counting the
+      // marker across the whole reply (issue #1387).
+      assert.match(
+        out,
+        new RegExp(
+          `${RUN} Known Actor \\(discord\\): 1 actions \\(1 success / 0 failed\\)[^\\n]*\\(new this period\\)`,
+        ),
+        'the known actor has no prior-window activity and renders the new-this-period marker',
+      );
+      assert.match(
+        out,
+        new RegExp(
+          `${unknownActor} \\(discord\\): 1 actions \\(1 success / 0 failed\\)[^\\n]*\\(new this period\\)`,
+        ),
+        'the unknown actor has no prior-window activity and renders the new-this-period marker',
+      );
     } finally {
       await pool.query(`DELETE FROM admin_audit WHERE actor_user_id = ANY($1)`, [[knownActor, unknownActor]]);
       await pool.query(`DELETE FROM community_users WHERE platform_user_id = $1`, [knownActor]);
+    }
+  },
+);
+
+test(
+  'admin_activity computes the period-over-period trend from a real prior window via backdated admin_audit rows (issue #1387 acceptance criteria 1-3)',
+  { skip },
+  async () => {
+    const risingActor = `${RUN}-aa-trend-rising`;
+    const newActor = `${RUN}-aa-trend-new`;
+
+    // risingActor: 2 actions ~10 days ago (inside the 14-day double window,
+    // outside the 7-day current window), then 5 more actions "now".
+    for (let i = 0; i < 2; i++) {
+      await recordAdminAction({
+        platform: 'discord',
+        actorUserId: risingActor,
+        actionKind: 'warn_user',
+        result: 'warned',
+        success: true,
+      });
+    }
+    await pool.query(
+      `UPDATE admin_audit SET created_at = now() - interval '10 days' WHERE actor_user_id = $1`,
+      [risingActor],
+    );
+    for (let i = 0; i < 5; i++) {
+      await recordAdminAction({
+        platform: 'discord',
+        actorUserId: risingActor,
+        actionKind: 'warn_user',
+        result: 'warned',
+        success: true,
+      });
+    }
+
+    // newActor: 3 actions "now", none in the prior window.
+    for (let i = 0; i < 3; i++) {
+      await recordAdminAction({
+        platform: 'discord',
+        actorUserId: newActor,
+        actionKind: 'warn_user',
+        result: 'warned',
+        success: true,
+      });
+    }
+
+    const adapter = stubAdapter(async () => {});
+    const handler = adminActivityHandler({ userId: `${RUN}-aa-trend-actor2`, adapter });
+    try {
+      const result = await handler.handler({ days: 7 });
+      const out = result.content[0]?.text ?? '';
+      assert.match(
+        out,
+        new RegExp(`${risingActor} \\(discord\\): 5 actions .* ▲ 3 since previous 7 day\\(s\\)`),
+        'risingActor: current-window count 5 vs prior-window count 2 (the 10-day-old rows) renders ▲ 3',
+      );
+      assert.match(
+        out,
+        new RegExp(`${newActor} \\(discord\\): 3 actions .*\\(new this period\\)`),
+        'newActor has zero prior-window activity and renders the new-this-period marker, not a bare ▲',
+      );
+    } finally {
+      await pool.query(`DELETE FROM admin_audit WHERE actor_user_id = ANY($1)`, [[risingActor, newActor]]);
+    }
+  },
+);
+
+test(
+  'SECURITY: admin_activity writes no new persisted state (privacy) — the trend is computed transiently from admin_audit reads only (issue #1387 acceptance criterion 7)',
+  { skip },
+  async () => {
+    const actorId = `${RUN}-aa-persist-check`;
+    await recordAdminAction({
+      platform: 'discord',
+      actorUserId: actorId,
+      actionKind: 'warn_user',
+      result: 'warned',
+      success: true,
+    });
+    const before = await pool.query(`SELECT count(*)::int AS n FROM admin_audit WHERE actor_user_id = $1`, [
+      actorId,
+    ]);
+
+    const adapter = stubAdapter(async () => {});
+    const handler = adminActivityHandler({ userId: `${RUN}-aa-persist-actor2`, adapter });
+    try {
+      await handler.handler({ days: 30 });
+
+      const after = await pool.query(`SELECT count(*)::int AS n FROM admin_audit WHERE actor_user_id = $1`, [
+        actorId,
+      ]);
+      assert.equal(
+        after.rows[0].n,
+        before.rows[0].n,
+        'admin_activity is a read-only rollup (now querying the same table twice) — it must never write its own admin_audit row',
+      );
+    } finally {
+      await pool.query(`DELETE FROM admin_audit WHERE actor_user_id = $1`, [actorId]);
     }
   },
 );
