@@ -1,10 +1,11 @@
 import { z } from 'zod';
 import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
 import { updatePolicy } from '@swampratnz/agent-base/storage/policyStore.js';
-// The community policy keys this file writes are registered by policies.ts
-// at its import time — load it so a direct import of this module can't hit
-// policyStore's unknown-key throw.
-import '../../storage/policies.js';
+// The community policy keys this file writes (and, below, reads) are
+// registered by policies.ts at its import time — importing its getters here
+// also satisfies that load-before-use requirement, so a direct import of this
+// module can't hit policyStore's unknown-key throw.
+import { getWelcomeMessage, getWelcomeMessageMi } from '../../storage/policies.js';
 import { text } from './helpers.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
@@ -107,6 +108,33 @@ export const policyTextTools = [
       if (!success) return text(`Failed: ${result}`, true);
       const label = language === 'mi' ? 'Welcome message (mi)' : 'Welcome message';
       return text(args.text ? `${label} updated.` : `${label} cleared.`);
+    },
+  }),
+
+  // Read counterpart to set_welcome_message (issue #1377) — the #212/#253
+  // sibling pattern's read half that community_guidelines got and this one
+  // never did. Admin-tier (not member, unlike community_guidelines): the
+  // evidenced need is an admin verifying their own write, not a member
+  // question, and showing both language variants at once regardless of the
+  // caller's own standing language_preference avoids the mi-verification
+  // dance community_guidelines still has today. No CONFIRM, no audited() —
+  // matches community_guidelines/feature_flags/list_access_requests, none of
+  // which wrap their read-only handlers.
+  defineTool({
+    name: 'welcome_message',
+    description:
+      "Return this community's currently configured welcome message — both the default (en) and te reo " +
+      "Māori (mi) variants — exactly as an admin set them via set_welcome_message. Call this to check " +
+      "whether a write took effect, or what a new joiner currently receives. Admin only.",
+    minTier: 'admin',
+    readOnlyHint: true,
+    schema: {},
+    handler: async (_args, { caller }) => {
+      assertAtLeast(caller.role, 'admin', 'welcome_message');
+      const [en, mi] = await Promise.all([getWelcomeMessage(), getWelcomeMessageMi()]);
+      const enLine = `Welcome message (en): ${en ?? "Not set — falls back to this platform's default welcome text."}`;
+      const miLine = `Welcome message (mi): ${mi ?? 'Not set.'}`;
+      return text(`${enLine}\n${miLine}`);
     },
   }),
 ];

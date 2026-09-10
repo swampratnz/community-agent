@@ -67,7 +67,7 @@ is marked **🔒**. Changes there need a `SECURITY:` test (see
 - `src/module/agent/tools/memory.ts` — The `remember_search`/`catch_up` ToolDef domain: recall over past interactions, with the shared per-message truncation cap and the catch_up window/row limits.
 - `src/module/agent/tools/moderation.ts` — The `moderate`/`clear_warnings`/`list_member_warnings`/`list_muted_members`/`list_blocked_members`/`moderation_history` ToolDef domain plus the per-conversation warn reserver.
 - `src/module/agent/tools/notify.ts` — The notify family (super-admin/admin fan-out, approval/resolution DMs) with window-reopen queueing, plus `applyManualWarnStrike`/`ackReportedMessage` side-effect helpers.
-- `src/module/agent/tools/policyText.ts` — The `set_community_guidelines`/`set_welcome_message` ToolDef domain plus the two Discord-message-limit-derived text caps.
+- `src/module/agent/tools/policyText.ts` — The `set_community_guidelines`/`set_welcome_message`/`welcome_message` ToolDef domain plus the two Discord-message-limit-derived text caps.
 - `src/module/agent/tools/prefs.ts` — The `set_response_style`/`set_language_preference` ToolDef domain: self-scoped, closed-enum standing preferences.
 - `src/module/agent/tools/projectNotes.ts` — The `project_recall`/`project_note`/`project_list` ToolDef domain: team-project shared memory, access-scoped in SQL via `visibleProjectIds`.
 - `src/module/agent/tools/projectsAdmin.ts` — The `project_*` admin ToolDef domain (create/add/remove member, bind/unbind, info, archive/unarchive): team-project membership and surface bindings, never tiers.

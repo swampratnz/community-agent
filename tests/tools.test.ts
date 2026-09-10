@@ -10432,6 +10432,91 @@ test(
   },
 );
 
+// welcome_message (issue #1377): the read counterpart to set_welcome_message
+// that never got built alongside community_guidelines' own read half. Admin
+// tier, no arguments, both language variants at once — see policyText.ts for
+// why (an admin verifying two writes shouldn't have to flip their own
+// set_language_preference to see the mi one).
+function welcomeMessageHandler(role: 'guest' | 'member' | 'admin' | 'super_admin') {
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId: `welcome-message-${role}`,
+      userName: 'Caller',
+      role,
+      conversationId: `convo-welcome-message-${role}`,
+    },
+    stubAdapter(async () => {}),
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        { handler: () => Promise<{ content: Array<{ type: string; text: string }> }> }
+      >;
+    }
+  )._registeredTools['welcome_message'];
+}
+
+test('SECURITY: welcome_message rejects a member-tier and a guest-tier caller, before any policy read (assertAtLeast re-check, issue #1377 acceptance criterion 4)', async () => {
+  for (const role of ['member', 'guest'] as const) {
+    await assert.rejects(
+      () => welcomeMessageHandler(role).handler(),
+      /Permission denied/,
+      `${role} must never reach the policy read — welcome_message is admin-tier`,
+    );
+  }
+  // Structural half of the same guarantee: assertAtLeast is literally the
+  // first statement in the handler body, and getWelcomeMessage/
+  // getWelcomeMessageMi (the only policy reads) are only reached afterwards —
+  // so a refusal can never fall through to a policy read, not merely
+  // "usually doesn't" in practice.
+});
+
+test(
+  'welcome_message returns both language variants verbatim, with distinct byte-for-byte not-set fallbacks that are never conflated with an empty configured value, across all four set/unset combinations (issue #1377 acceptance criteria 1-3)',
+  { skip },
+  async () => {
+    resetPolicyCacheForTests();
+    const readTool = welcomeMessageHandler('admin');
+    const NOT_SET_EN = "Welcome message (en): Not set — falls back to this platform's default welcome text.";
+    const NOT_SET_MI = 'Welcome message (mi): Not set.';
+
+    try {
+      // Both unset.
+      assert.equal(await getWelcomeMessage(), null, 'precondition: welcome message starts unset');
+      assert.equal(await getWelcomeMessageMi(), null, 'precondition: mi variant starts unset');
+      const bothUnset = await readTool.handler();
+      assert.equal(bothUnset.content[0].text, `${NOT_SET_EN}\n${NOT_SET_MI}`);
+
+      // en-only set.
+      const enText = 'Welcome to our community!';
+      await updatePolicy('welcome_message', enText, 'test');
+      const enOnly = await readTool.handler();
+      assert.equal(enOnly.content[0].text, `Welcome message (en): ${enText}\n${NOT_SET_MI}`);
+
+      // Both set.
+      const miText = 'Nau mai ki tō mātou hapori!';
+      await updatePolicy('welcome_message_mi', miText, 'test');
+      const bothSet = await readTool.handler();
+      assert.equal(bothSet.content[0].text, `Welcome message (en): ${enText}\nWelcome message (mi): ${miText}`);
+
+      // mi-only set (clear en, keep mi) — also exercises the empty-string
+      // clear reverting to the not-set line, never to an empty configured value.
+      await updatePolicy('welcome_message', '', 'test');
+      assert.equal(
+        await getWelcomeMessage(),
+        null,
+        'clearing via empty string must read back as null, never as an empty configured value',
+      );
+      const miOnly = await readTool.handler();
+      assert.equal(miOnly.content[0].text, `${NOT_SET_EN}\nWelcome message (mi): ${miText}`);
+    } finally {
+      resetPolicyCacheForTests();
+    }
+  },
+);
+
 // moderate: the reachability gate here has no canPostTo fallback (unlike
 // announce/create_poll/create_thread below) — #270 deliberately left it on
 // the strict isKnownConversation-only check.
