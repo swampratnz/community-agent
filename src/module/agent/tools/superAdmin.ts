@@ -283,12 +283,27 @@ export const superAdminTools = [
     handler: async (args, { caller }) => {
       assertAtLeast(caller.role, 'super_admin', 'admin_activity');
       const days = Math.min(Math.max(Math.trunc(args.days ?? 30) || 30, 1), 365);
-      const rows = await adminActivitySummary(days);
+      // Period-over-period trend (issue #1387): a second rollup over twice the
+      // window, minus the first, isolates the immediately preceding window of
+      // equal length — no new repository function, table, or config flag.
+      // Clamped to >= 0 to guard the two separate `now()` reads against any
+      // clock-skew edge case.
+      const [rows, doubleWindowRows] = await Promise.all([
+        adminActivitySummary(days),
+        adminActivitySummary(days * 2),
+      ]);
+      const doubleWindowCountByKey = new Map(
+        doubleWindowRows.map((r) => [`${r.platform}:${r.actorUserId}`, r.actionCount]),
+      );
       const named = await Promise.all(
-        rows.map(async (r) => ({
-          ...r,
-          name: (await resolveDisplayName(r.platform, r.actorUserId)) ?? r.actorUserId,
-        })),
+        rows.map(async (r) => {
+          const doubleWindowCount = doubleWindowCountByKey.get(`${r.platform}:${r.actorUserId}`) ?? r.actionCount;
+          return {
+            ...r,
+            name: (await resolveDisplayName(r.platform, r.actorUserId)) ?? r.actorUserId,
+            previousActionCount: Math.max(0, doubleWindowCount - r.actionCount),
+          };
+        }),
       );
       return text(formatAdminActivity(named, days));
     },

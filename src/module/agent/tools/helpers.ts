@@ -1040,6 +1040,12 @@ function formatAutoAnswerUsageLine(
  * falling back to the raw platform user id) — this function does no lookup
  * itself, so it never touches the DB and is directly unit-testable. Never
  * renders `admin_audit.params` — only actor/count/timestamp fields.
+ *
+ * Each row also carries `previousActionCount` (issue #1387): the caller's
+ * count over the immediately preceding window of equal length, already
+ * clamped to >= 0. A row whose `previousActionCount` is 0 renders a distinct
+ * "(new this period)" marker rather than a bare `▲ N`, which would otherwise
+ * read as a continuation of an existing trend instead of a first appearance.
  */
 export function formatAdminActivity(
   rows: Array<{
@@ -1049,15 +1055,24 @@ export function formatAdminActivity(
     successCount: number;
     failureCount: number;
     lastActionAt: Date;
+    previousActionCount: number;
   }>,
   days: number,
 ): string {
   if (rows.length === 0) return `No privileged actions recorded in the last ${days} day(s).`;
   return rows
-    .map(
-      (r) =>
-        `${r.name} (${r.platform}): ${r.actionCount} actions (${r.successCount} success / ${r.failureCount} failed), last ${r.lastActionAt.toISOString()}`,
-    )
+    .map((r) => {
+      const diff = r.actionCount - r.previousActionCount;
+      const trend =
+        r.previousActionCount === 0
+          ? ' (new this period)'
+          : diff > 0
+            ? ` ▲ ${diff} since previous ${days} day(s)`
+            : diff < 0
+              ? ` ▼ ${Math.abs(diff)} since previous ${days} day(s)`
+              : ` No change since previous ${days} day(s)`;
+      return `${r.name} (${r.platform}): ${r.actionCount} actions (${r.successCount} success / ${r.failureCount} failed), last ${r.lastActionAt.toISOString()}${trend}`;
+    })
     .join('\n');
 }
 
