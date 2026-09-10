@@ -262,7 +262,19 @@ export const projectsAdminTools = [
       if (!args.project) {
         const projects = await listAllProjects();
         if (projects.length === 0) return text('No projects yet.');
-        return text(projects.map((p) => `- ${p.name} [${p.slug}]`).join('\n'));
+        // Batched (issue #1389 AC #5) — one Promise.all across all active
+        // projects, not a serial await-in-loop, so this stays cheap as the
+        // project count grows. Reuses the same listProjectMembers the detail
+        // branch below already calls, so the two counts can never drift.
+        const memberLists = await Promise.all(projects.map((p) => listProjectMembers(p.id)));
+        return text(
+          projects
+            .map((p, i) => {
+              const n = memberLists[i].length;
+              return `- ${p.name} [${p.slug}] (${n} member${n === 1 ? '' : 's'})`;
+            })
+            .join('\n'),
+        );
       }
       const project = await getProjectBySlug(args.project);
       if (!project) return text(`No project "${args.project}".`, true);
