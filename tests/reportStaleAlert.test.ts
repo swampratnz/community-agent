@@ -73,6 +73,14 @@ function admins(entries: Array<Partial<AdminIdentity>>): AdminIdentity[] {
   return entries.map((e, i) => ({ platform: 'discord', platformUserId: `admin-${i}`, ...e }));
 }
 
+// Stands in for the real `recordReporterStaleNotice` (issue #1375): always
+// reports "already notified" (false), so the reporter-notify branch added to
+// makeDefaultReportStaleAlertRun's loop is a guaranteed no-op for every test
+// below that isn't specifically exercising the reporter-notify path itself —
+// otherwise a stale report's reporter DM would land in the very same `dms`
+// array these tests assert the admin alert count against.
+const skipReporterNotice = async () => false;
+
 function makeAdapter(
   connected = true,
   scopeByUser: Record<string, string[]> = {},
@@ -192,6 +200,7 @@ test('SECURITY: the crossing-tick alert DM contains no report id, reporter, targ
     listOpenReportsForAdmin,
     async () => [],
     fakePolicyStore(),
+    skipReporterNotice,
   );
 
   await runOnce();
@@ -223,6 +232,7 @@ test('makeDefaultReportStaleAlertRun: an open-reports set with none older than t
     listOpenReportsForAdmin,
     async () => [],
     fakePolicyStore(),
+    skipReporterNotice,
   );
 
   await runOnce();
@@ -242,6 +252,7 @@ test('makeDefaultReportStaleAlertRun: alerts exactly once on the tick the stale 
     listOpenReportsForAdmin,
     async () => [],
     fakePolicyStore(),
+    skipReporterNotice,
   );
 
   await runOnce(); // 0 -> no alert
@@ -272,6 +283,7 @@ test('makeDefaultReportStaleAlertRun: the latch re-arms once the stale count ret
     listOpenReportsForAdmin,
     async () => [],
     fakePolicyStore(),
+    skipReporterNotice,
   );
 
   await runOnce(); // 0 -> 2, crosses
@@ -300,6 +312,7 @@ test(
       listOpenReportsForAdmin,
       async () => [],
       store,
+      skipReporterNotice,
     );
 
     await runOnce();
@@ -328,6 +341,7 @@ test(
       listOpenReportsForAdmin,
       async () => [],
       store,
+      skipReporterNotice,
     );
 
     await runOnce(); // 0 -> 2, crosses
@@ -346,6 +360,7 @@ test(
       listOpenReportsForAdmin,
       async () => [],
       store,
+      skipReporterNotice,
     );
     await restarted(); // 0 -> 1, crosses again
     assert.equal(
@@ -376,6 +391,7 @@ test(
       listOpenReportsForAdmin,
       async () => [],
       store,
+      skipReporterNotice,
     );
 
     await runOnce();
@@ -406,6 +422,7 @@ test(
       listOpenReportsForAdmin,
       async () => [],
       store,
+      skipReporterNotice,
     );
 
     await assert.doesNotReject(runOnce());
@@ -437,6 +454,7 @@ test(
       listOpenReportsForAdmin,
       async () => [],
       fakePolicyStore(),
+      skipReporterNotice,
     );
 
     await runOnce();
@@ -475,6 +493,7 @@ test(
       listOpenReportsForAdmin,
       resolveViewerIds,
       fakePolicyStore(),
+      skipReporterNotice,
     );
 
     await runOnce();
@@ -503,6 +522,7 @@ test('SECURITY: a WindowClosedError for one admin is queued via queueForWindowRe
     listOpenReportsForAdmin,
     async () => [],
     fakePolicyStore(),
+    skipReporterNotice,
   );
 
   await runOnce();
@@ -551,6 +571,7 @@ test(
       listOpenReportsForAdmin,
       async () => [],
       fakePolicyStore(),
+      skipReporterNotice,
     );
 
     await assert.doesNotReject(runOnce());
@@ -573,6 +594,7 @@ test('alertReportStale: an admin with no adapter matching its platform (or a dis
     listOpenReportsForAdmin,
     async () => [],
     fakePolicyStore(),
+    skipReporterNotice,
   );
 
   await assert.doesNotReject(runOnce());
@@ -583,6 +605,171 @@ test('startReportStaleAlert: always-on, no enable flag — creates a timer even 
   const timer = startReportStaleAlert([], async () => {});
   assert.notEqual(timer, null, 'this job is unconditionally enabled by design');
   if (timer) clearInterval(timer);
+});
+
+// --- reporter-side mid-flight stale notice (issue #1375) -------------------
+
+/** Stands in for `recordReporterStaleNotice`: an in-memory Set, same
+ * "returns true only the first time" contract the real `INSERT ... ON
+ * CONFLICT DO NOTHING` gives. */
+function fakeReporterNoticeRecorder(): (id: number) => Promise<boolean> {
+  const seen = new Set<number>();
+  return async (id: number) => {
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  };
+}
+
+function fakeNotifyStale(): {
+  notifyStale: (adapter: PlatformAdapter, reporterUserId: string, platform: Platform) => Promise<void>;
+  calls: Array<{ reporterUserId: string; platform: Platform }>;
+} {
+  const calls: Array<{ reporterUserId: string; platform: Platform }> = [];
+  return {
+    notifyStale: async (_adapter, reporterUserId, platform) => {
+      calls.push({ reporterUserId, platform });
+    },
+    calls,
+  };
+}
+
+test('reporter stale notice: sent exactly once per report id — a second tick for the same still-stale report does not re-send', async () => {
+  const { adapter } = makeAdapter(true, { 'admin-0': ['convo-1'] });
+  const listOpenReportsForAdmin = async () => [report({ ageHours: 60, id: 5, reporterUserId: 'reporter-1' })];
+  const listAdminIdentities = async () => admins([{}]);
+  const recordReporterStaleNotice = fakeReporterNoticeRecorder();
+  const { notifyStale, calls } = fakeNotifyStale();
+  const runOnce = makeDefaultReportStaleAlertRun(
+    [adapter],
+    listAdminIdentities,
+    listOpenReportsForAdmin,
+    async () => [],
+    fakePolicyStore(),
+    recordReporterStaleNotice,
+    notifyStale,
+  );
+
+  await runOnce();
+  await runOnce();
+
+  assert.deepEqual(calls, [{ reporterUserId: 'reporter-1', platform: 'discord' }]);
+});
+
+test('reporter stale notice: two admins sharing the same stale report in the same tick only ever notify the reporter once', async () => {
+  const { adapter } = makeAdapter(true, { 'admin-a': ['convo-shared'], 'admin-b': ['convo-shared'] });
+  const sharedReport = report({
+    ageHours: 60,
+    id: 9,
+    reporterUserId: 'reporter-1',
+    conversationId: 'convo-shared',
+  });
+  const listOpenReportsForAdmin = async () => [sharedReport];
+  const listAdminIdentities = async () =>
+    admins([{ platformUserId: 'admin-a' }, { platformUserId: 'admin-b' }]);
+  const recordReporterStaleNotice = fakeReporterNoticeRecorder();
+  const { notifyStale, calls } = fakeNotifyStale();
+  const runOnce = makeDefaultReportStaleAlertRun(
+    [adapter],
+    listAdminIdentities,
+    listOpenReportsForAdmin,
+    async () => [],
+    fakePolicyStore(),
+    recordReporterStaleNotice,
+    notifyStale,
+  );
+
+  await runOnce();
+
+  assert.equal(
+    calls.length,
+    1,
+    'the second admin processing the same report id must see it already recorded',
+  );
+});
+
+test(
+  "reporter stale notice: fires independently of this admin's own crossing latch — an admin already latched " +
+    'open (shouldAlert false) still gets their reporter notified',
+  async () => {
+    const { adapter, dms } = makeAdapter(true, { 'admin-0': ['convo-1'] });
+    const store = fakePolicyStore({ [REPORT_STALE_ALERT_POLICY_KEY]: ['discord:admin-0'] });
+    const listOpenReportsForAdmin = async () => [
+      report({ ageHours: 60, id: 11, reporterUserId: 'reporter-1' }),
+    ];
+    const listAdminIdentities = async () => admins([{}]);
+    const recordReporterStaleNotice = fakeReporterNoticeRecorder();
+    const { notifyStale, calls } = fakeNotifyStale();
+    const runOnce = makeDefaultReportStaleAlertRun(
+      [adapter],
+      listAdminIdentities,
+      listOpenReportsForAdmin,
+      async () => [],
+      store,
+      recordReporterStaleNotice,
+      notifyStale,
+    );
+
+    await runOnce();
+
+    assert.equal(dms.length, 0, "the admin's own alert stays latched (already active) and does not re-send");
+    assert.deepEqual(
+      calls,
+      [{ reporterUserId: 'reporter-1', platform: 'discord' }],
+      "the reporter notice must not be gated behind the admin's own shouldAlert",
+    );
+  },
+);
+
+test("SECURITY: reporter stale notice is addressed only to the report's own reporterUserId, never the admin's own id", async () => {
+  const { adapter } = makeAdapter(true, { 'admin-0': ['convo-1'] });
+  const listOpenReportsForAdmin = async () => [
+    report({ ageHours: 60, id: 21, reporterUserId: 'reporter-distinct-from-admin' }),
+  ];
+  const listAdminIdentities = async () => admins([{ platformUserId: 'admin-0' }]);
+  const recordReporterStaleNotice = fakeReporterNoticeRecorder();
+  const { notifyStale, calls } = fakeNotifyStale();
+  const runOnce = makeDefaultReportStaleAlertRun(
+    [adapter],
+    listAdminIdentities,
+    listOpenReportsForAdmin,
+    async () => [],
+    fakePolicyStore(),
+    recordReporterStaleNotice,
+    notifyStale,
+  );
+
+  await runOnce();
+
+  assert.deepEqual(calls, [{ reporterUserId: 'reporter-distinct-from-admin', platform: 'discord' }]);
+});
+
+test("reporter stale notice: a throwing recordReporterStaleNotice for one report is caught, never blocking another stale report or this admin's own alert", async () => {
+  const { adapter, dms } = makeAdapter(true, { 'admin-0': ['convo-1'] });
+  const listOpenReportsForAdmin = async () => [
+    report({ ageHours: 60, id: 31, reporterUserId: 'reporter-broken' }),
+    report({ ageHours: 60, id: 32, reporterUserId: 'reporter-fine' }),
+  ];
+  const listAdminIdentities = async () => admins([{}]);
+  const recordReporterStaleNotice = async (id: number) => {
+    if (id === 31) throw new Error('transient DB blip');
+    return true;
+  };
+  const { notifyStale, calls } = fakeNotifyStale();
+  const runOnce = makeDefaultReportStaleAlertRun(
+    [adapter],
+    listAdminIdentities,
+    listOpenReportsForAdmin,
+    async () => [],
+    fakePolicyStore(),
+    recordReporterStaleNotice,
+    notifyStale,
+  );
+
+  await assert.doesNotReject(runOnce());
+
+  assert.deepEqual(calls, [{ reporterUserId: 'reporter-fine', platform: 'discord' }]);
+  assert.equal(dms.length, 1, "this admin's own alert must still fire despite one reporter notice failing");
 });
 
 // --- the scan bound -----------------------------------------------------

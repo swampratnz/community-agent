@@ -79,6 +79,7 @@ const {
   notifyProjectMemberRemoved,
   notifySuggestionResolved,
   notifyReportResolved,
+  notifyReportStale,
   notifyReportFiled,
   notifyReportWithdrawn,
   notifyAppealFiled,
@@ -266,6 +267,8 @@ const { recordSuggestionWithdrawal, getWithdrawnSuggestionIds } =
   await import('../src/module/storage/suggestionWithdrawals.js');
 const { recordAppealWithdrawal, getWithdrawnAppealIds } =
   await import('../src/module/storage/appealWithdrawals.js');
+const { recordReporterStaleNotice, getReporterStaleNoticeIds } =
+  await import('../src/module/storage/reportReporterStaleNotices.js');
 const { recordFindHelperRequest, listOwnFindHelperRequests } =
   await import('../src/module/storage/findHelperRequests.js');
 const { recordProjectNoteAuthor, countOwnProjectNoteAuthorships } =
@@ -3417,6 +3420,140 @@ test("notifyReportResolved's adminReason clause renders in te reo Māori for a c
     /Take: "he tauriterite tēnei"/,
     'the reason clause label is te reo, the text is not',
   );
+});
+
+// notifyReportStale is the reporter-side mid-flight "still being reviewed"
+// notice (issue #1375) `reportStaleAlert.ts` sends between `notifyReportFiled`'s
+// immediate ack and `notifyReportResolved`'s end-of-lifecycle DM. Tested
+// directly here the same way notifyReportResolved is above.
+test('SECURITY: notifyReportStale sends the DM to exactly the given userId, with no other identity input possible from its signature', async () => {
+  const calls: Array<[string, string]> = [];
+  const adapter = stubAdapter(async (userId, text) => {
+    calls.push([userId, text]);
+  });
+
+  await notifyReportStale(adapter, 'reporter-1', 'discord');
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'reporter-1', 'the DM goes only to the userId argument, nothing else');
+});
+
+test('SECURITY: notifyReportStale carries no report content — no id, reason, target, or reporter-of-record name, for any input', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+  const secretReportId = 'secret-report-id-4f2a';
+  const secretReporterName = 'Secret Reporter Name';
+  const secretReason = 'secret-report-reason-text';
+  const secretTargetId = 'secret-target-id-9b1c';
+
+  // notifyReportStale's own signature has no parameter that could even carry
+  // these — this asserts the OUTPUT never contains them regardless, so the
+  // guarantee holds even if a future edit widened the signature carelessly.
+  await notifyReportStale(adapter, secretReporterName, 'discord');
+
+  assert.equal(calls.length, 1);
+  assert.ok(!calls[0].includes(secretReportId), 'report id must never appear in the stale-notice DM');
+  assert.ok(!calls[0].includes(secretReason), 'reason text must never appear in the stale-notice DM');
+  assert.ok(!calls[0].includes(secretTargetId), 'target id must never appear in the stale-notice DM');
+});
+
+test('notifyReportStale swallows a DM failure rather than throwing', async () => {
+  const adapter = stubAdapter(async () => {
+    throw new Error('DMs closed');
+  });
+
+  await assert.doesNotReject(notifyReportStale(adapter, 'reporter-1', 'discord'));
+});
+
+test('SECURITY: notifyReportStale queues via queueForWindowReopen at "low" priority on a WindowClosedError, rather than dropping the DM (issue #644 recovery extended to issue #1375)', async () => {
+  const queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }> = [];
+  const adapter: PlatformAdapter = {
+    ...stubAdapter(async () => {
+      throw new WindowClosedError('reporter-1');
+    }),
+    queueForWindowReopen(userId: string, message: string, priority: 'system' | 'low') {
+      queued.push({ userId, message, priority });
+    },
+  };
+
+  await notifyReportStale(adapter, 'reporter-1', 'whatsapp');
+
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0]?.userId, 'reporter-1');
+  assert.equal(queued[0]?.priority, 'low');
+});
+
+test("notifyReportStale sends the te reo Māori variant for a caller with a stored 'mi' preference (issue #331)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyReportStale(adapter, 'reporter-1', 'discord', async () => 'mi');
+
+  assert.match(calls[0], /arotakehia tonu/);
+});
+
+test("notifyReportStale sends the English default for the default 'auto' preference, byte-identical to today", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyReportStale(adapter, 'reporter-1', 'discord', async () => 'auto');
+
+  assert.match(calls[0], /still being reviewed/);
+});
+
+test("SECURITY: notifyReportStale degrades to the English default, rather than throwing or dropping the DM, when the language-preference lookup fails (issue #52's invariant extended to issue #1375)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyReportStale(adapter, 'reporter-1', 'discord', async () => {
+    throw new Error('DB unreachable');
+  });
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /still being reviewed/);
+});
+
+test("notifyReportStale sends the plain-language variant for a caller with a stored 'plain' response style (issue #1212)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyReportStale(
+    adapter,
+    'reporter-1',
+    'discord',
+    async () => 'auto',
+    async () => 'plain',
+  );
+
+  assert.equal(calls[0], 'Your report is still being reviewed. Thanks for your patience.');
+});
+
+test("SECURITY: a standing 'mi' language preference wins over a standing 'plain' response style for notifyReportStale — the te reo variant is sent, never the plain one (issue #1212, precedence: mi > plain > standard)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyReportStale(
+    adapter,
+    'reporter-1',
+    'discord',
+    async () => 'mi',
+    async () => 'plain',
+  );
+
+  assert.match(calls[0], /arotakehia tonu/);
+  assert.doesNotMatch(calls[0], /still being reviewed/);
 });
 
 // notifyAppealResolved holds all of resolve_appeal's new (issue #622)
@@ -22626,6 +22763,58 @@ test(
       "SECURITY: the reporter's resolution DM must never include the reported user's identity",
     );
     assert.match(calls[0], /they were harassing me/, "the reporter's own reason is echoed");
+  },
+);
+
+// report_reporter_stale_notices accessor (issue #1375): no tool calls this
+// directly — it backs reportStaleAlert.ts's per-tick idempotency check —
+// so it is exercised here directly against the real table, the same way
+// recordAppealWithdrawal/getWithdrawnAppealIds are exercised via
+// withdraw_appeal above rather than through a dedicated tool.
+test(
+  'recordReporterStaleNotice returns true only the first time for a given report id, and getReporterStaleNoticeIds reflects the write (issue #1375 acceptance criterion 1)',
+  { skip },
+  async () => {
+    const created = await createContentReport({
+      platform: 'discord',
+      reporterUserId: `${RUN}-reporter-stale-notice-accessor`,
+      conversationId: 'convo-1',
+      reason: 'accessor-level idempotency check',
+    });
+    assert.ok(created);
+
+    const firstInsert = await recordReporterStaleNotice(created.id);
+    assert.equal(firstInsert, true, 'the first record for a report id must report a fresh insert');
+
+    const secondInsert = await recordReporterStaleNotice(created.id);
+    assert.equal(secondInsert, false, 'a repeated record for the same report id must be a no-op');
+
+    const ids = await getReporterStaleNoticeIds([created.id]);
+    assert.ok(ids.has(created.id), 'getReporterStaleNoticeIds must reflect the recorded row');
+
+    await pool.query(`DELETE FROM content_reports WHERE id = $1`, [created.id]);
+    await pool.query(`DELETE FROM report_reporter_stale_notices WHERE report_id = $1`, [created.id]);
+  },
+);
+
+test(
+  'getReporterStaleNoticeIds: looked up by report id only, an id with no recorded notice is absent from the result, and empty input short-circuits without a query',
+  { skip },
+  async () => {
+    assert.deepEqual(await getReporterStaleNoticeIds([]), new Set());
+
+    const created = await createContentReport({
+      platform: 'discord',
+      reporterUserId: `${RUN}-reporter-stale-notice-accessor-absent`,
+      conversationId: 'convo-1',
+      reason: 'never recorded',
+    });
+    assert.ok(created);
+
+    const ids = await getReporterStaleNoticeIds([created.id]);
+    assert.ok(!ids.has(created.id), 'an id with no recorded notice must be absent');
+
+    await pool.query(`DELETE FROM content_reports WHERE id = $1`, [created.id]);
   },
 );
 

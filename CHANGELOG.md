@@ -48,6 +48,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   member had more warnings than the default limit. A new optional
   `oldestFirst` flag reorders the same data ascending by date, matching the
   `oldestFirst` option already on `list_muted_members`/`list_blocked_members`.
+- **Filed a content report? You'll now hear from us once while it's still
+  being looked at, not just at the very start and the very end.** (#1375)
+  `report_content` only ever gave a reporter two signals: an ack on filing,
+  and a DM once an admin resolved or dismissed it — nothing in between, even
+  though admins already get a nudge once a report sits unreviewed for 48
+  hours. Silence in the middle of a harassment or abuse report is easy to
+  read as being ignored. A stale report's reporter now gets a single,
+  content-free "still being reviewed, thanks for your patience" DM the first
+  time it crosses that same 48-hour mark — never repeated, and never naming
+  the report, its reason, or the person it was filed against.
 
 ## 2026-09-09
 
