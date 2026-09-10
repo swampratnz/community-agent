@@ -297,7 +297,8 @@ export const superAdminTools = [
       );
       const named = await Promise.all(
         rows.map(async (r) => {
-          const doubleWindowCount = doubleWindowCountByKey.get(`${r.platform}:${r.actorUserId}`) ?? r.actionCount;
+          const doubleWindowCount =
+            doubleWindowCountByKey.get(`${r.platform}:${r.actorUserId}`) ?? r.actionCount;
           return {
             ...r,
             name: (await resolveDisplayName(r.platform, r.actorUserId)) ?? r.actorUserId,

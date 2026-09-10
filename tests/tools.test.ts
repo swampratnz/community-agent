@@ -16996,57 +16996,54 @@ test('formatAdminActivity renders one line per actor sorted by action count desc
   );
 });
 
-test(
-  'formatAdminActivity renders a rise, a fall, a flat "No change" and a "new this period" marker per admin (issue #1387 acceptance criterion 5)',
-  () => {
-    const out = formatAdminActivity(
-      [
-        {
-          name: 'Rising',
-          platform: 'discord',
-          actionCount: 10,
-          successCount: 10,
-          failureCount: 0,
-          lastActionAt: new Date('2026-06-01T00:00:00.000Z'),
-          previousActionCount: 4,
-        },
-        {
-          name: 'Falling',
-          platform: 'discord',
-          actionCount: 2,
-          successCount: 2,
-          failureCount: 0,
-          lastActionAt: new Date('2026-06-01T00:00:00.000Z'),
-          previousActionCount: 9,
-        },
-        {
-          name: 'Flat',
-          platform: 'discord',
-          actionCount: 5,
-          successCount: 5,
-          failureCount: 0,
-          lastActionAt: new Date('2026-06-01T00:00:00.000Z'),
-          previousActionCount: 5,
-        },
-        {
-          name: 'NewAdmin',
-          platform: 'discord',
-          actionCount: 3,
-          successCount: 3,
-          failureCount: 0,
-          lastActionAt: new Date('2026-06-01T00:00:00.000Z'),
-          previousActionCount: 0,
-        },
-      ],
-      7,
-    );
-    const lines = out.split('\n');
-    assert.match(lines[0] ?? '', /^Rising \(discord\): 10 actions .* ▲ 6 since previous 7 day\(s\)$/);
-    assert.match(lines[1] ?? '', /^Falling \(discord\): 2 actions .* ▼ 7 since previous 7 day\(s\)$/);
-    assert.match(lines[2] ?? '', /^Flat \(discord\): 5 actions .* No change since previous 7 day\(s\)$/);
-    assert.match(lines[3] ?? '', /^NewAdmin \(discord\): 3 actions .* \(new this period\)$/);
-  },
-);
+test('formatAdminActivity renders a rise, a fall, a flat "No change" and a "new this period" marker per admin (issue #1387 acceptance criterion 5)', () => {
+  const out = formatAdminActivity(
+    [
+      {
+        name: 'Rising',
+        platform: 'discord',
+        actionCount: 10,
+        successCount: 10,
+        failureCount: 0,
+        lastActionAt: new Date('2026-06-01T00:00:00.000Z'),
+        previousActionCount: 4,
+      },
+      {
+        name: 'Falling',
+        platform: 'discord',
+        actionCount: 2,
+        successCount: 2,
+        failureCount: 0,
+        lastActionAt: new Date('2026-06-01T00:00:00.000Z'),
+        previousActionCount: 9,
+      },
+      {
+        name: 'Flat',
+        platform: 'discord',
+        actionCount: 5,
+        successCount: 5,
+        failureCount: 0,
+        lastActionAt: new Date('2026-06-01T00:00:00.000Z'),
+        previousActionCount: 5,
+      },
+      {
+        name: 'NewAdmin',
+        platform: 'discord',
+        actionCount: 3,
+        successCount: 3,
+        failureCount: 0,
+        lastActionAt: new Date('2026-06-01T00:00:00.000Z'),
+        previousActionCount: 0,
+      },
+    ],
+    7,
+  );
+  const lines = out.split('\n');
+  assert.match(lines[0] ?? '', /^Rising \(discord\): 10 actions .* ▲ 6 since previous 7 day\(s\)$/);
+  assert.match(lines[1] ?? '', /^Falling \(discord\): 2 actions .* ▼ 7 since previous 7 day\(s\)$/);
+  assert.match(lines[2] ?? '', /^Flat \(discord\): 5 actions .* No change since previous 7 day\(s\)$/);
+  assert.match(lines[3] ?? '', /^NewAdmin \(discord\): 3 actions .* \(new this period\)$/);
+});
 
 test('SECURITY: formatAdminActivity never renders admin_audit.params content — only actor/count/timestamp fields (issue #488)', () => {
   const sentinel = 'SENTINEL-FREE-TEXT-REASON-NEVER-SHOWN';
@@ -44121,10 +44118,23 @@ test(
         'an actor with no resolvable name falls back to the raw platform user id',
       );
       assert.ok(!out.includes(sentinel), 'admin_audit.params content must never appear in the reply');
-      assert.equal(
-        (out.match(/\(new this period\)/g) ?? []).length,
-        2,
-        'both actors have no prior-window activity, so both rows render the new-this-period marker (issue #1387)',
+      // admin_activity is a global (unscoped) rollup, so `out` also contains
+      // rows from other tests/actors running concurrently — match each of
+      // THIS test's own actor lines specifically rather than counting the
+      // marker across the whole reply (issue #1387).
+      assert.match(
+        out,
+        new RegExp(
+          `${RUN} Known Actor \\(discord\\): 1 actions \\(1 success / 0 failed\\)[^\\n]*\\(new this period\\)`,
+        ),
+        'the known actor has no prior-window activity and renders the new-this-period marker',
+      );
+      assert.match(
+        out,
+        new RegExp(
+          `${unknownActor} \\(discord\\): 1 actions \\(1 success / 0 failed\\)[^\\n]*\\(new this period\\)`,
+        ),
+        'the unknown actor has no prior-window activity and renders the new-this-period marker',
       );
     } finally {
       await pool.query(`DELETE FROM admin_audit WHERE actor_user_id = ANY($1)`, [[knownActor, unknownActor]]);
@@ -44151,9 +44161,10 @@ test(
         success: true,
       });
     }
-    await pool.query(`UPDATE admin_audit SET created_at = now() - interval '10 days' WHERE actor_user_id = $1`, [
-      risingActor,
-    ]);
+    await pool.query(
+      `UPDATE admin_audit SET created_at = now() - interval '10 days' WHERE actor_user_id = $1`,
+      [risingActor],
+    );
     for (let i = 0; i < 5; i++) {
       await recordAdminAction({
         platform: 'discord',
@@ -44197,7 +44208,7 @@ test(
 );
 
 test(
-  'SECURITY/privacy: admin_activity writes no new persisted state — the trend is computed transiently from admin_audit reads only (issue #1387 acceptance criterion 7)',
+  'SECURITY: admin_activity writes no new persisted state (privacy) — the trend is computed transiently from admin_audit reads only (issue #1387 acceptance criterion 7)',
   { skip },
   async () => {
     const actorId = `${RUN}-aa-persist-check`;
