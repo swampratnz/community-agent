@@ -94,6 +94,18 @@ export const KNOWLEDGE_FIX_NOTIFY_TRUNCATION_CAVEAT =
   "scope, so this entry's own past raters may have fallen outside the notification fetch window and " +
   'not all received a fix DM.';
 
+// list_answer_feedback's oldestFirst (issue #1379): `listAnswerFeedback`
+// (agent-base) has no ordering parameter and is always newest-first,
+// hard-clamped at 200 rows — the same clamp KNOWLEDGE_FIX_NOTIFY_FETCH_CAP's
+// own comment above documents and that this repo cannot raise without an
+// agent-base change. So `oldestFirst: true` below can only ever fetch the
+// newest LIST_ANSWER_FEEDBACK_SCAN_LIMIT matching rows (one bounded call,
+// never a second) and sort that window ascending by createdAt in JS — the
+// same bounded, precedent-accepted tradeoff as LIST_MEMBER_WARNINGS_SCAN_LIMIT
+// (moderation.ts, issue #1371) and the rest of the oldestFirst sweep (#1255,
+// #1259, #1261, #1265, #1267).
+const LIST_ANSWER_FEEDBACK_SCAN_LIMIT = 200;
+
 /**
  * Collects the deduped, capped set of unhelpful raters to notify when
  * update_knowledge/merge_knowledge fixes one of `entryIds` (issue #1169).
@@ -951,12 +963,46 @@ export const knowledgeAdminTools = [
     schema: {
       unhelpfulOnly: z.boolean().optional().describe('Only show unhelpful (thumbs-down) ratings'),
       limit: z.number().optional().describe('Max entries (default 50)'),
+      oldestFirst: z
+        .boolean()
+        .optional()
+        .describe(
+          'Order by createdAt ascending (earliest rating first) instead of the default newest-first — ' +
+            'use this to tell whether answer quality is degrading over weeks (unhelpful ratings trickling ' +
+            'in and worsening) from a single recent bad batch. Approximate for a scope with a long history: ' +
+            `only scans the ${LIST_ANSWER_FEEDBACK_SCAN_LIMIT} most recent ratings (within your scope, and ` +
+            'respecting unhelpfulOnly) before sorting, so if that many or more exist, the true earliest may ' +
+            'fall outside what was scanned — the response says so explicitly when this happens.',
+        ),
     },
     handler: async (args, { caller, callerScope }) => {
       assertAtLeast(caller.role, 'admin', 'list_answer_feedback');
       const allowed = await callerScope();
-      const rows = await listAnswerFeedback(allowed, args.unhelpfulOnly ?? false, args.limit ?? 50);
+      // oldestFirst: true takes exactly one bounded read (never a second
+      // call) and sorts/slices in JS — see LIST_ANSWER_FEEDBACK_SCAN_LIMIT
+      // above. False/omitted stays byte-identical to before this field
+      // existed, using the identical single-call shape as before.
+      const scanned = args.oldestFirst
+        ? await listAnswerFeedback(allowed, args.unhelpfulOnly ?? false, LIST_ANSWER_FEEDBACK_SCAN_LIMIT)
+        : null;
+      const rows = scanned
+        ? [...scanned]
+            .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+            .slice(0, args.limit ?? 50)
+        : await listAnswerFeedback(allowed, args.unhelpfulOnly ?? false, args.limit ?? 50);
       if (rows.length === 0) return text('No answer feedback found (within your conversations).');
+      // Truncation caveat (mirrors list_member_warnings'/list_muted_members'
+      // above): `scanned` hitting exactly LIST_ANSWER_FEEDBACK_SCAN_LIMIT
+      // means the admin's scope may hold more ratings than the single bounded
+      // scan could see, so the "oldest" rows below only ever come from the
+      // most recent LIST_ANSWER_FEEDBACK_SCAN_LIMIT ones — the genuine
+      // earliest could be outside that window and missing here.
+      const truncationCaveat =
+        scanned && scanned.length === LIST_ANSWER_FEEDBACK_SCAN_LIMIT
+          ? ` ⚠️ oldestFirst caveat: list_answer_feedback found ${LIST_ANSWER_FEEDBACK_SCAN_LIMIT}+ ratings ` +
+            `in your scope, so only the ${LIST_ANSWER_FEEDBACK_SCAN_LIMIT} most recent ones were scanned ` +
+            'before sorting — the true oldest may not be shown above.'
+          : '';
       return text(
         rows
           .map((r) => {
@@ -970,7 +1016,7 @@ export const knowledgeAdminTools = [
               `${knowledgeNote} (${r.createdAt.toISOString()})${answerText}${commentText}`
             );
           })
-          .join('\n'),
+          .join('\n') + truncationCaveat,
       );
     },
   }),
