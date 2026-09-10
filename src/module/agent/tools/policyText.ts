@@ -124,8 +124,8 @@ export const policyTextTools = [
     name: 'welcome_message',
     description:
       "Return this community's currently configured welcome message — both the default (en) and te reo " +
-      "Māori (mi) variants — exactly as an admin set them via set_welcome_message. Call this to check " +
-      "whether a write took effect, or what a new joiner currently receives. Admin only.",
+      'Māori (mi) variants — exactly as an admin set them via set_welcome_message. Call this to check ' +
+      'whether a write took effect, or what a new joiner currently receives. Admin only.',
     minTier: 'admin',
     readOnlyHint: true,
     schema: {},

@@ -734,7 +734,8 @@ const NOTICE_ENTRIES = {
       '- See who is waiting for access, decline a pending access request without granting it, or see who ' +
       'has joined or left the server\n' +
       "- Add a note about a member, review notes on a member, delete a note, or look up a member's history across conversations\n" +
-      '- Set the community guidelines or the welcome message shown to new members\n' +
+      '- Set the community guidelines or the welcome message shown to new members, or read back the ' +
+      'currently configured welcome message in both languages\n' +
       '- Assign a Discord role, remove a Discord role, or list which roles are available to assign\n' +
       "- Set up team projects: create one, give a member access, take a member's access away, allow or " +
       'stop it being discussed here, review who has access, or archive a finished project and bring it ' +
@@ -773,7 +774,8 @@ const NOTICE_ENTRIES = {
         'tiro rānei i te hunga kua uru mai, kua wehe rānei i te tūmau\n' +
         '- Tāpiri i tētahi tuhinga mō tētahi mema, arotake i ngā tuhinga mō tētahi mema, muku i tētahi ' +
         'tuhinga, rapu rānei i te hītori o tētahi mema puta noa i ngā kōrerorero\n' +
-        '- Whakarite i ngā tikanga hapori, i te karere pōwhiri rānei e whakaatuhia ana ki ngā mema hōu\n' +
+        '- Whakarite i ngā tikanga hapori, i te karere pōwhiri rānei e whakaatuhia ana ki ngā mema hōu, ā, ' +
+        'arotake i te karere pōwhiri e whakaritea ana ināianei i ngā reo e rua\n' +
         '- Tuku tūranga (role) Discord, tango tūranga Discord, whakarārangi rānei i ngā tūranga e wātea ana ' +
         'mō te tuku\n' +
         '- Whakarite kaupapa mō te tīma: hanga i tētahi, tuku urunga ki tētahi mema, tango i te urunga a ' +
