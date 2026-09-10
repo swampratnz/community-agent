@@ -225,18 +225,21 @@ export const knowledgeMemberTools = [
   // scoped lookup who_is_into({mine:true}) already uses, issue #1022) fed
   // straight into searchKnowledge — the identical framework call
   // knowledge_search makes — and rendered through the existing
-  // formatKnowledgeSearchResults, unchanged. Deliberately the SMALLEST
-  // viable composition: unlike knowledge_search's own handler above, this
-  // adds no lexical fallback and no gap/stale turn-state writes or
-  // retrieval-count bump — those remain deliberately out of scope (#1287).
-  // The low-rated/conflict caveats below are NOT new scope, though: #1287's
-  // own acceptance criterion #1 promised them via reuse of
-  // formatKnowledgeSearchResults, and issue #1321 closes the gap between
+  // formatKnowledgeSearchResults, unchanged. Unlike knowledge_search's own
+  // handler above, this adds no lexical fallback and no knowledge-gap
+  // turn-state write — a "no interests published"/"no hits" outcome here
+  // isn't a content gap in the same sense a failed search query is, so that
+  // stays deliberately out of scope (#1287). The retrieval-count bump and the
+  // stale-alert turn-state write, previously deferred here too, were closed
+  // by issue #1383 — see the calls below, byte-for-byte matching
+  // knowledge_search's own. The low-rated/conflict caveats below are NOT new
+  // scope either: #1287's own acceptance criterion #1 promised them via reuse
+  // of formatKnowledgeSearchResults, and issue #1321 closes the gap between
   // that promise and the bare call this handler used to make. Gating and
   // fail-safe behaviour mirror knowledge_search's identical lookups above in
   // this same file exactly. The `lastKnowledgeHitId` feedback-attribution
   // stamp (issue #1325) was never a deliberate deferral here (unlike the
-  // three above), so it's reused too — see the stamp below.
+  // gap-write above), so it's reused too — see the stamp below.
   defineTool({
     name: 'knowledge_for_me',
     description:
@@ -276,6 +279,14 @@ export const knowledgeMemberTools = [
       const relevantIds = hits
         .filter((h) => h.similarity >= KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD)
         .map((h) => h.id);
+      // Fire-and-forget usage tracking (issue #1383) — byte-for-byte the same
+      // call knowledge_search's own handler above makes on its identically-
+      // computed relevantIds. recordKnowledgeRetrieval no-ops (no SQL issued)
+      // for an empty id array, so calling this unconditionally here is still
+      // a true no-op on a non-qualifying call (acceptance criterion 4).
+      recordKnowledgeRetrieval(relevantIds).catch((err) =>
+        logger.warn({ err }, 'Knowledge retrieval count update failed'),
+      );
       // Best-effort knowledge_search-hit correlation (issue #1325), byte-
       // identical to knowledge_search's own stamp above: only overwrite on a
       // QUALIFYING call, so a later no-hit call in the same turn never
@@ -301,6 +312,25 @@ export const knowledgeMemberTools = [
               return new Set<number>();
             })
           : new Set<number>();
+      // Real-time stale-knowledge admin nudge (issue #1383), the same #701
+      // nudge knowledge_search's handler above gives its own hits — one
+      // adaptation: this tool has no lexical fallback, so the loop runs over
+      // `hits` filtered on the same relevance floor rather than
+      // knowledge_search's `finalHits`/`viaLexical` union.
+      if (config.knowledgeStaleAlert.enabled && turnState) {
+        for (const h of hits) {
+          if (h.similarity < KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD) continue;
+          if (
+            isKnowledgeStale(
+              { updatedAt: h.updatedAt, lastRetrievedAt: h.lastRetrievedAt ?? null },
+              config.adminDigest.knowledgeStaleDays,
+              config.adminDigest.knowledgeStaleMaxAgeDays,
+            )
+          ) {
+            (turnState.staleKnowledgeAlertIds ??= []).push(h.id);
+          }
+        }
+      }
       return text(
         formatKnowledgeSearchResults(
           hits,
