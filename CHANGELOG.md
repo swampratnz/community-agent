@@ -23,7 +23,7 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #868 #896 #899 #904 #949 #950 #951 #952 #953 #954 #955 #956 #957 #958 #961
 #963 #964 #965 #968 #971 #983 #988 #989 #991 #992 #994 #1017 #1071 #1086
 #1122 #1123 #1132 #1232 #1236 #1248 #1281 #1284 #1304 #1308 #1310
-#1355 #1356 #1357 #1381
+#1355 #1356 #1357 #1341 #1350 #1360 #1381
 -->
 
 ## 2026-09-10
@@ -68,6 +68,19 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   variants at once, each with its own clear "not set" fallback, so an admin
   can verify a write (including the mi variant) without needing to flip
   their own language preference first.
+
+### Fixed
+- **`knowledge_for_me` answers now count toward an entry's usage stats and
+  the stale-knowledge nudge, like every other knowledge-serving path.**
+  (#1383) `knowledge_for_me` (#1287) searches the knowledge base using a
+  member's own published interests, but never told the two things that track
+  whether an entry is actually useful: the retrieval count `most_helpful_
+  knowledge`/admin rankings rely on, and the real-time "this may be
+  outdated" nudge admins get for a stale entry (#701). An entry reached
+  mostly through this discovery path was quietly under-counted and could
+  drift toward looking abandoned even while it was being served. Both
+  writes now fire exactly as `knowledge_search` already does for the same
+  kind of hit.
 
 ## 2026-09-09
 
