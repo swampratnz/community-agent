@@ -69,6 +69,7 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 
 ### Fixed
 
+- **Dave keeps track of who he's talking to in group chats.** Dave keeps one ongoing conversation per chat, and it kept whatever instructions it started with. So in a group, everyone after the first person was handled as if they were that first person: an admin could be told they weren't an admin, and one member's style or language preference applied to everyone. Dave now starts a fresh conversation whenever who he's talking to (or his instructions) changes, bringing the last few messages along as context. Changes to how Dave talks now also reach existing chats straight away.
 - **Link summaries now read the page, not its scaffolding.** Dave was handed raw HTML cut at 12,000 characters. On many sites, GitHub repo pages included, that is all `<head>` boilerplate, so he had nothing real to summarise and could fill the gap with guesses. He now gets the page's readable text (the article or main content first, with scripts, styles and navigation dropped). A page with no readable text, such as a JavaScript-only app or a login wall, now gets an honest "I couldn't read that" instead of a made-up summary.
 
 ### Changed
