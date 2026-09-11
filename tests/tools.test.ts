@@ -8450,6 +8450,7 @@ test('SECURITY: community_info for a WhatsApp caller with whatsappTextCommandsEn
         '- `!status` — check for a known Anthropic outage\n' +
         '- `!kbtopics` — browse what the knowledge base covers\n' +
         '- `!kbhelpful` — see the most relied-on knowledge entries\n' +
+        '- `!kbforme` — knowledge search using your own published interests\n' +
         '- `!warnings` — your own active warning count\n' +
         '- `!mysubmissions` — status of your filed suggestions/reports\n' +
         '- `!mydata` — what the bot has stored about you\n' +
@@ -9810,6 +9811,7 @@ test(
       '- `!status` — check for a known Anthropic outage\n' +
       '- `!kbtopics` — browse what the knowledge base covers\n' +
       '- `!kbhelpful` — see the most relied-on knowledge entries\n' +
+      '- `!kbforme` — knowledge search using your own published interests\n' +
       '- `!warnings` — your own active warning count\n' +
       '- `!mysubmissions` — status of your filed suggestions/reports\n' +
       '- `!mydata` — what the bot has stored about you\n' +

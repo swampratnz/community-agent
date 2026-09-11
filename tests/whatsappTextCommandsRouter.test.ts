@@ -77,6 +77,7 @@ const {
   insertContextDigest,
   listAdminRoster,
   listKnowledge,
+  searchKnowledge,
   setLanguagePreference,
 } = await import('@swampratnz/agent-base/storage/repository.js');
 const {
@@ -84,6 +85,7 @@ const {
   formatAdminRoster,
   formatBlockedMembersList,
   formatFeatureFlags,
+  formatKnowledgeSearchResults,
   formatListProjectsEmptyText,
   formatMostHelpfulKnowledge,
   formatMutedMembersList,
@@ -2813,6 +2815,254 @@ test('SECURITY: !kbhelpful still replies successfully with the entries and no co
     'a lookup failure must degrade to no conflict caveat, never an error',
   );
   assert.ok(warnLog.mock.calls.length >= 1, 'the lookup failure must be logged, not silently swallowed');
+});
+
+// --- !kbforme (issue #1411) ---------------------------------------------------
+
+/**
+ * Stubs `pool.query`'s role branch plus `FROM member_interests` and
+ * `FROM knowledge` (`searchKnowledge`'s own read, `!kbforme` calls it
+ * DIRECTLY — never through a `deps.*Fn`, same reasoning as
+ * `mockPoolRoleAndInterests` above for `!whois mine`/`!kbforme`'s own
+ * interests lookup). The conflict/low-rated lookups both also touch the
+ * `knowledge` table, so they are matched FIRST by their own distinguishing
+ * substring, same specific-first discipline `discordSlashCommands.test.ts`'s
+ * `mockPool` uses.
+ */
+function mockPoolRoleInterestsAndKnowledge(
+  t: { mock: { method: typeof import('node:test').mock.method } },
+  role: 'admin' | 'member' | null,
+  interestRows: Array<Record<string, unknown>> = [],
+  knowledgeRows: Array<Record<string, unknown>> = [],
+  opts: { conflictExists?: boolean; lowRatedIds?: number[] } = {},
+): Array<{ sql: string; params: unknown[] }> {
+  const calls: Array<{ sql: string; params: unknown[] }> = [];
+  t.mock.method(pool, 'query', (async (sql: string, params: unknown[] = []) => {
+    calls.push({ sql, params });
+    if (sql.includes('SELECT role FROM community_users')) {
+      return { rows: role ? [{ role }] : [], rowCount: 0 };
+    }
+    if (sql.includes('JOIN knowledge b')) {
+      return { rows: opts.conflictExists ? [{ '?column?': 1 }] : [], rowCount: 0 };
+    }
+    if (sql.includes('FROM answer_feedback')) {
+      return { rows: (opts.lowRatedIds ?? []).map((id) => ({ id })), rowCount: 0 };
+    }
+    if (sql.includes('FROM member_interests')) {
+      return { rows: interestRows, rowCount: 0 };
+    }
+    if (sql.includes('FROM knowledge')) {
+      return { rows: knowledgeRows, rowCount: 0 };
+    }
+    return { rows: [], rowCount: 0 };
+  }) as typeof pool.query);
+  return calls;
+}
+
+test(
+  "!kbforme returns text byte-identical to what formatKnowledgeSearchResults renders for searchKnowledge's own " +
+    "hits on the caller's published interests text — proving this is the real read pipeline knowledge_for_me " +
+    'uses, not a re-derivation (issue #1411 acceptance criterion 1)',
+  async (t) => {
+    const interests = 'rust and distributed systems';
+    const knowledgeRows = [
+      {
+        id: 1,
+        title: 'Distributed systems FAQ',
+        content: 'KBFORME_HIT_TEXT',
+        created_by_role: 'admin',
+        similarity: 0.9,
+        updated_at: new Date(),
+      },
+    ];
+    mockPoolRoleInterestsAndKnowledge(
+      t,
+      'member',
+      [{ platform: 'whatsapp', user_id: 'member-1', interests }],
+      knowledgeRows,
+    );
+    const router = makeRouter({ runTurn: throwingRunTurn });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!kbforme', userId: 'member-1' }));
+
+    const hits = await searchKnowledge(interests, { platform: 'whatsapp', conversationId: 'wa-conv-1' });
+    const expected = formatKnowledgeSearchResults(
+      hits,
+      config.adminDigest.knowledgeStaleDays,
+      config.adminDigest.knowledgeStaleMaxAgeDays,
+      false,
+      new Set(),
+    );
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].text, expected);
+    assert.match(sent[0].text, /KBFORME_HIT_TEXT/);
+  },
+);
+
+test(
+  "!kbforme renders formatWhoIsIntoEmptyText('noProfile', ...) verbatim, and never calls searchKnowledge, " +
+    'for a caller with no published interests (issue #1411 acceptance criterion 1)',
+  async (t) => {
+    const calls = mockPoolRoleInterestsAndKnowledge(t, 'member', []);
+    const router = makeRouter({ runTurn: throwingRunTurn });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!kbforme', userId: 'member-1' }));
+
+    assert.equal(sent[0].text, formatWhoIsIntoEmptyText('noProfile', 'auto'));
+    assert.ok(
+      !calls.some((c) => c.sql.includes('FROM knowledge')),
+      'a caller with no published interests must never reach searchKnowledge',
+    );
+  },
+);
+
+test(
+  "!kbforme's no-profile guidance is translated for a caller with a standing 'mi' language preference (issue " +
+    '#1411 acceptance criterion 1)',
+  async (t) => {
+    mockPoolRoleInterestsAndKnowledge(t, 'member', []);
+    const router = makeRouter({ runTurn: throwingRunTurn, getLangPref: async () => 'mi' });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!kbforme', userId: 'member-1' }));
+
+    assert.equal(sent[0].text, formatWhoIsIntoEmptyText('noProfile', 'mi'));
+  },
+);
+
+test(
+  'a bare "!kbformex" (no space, unrecognised) is not matched as the !kbforme command — anchored matcher ' +
+    '(issue #1411 SECURITY criterion 4)',
+  async (t) => {
+    mockPoolRoleInterestsAndKnowledge(t, 'member');
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!kbformex', userId: 'member-1' }));
+
+    assert.equal(sent[0].text, REAL_TURN_REPLY);
+  },
+);
+
+test(
+  'SECURITY: "!kbforme <anything>" is never matched — the anchored matcher rejects any argument, so no ' +
+    'message-supplied text can ever reach the interests lookup or searchKnowledge, even one shaped like a ' +
+    'second command on the same line (issue #1411 SECURITY criterion 4)',
+  async (t) => {
+    const calls = mockPoolRoleInterestsAndKnowledge(t, 'member');
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!kbforme; !purge_user_data', userId: 'member-1' }));
+
+    assert.equal(sent[0].text, REAL_TURN_REPLY, 'must fall through to the normal turn, never match');
+    assert.ok(
+      !calls.some((c) => c.sql.includes('FROM member_interests') || c.sql.includes('FROM knowledge')),
+      'no message-supplied text may reach the interests lookup or searchKnowledge',
+    );
+  },
+);
+
+test(
+  'SECURITY: a guest caller\'s "!kbforme" falls through to the normal turn silently — getPublishedInterestsForOwners ' +
+    'is never invoked (issue #1411 acceptance criterion 3)',
+  async (t) => {
+    const calls = mockPoolRoleInterestsAndKnowledge(t, null);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!kbforme', userId: 'guest-1' }));
+
+    assert.equal(sent[0].text, REAL_TURN_REPLY);
+    assert.ok(
+      !calls.some((c) => c.sql.includes('FROM member_interests')),
+      'a guest caller must never reach getPublishedInterestsForOwners',
+    );
+  },
+);
+
+test(
+  'SECURITY: "!kbforme" for caller A never returns caller B\'s interests or reaches a wider query — only the ' +
+    "caller's own resolved msg.platform/msg.userId is wired into getPublishedInterestsForOwners (issue #1411 " +
+    'acceptance criterion 5)',
+  async (t) => {
+    const calls = mockPoolRoleInterestsAndKnowledge(t, 'member', [
+      { platform: 'whatsapp', user_id: 'caller-a', interests: 'caller-a-only-interests' },
+    ]);
+    const router = makeRouter({ runTurn: throwingRunTurn });
+    const { adapter, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!kbforme', userId: 'caller-a', userName: 'caller-b-impersonation' }));
+
+    const interestsCall = calls.find((c) => c.sql.includes('FROM member_interests'));
+    assert.ok(interestsCall, 'getPublishedInterestsForOwners must have run');
+    assert.deepEqual(
+      interestsCall?.params,
+      [['whatsapp'], ['caller-a']],
+      "only the caller's own {platform, userId} may reach getPublishedInterestsForOwners",
+    );
+  },
+);
+
+test(
+  '!kbforme fires recordKnowledgeRetrieval on the qualifying path exactly as knowledge_for_me does — a no-hit ' +
+    'call issues no retrieval write (issue #1411 acceptance criterion 6)',
+  async (t) => {
+    const interests = 'below floor test interests';
+    const knowledgeRows = [
+      {
+        id: 42,
+        title: 'Unrelated entry',
+        content: 'UNRELATED_TEXT',
+        created_by_role: 'admin',
+        similarity: 0.05,
+        updated_at: new Date(),
+      },
+    ];
+    const calls = mockPoolRoleInterestsAndKnowledge(
+      t,
+      'member',
+      [{ platform: 'whatsapp', user_id: 'member-1', interests }],
+      knowledgeRows,
+    );
+    const router = makeRouter({ runTurn: throwingRunTurn });
+    const { adapter, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!kbforme', userId: 'member-1' }));
+
+    assert.ok(
+      !calls.some((c) => c.sql.includes('retrieval_count') && c.sql.includes('UPDATE')),
+      'a below-floor-only result set must issue no retrieval_count write',
+    );
+  },
+);
+
+test("a successful !kbforme invocation calls recordShortcutHit('whatsapp_text_command') exactly once (issue #1411)", async (t) => {
+  mockPoolRoleInterestsAndKnowledge(t, 'member', []);
+  const hits: string[] = [];
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    recordShortcutHitFn: async (kind) => {
+      hits.push(kind);
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!kbforme', userId: 'member-1' }));
+
+  assert.equal(sent.length, 1);
+  assert.deepEqual(hits, ['whatsapp_text_command']);
 });
 
 // --- !reviewqueue (issue #1095; reports line added #1207) --------------------

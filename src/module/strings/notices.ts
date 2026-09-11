@@ -889,7 +889,8 @@ const NOTICE_ENTRIES = {
    * added to both variants by issue #1044/#1034, closing a gap where it
    * shipped without ever being added to this list. `!kbhelpful` (issue
    * #1087) was added to both variants in the SAME PR as the command itself,
-   * precisely to avoid repeating that gap.
+   * precisely to avoid repeating that gap. `!kbforme` (issue #1411) follows
+   * the same discipline.
    */
   whatsappTextCommands: {
     base:
@@ -901,6 +902,7 @@ const NOTICE_ENTRIES = {
       '- `!status` — check for a known Anthropic outage\n' +
       '- `!kbtopics` — browse what the knowledge base covers\n' +
       '- `!kbhelpful` — see the most relied-on knowledge entries\n' +
+      '- `!kbforme` — knowledge search using your own published interests\n' +
       '- `!warnings` — your own active warning count\n' +
       '- `!mysubmissions` — status of your filed suggestions/reports\n' +
       '- `!mydata` — what the bot has stored about you\n' +
@@ -915,6 +917,7 @@ const NOTICE_ENTRIES = {
         '- `!status` — tirotiro mehemea he raru mōhiotia nā Anthropic\n' +
         '- `!kbtopics` — tirotiro i ngā kaupapa e kapi ana e te pātengi mōhiotanga\n' +
         '- `!kbhelpful` — tiro i ngā mōhiotanga e whakawhirinaki nuitia ana\n' +
+        '- `!kbforme` — rapu mōhiotanga mā ō hiahia kua whakaputaina\n' +
         '- `!warnings` — te tatau o ō whakatūpato e mahi tonu ana\n' +
         '- `!mysubmissions` — te āhua o ō tono/pūrongo kua tukuna\n' +
         '- `!mydata` — he aha kua rongoātia e ahau mōu\n' +
