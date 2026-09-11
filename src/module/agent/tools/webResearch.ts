@@ -6,7 +6,12 @@ import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
 import { makeSlidingWindowReserver } from '@swampratnz/agent-base/util/rateReservation.js';
 import { recordBackgroundJobCost } from '@swampratnz/agent-base/storage/repository/adminStats.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
-import { getLanguagePreference } from '@swampratnz/agent-base/storage/repository.js';
+import {
+  getLanguagePreference,
+  KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD,
+  searchKnowledge,
+  searchKnowledgeLexical,
+} from '@swampratnz/agent-base/storage/repository.js';
 import { relayLanguageNote, text, untrusted } from './helpers.js';
 
 /**
@@ -29,10 +34,14 @@ import { relayLanguageNote, text, untrusted } from './helpers.js';
  *     wrapper as recalled chat and fetched pages — with sources filtered to
  *     https and capped. The existing prompt rule "only relay a link that came
  *     from a tool result" is what governs citing them.
- *  3. **Knowledge base first, mechanically.** The handler refuses unless a
- *     `knowledge_search` earlier in this SAME turn found nothing above the
- *     relevance floor (`turnState.knowledgeSearchMissed`), so curated community
- *     answers always win and the web is the fallback, never the habit.
+ *  3. **Knowledge base first, mechanically, and keyed to the question.** The
+ *     handler refuses unless a `knowledge_search` earlier in this SAME turn
+ *     found nothing above the relevance floor (`turnState.knowledgeSearchMissed`)
+ *     AND its own pre-check (`knowledgeCovers`) finds no curated hit for the
+ *     exact question it was given. The turn flag alone is sticky, so an
+ *     unrelated, deliberately-missing search could otherwise unlock research
+ *     on a question the knowledge base does answer. Curated community answers
+ *     always win; the web is the fallback, never the habit.
  *  4. **Bounded and visible.** A per-caller daily cap
  *     (`WEB_RESEARCH_DAILY_LIMIT`) and dedup window, a turn ceiling
  *     (`WEB_RESEARCH_MAX_TURNS`), a wall-clock timeout, and the spend recorded
@@ -148,6 +157,22 @@ export function formatWebResearchForModel(result: WebResearchResult): string {
 }
 
 /**
+ * The keyed half of "knowledge base first": does curated knowledge cover THIS
+ * question? Exactly knowledge_search's own hit rule: a semantic hit at or above
+ * the relevance floor, or, when there were only below-floor candidates, a
+ * lexical (trigram) hit. Throws on a lookup failure; the caller fails closed.
+ */
+export async function knowledgeCovers(
+  question: string,
+  scope: NonNullable<Parameters<typeof searchKnowledge>[1]>,
+): Promise<boolean> {
+  const hits = await searchKnowledge(question, scope);
+  if (hits.some((h) => h.similarity >= KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD)) return true;
+  if (hits.length === 0) return false;
+  return (await searchKnowledgeLexical(question, scope)).length > 0;
+}
+
+/**
  * Run the isolated research sub-turn. The prompt carries the question and the
  * rules — nothing from the conversation — and the options grant exactly
  * `WebSearch`. Exported so tests can mock `query()` and assert on these
@@ -260,6 +285,32 @@ export const webResearchTools = [
       }
 
       const question = args.question.replace(/\s+/g, ' ').trim();
+      // Keyed to THIS question (see point 3 above). Before dedup and the daily
+      // quota, so a refusal here costs the member nothing.
+      let covered: boolean;
+      try {
+        covered = await knowledgeCovers(question, {
+          platform: caller.platform,
+          conversationId: caller.conversationId,
+        });
+      } catch (err) {
+        logger.warn(
+          { err, platform: caller.platform, conversationId: hashId(caller.conversationId) },
+          'web_research knowledge pre-check failed',
+        );
+        return text(
+          'Could not check the community knowledge base first, so web research was not run. Say so, and ' +
+            'do not guess an answer.',
+          true,
+        );
+      }
+      if (covered) {
+        return text(
+          'Refusing: the community knowledge base has material on this question. Answer from ' +
+            'knowledge_search (call it with this question if you have not) instead of the web.',
+          true,
+        );
+      }
       // Checked before the daily quota so a caught duplicate costs nothing.
       const dedupKey = `${caller.platform}:${caller.userId}:${question.toLowerCase()}`;
       if (!reserveResearchDedup(dedupKey, 1)) {

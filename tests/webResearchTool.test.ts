@@ -62,9 +62,20 @@ mock.module('@swampratnz/agent-base/storage/repository/adminStats.js', {
 });
 
 let languagePref: 'auto' | 'en' | 'mi' = 'auto';
+let knowledgeHits: Array<{ id: number; similarity: number }> = [];
+let lexicalHits: Array<{ id: number }> = [];
+let knowledgeThrows = false;
 const realRepo = await import('@swampratnz/agent-base/storage/repository.js');
 mock.module('@swampratnz/agent-base/storage/repository.js', {
-  namedExports: { ...realRepo, getLanguagePreference: async () => languagePref },
+  namedExports: {
+    ...realRepo,
+    getLanguagePreference: async () => languagePref,
+    searchKnowledge: async () => {
+      if (knowledgeThrows) throw new Error('knowledge lookup down');
+      return knowledgeHits;
+    },
+    searchKnowledgeLexical: async () => lexicalHits,
+  },
 });
 
 const { webResearchTools, parseWebResearchResult } = await import('../src/module/agent/tools/webResearch.js');
@@ -291,4 +302,44 @@ test('a standing te reo Māori preference prefixes the relay note; the default a
   languagePref = 'auto';
   const en = await tool.handler({ question: 'language check two' }, ctx('member', missed()));
   assert.doesNotMatch(textOf(en), /te reo Māori/);
+});
+
+const FLOOR = realRepo.KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD;
+
+test('SECURITY: an unrelated knowledge miss earlier in the turn does not unlock research on a question the knowledge base covers', async () => {
+  resetResult();
+  knowledgeHits = [{ id: 1, similarity: FLOOR + 0.01 }];
+  const before = queryCalls.length;
+  const res = await tool.handler({ question: 'what are the community rules?' }, ctx('member', missed()));
+  assert.equal(res.isError, true);
+  assert.match(textOf(res), /knowledge base has material on this question/);
+  assert.equal(
+    queryCalls.length,
+    before,
+    'SECURITY: no research sub-turn when curated knowledge covers the question',
+  );
+  knowledgeHits = [];
+});
+
+test('SECURITY: a lexical hit on the question counts as covered, exactly as knowledge_search would render it', async () => {
+  resetResult();
+  knowledgeHits = [{ id: 2, similarity: FLOOR - 0.2 }];
+  lexicalHits = [{ id: 2 }];
+  const before = queryCalls.length;
+  const res = await tool.handler({ question: 'what does ERR_FOO_BAR mean?' }, ctx('member', missed()));
+  assert.equal(res.isError, true);
+  assert.equal(queryCalls.length, before);
+  knowledgeHits = [];
+  lexicalHits = [];
+});
+
+test('SECURITY: a failed knowledge pre-check fails closed, with no research sub-turn and a do-not-guess instruction', async () => {
+  resetResult();
+  knowledgeThrows = true;
+  const before = queryCalls.length;
+  const res = await tool.handler({ question: 'knowledge is down right now' }, ctx('member', missed()));
+  assert.equal(res.isError, true);
+  assert.match(textOf(res), /do not guess/);
+  assert.equal(queryCalls.length, before);
+  knowledgeThrows = false;
 });

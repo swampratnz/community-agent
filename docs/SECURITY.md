@@ -187,8 +187,12 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   nothing to exfiltrate and no tool that can act. The answer returns through
   `untrusted()` with https-only sources. The handler refuses unless a
   `knowledge_search` earlier in the same turn found nothing above the
-  relevance floor (`turnState.knowledgeSearchMissed`), so the curated base is
-  always consulted first. It carries a per-caller daily cap and dedup window,
+  relevance floor (`turnState.knowledgeSearchMissed`) AND its own pre-check
+  finds no curated hit (same semantic-floor-then-lexical rule) for the exact
+  question it was given, failing closed if that lookup errors. The turn flag
+  alone is sticky, so the keyed pre-check is what stops an unrelated,
+  deliberately-missing search from unlocking research on a question the
+  curated base answers. It carries a per-caller daily cap and dedup window,
   a turn ceiling and a wall-clock timeout, and its spend is the
   `web_research` background job, watched by the cost-spike alert. The
   question text is never logged or persisted. **Residual:** the question is

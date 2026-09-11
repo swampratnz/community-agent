@@ -174,7 +174,7 @@
   "usageAlertPendingQueue.test.ts": 3,
   "usageCostDigest.test.ts": 4,
   "voiceTranscribeModelRouting.test.ts": 2,
-  "webResearchTool.test.ts": 8,
+  "webResearchTool.test.ts": 11,
   "whatsappAmbientArchiving.test.ts": 3,
   "whatsappArchiveAllGroups.test.ts": 1,
   "whatsappBlockRouter.test.ts": 1,
