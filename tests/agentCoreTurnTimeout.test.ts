@@ -60,9 +60,9 @@ type QueryBehavior =
 let behavior: QueryBehavior = { mode: 'success', text: 'ok' };
 let storedSession: StoredSession | null = null;
 
-const capturedCalls: Array<{ prompt: string; options: { resume?: string } }> = [];
+const capturedCalls: Array<{ prompt: string; options: { resume?: string; systemPrompt?: string } }> = [];
 
-function mockQuery(params: { prompt: string; options: { resume?: string } }) {
+function mockQuery(params: { prompt: string; options: { resume?: string; systemPrompt?: string } }) {
   capturedCalls.push(params);
   return (async function* () {
     // Simulates a genuinely wedged query() iteration (issue #826): the
@@ -149,6 +149,23 @@ function reset() {
   capturedCalls.length = 0;
 }
 
+type Core = typeof import('@swampratnz/agent-base/agent/core.js');
+
+/**
+ * agent-base 0.6.6 resumes a stored session only when its prompt fingerprint
+ * matches the system prompt this turn builds (a resumed SDK session keeps its
+ * ORIGINAL system prompt). A resumable-session case therefore runs a throwaway
+ * fresh turn for the same caller and text to learn that prompt's fingerprint,
+ * then clears what the probe recorded.
+ */
+async function promptHashFor(c: Core, caller: CallerContext, text: string): Promise<string> {
+  storedSession = null;
+  await c.runAgentTurn(caller, text, makeAdapter().adapter);
+  const hash = c.systemPromptFingerprint(capturedCalls.at(-1)!.options.systemPrompt ?? '');
+  capturedCalls.length = 0;
+  return hash;
+}
+
 test('runAgentTurn: a query() call that never yields and never settles resolves within the configured timeout, not hangs (issue #826)', async (t) => {
   const { runAgentTurn } = await core(t);
   reset();
@@ -202,7 +219,12 @@ test('runAgentTurn: resumeFailed is false on a turn timeout even when a resumabl
   reset();
   const { adapter } = makeAdapter();
 
-  storedSession = { sessionId: 'sess-live', turnCount: 1, updatedAt: new Date() };
+  storedSession = {
+    sessionId: 'sess-live',
+    turnCount: 1,
+    updatedAt: new Date(),
+    promptHash: await promptHashFor(await core(t), makeCaller(), 'hello'),
+  };
   behavior = { mode: 'hang' };
   await runAgentTurn(makeCaller(), 'hello', adapter);
 

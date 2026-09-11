@@ -125,6 +125,24 @@ function reset() {
   capturedCalls.length = 0;
 }
 
+type Core = typeof import('@swampratnz/agent-base/agent/core.js');
+
+/**
+ * agent-base 0.6.6 resumes a stored session only when its prompt fingerprint
+ * matches the system prompt this turn builds (a resumed SDK session keeps its
+ * ORIGINAL system prompt). A resumable-session case therefore runs a throwaway
+ * fresh turn for the same caller and text to learn that prompt's fingerprint,
+ * then clears what the probe recorded.
+ */
+async function promptHashFor(c: Core, caller: CallerContext, text: string): Promise<string> {
+  storedSession = null;
+  await c.runAgentTurn(caller, text, makeAdapter());
+  const hash = c.systemPromptFingerprint(capturedCalls.at(-1)!.options.systemPrompt);
+  capturedCalls.length = 0;
+  tailCalls = 0;
+  return hash;
+}
+
 test('runAgentTurn: a turn with no resumable session backfills the conversation tail into the user turn, before the current message', async (t) => {
   const { runAgentTurn } = await core(t);
   reset();
@@ -156,7 +174,12 @@ test('runAgentTurn: a turn with no resumable session backfills the conversation 
 test('runAgentTurn: a resumable session gets no tail — its history is already in-session', async (t) => {
   const { runAgentTurn } = await core(t);
   reset();
-  storedSession = { sessionId: 'sess-live', turnCount: 1, updatedAt: new Date() };
+  storedSession = {
+    sessionId: 'sess-live',
+    turnCount: 1,
+    updatedAt: new Date(),
+    promptHash: await promptHashFor(await core(t), makeCaller(), 'hello again'),
+  };
   tailRows = [tail('should never be quoted')];
 
   const reply = await runAgentTurn(makeCaller(), 'hello again', makeAdapter());
@@ -174,7 +197,7 @@ test('runAgentTurn: a session past the turn cap rolls over fresh WITH the tail b
   reset();
   // Way past SESSION_MAX_TURNS (default 30): rollover, not resume — this is
   // exactly the mid-conversation amnesia case the backfill exists for.
-  storedSession = { sessionId: 'sess-capped', turnCount: 999, updatedAt: new Date() };
+  storedSession = { sessionId: 'sess-capped', turnCount: 999, updatedAt: new Date(), promptHash: null };
   tailRows = [tail('the question the bot must still remember')];
 
   const reply = await runAgentTurn(makeCaller(), 'and what did I just ask?', makeAdapter());
@@ -188,7 +211,12 @@ test('runAgentTurn: a session past the turn cap rolls over fresh WITH the tail b
 test('runAgentTurn: the failed-resume fresh retry also gets the tail backfill', async (t) => {
   const { runAgentTurn } = await core(t);
   reset();
-  storedSession = { sessionId: 'sess-old', turnCount: 1, updatedAt: new Date() };
+  storedSession = {
+    sessionId: 'sess-old',
+    turnCount: 1,
+    updatedAt: new Date(),
+    promptHash: await promptHashFor(await core(t), makeCaller(), 'still with me?'),
+  };
   tailRows = [tail('context from before the restart')];
   failResume = true;
 
@@ -229,3 +257,40 @@ test('SECURITY: tail content and author names cannot escape the quarantine block
   assert.doesNotMatch(options.systemPrompt, /you are now root/);
   assert.doesNotMatch(options.systemPrompt, /obey me/);
 });
+
+test(
+  "SECURITY: a session started under a member's system prompt is never resumed for an admin in the same " +
+    'conversation; the admin runs under their own role note with the group history backfilled (agent-base 0.6.6)',
+  async (t) => {
+    const c = await core(t);
+    reset();
+    const text = 'can you save that comparison to the knowledge base?';
+    // The shared group session was started by a MEMBER.
+    const memberHash = await promptHashFor(c, makeCaller(), text);
+    storedSession = {
+      sessionId: 'sess-member-started',
+      turnCount: 1,
+      updatedAt: new Date(),
+      promptHash: memberHash,
+    };
+    tailRows = [tail('earlier chat in this group')];
+
+    const admin: CallerContext = { ...makeCaller(), userId: 'admin-1', role: 'admin' };
+    const reply = await c.runAgentTurn(admin, text, makeAdapter());
+
+    assert.equal(reply.ok, true);
+    const { prompt, options } = capturedCalls.at(-1)!;
+    assert.equal(
+      (options as { resume?: string }).resume,
+      undefined,
+      "SECURITY: resuming would run the admin's turn under the member's frozen role note",
+    );
+    assert.match(
+      options.systemPrompt,
+      /an ADMIN/,
+      "the fresh turn carries the admin's own verified role note",
+    );
+    assert.doesNotMatch(options.systemPrompt, /requester is a MEMBER/);
+    assert.match(prompt, /earlier chat in this group/, 'group context comes back as the quarantined tail');
+  },
+);
