@@ -406,7 +406,15 @@ ownership rules:
   it gets a `human-merge-ready` label plus one marker-guarded comment asking
   a maintainer to merge (pipeline work routinely edits `.github/` or
   `scripts/` to fix the machinery itself, so this stays a well-trodden path
-  even with `docs/SECURITY.md` off the list).
+  even with `docs/SECURITY.md` off the list). That label tracks LIVE state,
+  not a verdict once reached: the loop revokes it the moment the PR fails any
+  gate it had passed (goes CONFLICTING, CI turns red, the LGTM staledates, a
+  stop label appears) and re-asserts it when the PR qualifies again. #1382
+  carried it for 22 hours while actually CONFLICTING — its comment says "a
+  maintainer just needs to press merge", and there was no button to press.
+  The one-per-PR comment stays marker-gated, so only the label moves; the
+  label add is deliberately OUTSIDE that marker gate, since after a revocation
+  the marker comment still exists and a gated add could never restore it.
   Never one labelled `needs-human`/`no-auto-merge`. Exactly ONE merge per run:
   afterwards `main` has advanced, so it dispatches the conflict resolver to
   rebase the rest, and the next PR only re-qualifies once it is green against

@@ -180,13 +180,24 @@ runs:
         # looked yet" is the exact harm this whole change exists to remove, so
         # the arm now keys on an explicit deferral verb (check back, come back,
         # resume, pick this up) instead of a pronoun.
+        #
+        # The third arm was added after a live miss on PR #1390: the autofix
+        # agent stopped with "Here's a summary while the security test suite
+        # finishes running in the background", which contains no wait word and
+        # no deferral verb, so neither of the first two arms fired. Its work
+        # was never committed and a human had to read the truncated summary to
+        # notice. The arm keys on the agent describing something as CURRENTLY
+        # in flight at the moment it stopped — deliberately "running in the
+        # background" and not the bare "in the background", so a past-tense
+        # report ("I ran the suite in the background and it failed for a real
+        # reason") stays a refusal.
         # Herestring, not `printf … | grep`: under `set -o pipefail` a pipeline
         # where grep -q exits early and printf takes SIGPIPE reports 141 even
         # though grep MATCHED, which would silently disable this note. The
         # summary is capped at 1500 bytes so it would fit the pipe buffer
         # today, but that is a property of an unrelated `head -c` and not
         # something this branch should depend on.
-        if [ -z "${outcome_note}" ] && [ -n "${summary}" ] && grep -qiE "(wait|waiting|hold off|stand by)[^.]{0,40}\b(for|on|until)\b|\b(check back|come back|circle back|resume|pick (this|it) up)\b[^.]{0,40}\b(once|when|after|later)\b" <<<"${summary}"; then
+        if [ -z "${outcome_note}" ] && [ -n "${summary}" ] && grep -qiE "(wait|waiting|hold off|stand by)[^.]{0,40}\b(for|on|until)\b|\b(check back|come back|circle back|resume|pick (this|it) up)\b[^.]{0,40}\b(once|when|after|later)\b|\b(still running|running in the background|finishes running|running now)\b" <<<"${summary}"; then
           outcome_note="⚠️ **This looks like a stall, not a diagnosis.** The agent ended its turn waiting for something to finish (its own words below), so the triage it is instructed to run may never have happened. Read this as \"nobody has looked yet\", NOT as \"the code cannot be fixed\" — re-queue by removing \`${ESCALATION_LABEL}\`."
         fi
 
