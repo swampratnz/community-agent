@@ -23,14 +23,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #868 #896 #899 #904 #949 #950 #951 #952 #953 #954 #955 #956 #957 #958 #961
 #963 #964 #965 #968 #971 #983 #988 #989 #991 #992 #994 #1017 #1071 #1086
 #1122 #1123 #1132 #1232 #1236 #1248 #1281 #1284 #1304 #1308 #1310
-#1355 #1356 #1357 #1341 #1350 #1360 #1381
+#1355 #1356 #1357 #1341 #1350 #1360 #1381 #1391
 -->
 
 ## 2026-09-12
 
 ### Added
 - **A moderation appeal you filed now checks in with you if it's waiting a
-  while.** If your `appeal_moderation` appeal is still open after 72 hours,
+  while.** (#1414) If your `appeal_moderation` appeal is still open after 72 hours,
   you now get a one-time "still being reviewed, thanks for your patience" DM —
   the same mid-flight reassurance content reports (#1375) and knowledge tips
   (#1408) already got, extended to the appeal queue. It fires independently of
@@ -51,13 +51,13 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   (that pair notifies one member at a time; this is the whole-project
   equivalent). No new data is collected or retained, and the admin's own
   reply is unchanged either way.
-- **Web research for members (off by default).** When the community knowledge
+- **Web research for members (off by default).** (#1394) When the community knowledge
   base has no answer — release news, third-party tools, "is X out yet?" — the
   bot can look it up on the web and answer with its sources. It always checks
   the knowledge base first, runs the search in a separate sandboxed step that
   can't see the conversation, and has a small daily limit per member. An
   operator turns it on with `WEB_RESEARCH_ENABLED`.
-- **Link summaries (off by default).** Ask "TLDR?" or "what does that link
+- **Link summaries (off by default).** (#1394) Ask "TLDR?" or "what does that link
   say?" about a link someone posted in the chat, and the bot reads the page and
   summarises it. It only opens links a person actually posted in that
   conversation recently — never one it made up — and won't follow a link that
@@ -99,11 +99,11 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ### Fixed
 
 - **Dave keeps track of who he's talking to in group chats.** Dave keeps one ongoing conversation per chat, and it kept whatever instructions it started with. So in a group, everyone after the first person was handled as if they were that first person: an admin could be told they weren't an admin, and one member's style or language preference applied to everyone. Dave now starts a fresh conversation whenever who he's talking to (or his instructions) changes, bringing the last few messages along as context. Changes to how Dave talks now also reach existing chats straight away.
-- **Link summaries now read the page, not its scaffolding.** Dave was handed raw HTML cut at 12,000 characters. On many sites, GitHub repo pages included, that is all `<head>` boilerplate, so he had nothing real to summarise and could fill the gap with guesses. He now gets the page's readable text (the article or main content first, with scripts, styles and navigation dropped). A page with no readable text, such as a JavaScript-only app or a login wall, now gets an honest "I couldn't read that" instead of a made-up summary.
+- **Link summaries now read the page, not its scaffolding.** (#1396) Dave was handed raw HTML cut at 12,000 characters. On many sites, GitHub repo pages included, that is all `<head>` boilerplate, so he had nothing real to summarise and could fill the gap with guesses. He now gets the page's readable text (the article or main content first, with scripts, styles and navigation dropped). A page with no readable text, such as a JavaScript-only app or a login wall, now gets an honest "I couldn't read that" instead of a made-up summary.
 
 ### Changed
 
-- **Dave sounds more like a person and less like a helpdesk.** He no longer opens with a greeting and your name every time or signs off with "anything else I can help with?", keeps chat replies short and plain (no bold headings or mini-documents), plays along with banter instead of answering it like a policy, and says what he can't do in plain words rather than explaining his internals. Kiwi slang is now occasional rather than a verbal tic. In a side-by-side on fifteen sample messages, replies ending in a question fell from 40% to 13%, greetings from 53% to none, use of the person's name from 67% to 13%, bold from 27% to none, and the median reply halved (312 to 155 characters).
+- **Dave sounds more like a person and less like a helpdesk.** (#1398) He no longer opens with a greeting and your name every time or signs off with "anything else I can help with?", keeps chat replies short and plain (no bold headings or mini-documents), plays along with banter instead of answering it like a policy, and says what he can't do in plain words rather than explaining his internals. Kiwi slang is now occasional rather than a verbal tic. In a side-by-side on fifteen sample messages, replies ending in a question fell from 40% to 13%, greetings from 53% to none, use of the person's name from 67% to 13%, bold from 27% to none, and the median reply halved (312 to 155 characters).
 
 ## 2026-09-10
 
