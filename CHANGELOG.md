@@ -29,6 +29,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-09-12
 
 ### Added
+- **A suggestion you submitted now checks in with you if it's waiting a
+  while.** If your `suggest_improvement` idea is still pending after 7 days,
+  you now get a one-time "still being reviewed, thanks for your patience" DM —
+  the same mid-flight reassurance content reports (#1375), knowledge tips
+  (#1408) and moderation appeals (#1413) already got, extended to the last
+  remaining member-contribution queue. It fires independently of the admins'
+  own separate backlog alert, and never fires for a suggestion you withdrew
+  yourself.
 - **A moderation appeal you filed now checks in with you if it's waiting a
   while.** If your `appeal_moderation` appeal is still open after 72 hours,
   you now get a one-time "still being reviewed, thanks for your patience" DM —

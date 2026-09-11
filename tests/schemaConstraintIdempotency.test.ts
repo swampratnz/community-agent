@@ -196,3 +196,32 @@ test('SECURITY: appeal_appellant_stale_notices (issue #1413) is an id-only table
     'the fragment must document the same no-purge-hook rationale as 89-knowledge-candidate-stale-notices.sql',
   );
 });
+
+test('SECURITY: suggestion_submitter_stale_notices (issue #1415) is an id-only table with no identity/content column, matching the #1413/#1408/#1375 stale-notice family (acceptance criterion 7)', () => {
+  const fragment = COMMUNITY_MIGRATIONS.find(
+    (f) => f.name === 'nz-community/91-suggestion-submitter-stale-notices.sql',
+  );
+  assert.ok(fragment, 'expected fragment 91-suggestion-submitter-stale-notices.sql to be registered');
+
+  const createMatch = /CREATE TABLE IF NOT EXISTS suggestion_submitter_stale_notices \(([\s\S]*?)\n\);/.exec(
+    fragment.sql,
+  );
+  assert.ok(createMatch, 'could not locate the CREATE TABLE statement');
+  const columnNames = createMatch[1]
+    .split(',')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => line.split(/\s+/)[0]);
+  assert.deepEqual(
+    columnNames,
+    ['suggestion_id', 'notified_at'],
+    'the table must carry no submitter identity or suggestion content/text column — suggestion_id and ' +
+      'notified_at only, matching the #1413 precedent (nothing here for forget_me/purge_user_data to erase)',
+  );
+
+  assert.match(
+    fragment.sql,
+    /needs no `registerPurgeContributor` hook/,
+    'the fragment must document the same no-purge-hook rationale as 90-appeal-appellant-stale-notices.sql',
+  );
+});
