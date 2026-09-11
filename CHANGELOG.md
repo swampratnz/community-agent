@@ -28,6 +28,18 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 
 ## 2026-09-11
 
+### Added
+- **Archiving or restoring a team project now tells its members, not just the
+  admin who did it.** (#1395) `project_archive` cuts off every member's read
+  and write access to a project's shared memory, and `project_unarchive`
+  restores it — but until now only the acting admin ever saw that happen; the
+  members it actually affected got nothing. Both tools now send each current
+  member a short DM the moment the project transitions (archived → nobody can
+  reach it until restored; restored → access works again), the same
+  "tell the person an admin action affected" pattern `project_add_member`/
+  `project_remove_member` already have (#1241). Each member sees only the
+  project name and a fixed notice — never the rest of the roster.
+
 ### Security
 - **Dependency: `sharp` raised past the libheif advisory (GHSA-rgj7-g3m4-5g8c).**
   The `overrides` pin moved `^0.35.3` → `^0.35.4`, clearing all three `high`

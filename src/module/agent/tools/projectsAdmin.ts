@@ -17,8 +17,14 @@ import {
   unbindProjectSurface,
 } from '@swampratnz/agent-base/storage/repository.js';
 import { platformArg, SUGGESTION_RESOLUTION_ECHO_CHARS, text } from './helpers.js';
-import { notifyProjectMemberAdded, notifyProjectMemberRemoved } from './notify.js';
+import {
+  notifyProjectArchived,
+  notifyProjectMemberAdded,
+  notifyProjectMemberRemoved,
+  notifyProjectUnarchived,
+} from './notify.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
+import type { Platform } from '@swampratnz/agent-base/platforms/types.js';
 
 /**
  * Admin project tools resolve by slug via getProjectBySlug, which does NOT
@@ -334,7 +340,7 @@ export const projectsAdminTools = [
     minTier: 'admin',
     readOnlyHint: false,
     schema: { project: z.string().describe('The project slug') },
-    handler: async (args, { caller, audited }) => {
+    handler: async (args, { caller, audited, adapterFor }) => {
       assertAtLeast(caller.role, 'admin', 'project_archive');
       // Not requireConfirm-gated, on the same reasoning as
       // project_add_member/project_remove_member above: this repo's CONFIRM
@@ -342,16 +348,52 @@ export const projectsAdminTools = [
       // neither. It deletes nothing, and project_unarchive below reverses it
       // in one call — which is precisely why that tool exists (PR #929
       // review). Ship the two together or this becomes a one-way door.
+      //
+      // Same `state` capture pattern as project_add_member/
+      // project_remove_member above (issues #1241/#1395) — the notify-on-
+      // archive fan-out below only ever fires from a roster resolved inside
+      // audited()'s run(), on the actual "was active, now archived"
+      // transition, never on the "no active project" refusal branch.
+      const state: { projectName: string | null; members: { platform: Platform; userId: string }[] } = {
+        projectName: null,
+        members: [],
+      };
       const { result } = await audited({
         actionKind: 'project_archive',
         params: { project: args.project },
         run: async () => {
+          const project = await getProjectBySlug(args.project);
+          if (!project || project.archivedAt) return `No active project "${args.project}".`;
+          // Members are read BEFORE archiving (project_members is untouched
+          // by archiving, so this is safe either way) so the roster reflects
+          // who actually had access at the moment of the transition.
+          const members = await listProjectMembers(project.id);
           const archived = await archiveProject(args.project);
+          if (archived) {
+            state.projectName = project.name;
+            state.members = members;
+          }
           return archived
             ? `Archived ${args.project}. Its notes are retained but no longer readable — project_unarchive restores access.`
             : `No active project "${args.project}".`;
         },
       });
+      // Best-effort revocation DM fanned out to every current member (issue
+      // #1395) — fires only on the actual "was active, now archived"
+      // transition, never changes this tool's own reported outcome above.
+      // Each member is reached only via their own resolved
+      // adapterFor(member.platform) identity, never anyone else's.
+      const { projectName, members } = state;
+      if (projectName) {
+        await Promise.all(
+          members.map((member) => {
+            const memberAdapter = adapterFor(member.platform);
+            return memberAdapter
+              ? notifyProjectArchived(memberAdapter, member.userId, member.platform, projectName)
+              : Promise.resolve();
+          }),
+        );
+      }
       return text(result);
     },
   }),
@@ -365,18 +407,49 @@ export const projectsAdminTools = [
     minTier: 'admin',
     readOnlyHint: false,
     schema: { project: z.string().describe('The project slug') },
-    handler: async (args, { caller, audited }) => {
+    handler: async (args, { caller, audited, adapterFor }) => {
       assertAtLeast(caller.role, 'admin', 'project_unarchive');
+      // Same `state` capture pattern as project_archive above (issue #1395)
+      // — the notify-on-unarchive fan-out below only ever fires from a
+      // roster resolved inside audited()'s run(), on the actual "was
+      // archived, now active" transition, never on the "no archived project"
+      // refusal branch.
+      const state: { projectName: string | null; members: { platform: Platform; userId: string }[] } = {
+        projectName: null,
+        members: [],
+      };
       const { result } = await audited({
         actionKind: 'project_unarchive',
         params: { project: args.project },
         run: async () => {
+          const project = await getProjectBySlug(args.project);
+          if (!project || !project.archivedAt) return `No archived project "${args.project}".`;
+          const members = await listProjectMembers(project.id);
           const unarchived = await unarchiveProject(args.project);
+          if (unarchived) {
+            state.projectName = project.name;
+            state.members = members;
+          }
           return unarchived
             ? `Restored ${args.project}. Its members can read and add to it again.`
             : `No archived project "${args.project}".`;
         },
       });
+      // Best-effort restoration DM fanned out to every current member (issue
+      // #1395), symmetric to project_archive above — fires only on the
+      // actual "was archived, now active" transition, never changes this
+      // tool's own reported outcome above.
+      const { projectName, members } = state;
+      if (projectName) {
+        await Promise.all(
+          members.map((member) => {
+            const memberAdapter = adapterFor(member.platform);
+            return memberAdapter
+              ? notifyProjectUnarchived(memberAdapter, member.userId, member.platform, projectName)
+              : Promise.resolve();
+          }),
+        );
+      }
       return text(result);
     },
   }),

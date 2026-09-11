@@ -500,6 +500,43 @@ const NOTICE_ENTRIES = {
       plain: "An admin removed your access to a project's shared memory on NZ Claude Community.",
     },
   },
+  // --- project_archive / project_unarchive member DMs (agent/tools/notify.ts,
+  // issue #1395) ---
+  /**
+   * The neutral revocation DM for the admin-tier `project_archive` — static,
+   * same non-interpolation shape as `projectMemberRemovedMessage` above: the
+   * project name is appended only as a distinct, quoted, `truncateForEcho`-
+   * capped clause (see `notifyProjectArchived` in notify.ts). Unconditional,
+   * same rationale as `projectMemberRemovedMessage` — archiving a whole
+   * project is ordinary team-access housekeeping, not moderation.
+   */
+  projectArchivedMessage: {
+    base: "A project's shared memory on NZ Claude Community was archived by an admin — you can't read or add to it until it's restored.",
+    language: {
+      mi: 'I whakakāhoretia tētahi kaupapa i ngā mahara tiritahi o NZ Claude Community e tētahi kaiwhakahaere — kāore e taea te pānui, te tāpiri rānei kia whakahokia mai rā anō.',
+    },
+    style: {
+      plain:
+        "An admin archived a project's shared memory on NZ Claude Community. You can't read or add to it until an admin restores it.",
+    },
+  },
+  /**
+   * The neutral restoration DM for the admin-tier `project_unarchive` — the
+   * symmetric grant-side counterpart to `projectArchivedMessage` above, same
+   * non-interpolation shape: the project name is appended only as a distinct,
+   * quoted, `truncateForEcho`-capped clause (see `notifyProjectUnarchived` in
+   * notify.ts). Unconditional, same rationale as every sibling in this pair.
+   */
+  projectUnarchivedMessage: {
+    base: "A project's shared memory on NZ Claude Community was restored by an admin — you can read and add to it again.",
+    language: {
+      mi: 'I whakahokia mai tētahi kaupapa i ngā mahara tiritahi o NZ Claude Community e tētahi kaiwhakahaere — ka taea anō e koe te pānui, te tāpiri rānei.',
+    },
+    style: {
+      plain:
+        "An admin restored a project's shared memory on NZ Claude Community. You can read and add to it again.",
+    },
+  },
   // --- find_helper / share_project / request_project_connection peer-DM
   // recipient notifications (agent/tools/social.ts, issue #1245) ---
   /**
