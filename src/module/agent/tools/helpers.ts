@@ -960,7 +960,7 @@ export function formatUsageStats(
     `Cost by role: ${s.costByRole.map((r) => `${r.role} ~$${r.costUsd.toFixed(2)} (${r.replies} replies)`).join(' · ') || 'none'}\n` +
     `Top users:\n${s.topUsers.map((u) => `- ${u.userName ? sanitizeName(u.userName) : u.userId}: ${u.messages} msgs`).join('\n') || '- none'}` +
     (s.backgroundCostUsd > 0 ? `\nBackground jobs: ${byJob}.` : '') +
-    formatShortcutHitsLine(s.shortcutHits, s.costByRole) +
+    formatShortcutHitsLine(s.shortcutHits, s.costByRole, s.outbound) +
     formatCacheUsageLine(s.cacheUsage) +
     formatAutoAnswerUsageLine(s.autoAnswerUsage, s.costUsd) +
     formatModelUsageLine(s.costByModel)
@@ -1040,6 +1040,12 @@ function formatAutoAnswerUsageLine(
  * falling back to the raw platform user id) — this function does no lookup
  * itself, so it never touches the DB and is directly unit-testable. Never
  * renders `admin_audit.params` — only actor/count/timestamp fields.
+ *
+ * Each row also carries `previousActionCount` (issue #1387): the caller's
+ * count over the immediately preceding window of equal length, already
+ * clamped to >= 0. A row whose `previousActionCount` is 0 renders a distinct
+ * "(new this period)" marker rather than a bare `▲ N`, which would otherwise
+ * read as a continuation of an existing trend instead of a first appearance.
  */
 export function formatAdminActivity(
   rows: Array<{
@@ -1049,15 +1055,24 @@ export function formatAdminActivity(
     successCount: number;
     failureCount: number;
     lastActionAt: Date;
+    previousActionCount: number;
   }>,
   days: number,
 ): string {
   if (rows.length === 0) return `No privileged actions recorded in the last ${days} day(s).`;
   return rows
-    .map(
-      (r) =>
-        `${r.name} (${r.platform}): ${r.actionCount} actions (${r.successCount} success / ${r.failureCount} failed), last ${r.lastActionAt.toISOString()}`,
-    )
+    .map((r) => {
+      const diff = r.actionCount - r.previousActionCount;
+      const trend =
+        r.previousActionCount === 0
+          ? ' (new this period)'
+          : diff > 0
+            ? ` ▲ ${diff} since previous ${days} day(s)`
+            : diff < 0
+              ? ` ▼ ${Math.abs(diff)} since previous ${days} day(s)`
+              : ` No change since previous ${days} day(s)`;
+      return `${r.name} (${r.platform}): ${r.actionCount} actions (${r.successCount} success / ${r.failureCount} failed), last ${r.lastActionAt.toISOString()}${trend}`;
+    })
     .join('\n');
 }
 
@@ -1099,15 +1114,31 @@ export function formatAdminRoster(roster: readonly AdminRosterEntry[]): string {
  * (already computed by `usageStats()`, no new pricing constant) and is
  * omitted — count-only — when the member tier has zero replies in the
  * window, to avoid a divide-by-zero.
+ *
+ * The `outbound` param (issue #1385) is the window's total replies count
+ * (`s.outbound`, the same figure `formatUsageStats`'s headline line renders)
+ * — used only to derive a `, N% of replies served without a model call`
+ * clause, appended right after the per-kind breakdown and before the dollar
+ * clause. `shortcutHits.total` is a true subset of `outbound` by construction
+ * (shortcut-served replies are recorded via the same `recordInteraction` path
+ * as any other reply), so `Math.min(100, …)` only guards a future
+ * counting-window drift, not the normal case. Omitted — same
+ * "nothing to show" convention — when `outbound <= 0`, to avoid a
+ * divide-by-zero.
  */
 function formatShortcutHitsLine(
   shortcutHits: Awaited<ReturnType<typeof usageStats>>['shortcutHits'],
   costByRole: Awaited<ReturnType<typeof usageStats>>['costByRole'],
+  outbound: number,
 ): string {
   if (shortcutHits.total === 0) return '';
   const countOf = (kind: string) => shortcutHits.byKind.find((k) => k.kind === kind)?.count ?? 0;
   const memberRow = costByRole.find((r) => r.role === 'member');
   const avgMemberCost = memberRow && memberRow.replies > 0 ? memberRow.costUsd / memberRow.replies : null;
+  const pctClause =
+    outbound > 0
+      ? `, ${Math.min(100, Math.round((100 * shortcutHits.total) / outbound))}% of replies served without a model call`
+      : '';
   const dollarClause =
     avgMemberCost !== null
       ? ` — ~$${(shortcutHits.total * avgMemberCost).toFixed(2)} avoided at the member-tier average reply cost`
@@ -1115,7 +1146,7 @@ function formatShortcutHitsLine(
   return (
     `\nShortcuts fired: ${shortcutHits.total} (ack ${countOf('ack')}, knowledge ${countOf('knowledge')}, ` +
     `repeat-question ${countOf('repeat_question')}, repeat-max-turns ${countOf('repeat_max_turns')}, ` +
-    `slash-command ${countOf('slash_command')}, whatsapp-text-command ${countOf('whatsapp_text_command')})${dollarClause}.`
+    `slash-command ${countOf('slash_command')}, whatsapp-text-command ${countOf('whatsapp_text_command')})${pctClause}${dollarClause}.`
   );
 }
 

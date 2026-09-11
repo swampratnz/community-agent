@@ -75,6 +75,11 @@ type KnowledgeForMeHandler = {
   }>;
 };
 
+type KnowledgeForMeTurnState = {
+  lastKnowledgeHitId: number | null;
+  staleKnowledgeAlertIds?: number[];
+};
+
 function getKnowledgeForMeHandler(
   caller: {
     platform: 'discord';
@@ -84,7 +89,7 @@ function getKnowledgeForMeHandler(
     conversationId: string;
     isDirect: boolean;
   },
-  turnState?: { lastKnowledgeHitId: number | null },
+  turnState?: KnowledgeForMeTurnState,
 ): KnowledgeForMeHandler {
   const server = buildToolServer(caller, stubAdapter(), undefined, turnState);
   return (
@@ -92,6 +97,58 @@ function getKnowledgeForMeHandler(
       _registeredTools: Record<string, KnowledgeForMeHandler>;
     }
   )._registeredTools['knowledge_for_me'];
+}
+
+type KnowledgeSearchHandler = {
+  handler: (args: { query: string }) => Promise<{
+    content: Array<{ type: string; text: string }>;
+    isError?: boolean;
+  }>;
+};
+
+function getKnowledgeSearchHandler(
+  caller: {
+    platform: 'discord';
+    userId: string;
+    userName: string;
+    role: 'member' | 'guest';
+    conversationId: string;
+    isDirect: boolean;
+  },
+  turnState?: KnowledgeForMeTurnState,
+): KnowledgeSearchHandler {
+  const server = buildToolServer(caller, stubAdapter(), undefined, turnState);
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<string, KnowledgeSearchHandler>;
+    }
+  )._registeredTools['knowledge_search'];
+}
+
+/** Poll for the fire-and-forget retrieval-count bump (issue #134/#1383) to land. */
+async function waitForRetrievalCount(
+  id: number,
+  predicate: (count: number) => boolean,
+  timeoutMs = 10_000,
+): Promise<number> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const { rows } = await pool.query(`SELECT retrieval_count FROM knowledge WHERE id = $1`, [id]);
+    const count = Number(rows[0]?.retrieval_count ?? 0);
+    if (predicate(count) || Date.now() > deadline) return count;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
+// `config.knowledgeStaleAlert`/`config.adminDigest` are deeply `readonly` in
+// agent-base's config type (this file is on tsconfig.tests.json's typechecked
+// ratchet) — same confined-cast discipline as
+// setKnowledgeLowRatedCaveatMinUnhelpful above.
+function setKnowledgeStaleAlertEnabled(value: boolean): void {
+  (config.knowledgeStaleAlert as { enabled: boolean }).enabled = value;
+}
+function setKnowledgeStaleDays(value: number): void {
+  (config.adminDigest as { knowledgeStaleDays: number }).knowledgeStaleDays = value;
 }
 
 type RateAnswerHandler = {
@@ -931,5 +988,403 @@ test(
     await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [scope]);
     await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
     await setMemberInterests('discord', userId, 'clear');
+  },
+);
+
+// Issue #1383: knowledge_for_me computed the same relevantIds knowledge_search
+// does (already reused for the #1325 lastKnowledgeHitId stamp above) but never
+// fed them to recordKnowledgeRetrieval or the #701 stale-alert turn-state
+// write — the exact #1052/#1103 curation-signal gap, one tool over. These
+// tests mirror knowledge_search's own retrieval-count/stale-alert coverage in
+// tests/tools.test.ts, adapted to this tool's interests-derived query and its
+// lack of a lexical fallback.
+
+test(
+  'knowledge_for_me bumps retrieval_count only for the hit that clears the relevance floor, matching ' +
+    "knowledge_search's own recordKnowledgeRetrieval call (issue #1383 acceptance criteria 1, 5)",
+  { skip },
+  async () => {
+    const scope = `${RUN}-retrieval-bump`;
+    const userId = `${RUN}-member-retrieval-bump`;
+    const interests = `retrieval bump test interests ${RUN}`;
+    await setMemberInterests('discord', userId, interests);
+
+    const anchorVec = await embed(interests);
+    const relevantVec = atCosineSimilarity(anchorVec, 0.9);
+    // Orthogonal-ish to the anchor, so its similarity lands well below the
+    // 0.35 relevance floor — the negative case proving a below-floor hit is
+    // never counted as a "use", same shape as tools.test.ts's own
+    // knowledge_search retrieval-bump test.
+    const distractorVec = atCosineSimilarity(anchorVec, 0.05);
+    const { rows: relevantRows } = await pool.query(
+      `INSERT INTO knowledge (scope, title, content, embedding) VALUES ($1,$2,$3,$4) RETURNING id`,
+      [scope, `Retrieval bump entry ${RUN}`, 'RETRIEVAL_BUMP_FOR_ME_TEXT', pgvector.toSql(relevantVec)],
+    );
+    const { rows: distractorRows } = await pool.query(
+      `INSERT INTO knowledge (scope, title, content, embedding) VALUES ($1,$2,$3,$4) RETURNING id`,
+      [
+        scope,
+        `Retrieval bump distractor ${RUN}`,
+        'RETRIEVAL_BUMP_DISTRACTOR_TEXT',
+        pgvector.toSql(distractorVec),
+      ],
+    );
+    const relevantId = Number(relevantRows[0].id);
+    const distractorId = Number(distractorRows[0].id);
+
+    const caller = {
+      platform: 'discord' as const,
+      userId,
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: scope,
+      isDirect: false,
+    };
+    await getKnowledgeForMeHandler(caller).handler({});
+
+    const relevantCount = await waitForRetrievalCount(relevantId, (c) => c >= 1);
+    assert.equal(
+      relevantCount,
+      1,
+      'the entry that clears the relevance floor gets its retrieval_count bumped',
+    );
+
+    const distractorCount = await waitForRetrievalCount(distractorId, (c) => c >= 1, 1_000);
+    assert.equal(
+      distractorCount,
+      0,
+      'a below-floor entry must never be counted as a use — only relevantIds reaches recordKnowledgeRetrieval',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[relevantId, distractorId]]);
+    await setMemberInterests('discord', userId, 'clear');
+  },
+);
+
+test(
+  'knowledge_for_me makes no retrieval_count write and no published interests, hence never reaches ' +
+    'searchKnowledge — matching criterion 4 for the "no interests" branch (issue #1383 acceptance criterion 4)',
+  async (t) => {
+    let retrievalUpdateCalls = 0;
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && sql.includes('FROM member_interests')) {
+        return Promise.resolve({ rows: [], rowCount: 0 });
+      }
+      if (typeof sql === 'string' && sql.includes('retrieval_count')) {
+        retrievalUpdateCalls += 1;
+      }
+      return (realQuery as (...args: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-member-no-profile-retrieval`,
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: `${RUN}-no-profile-retrieval`,
+      isDirect: false,
+    };
+    const turnState: KnowledgeForMeTurnState = { lastKnowledgeHitId: null };
+    await getKnowledgeForMeHandler(caller, turnState).handler({});
+
+    assert.equal(
+      retrievalUpdateCalls,
+      0,
+      'a caller with no published interests must never reach recordKnowledgeRetrieval',
+    );
+    assert.equal(
+      turnState.staleKnowledgeAlertIds,
+      undefined,
+      'a caller with no published interests must never push onto staleKnowledgeAlertIds',
+    );
+  },
+);
+
+test(
+  'knowledge_for_me makes no retrieval_count write when hits exist but none clear the relevance floor (issue ' +
+    '#1383 acceptance criterion 4)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-below-floor`;
+    const userId = `${RUN}-member-below-floor`;
+    const interests = `below floor test interests ${RUN}`;
+    await setMemberInterests('discord', userId, interests);
+
+    const anchorVec = await embed(interests);
+    const belowFloorVec = atCosineSimilarity(anchorVec, 0.05);
+    const { rows } = await pool.query(
+      `INSERT INTO knowledge (scope, title, content, embedding) VALUES ($1,$2,$3,$4) RETURNING id`,
+      [scope, `Below floor entry ${RUN}`, 'BELOW_FLOOR_FOR_ME_TEXT', pgvector.toSql(belowFloorVec)],
+    );
+    const id = Number(rows[0].id);
+
+    const caller = {
+      platform: 'discord' as const,
+      userId,
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: scope,
+      isDirect: false,
+    };
+    const turnState: KnowledgeForMeTurnState = { lastKnowledgeHitId: 999_999 };
+    await getKnowledgeForMeHandler(caller, turnState).handler({});
+
+    const count = await waitForRetrievalCount(id, (c) => c >= 1, 1_000);
+    assert.equal(count, 0, 'a below-floor-only result set must never bump retrieval_count');
+    assert.equal(
+      turnState.lastKnowledgeHitId,
+      999_999,
+      'a non-qualifying call must never clobber an earlier qualifying turnState id',
+    );
+    assert.equal(
+      turnState.staleKnowledgeAlertIds,
+      undefined,
+      'a non-qualifying call must never push onto staleKnowledgeAlertIds',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
+    await setMemberInterests('discord', userId, 'clear');
+  },
+);
+
+test(
+  'knowledge_for_me (KNOWLEDGE_STALE_ALERT_ENABLED=true): a served, stale hit pushes its id onto ' +
+    'turnState.staleKnowledgeAlertIds — the same #701 nudge knowledge_search gives its own hits (issue #1383 ' +
+    'acceptance criterion 2)',
+  { skip },
+  async () => {
+    const originalEnabled = config.knowledgeStaleAlert.enabled;
+    const originalStaleDays = config.adminDigest.knowledgeStaleDays;
+    setKnowledgeStaleAlertEnabled(true);
+    setKnowledgeStaleDays(30);
+    try {
+      const scope = `${RUN}-stale-alert-for-me`;
+      const userId = `${RUN}-member-stale-alert`;
+      const interests = `stale alert test interests ${RUN}`;
+      await setMemberInterests('discord', userId, interests);
+
+      const anchorVec = await embed(interests);
+      const { rows } = await pool.query(
+        `INSERT INTO knowledge (scope, title, content, embedding) VALUES ($1,$2,$3,$4) RETURNING id`,
+        [scope, `Stale alert entry ${RUN}`, 'STALE_ALERT_FOR_ME_TEXT', pgvector.toSql(anchorVec)],
+      );
+      const id = Number(rows[0].id);
+      await pool.query(`UPDATE knowledge SET updated_at = now() - interval '400 days' WHERE id = $1`, [id]);
+
+      const caller = {
+        platform: 'discord' as const,
+        userId,
+        userName: 'Member',
+        role: 'member' as const,
+        conversationId: scope,
+        isDirect: false,
+      };
+      const turnState: KnowledgeForMeTurnState = { lastKnowledgeHitId: null };
+      await getKnowledgeForMeHandler(caller, turnState).handler({});
+
+      assert.deepEqual(
+        turnState.staleKnowledgeAlertIds,
+        [id],
+        'a served, stale hit must have its id pushed onto turnState.staleKnowledgeAlertIds',
+      );
+
+      await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
+      await setMemberInterests('discord', userId, 'clear');
+    } finally {
+      setKnowledgeStaleAlertEnabled(originalEnabled);
+      setKnowledgeStaleDays(originalStaleDays);
+    }
+  },
+);
+
+test(
+  'knowledge_for_me (KNOWLEDGE_STALE_ALERT_ENABLED unset/false, the default): a served, stale hit never sets ' +
+    'turnState.staleKnowledgeAlertIds, but its retrieval_count still bumps — the only observable change is the ' +
+    'new recordKnowledgeRetrieval call (issue #1383 acceptance criterion 3)',
+  { skip },
+  async () => {
+    assert.equal(config.knowledgeStaleAlert.enabled, false, 'this test requires the flag at its off default');
+    const originalStaleDays = config.adminDigest.knowledgeStaleDays;
+    setKnowledgeStaleDays(30);
+    try {
+      const scope = `${RUN}-stale-alert-off-for-me`;
+      const userId = `${RUN}-member-stale-alert-off`;
+      const interests = `stale alert off test interests ${RUN}`;
+      await setMemberInterests('discord', userId, interests);
+
+      const anchorVec = await embed(interests);
+      const { rows } = await pool.query(
+        `INSERT INTO knowledge (scope, title, content, embedding) VALUES ($1,$2,$3,$4) RETURNING id`,
+        [scope, `Stale alert off entry ${RUN}`, 'STALE_ALERT_OFF_FOR_ME_TEXT', pgvector.toSql(anchorVec)],
+      );
+      const id = Number(rows[0].id);
+      await pool.query(`UPDATE knowledge SET updated_at = now() - interval '400 days' WHERE id = $1`, [id]);
+
+      const caller = {
+        platform: 'discord' as const,
+        userId,
+        userName: 'Member',
+        role: 'member' as const,
+        conversationId: scope,
+        isDirect: false,
+      };
+      const turnState: KnowledgeForMeTurnState = { lastKnowledgeHitId: null };
+      await getKnowledgeForMeHandler(caller, turnState).handler({});
+
+      assert.equal(
+        turnState.staleKnowledgeAlertIds,
+        undefined,
+        'the flag being off must never set turnState.staleKnowledgeAlertIds, even for a stale served hit',
+      );
+      const count = await waitForRetrievalCount(id, (c) => c >= 1);
+      assert.equal(
+        count,
+        1,
+        'the retrieval_count bump is unconditional — the flag only gates the stale-alert turn-state write',
+      );
+
+      await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
+      await setMemberInterests('discord', userId, 'clear');
+    } finally {
+      setKnowledgeStaleDays(originalStaleDays);
+    }
+  },
+);
+
+test(
+  'SECURITY: knowledge_for_me writes only relevantIds to recordKnowledgeRetrieval and only ' +
+    'staleKnowledgeAlertIds onto turnState — no caller-supplied field, no widened id set, no second call site ' +
+    '(issue #1383 acceptance criterion 5)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-security-surface`;
+    const userId = `${RUN}-member-security-surface`;
+    const interests = `security surface test interests ${RUN}`;
+    await setMemberInterests('discord', userId, interests);
+
+    const anchorVec = await embed(interests);
+    const relevantVec = atCosineSimilarity(anchorVec, 0.9);
+    const { rows } = await pool.query(
+      `INSERT INTO knowledge (scope, title, content, embedding) VALUES ($1,$2,$3,$4) RETURNING id`,
+      [scope, `Security surface entry ${RUN}`, 'SECURITY_SURFACE_FOR_ME_TEXT', pgvector.toSql(relevantVec)],
+    );
+    const id = Number(rows[0].id);
+
+    const caller = {
+      platform: 'discord' as const,
+      userId,
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: scope,
+      isDirect: false,
+    };
+    const turnState: KnowledgeForMeTurnState = { lastKnowledgeHitId: null };
+    await getKnowledgeForMeHandler(caller, turnState).handler({});
+
+    const count = await waitForRetrievalCount(id, (c) => c >= 1);
+    assert.equal(count, 1, 'the only floor-clearing id must reach recordKnowledgeRetrieval exactly once');
+    // Subset check rather than an exact set, since staleKnowledgeAlertIds is
+    // only populated when the flag is on AND the served hit is stale
+    // (neither true for this fixture) — the point here is that the handler
+    // never introduces any OTHER key.
+    for (const key of Object.keys(turnState)) {
+      assert.ok(
+        key === 'lastKnowledgeHitId' || key === 'staleKnowledgeAlertIds',
+        `the handler must never write any turnState key beyond the pre-existing lastKnowledgeHitId and the ` +
+          `new staleKnowledgeAlertIds — found unexpected key "${key}"`,
+      );
+    }
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
+    await setMemberInterests('discord', userId, 'clear');
+  },
+);
+
+test(
+  'SECURITY: knowledge_for_me and knowledge_search produce parity outcomes (a retrieval_count bump plus a ' +
+    'staleKnowledgeAlertIds push) for a stale hit served the same way through each path — no interest-path ' +
+    'entry is under-counted or under-alerted relative to the search path (issue #1383 acceptance criterion 6)',
+  { skip },
+  async () => {
+    const originalEnabled = config.knowledgeStaleAlert.enabled;
+    const originalStaleDays = config.adminDigest.knowledgeStaleDays;
+    setKnowledgeStaleAlertEnabled(true);
+    setKnowledgeStaleDays(30);
+    try {
+      const sharedText = `parity test shared text ${RUN}`;
+      const anchorVec = await embed(sharedText);
+
+      // Two independent fixtures (separate scope, separate row) rather than
+      // one shared row, so each tool's own fire-and-forget write can be
+      // observed in isolation without one call's bump racing the other's.
+      const searchScope = `${RUN}-parity-search`;
+      const forMeScope = `${RUN}-parity-for-me`;
+      const forMeUserId = `${RUN}-member-parity`;
+      await setMemberInterests('discord', forMeUserId, sharedText);
+
+      const { rows: searchRows } = await pool.query(
+        `INSERT INTO knowledge (scope, title, content, embedding) VALUES ($1,$2,$3,$4) RETURNING id`,
+        [searchScope, `Parity search entry ${RUN}`, 'PARITY_SEARCH_TEXT', pgvector.toSql(anchorVec)],
+      );
+      const { rows: forMeRows } = await pool.query(
+        `INSERT INTO knowledge (scope, title, content, embedding) VALUES ($1,$2,$3,$4) RETURNING id`,
+        [forMeScope, `Parity for-me entry ${RUN}`, 'PARITY_FOR_ME_TEXT', pgvector.toSql(anchorVec)],
+      );
+      const searchId = Number(searchRows[0].id);
+      const forMeId = Number(forMeRows[0].id);
+      await pool.query(`UPDATE knowledge SET updated_at = now() - interval '400 days' WHERE id = ANY($1)`, [
+        [searchId, forMeId],
+      ]);
+
+      const searchCaller = {
+        platform: 'discord' as const,
+        userId: `${RUN}-member-parity-search`,
+        userName: 'Member',
+        role: 'member' as const,
+        conversationId: searchScope,
+        isDirect: false,
+      };
+      const forMeCaller = {
+        platform: 'discord' as const,
+        userId: forMeUserId,
+        userName: 'Member',
+        role: 'member' as const,
+        conversationId: forMeScope,
+        isDirect: false,
+      };
+      const searchTurnState: KnowledgeForMeTurnState = { lastKnowledgeHitId: null };
+      const forMeTurnState: KnowledgeForMeTurnState = { lastKnowledgeHitId: null };
+
+      await getKnowledgeSearchHandler(searchCaller, searchTurnState).handler({ query: sharedText });
+      await getKnowledgeForMeHandler(forMeCaller, forMeTurnState).handler({});
+
+      const searchCount = await waitForRetrievalCount(searchId, (c) => c >= 1);
+      const forMeCount = await waitForRetrievalCount(forMeId, (c) => c >= 1);
+      assert.equal(searchCount, 1, 'knowledge_search must bump retrieval_count for its served hit');
+      assert.equal(
+        forMeCount,
+        1,
+        'knowledge_for_me must bump retrieval_count for its served hit — parity with knowledge_search',
+      );
+
+      assert.deepEqual(
+        searchTurnState.staleKnowledgeAlertIds,
+        [searchId],
+        'precondition: knowledge_search pushes the stale hit onto staleKnowledgeAlertIds',
+      );
+      assert.deepEqual(
+        forMeTurnState.staleKnowledgeAlertIds,
+        [forMeId],
+        'knowledge_for_me must push its own served stale hit onto staleKnowledgeAlertIds — parity with ' +
+          'knowledge_search, no under-alerting for the interest-discovery path',
+      );
+
+      await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[searchId, forMeId]]);
+      await setMemberInterests('discord', forMeUserId, 'clear');
+    } finally {
+      setKnowledgeStaleAlertEnabled(originalEnabled);
+      setKnowledgeStaleDays(originalStaleDays);
+    }
   },
 );
