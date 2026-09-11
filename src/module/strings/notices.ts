@@ -424,7 +424,7 @@ const NOTICE_ENTRIES = {
       mi:
         'Kua hono ō tuakiri Discord me WhatsApp i NZ Claude Community hei tangata kotahi e tētahi ' +
         'kaiwhakahaere. Mai i tēnei wā, ka mukua ngā raraunga o ērā tuakiri e rua e tētahi tono ' +
-        "muku-raraunga (forget_me) mai i tētahi. Whakapā atu ki tētahi kaiwhakahaere mēnā kāore i tika tēnei.",
+        'muku-raraunga (forget_me) mai i tētahi. Whakapā atu ki tētahi kaiwhakahaere mēnā kāore i tika tēnei.',
     },
     style: {
       plain:

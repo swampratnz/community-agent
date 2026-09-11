@@ -588,7 +588,10 @@ export async function notifyMemberUnlinked(
     .catch((err) => {
       if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
         adapter.queueForWindowReopen(userId, message, 'low');
-        logger.warn({ userId, platform }, "Member unlink DM: recipient's window is closed, queued for reopen");
+        logger.warn(
+          { userId, platform },
+          "Member unlink DM: recipient's window is closed, queued for reopen",
+        );
         return true;
       }
       logger.warn({ err, userId }, 'Member unlink DM failed');

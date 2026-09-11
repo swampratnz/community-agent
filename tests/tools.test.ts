@@ -71,6 +71,8 @@ await import('./support/registerToolRegistry.js');
 const {
   notifyMemberApproved,
   notifyMemberRemoved,
+  notifyMemberLinked,
+  notifyMemberUnlinked,
   notifyAdminApproved,
   notifyAdminRevoked,
   notifyAccessRequestDeclined,
@@ -1924,6 +1926,187 @@ test(
     );
     for (const message of calls) {
       assert.doesNotMatch(message, /user-1/);
+    }
+  },
+);
+
+// notifyMemberLinked/notifyMemberUnlinked hold all of link_member's/
+// unlink_member's new (issue #1393) notification behaviour — the last silent
+// pair in this family, per docs/SECURITY.md §7. Structurally identical to
+// notifyMemberRemoved above, so these tests mirror that block's shape.
+test('notifyMemberLinked sends exactly one link DM, and resolves true (issue #1393)', async () => {
+  const calls: Array<[string, string]> = [];
+  const adapter = stubAdapter(async (userId, message) => {
+    calls.push([userId, message]);
+  });
+
+  const delivered = await notifyMemberLinked(adapter, 'user-1', 'discord');
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'user-1');
+  assert.match(calls[0][1], /have been linked as the same person/i);
+  assert.equal(delivered, true);
+});
+
+test('notifyMemberLinked swallows a DM failure rather than throwing, and resolves false (issue #1393)', async () => {
+  const adapter = stubAdapter(async () => {
+    throw new Error('DMs closed');
+  });
+
+  const delivered = await notifyMemberLinked(adapter, 'user-1', 'discord');
+
+  assert.equal(delivered, false);
+});
+
+test("notifyMemberLinked sends the te reo Māori variant for a caller with a stored 'mi' preference (issue #1393)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyMemberLinked(adapter, 'user-1', 'discord', async () => 'mi');
+
+  assert.match(calls[0], /Kua hono ō tuakiri Discord me WhatsApp/);
+  assert.doesNotMatch(calls[0], /have been linked as the same person/);
+});
+
+test("notifyMemberLinked sends the plain-language variant for a caller with a stored 'plain' response style (issue #1393)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyMemberLinked(
+    adapter,
+    'user-1',
+    'discord',
+    async () => 'auto',
+    async () => 'plain',
+  );
+
+  assert.match(calls[0], /have been linked as one person by an/);
+});
+
+test('SECURITY: notifyMemberLinked queues via queueForWindowReopen at "low" priority on a WindowClosedError, rather than dropping the DM (issue #1393, #644 recovery extended)', async () => {
+  const queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }> = [];
+  const adapter: PlatformAdapter = {
+    ...stubAdapter(async () => {
+      throw new WindowClosedError('user-1');
+    }),
+    queueForWindowReopen(userId: string, message: string, priority: 'system' | 'low') {
+      queued.push({ userId, message, priority });
+    },
+  };
+
+  const delivered = await notifyMemberLinked(adapter, 'user-1', 'discord');
+
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0]?.userId, 'user-1');
+  assert.equal(queued[0]?.priority, 'low');
+  assert.equal(delivered, true);
+});
+
+test(
+  'SECURITY: notifyMemberLinked renders no acting-admin identity, no third-party identifier, or ' +
+    "audit/link metadata in any language/style variant — never interpolated with the target's own userId or " +
+    'any other identity (issue #1393 acceptance criterion #8)',
+  async () => {
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (_userId, message) => {
+      calls.push(message);
+    });
+
+    await notifyMemberLinked(adapter, 'user-1', 'discord', async () => 'auto');
+    await notifyMemberLinked(adapter, 'user-1', 'discord', async () => 'mi');
+    await notifyMemberLinked(
+      adapter,
+      'user-1',
+      'discord',
+      async () => 'auto',
+      async () => 'plain',
+    );
+
+    assert.equal(calls.length, 3);
+    for (const message of calls) {
+      assert.doesNotMatch(message, /user-1/);
+      assert.doesNotMatch(message, /user-2/);
+      assert.doesNotMatch(message, /whatsapp:|discord:/);
+    }
+  },
+);
+
+test('notifyMemberUnlinked sends exactly one unlink DM, and resolves true (issue #1393)', async () => {
+  const calls: Array<[string, string]> = [];
+  const adapter = stubAdapter(async (userId, message) => {
+    calls.push([userId, message]);
+  });
+
+  const delivered = await notifyMemberUnlinked(adapter, 'user-1', 'discord');
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'user-1');
+  assert.match(calls[0][1], /split back into two separate accounts/i);
+  assert.equal(delivered, true);
+});
+
+test('notifyMemberUnlinked swallows a DM failure rather than throwing, and resolves false (issue #1393)', async () => {
+  const adapter = stubAdapter(async () => {
+    throw new Error('DMs closed');
+  });
+
+  const delivered = await notifyMemberUnlinked(adapter, 'user-1', 'discord');
+
+  assert.equal(delivered, false);
+});
+
+test("notifyMemberUnlinked sends the te reo Māori variant for a caller with a stored 'mi' preference (issue #1393)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyMemberUnlinked(adapter, 'user-1', 'discord', async () => 'mi');
+
+  assert.match(calls[0], /Kua wehea anōtia tō tuakiri hono/);
+  assert.doesNotMatch(calls[0], /split back into two separate accounts/);
+});
+
+test('SECURITY: notifyMemberUnlinked queues via queueForWindowReopen at "low" priority on a WindowClosedError, rather than dropping the DM (issue #1393, #644 recovery extended)', async () => {
+  const queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }> = [];
+  const adapter: PlatformAdapter = {
+    ...stubAdapter(async () => {
+      throw new WindowClosedError('user-1');
+    }),
+    queueForWindowReopen(userId: string, message: string, priority: 'system' | 'low') {
+      queued.push({ userId, message, priority });
+    },
+  };
+
+  const delivered = await notifyMemberUnlinked(adapter, 'user-1', 'discord');
+
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0]?.userId, 'user-1');
+  assert.equal(queued[0]?.priority, 'low');
+  assert.equal(delivered, true);
+});
+
+test(
+  'SECURITY: notifyMemberUnlinked renders no acting-admin identity or third-party identifier — never ' +
+    "interpolated with the target's own userId or the former linked partner's identity (issue #1393 " +
+    'acceptance criterion #8)',
+  async () => {
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (_userId, message) => {
+      calls.push(message);
+    });
+
+    await notifyMemberUnlinked(adapter, 'user-1', 'discord', async () => 'auto');
+    await notifyMemberUnlinked(adapter, 'user-1', 'discord', async () => 'mi');
+
+    assert.equal(calls.length, 2);
+    for (const message of calls) {
+      assert.doesNotMatch(message, /user-1/);
+      assert.doesNotMatch(message, /user-2/);
     }
   },
 );
@@ -16110,6 +16293,412 @@ test(
       await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
         targetUserId,
       ]);
+    }
+  },
+);
+
+test(
+  'SECURITY: link_member never calls notifyMemberLinked on the self-link, super-admin-target, or ' +
+    'not-a-member refusal paths, or before requireConfirm executes (issue #1393 acceptance criterion #7)',
+  { skip },
+  async () => {
+    const now = Date.now();
+    const targetA = `${now}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    const targetB = `${now}`.slice(-9) + String(Math.floor(Math.random() * 900) + 100);
+    const adminUserId = `admin-link-member-refusal-${targetA}`;
+    const conversationId = `convo-link-member-refusal-${targetA}`;
+    const discordCalls: string[] = [];
+    const whatsappCalls: string[] = [];
+    const discordAdapter = stubAdapter(async (userId) => {
+      discordCalls.push(userId);
+    });
+    const whatsappAdapter = stubAdapter(async (userId) => {
+      whatsappCalls.push(userId);
+    });
+    const caller = {
+      platform: 'discord' as const,
+      userId: adminUserId,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId,
+    };
+    const server = buildToolServer(caller, discordAdapter, (platform) =>
+      platform === 'whatsapp' ? whatsappAdapter : discordAdapter,
+    );
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          {
+            handler: (
+              args: object,
+            ) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+          }
+        >;
+      }
+    )._registeredTools['link_member'];
+
+    try {
+      // 1. Self-link refusal.
+      const selfLinkResult = await registeredTool.handler({
+        platformA: 'discord',
+        userIdA: targetA,
+        platformB: 'discord',
+        userIdB: targetA,
+      });
+      assert.equal(selfLinkResult.isError, true);
+      assert.match(selfLinkResult.content[0].text, /Refusing.*link an identity to itself/i);
+
+      // 2. Super-admin-target refusal.
+      const wasSupers = config.rbac.superAdminDiscordIds;
+      config.rbac.superAdminDiscordIds = [targetA];
+      let superAdminResult: { content: Array<{ type: string; text: string }>; isError?: boolean };
+      try {
+        superAdminResult = await registeredTool.handler({
+          platformA: 'discord',
+          userIdA: targetA,
+          platformB: 'whatsapp',
+          userIdB: targetB,
+        });
+      } finally {
+        config.rbac.superAdminDiscordIds = wasSupers;
+      }
+      assert.equal(superAdminResult.isError, true);
+      assert.match(superAdminResult.content[0].text, /Refusing.*super admin/i);
+
+      // 3. Not-a-member refusal (neither target registered yet).
+      const notMemberResult = await registeredTool.handler({
+        platformA: 'discord',
+        userIdA: targetA,
+        platformB: 'whatsapp',
+        userIdB: targetB,
+      });
+      assert.equal(notMemberResult.isError, true);
+      assert.match(notMemberResult.content[0].text, /Refusing.*must already be known community members/i);
+
+      // 4. Now register both as members and call once more — this registers
+      // the pending CONFIRM action but must not fire any DM before an
+      // explicit confirmation.
+      await upsertMember({ platform: 'discord', userId: targetA, role: 'member', addedBy: adminUserId });
+      await upsertMember({ platform: 'whatsapp', userId: targetB, role: 'member', addedBy: adminUserId });
+      const pendingResult = await registeredTool.handler({
+        platformA: 'discord',
+        userIdA: targetA,
+        platformB: 'whatsapp',
+        userIdB: targetB,
+      });
+      assert.match(pendingResult.content[0].text, /CONFIRM/);
+      const pending = takePendingAction('discord', conversationId, adminUserId);
+      assert.ok(pending, 'link_member must register a pending action before any DM can fire');
+
+      assert.equal(discordCalls.length, 0, 'no link DM was ever sent before requireConfirm executed');
+      assert.equal(whatsappCalls.length, 0, 'no link DM was ever sent before requireConfirm executed');
+    } finally {
+      await pool.query(
+        `DELETE FROM community_users WHERE (platform = 'discord' AND platform_user_id = $1) ` +
+          `OR (platform = 'whatsapp' AND platform_user_id = $2)`,
+        [targetA, targetB],
+      );
+      await pool.query(`DELETE FROM admin_audit WHERE target_user_id LIKE $1`, [`%${targetA}%`]);
+    }
+  },
+);
+
+test(
+  "SECURITY: link_member's two link DMs are independent — an unregistered target platform attempts nothing " +
+    "and still counts as delivered, without suppressing the other side's DM or changing link_member's " +
+    'reported success (issue #1393 acceptance criterion #9)',
+  { skip },
+  async () => {
+    const now = Date.now();
+    const targetA = `${now}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    const targetB = `${now}`.slice(-9) + String(Math.floor(Math.random() * 900) + 100);
+    const adminUserId = `admin-link-member-independent-${targetA}`;
+    const conversationId = `convo-link-member-independent-${targetA}`;
+    const discordCalls: string[] = [];
+    const discordAdapter = stubAdapter(async (userId) => {
+      discordCalls.push(userId);
+    });
+    const caller = {
+      platform: 'discord' as const,
+      userId: adminUserId,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId,
+    };
+    // No adapterFor at all — whatsapp simply isn't registered in this
+    // deployment, matching add_member/remove_member's "unregistered target
+    // attempts nothing, counts as delivered" convention.
+    const server = buildToolServer(caller, discordAdapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['link_member'];
+
+    try {
+      await upsertMember({ platform: 'discord', userId: targetA, role: 'member', addedBy: adminUserId });
+      await upsertMember({ platform: 'whatsapp', userId: targetB, role: 'member', addedBy: adminUserId });
+
+      await registeredTool.handler({
+        platformA: 'discord',
+        userIdA: targetA,
+        platformB: 'whatsapp',
+        userIdB: targetB,
+      });
+      const pending = takePendingAction('discord', conversationId, adminUserId);
+      assert.ok(pending, 'link_member must register a pending action, not execute directly');
+      const reply = await pending?.execute();
+
+      assert.match(reply ?? '', /^Linked discord:.+ and whatsapp:.+: linked as person #\d+\.$/);
+      assert.deepEqual(
+        discordCalls,
+        [targetA],
+        "the discord side's own adapter still delivers even though whatsapp has no registered adapter",
+      );
+    } finally {
+      await pool.query(
+        `DELETE FROM community_users WHERE (platform = 'discord' AND platform_user_id = $1) ` +
+          `OR (platform = 'whatsapp' AND platform_user_id = $2)`,
+        [targetA, targetB],
+      );
+      await pool.query(`DELETE FROM admin_audit WHERE target_user_id LIKE $1`, [`%${targetA}%`]);
+    }
+  },
+);
+
+test(
+  "SECURITY: a notifyMemberLinked delivery failure on either side never changes link_member's reported " +
+    'success, and appends MEMBER_LINKED_DM_FAILED_NOTE (issue #1393)',
+  { skip },
+  async () => {
+    const now = Date.now();
+    const targetA = `${now}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    const targetB = `${now}`.slice(-9) + String(Math.floor(Math.random() * 900) + 100);
+    const adminUserId = `admin-link-member-dm-failed-${targetA}`;
+    const conversationId = `convo-link-member-dm-failed-${targetA}`;
+    const discordAdapter = stubAdapter(async () => {
+      throw new Error('DMs closed');
+    });
+    const whatsappAdapter = stubAdapter(async () => {
+      throw new Error('DMs closed');
+    });
+    const caller = {
+      platform: 'discord' as const,
+      userId: adminUserId,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId,
+    };
+    const server = buildToolServer(caller, discordAdapter, (platform) =>
+      platform === 'whatsapp' ? whatsappAdapter : discordAdapter,
+    );
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['link_member'];
+
+    try {
+      await upsertMember({ platform: 'discord', userId: targetA, role: 'member', addedBy: adminUserId });
+      await upsertMember({ platform: 'whatsapp', userId: targetB, role: 'member', addedBy: adminUserId });
+
+      await registeredTool.handler({
+        platformA: 'discord',
+        userIdA: targetA,
+        platformB: 'whatsapp',
+        userIdB: targetB,
+      });
+      const pending = takePendingAction('discord', conversationId, adminUserId);
+      assert.ok(pending);
+      const reply = await pending?.execute();
+
+      assert.match(reply ?? '', /^Linked discord:.+ and whatsapp:.+: linked as person #\d+\./);
+      assert.match(reply ?? '', / \(Couldn't DM one or both identities about the link/);
+    } finally {
+      await pool.query(
+        `DELETE FROM community_users WHERE (platform = 'discord' AND platform_user_id = $1) ` +
+          `OR (platform = 'whatsapp' AND platform_user_id = $2)`,
+        [targetA, targetB],
+      );
+      await pool.query(`DELETE FROM admin_audit WHERE target_user_id LIKE $1`, [`%${targetA}%`]);
+    }
+  },
+);
+
+test(
+  'SECURITY: unlink_member never calls notifyMemberUnlinked on the not-currently-linked refusal path, or ' +
+    'before requireConfirm executes (issue #1393 acceptance criterion #7)',
+  { skip },
+  async () => {
+    const targetUserId = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    const adminUserId = `admin-unlink-member-refusal-${targetUserId}`;
+    const conversationId = `convo-unlink-member-refusal-${targetUserId}`;
+    const dmCalls: string[] = [];
+    const adapter = stubAdapter(async (userId) => {
+      dmCalls.push(userId);
+    });
+    const caller = {
+      platform: 'discord' as const,
+      userId: adminUserId,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId,
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['unlink_member'];
+
+    try {
+      // 1. Not currently linked to anyone: upsert as an unlinked member, then
+      // register the pending CONFIRM action (no DM before an explicit
+      // confirmation), then execute — the "not currently linked" failure path.
+      await upsertMember({ platform: 'discord', userId: targetUserId, role: 'member', addedBy: adminUserId });
+      const pendingResult = await registeredTool.handler({ userId: targetUserId, platform: 'discord' });
+      assert.match(pendingResult.content[0].text, /CONFIRM/);
+      const pending = takePendingAction('discord', conversationId, adminUserId);
+      assert.ok(pending, 'unlink_member must register a pending action before any DM can fire');
+
+      assert.equal(dmCalls.length, 0, 'no unlink DM was ever sent before requireConfirm executed');
+
+      const failedReply = await pending?.execute();
+      assert.match(failedReply ?? '', /^Failed:.*not currently linked/);
+      assert.equal(dmCalls.length, 0, 'no unlink DM was ever sent on the not-currently-linked failure path');
+    } finally {
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        targetUserId,
+      ]);
+    }
+  },
+);
+
+test(
+  "SECURITY: unlink_member sends notifyMemberUnlinked to the targeted identity's own platform adapter only " +
+    'on an actual successful unlink (issue #1393)',
+  { skip },
+  async () => {
+    const targetA = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    const targetB = `${Date.now()}`.slice(-9) + String(Math.floor(Math.random() * 900) + 100);
+    const adminUserId = `admin-unlink-member-success-${targetA}`;
+    const conversationId = `convo-unlink-member-success-${targetA}`;
+    const discordCalls: string[] = [];
+    const discordAdapter = stubAdapter(async (userId) => {
+      discordCalls.push(userId);
+    });
+    const caller = {
+      platform: 'discord' as const,
+      userId: adminUserId,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId,
+    };
+    // No getAdapter for whatsapp: the targeted identity here is on discord
+    // (caller's own platform), so the unlink DM never needs a cross-platform
+    // lookup — and NOT wiring one keeps this test's discordCalls assertion
+    // free of the unrelated fire-and-forget notifySuperAdmins alert every
+    // successful audited() call fires, which (per the module-scope
+    // SUPER_ADMIN_WHATSAPP_NUMBERS set at the top of this file) would
+    // otherwise land on a wired-up whatsapp adapter too.
+    const server = buildToolServer(caller, discordAdapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['unlink_member'];
+
+    try {
+      await upsertMember({ platform: 'discord', userId: targetA, role: 'member', addedBy: adminUserId });
+      await upsertMember({ platform: 'whatsapp', userId: targetB, role: 'member', addedBy: adminUserId });
+      await linkMembers('discord', targetA, 'whatsapp', targetB);
+
+      await registeredTool.handler({ userId: targetA, platform: 'discord' });
+      const pending = takePendingAction('discord', conversationId, adminUserId);
+      assert.ok(pending, 'unlink_member must register a pending action, not execute directly');
+      const reply = await pending?.execute();
+
+      assert.match(reply ?? '', /^Unlinked .+ on discord: unlinked\.$/);
+      assert.deepEqual(
+        discordCalls,
+        [targetA],
+        "the unlink DM reaches only the targeted identity's own adapter",
+      );
+    } finally {
+      await pool.query(
+        `DELETE FROM community_users WHERE (platform = 'discord' AND platform_user_id = $1) ` +
+          `OR (platform = 'whatsapp' AND platform_user_id = $2)`,
+        [targetA, targetB],
+      );
+      await pool.query(`DELETE FROM admin_audit WHERE target_user_id LIKE $1`, [`%${targetA}%`]);
+    }
+  },
+);
+
+test(
+  'SECURITY: unlink_member sends no notify DM when the target platform has no adapter registered, and never ' +
+    'throws (issue #1393)',
+  { skip },
+  async () => {
+    const targetUserId = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    const otherUserId = `${Date.now()}`.slice(-9) + String(Math.floor(Math.random() * 900) + 100);
+    const adminUserId = `admin-unlink-member-unregistered-${targetUserId}`;
+    const conversationId = `convo-unlink-member-unregistered-${targetUserId}`;
+    const dmCalls: string[] = [];
+    const adapter = stubAdapter(async (userId) => {
+      dmCalls.push(userId);
+    });
+    const caller = {
+      platform: 'discord' as const,
+      userId: adminUserId,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId,
+    };
+    // No adapterFor at all — whatsapp simply isn't registered in this
+    // deployment.
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['unlink_member'];
+
+    try {
+      await upsertMember({ platform: 'discord', userId: targetUserId, role: 'member', addedBy: adminUserId });
+      await upsertMember({ platform: 'whatsapp', userId: otherUserId, role: 'member', addedBy: adminUserId });
+      await linkMembers('discord', targetUserId, 'whatsapp', otherUserId);
+
+      await registeredTool.handler({ userId: otherUserId, platform: 'whatsapp' });
+      const pending = takePendingAction('discord', conversationId, adminUserId);
+      assert.ok(pending);
+      const reply = await pending?.execute();
+
+      assert.match(reply ?? '', /^Unlinked .+ on whatsapp: unlinked\.$/);
+      assert.equal(dmCalls.length, 0, 'an unregistered target platform attempts no DM and never throws');
+    } finally {
+      await pool.query(
+        `DELETE FROM community_users WHERE (platform = 'discord' AND platform_user_id = $1) ` +
+          `OR (platform = 'whatsapp' AND platform_user_id = $2)`,
+        [targetUserId, otherUserId],
+      );
+      await pool.query(`DELETE FROM admin_audit WHERE target_user_id LIKE $1`, [`%${targetUserId}%`]);
     }
   },
 );

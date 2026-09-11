@@ -16,7 +16,12 @@ import {
 import { ACCESS_REQUEST_STALE_ALERT_SCAN_LIMIT } from '../../accessRequestStaleAlert.js';
 import { recordAccessRequestResolution } from '../../storage/accessRequestResolutions.js';
 import { platformArg, resolveSanitizedLabel, text } from './helpers.js';
-import { notifyMemberApproved, notifyMemberLinked, notifyMemberRemoved, notifyMemberUnlinked } from './notify.js';
+import {
+  notifyMemberApproved,
+  notifyMemberLinked,
+  notifyMemberRemoved,
+  notifyMemberUnlinked,
+} from './notify.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 /**
