@@ -70,6 +70,8 @@ const EXPECTED: Record<string, readonly string[]> = {
     'share_project',
     'suggest_improvement',
     'suggest_knowledge',
+    'summarize_link',
+    'web_research',
     'who_is_into',
     'withdraw_appeal',
     'withdraw_knowledge_tip',
