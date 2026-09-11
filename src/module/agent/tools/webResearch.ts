@@ -32,8 +32,9 @@ import { relayLanguageNote, text, untrusted } from './helpers.js';
  *     tool that can act on anything.
  *  2. **The answer comes back quarantined** through `untrusted()` — the same
  *     wrapper as recalled chat and fetched pages — with sources filtered to
- *     https and capped. The existing prompt rule "only relay a link that came
- *     from a tool result" is what governs citing them.
+ *     https and capped before the model ever sees them. That filtering is
+ *     the control: the prompt's citation rule is scoped to knowledge_search's
+ *     own source clause and does not cover this SOURCES list.
  *  3. **Knowledge base first, mechanically, and keyed to the question.** The
  *     handler refuses unless a `knowledge_search` earlier in this SAME turn
  *     found nothing above the relevance floor (`turnState.knowledgeSearchMissed`)

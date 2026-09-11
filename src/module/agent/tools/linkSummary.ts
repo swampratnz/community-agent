@@ -54,7 +54,12 @@ const reserveLinkDedup = makeSlidingWindowReserver(DEDUP_WINDOW_MS);
 /** Trim the quarantined body so one page cannot dominate the turn's context. */
 const MAX_RETURNED_CHARS = 12_000;
 
-/** Enough history for a busy day in a large group, without an unbounded read. */
+/**
+ * Enough history for a busy day in a large group, without an unbounded read.
+ * These are the NEWEST rows in the lookback window: recentConversationHistory
+ * orders by created_at DESC before its LIMIT, so overflow drops the oldest
+ * links in the window, never a just-posted one.
+ */
 export const PROVENANCE_SCAN_LIMIT = 500;
 
 const URL_RE = /https?:\/\/[^\s<>"'`]+/gi;
