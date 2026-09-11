@@ -25723,8 +25723,16 @@ test(
     const team = await createProject({ slug: teamSlug, name: 'Two Member Lab', createdBy: 'test' });
     assert.ok(empty && solo && team, 'setup: all three projects must be created');
 
-    const memberA = `${RUN.slice(1)}301`.slice(0, 19);
-    const memberB = `${RUN.slice(1)}302`.slice(0, 19);
+    // A fixed-length base, matching the notify-gating test below rather than
+    // the `${RUN.slice(1)}NNN.slice(0, 19)` convention used elsewhere in this
+    // file. RUN.slice(1) is 18-19 chars whenever RUN's random component has
+    // its usual 5-6 digits, so appending a 3-digit suffix and slicing back to
+    // 19 truncates the suffix away entirely and memberA === memberB: "Two
+    // Member Lab" then holds ONE member and the (2 members) assertion fails.
+    // Measured at 9991 collisions in 10000 RUN values.
+    const base = RUN.slice(1).slice(0, 14);
+    const memberA = `${base}3011`;
+    const memberB = `${base}3012`;
     await addProjectMember(solo.id, 'discord', memberA, 'test');
     await addProjectMember(team.id, 'discord', memberA, 'test');
     await addProjectMember(team.id, 'discord', memberB, 'test');
