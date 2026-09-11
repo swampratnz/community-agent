@@ -408,6 +408,51 @@ const NOTICE_ENTRIES = {
         'If this is a mistake, contact an admin.',
     },
   },
+  // --- link_member/unlink_member notification DMs (agent/tools/notify.ts, issue #1393) ---
+  /**
+   * The link-side counterpart to `memberRemovedMessage` above — static, no
+   * per-row content to interpolate. SECURITY: never names the OTHER linked
+   * identity's platform/userId/handle, nor the acting admin — that is the
+   * one real privacy hazard this notice could otherwise introduce.
+   */
+  memberLinkedMessage: {
+    base:
+      'Your Discord and WhatsApp identities on NZ Claude Community have been linked as the same person by ' +
+      'an admin. From now on, a data-deletion request (forget_me) from either one erases both. Contact an ' +
+      "admin if this wasn't expected.",
+    language: {
+      mi:
+        'Kua hono ō tuakiri Discord me WhatsApp i NZ Claude Community hei tangata kotahi e tētahi ' +
+        'kaiwhakahaere. Mai i tēnei wā, ka mukua ngā raraunga o ērā tuakiri e rua e tētahi tono ' +
+        "muku-raraunga (forget_me) mai i tētahi. Whakapā atu ki tētahi kaiwhakahaere mēnā kāore i tika tēnei.",
+    },
+    style: {
+      plain:
+        'Your Discord and WhatsApp identities on NZ Claude Community have been linked as one person by an ' +
+        'admin. A forget_me request from either one now deletes data for both. Contact an admin if this ' +
+        "wasn't expected.",
+    },
+  },
+  /**
+   * The reverse-direction counterpart to `memberLinkedMessage` above —
+   * static, no per-row content to interpolate. SECURITY: never names the
+   * former linked partner identity, nor the acting admin.
+   */
+  memberUnlinkedMessage: {
+    base:
+      'Your linked identity on NZ Claude Community has been split back into two separate accounts by an ' +
+      'admin. A data-deletion request now only affects this identity.',
+    language: {
+      mi:
+        'Kua wehea anōtia tō tuakiri hono i NZ Claude Community kia rua ngā pūkete motuhake e tētahi ' +
+        'kaiwhakahaere. Ka pā noa tētahi tono muku-raraunga ki tēnei tuakiri anake ināianei.',
+    },
+    style: {
+      plain:
+        'Your linked identity on NZ Claude Community was split back into two separate accounts by an admin. ' +
+        'A forget_me request now only deletes data for this identity.',
+    },
+  },
   // --- decline_access_request resolution DM (agent/tools/notify.ts, issue #1126) ---
   /**
    * The neutral decline DM for `decline_access_request` — static/templated,

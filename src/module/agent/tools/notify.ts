@@ -504,6 +504,99 @@ export async function notifyMemberRemoved(
 }
 
 /**
+ * Best-effort link-notification DM for `link_member` (issue #1393) — the
+ * member-facing counterpart to the CONFIRM gate SECURITY.md §7 already puts
+ * on the admin side: linking permanently expands what a single
+ * `forget_me`/`purge_user_data` call erases, across BOTH linked identities,
+ * and until now neither side was ever told. Same shape as
+ * `notifyMemberRemoved` above: fire-and-forget, a `WindowClosedError`
+ * rejection queued via `queueForWindowReopen` at `'low'` priority and
+ * treated as delivered (`true`), any other rejection logged and swallowed —
+ * the link itself is the source of truth, never blocked on this.
+ * `link_member`'s handler calls this once per side, each through that side's
+ * OWN platform adapter, independently: one call's outcome must never affect
+ * the other's, or the link's own reported success.
+ *
+ * The rendered text (`strings/notices.ts`'s `memberLinkedMessage`) is static
+ * and non-interpolated by design (SECURITY): it never names the OTHER
+ * identity's platform/userId/handle, nor the acting admin — the one real
+ * privacy hazard this notice could otherwise introduce.
+ *
+ * Returns `true`/`false` on the same terms as `notifyMemberRemoved` above —
+ * `link_member` uses this to tell the acting admin when either side's DM
+ * didn't land.
+ */
+export async function notifyMemberLinked(
+  adapter: PlatformAdapter,
+  userId: string,
+  platform: Platform,
+  getLangPref: typeof getLanguagePreference = getLanguagePreference,
+  getRespStyle: typeof getResponseStyle = getResponseStyle,
+): Promise<boolean> {
+  const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
+  const style: ResponseStyle | undefined =
+    lang === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
+  const message = notice('memberLinkedMessage', { language: lang, style });
+  return adapter
+    .sendDirectMessage(userId, message)
+    .then(() => true)
+    .catch((err) => {
+      if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+        adapter.queueForWindowReopen(userId, message, 'low');
+        logger.warn({ userId, platform }, "Member link DM: recipient's window is closed, queued for reopen");
+        return true;
+      }
+      logger.warn({ err, userId }, 'Member link DM failed');
+      return false;
+    });
+}
+
+/**
+ * Best-effort unlink-notification DM for `unlink_member` (issue #1393) — the
+ * reverse-direction counterpart to `notifyMemberLinked` above: after an
+ * unlink, `forget_me`/`purge_user_data` from this identity no longer reaches
+ * the identity it used to be linked to, and until now the member had no way
+ * to know that either. Same shape as `notifyMemberLinked`: fire-and-forget,
+ * a `WindowClosedError` rejection queued via `queueForWindowReopen` at
+ * `'low'` priority and treated as delivered, any other rejection logged and
+ * swallowed. `unlink_member`'s handler calls this once, for the targeted
+ * identity only — not the former linked partner (out of scope for this
+ * proposal; see the Growth section of issue #1393).
+ *
+ * The rendered text (`strings/notices.ts`'s `memberUnlinkedMessage`) is
+ * static and non-interpolated: it never names the former partner identity,
+ * nor the acting admin.
+ *
+ * Returns `true`/`false` on the same terms as `notifyMemberLinked` above —
+ * `unlink_member` uses this to tell the acting admin when the DM didn't
+ * land.
+ */
+export async function notifyMemberUnlinked(
+  adapter: PlatformAdapter,
+  userId: string,
+  platform: Platform,
+  getLangPref: typeof getLanguagePreference = getLanguagePreference,
+  getRespStyle: typeof getResponseStyle = getResponseStyle,
+): Promise<boolean> {
+  const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
+  const style: ResponseStyle | undefined =
+    lang === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
+  const message = notice('memberUnlinkedMessage', { language: lang, style });
+  return adapter
+    .sendDirectMessage(userId, message)
+    .then(() => true)
+    .catch((err) => {
+      if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+        adapter.queueForWindowReopen(userId, message, 'low');
+        logger.warn({ userId, platform }, "Member unlink DM: recipient's window is closed, queued for reopen");
+        return true;
+      }
+      logger.warn({ err, userId }, 'Member unlink DM failed');
+      return false;
+    });
+}
+
+/**
  * Best-effort decline DM for `decline_access_request` (issue #1126) — the
  * last member of the review-queue decline family (`resolve_suggestion`,
  * `resolve_report`, `resolve_appeal`, `decline_knowledge_candidate`) that

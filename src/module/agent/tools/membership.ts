@@ -16,7 +16,7 @@ import {
 import { ACCESS_REQUEST_STALE_ALERT_SCAN_LIMIT } from '../../accessRequestStaleAlert.js';
 import { recordAccessRequestResolution } from '../../storage/accessRequestResolutions.js';
 import { platformArg, resolveSanitizedLabel, text } from './helpers.js';
-import { notifyMemberApproved, notifyMemberRemoved } from './notify.js';
+import { notifyMemberApproved, notifyMemberLinked, notifyMemberRemoved, notifyMemberUnlinked } from './notify.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 /**
@@ -36,6 +36,23 @@ const MEMBER_DM_FAILED_NOTE = " (Couldn't DM them the welcome message — they m
  * since this is a removal, not a fresh membership.
  */
 const MEMBER_REMOVED_DM_FAILED_NOTE = " (Couldn't DM them about the removal — they may not know yet.)";
+
+/**
+ * Fixed, static note appended to `link_member`'s reply when
+ * `notifyMemberLinked` reports either side's DM did not land (issue #1393) —
+ * same rationale and shape as `MEMBER_DM_FAILED_NOTE`/
+ * `MEMBER_REMOVED_DM_FAILED_NOTE`, fires if EITHER side failed since both are
+ * equally affected by the link.
+ */
+const MEMBER_LINKED_DM_FAILED_NOTE =
+  " (Couldn't DM one or both identities about the link — they may not know yet.)";
+
+/**
+ * Fixed, static note appended to `unlink_member`'s reply when
+ * `notifyMemberUnlinked` reports the DM did not land (issue #1393) — same
+ * rationale and shape as `MEMBER_REMOVED_DM_FAILED_NOTE`.
+ */
+const MEMBER_UNLINKED_DM_FAILED_NOTE = " (Couldn't DM them about the unlink — they may not know yet.)";
 
 export const membershipTools = [
   defineTool({
@@ -166,7 +183,7 @@ export const membershipTools = [
       platformB: z.enum(['discord', 'whatsapp']).describe('Platform of the second identity'),
       userIdB: z.string().min(1).describe('Platform user id of the second identity'),
     },
-    handler: async (args, { caller, requireConfirm, audited }) => {
+    handler: async (args, { caller, requireConfirm, audited, adapterFor }) => {
       assertAtLeast(caller.role, 'admin', 'link_member');
       const a = { platform: args.platformA, userId: normalizeMemberId(args.platformA, args.userIdA) };
       const b = { platform: args.platformB, userId: normalizeMemberId(args.platformB, args.userIdB) };
@@ -203,9 +220,20 @@ export const membershipTools = [
               return `linked as person #${personId}`;
             },
           });
-          return success
-            ? `Linked ${a.platform}:${a.userId} and ${b.platform}:${b.userId}: ${result}.`
-            : `Failed: ${result}`;
+          if (!success) return `Failed: ${result}`;
+          // Link DMs (issue #1393), mirroring add_member/remove_member's
+          // routing above: each side's own platform adapter, not the acting
+          // admin's current-turn one. The two sends are independent — one
+          // failing (or one platform having no registered adapter, which
+          // counts as delivered) never suppresses or is gated by the other.
+          const adapterA = adapterFor(a.platform);
+          const adapterB = adapterFor(b.platform);
+          const [deliveredA, deliveredB] = await Promise.all([
+            adapterA ? notifyMemberLinked(adapterA, a.userId, a.platform) : Promise.resolve(true),
+            adapterB ? notifyMemberLinked(adapterB, b.userId, b.platform) : Promise.resolve(true),
+          ]);
+          const note = deliveredA && deliveredB ? '' : MEMBER_LINKED_DM_FAILED_NOTE;
+          return `Linked ${a.platform}:${a.userId} and ${b.platform}:${b.userId}: ${result}.${note}`;
         },
       );
     },
@@ -219,7 +247,7 @@ export const membershipTools = [
     minTier: 'admin',
     readOnlyHint: false,
     schema: { userId: z.string().min(1).describe('Platform user id to unlink'), platform: platformArg },
-    handler: async (args, { caller, requireConfirm, audited }) => {
+    handler: async (args, { caller, requireConfirm, audited, adapterFor }) => {
       assertAtLeast(caller.role, 'admin', 'unlink_member');
       const platform = args.platform ?? caller.platform;
       const userId = normalizeMemberId(platform, args.userId);
@@ -245,7 +273,15 @@ export const membershipTools = [
             return 'unlinked';
           },
         });
-        return success ? `Unlinked ${label} on ${platform}: ${result}.` : `Failed: ${result}`;
+        if (!success) return `Failed: ${result}`;
+        // Unlink DM (issue #1393), mirroring remove_member's routing above:
+        // the TARGET's platform adapter, not the acting admin's current-turn
+        // one. An unregistered target attempts nothing, so it counts as
+        // delivered (no failure note).
+        const target = adapterFor(platform);
+        const dmDelivered = target ? await notifyMemberUnlinked(target, userId, platform) : true;
+        const note = dmDelivered ? '' : MEMBER_UNLINKED_DM_FAILED_NOTE;
+        return `Unlinked ${label} on ${platform}: ${result}.${note}`;
       });
     },
   }),
