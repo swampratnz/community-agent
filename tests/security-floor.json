@@ -85,6 +85,7 @@
   "engagementAlert.test.ts": 2,
   "escalationHonesty.test.ts": 5,
   "escalationRouter.test.ts": 9,
+  "evalAnswersCitationCheck.test.ts": 5,
   "evalAnswersOffCi.test.ts": 2,
   "evalAnswersScopeSafety.test.ts": 2,
   "fetchPageTool.test.ts": 12,
