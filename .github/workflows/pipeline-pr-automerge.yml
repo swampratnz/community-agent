@@ -168,11 +168,6 @@ jobs:
               and ((.body // "") | test("[Cc]loses #[0-9]+"))
               and ([.labels[].name] | (index("needs-human") | not) and (index("no-auto-merge") | not))
             ' <<<"$struct")"
-            if [ "$eligible" != 'true' ]; then
-              echo "PR #$n: not an eligible build-worker PR (draft/fork/not claude[bot]/no Closes #/stop-labelled) — skip."
-              echo "::endgroup::"; continue
-            fi
-
             # --- `human-merge-ready` must not outlive the claim it makes -------
             # The label's comment tells a maintainer "a maintainer just needs to
             # press merge". That is a statement about the PR's CURRENT state,
@@ -188,6 +183,14 @@ jobs:
             # any gate it had previously passed. The one-per-PR explanatory
             # comment is NOT re-posted on re-qualification (it would be noise);
             # only the label tracks live state.
+            # Computed BEFORE the eligibility gate on purpose. The first draft
+            # defined this after it, which left the loop exiting at that gate
+            # without ever reaching a revocation — so a maintainer pinning a
+            # labelled PR out with `no-auto-merge` (the mechanism
+            # docs/PIPELINE.md tells them to use) or converting it back to
+            # draft would leave `human-merge-ready` sitting next to the label
+            # that contradicts it, forever. That is the same defect this whole
+            # block fixes, one gate earlier.
             has_ready="$(jq -r '[.labels[].name] | index("human-merge-ready") != null' <<<"$struct")"
             revoke_ready() {
               [ "$has_ready" = 'true' ] || return 0
@@ -199,6 +202,23 @@ jobs:
               gh pr edit "$n" --repo "$REPO" --remove-label human-merge-ready \
                 || echo "::warning::Could not remove human-merge-ready from PR #$n."
             }
+
+            if [ "$eligible" != 'true' ]; then
+              echo "PR #$n: not an eligible build-worker PR (draft/fork/not claude[bot]/no Closes #/stop-labelled) — skip."
+              # Revoke ONLY for the two reasons that mean "was eligible, now
+              # isn't". A fork / non-claude[bot] / no-`Closes #` PR could never
+              # have been labelled by this loop in the first place, so a label
+              # on one of those was put there by a human and is not ours to
+              # remove.
+              is_stopped="$(jq -r '[.labels[].name] | (index("needs-human") != null) or (index("no-auto-merge") != null)' <<<"$struct")"
+              is_draft="$(jq -r '.isDraft' <<<"$struct")"
+              if [ "$is_stopped" = 'true' ]; then
+                revoke_ready "a stop label was added"
+              elif [ "$is_draft" = 'true' ]; then
+                revoke_ready "the PR went back to draft"
+              fi
+              echo "::endgroup::"; continue
+            fi
 
             # --- Governance / CI / config paths are ALWAYS human-merged --------
             # A PR that changes CI or any workflow (including THIS loop's own

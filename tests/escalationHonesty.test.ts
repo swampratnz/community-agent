@@ -190,6 +190,13 @@ const NEAR_MISS_STOPS: string[] = [
   // a finished diagnosis, not a stall. This is why that arm keys on "running
   // in the background" rather than the bare "in the background".
   'I ran the suite in the background and it failed for a real reason, so I stopped.',
+  // The tense-ambiguity control, from the review of the PR that added the
+  // third arm. This one uses the LITERAL phrase the first draft matched
+  // ("running in the background") in a completed report — which is why that
+  // draft would have flagged it, and why the arm now keys on present-tense
+  // forms only. The control above sidesteps the phrase entirely and so never
+  // exercised this.
+  'The suite finished running in the background and reported two real failures I could not fix, so I stopped.',
 ];
 
 test('SECURITY: the escalation flags every known stall shape', { skip }, () => {

@@ -86,7 +86,32 @@ const INVALIDATING_GATES: Array<{ skipLine: string; why: string }> = [
   { skipLine: 'not an LGTM approval — skip', why: 'the verdict flipped to CHANGES_REQUESTED' },
   { skipLine: 'predates the current head commit', why: 'a later push staledated the LGTM' },
   { skipLine: 'a stop label (needs-human/no-auto-merge) appeared', why: 'a human pinned it out' },
+  // The gate the first draft missed. It sits ABOVE the others and `continue`s
+  // for draft / fork / not-claude[bot] / no-`Closes #` / stop-labelled, so a
+  // maintainer pinning a labelled PR out with `no-auto-merge` — the mechanism
+  // docs/PIPELINE.md tells them to use — or converting it back to draft would
+  // exit here and never reach any of the six revocations below it.
+  {
+    skipLine: 'not an eligible build-worker PR',
+    why: 'a labelled PR was pinned out or sent back to draft (found in review of this PR)',
+  },
 ];
+
+test('the eligibility gate revokes only for reasons a loop-applied label could have, not for PRs it never labelled', () => {
+  // A fork / non-claude[bot] / no-`Closes #` PR could never have been labelled
+  // by this loop, so a `human-merge-ready` on one of those was applied by a
+  // human and is not this loop's to remove. Only the two transitions that mean
+  // "was eligible, now isn't" revoke.
+  const block = yaml.slice(yaml.indexOf(`if [ "$eligible" != 'true' ]`));
+  const gate = block.slice(0, block.indexOf('continue'));
+  assert.match(gate, /is_stopped=/, 'the stop-label transition must be distinguished');
+  assert.match(gate, /is_draft=/, 'the draft transition must be distinguished');
+  assert.doesNotMatch(
+    gate.replace(/if \[ "\$is_(stopped|draft)" = 'true' \][\s\S]*/, ''),
+    /revoke_ready /,
+    'the eligibility gate must not revoke unconditionally — that would strip a human-applied label off a PR this loop never labelled',
+  );
+});
 
 test('SECURITY: every gate that can invalidate readiness revokes the label before skipping', () => {
   for (const gate of INVALIDATING_GATES) {
