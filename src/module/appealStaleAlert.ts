@@ -9,8 +9,11 @@ import {
 } from '@swampratnz/agent-base/storage/repository.js';
 import { persistedCrossingLatch, type CrossingLatchDeps } from './crossingLatch.js';
 import { APPEAL_STALE_ALERT_POLICY_KEY } from './storage/policies.js';
+import { getWithdrawnAppealIds } from './storage/appealWithdrawals.js';
+import { recordAppellantStaleNotice as recordAppellantStaleNoticeDefault } from './storage/appealAppellantStaleNotices.js';
+import { notifyAppealStale } from './agent/tools/notify.js';
 import type { JobSpec } from '@swampratnz/agent-base/jobs/types.js';
-import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
+import type { Platform, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
 /**
  * Staleness threshold (issue #1020, the deliberate smaller re-proposal of
@@ -120,6 +123,28 @@ export async function alertAdmins(
  * follow-up there rather than a raw query smuggled in here (nothing in
  * `src/module/` reaches past the repository layer, and this job should not be
  * the first).
+ *
+ * Also sends the APPELLANT their own one-time "still being reviewed" DM
+ * (issue #1413, mirroring `knowledgeCandidateStaleAlert.ts`'s #1408
+ * mechanism verbatim) for each appeal in `stale` — evaluated right after
+ * `stale` is computed, unconditionally, INDEPENDENT of the admin crossing
+ * latch below: an admin backlog already latched open (so `step.shouldAlert`
+ * is false) must not silently suppress the signal to an appellant who has
+ * never been notified about this particular appeal before. A withdrawn
+ * appeal (present in `getWithdrawnAppealIds`) is skipped entirely — no
+ * record, no notify call — SCOPED TO THIS LOOP ONLY: the admin-facing stale
+ * COUNT below still includes a withdrawn appeal, unchanged from today,
+ * because that is a separate, pre-existing behaviour this PR is explicitly
+ * scoped to leave alone. Idempotency is `recordAppellantStaleNotice`'s
+ * `INSERT ... ON CONFLICT DO NOTHING` alone — no second latch — so an appeal
+ * already flagged (by an earlier tick) is a no-op, and because that record
+ * commits BEFORE the send, a `WindowClosedError` at send time can never
+ * cause a later tick to re-notify. Routed via `adapters.find` on the
+ * appeal's OWN `platform`, never any caller-supplied value; a missing/
+ * disconnected adapter for that platform is a silent skip, matching every
+ * sibling job's adapter-missing handling. A failure recording or sending one
+ * appeal's notice is caught per-appeal so it can never suppress the notice
+ * to any other stale appeal's appellant, nor the admin alert below.
  */
 export function makeDefaultAppealStaleAlertRun(
   adapters: readonly PlatformAdapter[],
@@ -127,12 +152,48 @@ export function makeDefaultAppealStaleAlertRun(
     listAppeals('open', APPEAL_STALE_ALERT_SCAN_LIMIT),
   listAdminIdentities: () => Promise<AdminIdentity[]> = listAdmins,
   latchDeps?: CrossingLatchDeps,
+  getWithdrawnIds: (ids: readonly number[]) => Promise<Set<number>> = getWithdrawnAppealIds,
+  recordAppellantStaleNotice: (appealId: number) => Promise<boolean> = recordAppellantStaleNoticeDefault,
+  notifyStale: (
+    adapter: PlatformAdapter,
+    userId: string,
+    platform: Platform,
+  ) => Promise<void> = notifyAppealStale,
 ): () => Promise<void> {
   const latch = persistedCrossingLatch(APPEAL_STALE_ALERT_POLICY_KEY, latchDeps);
   return async () => {
     const now = Date.now();
     const appeals = await listOpenAppeals();
     const stale = staleOpenAppeals(appeals, now);
+
+    // Appellant-side mid-flight notice (issue #1413) — independent of the
+    // admin crossing latch below (see the function doc comment): every
+    // still-stale, non-withdrawn appeal is offered a one-time notice every
+    // tick, gated only by the ON CONFLICT DO NOTHING insert. The withdrawal
+    // filter applies ONLY to this loop — the admin-facing stale count
+    // computed below is untouched.
+    const withdrawnIds = await getWithdrawnIds(stale.map((appeal) => appeal.id));
+    for (const staleAppeal of stale) {
+      if (withdrawnIds.has(staleAppeal.id)) continue;
+      // Mirrors every sibling job's adapter-missing handling: resolved
+      // BEFORE recordAppellantStaleNotice, so an appeal whose appellant
+      // platform has no connected adapter is never marked as notified — it
+      // stays eligible for a real notice on a later tick, once an adapter
+      // exists.
+      const adapter = adapters.find((a) => a.platform === staleAppeal.platform && a.isConnected());
+      if (!adapter) continue;
+      try {
+        const isFirstNotice = await recordAppellantStaleNotice(staleAppeal.id);
+        if (!isFirstNotice) continue;
+        await notifyStale(adapter, staleAppeal.userId, staleAppeal.platform);
+      } catch (err) {
+        logger.warn(
+          { err, platform: staleAppeal.platform, appealId: staleAppeal.id },
+          'Appeal stale alert: appellant notice failed',
+        );
+      }
+    }
+
     const step = await latch.step(stale.length);
     if (!step.shouldAlert) return;
 

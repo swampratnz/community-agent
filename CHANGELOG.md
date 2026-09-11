@@ -26,6 +26,17 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #1355 #1356 #1357 #1341 #1350 #1360 #1381
 -->
 
+## 2026-09-12
+
+### Added
+- **A moderation appeal you filed now checks in with you if it's waiting a
+  while.** If your `appeal_moderation` appeal is still open after 72 hours,
+  you now get a one-time "still being reviewed, thanks for your patience" DM —
+  the same mid-flight reassurance content reports (#1375) and knowledge tips
+  (#1408) already got, extended to the appeal queue. It fires independently of
+  the admins' own separate backlog alert, and never fires for an appeal you
+  withdrew yourself.
+
 ## 2026-09-11
 
 ### Added

@@ -1337,6 +1337,64 @@ export async function notifyAppealResolved(
 }
 
 /**
+ * Best-effort, one-time "still being reviewed" DM to a moderation appeal's
+ * appellant while it sits open past the admin-side staleness threshold — the
+ * mid-flight signal issue #1413 adds between `notifyAppealFiled` (which goes
+ * to super admins, not the appellant) and `notifyAppealResolved`'s
+ * end-of-lifecycle DM above, mirroring `notifyKnowledgeCandidateStale`'s
+ * #1408 shape verbatim for the appeal queue.
+ *
+ * Content-free BY CONSTRUCTION (SECURITY): unlike `notifyAppealFiled`/
+ * `notifyAppealResolved` above, the signature accepts no appeal id, reason,
+ * warning count, or admin identity — only the recipient identity — so there
+ * is nothing for the message body to leak even by accident. The caller
+ * (`appealStaleAlert.ts`) is solely responsible for deciding WHICH appeals
+ * are stale and for the once-ever idempotency
+ * (`appeal_appellant_stale_notices`, `INSERT ... ON CONFLICT DO NOTHING`);
+ * this function only ever sends.
+ *
+ * `userId`/`platform` are the two inputs (SECURITY): both come from the
+ * `ModerationAppeal` row's own `userId`/`platform` at the one call site,
+ * never from model or admin input, matching `notifyAppealResolved`'s never
+ * caller-redirectable provenance-gated routing.
+ *
+ * Same failure shape as every sibling: honours a standing `'mi'` language
+ * preference (degrading to `'auto'`/English on lookup failure, issue #52's
+ * invariant), and a `WindowClosedError` rejection is queued via
+ * `queueForWindowReopen` at `'low'` priority instead of logged-and-dropped
+ * (issue #602) — any other rejection is logged and swallowed, never thrown,
+ * so one recipient's failure can never abort the stale-alert tick.
+ */
+export async function notifyAppealStale(
+  adapter: PlatformAdapter,
+  userId: string,
+  platform: Platform,
+  getLangPref: typeof getLanguagePreference = getLanguagePreference,
+  getRespStyle: typeof getResponseStyle = getResponseStyle,
+): Promise<void> {
+  const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
+  const style: ResponseStyle | undefined =
+    lang === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
+  const message =
+    lang === 'mi'
+      ? 'Kei te arotakehia tonu tō pīra — ngā mihi mō tō manawanui e tatari ana.'
+      : style === 'plain'
+        ? 'Your appeal is still being reviewed. Thanks for your patience.'
+        : 'Your appeal is still being reviewed — thanks for your patience while we look into it.';
+  await adapter.sendDirectMessage(userId, message).catch((err) => {
+    if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+      adapter.queueForWindowReopen(userId, message, 'low');
+      logger.warn(
+        { userId: hashId(userId), platform },
+        "Appeal stale DM: recipient's window is closed, queued for reopen",
+      );
+      return;
+    }
+    logger.warn({ err, userId: hashId(userId) }, 'Appeal stale DM failed');
+  });
+}
+
+/**
  * Best-effort confirmation DM to a member when their `suggest_knowledge` tip
  * (issue #633) is resolved via `accept_knowledge_candidate`/
  * `decline_knowledge_candidate` — closes #633's own named-and-unbuilt growth
