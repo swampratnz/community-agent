@@ -28,6 +28,19 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 
 ## 2026-09-11
 
+### Added
+- **Archiving or restoring a project now tells its members.** (#1395)
+  `project_archive` cuts off every current member's read/write access to a
+  team project's shared memory in one call — previously that happened
+  silently, and the only way a member found out was an admin telling them
+  separately, or noticing their project notes had gone unreachable.
+  `project_archive`/`project_unarchive` now send each current member a short
+  DM saying the project was archived or restored, the same best-effort
+  pattern #1241 already added for `project_add_member`/`project_remove_member`
+  (that pair notifies one member at a time; this is the whole-project
+  equivalent). No new data is collected or retained, and the admin's own
+  reply is unchanged either way.
+
 ### Security
 - **Dependency: `sharp` raised past the libheif advisory (GHSA-rgj7-g3m4-5g8c).**
   The `overrides` pin moved `^0.35.3` → `^0.35.4`, clearing all three `high`

@@ -795,6 +795,94 @@ export async function notifyProjectMemberRemoved(
 }
 
 /**
+ * Best-effort notification DM to a CURRENT member of a project an admin
+ * archives via `project_archive` (issue #1395) — the one project_*
+ * revoke/grant pair `notifyProjectMemberAdded`/`notifyProjectMemberRemoved`
+ * above (#1241) didn't reach: archiving revokes every member's read access
+ * to the project's shared memory in a single call, not just one member's,
+ * and until now nobody who lost that access was told. Same single-recipient
+ * shape as every sibling in this file — the fan-out over the project's
+ * current member list happens at the call site (`projectsAdmin.ts`'s
+ * `project_archive` handler), exactly as `notifySuperAdmins`/`notifyAdmins`
+ * fan out to their own recipient lists above, so one recipient's failure can
+ * never block or delay another's: this function itself never rejects, every
+ * failure is caught and logged below.
+ *
+ * Fires unconditionally, same rationale as `notifyProjectMemberAdded`/
+ * `notifyProjectMemberRemoved`: archiving is ordinary, reversible
+ * team-access housekeeping, not moderation, so there is no reason-gated
+ * silent path here the way `notifyProjectRemoved`/`notifyInterestsRemoved`
+ * have. The base text (`strings/notices.ts`'s `projectArchivedMessage`) is
+ * never interpolated with the project name; the name is appended only as a
+ * distinct, `truncateForEcho`-capped, quoted trailing clause, same shape as
+ * `notifyProjectMemberAdded`'s. Same fail-safe language/style lookups,
+ * `WindowClosedError` recovery, and swallow-and-log-everything-else shape as
+ * every sibling in this file. Exported separately so it's unit-testable
+ * without the MCP tool-call transport, same convention as every sibling
+ * notify function here.
+ */
+export async function notifyProjectArchived(
+  adapter: PlatformAdapter,
+  userId: string,
+  platform: Platform,
+  projectName: string,
+  getLangPref: typeof getLanguagePreference = getLanguagePreference,
+  getRespStyle: typeof getResponseStyle = getResponseStyle,
+): Promise<void> {
+  const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
+  const style: ResponseStyle | undefined =
+    lang === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
+  const base = notice('projectArchivedMessage', { language: lang, style });
+  const echoedName = truncateForEcho(projectName);
+  const message = `${base} ${lang === 'mi' ? 'Kaupapa' : 'Project'}: "${echoedName}"`;
+  await adapter.sendDirectMessage(userId, message).catch((err) => {
+    if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+      adapter.queueForWindowReopen(userId, message, 'low');
+      logger.warn(
+        { userId: hashId(userId), platform },
+        "Project archived DM: recipient's window is closed, queued for reopen",
+      );
+      return;
+    }
+    logger.warn({ err, userId: hashId(userId) }, 'Project archived DM failed');
+  });
+}
+
+/**
+ * The restoration-side counterpart to `notifyProjectArchived` above (issue
+ * #1395), for `project_unarchive` — same single-recipient shape, same
+ * unconditional-fire rationale, and the same per-current-member fan-out
+ * owned by the call site (`projectsAdmin.ts`'s `project_unarchive` handler)
+ * rather than by this function.
+ */
+export async function notifyProjectUnarchived(
+  adapter: PlatformAdapter,
+  userId: string,
+  platform: Platform,
+  projectName: string,
+  getLangPref: typeof getLanguagePreference = getLanguagePreference,
+  getRespStyle: typeof getResponseStyle = getResponseStyle,
+): Promise<void> {
+  const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
+  const style: ResponseStyle | undefined =
+    lang === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
+  const base = notice('projectUnarchivedMessage', { language: lang, style });
+  const echoedName = truncateForEcho(projectName);
+  const message = `${base} ${lang === 'mi' ? 'Kaupapa' : 'Project'}: "${echoedName}"`;
+  await adapter.sendDirectMessage(userId, message).catch((err) => {
+    if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+      adapter.queueForWindowReopen(userId, message, 'low');
+      logger.warn(
+        { userId: hashId(userId), platform },
+        "Project unarchived DM: recipient's window is closed, queued for reopen",
+      );
+      return;
+    }
+    logger.warn({ err, userId: hashId(userId) }, 'Project unarchived DM failed');
+  });
+}
+
+/**
  * Best-effort confirmation DM to a member when their suggest_improvement
  * submission is resolved — closes the "suggestion box into the void" gap
  * (issue #116), mirroring notifyMemberApproved's shape exactly: fire-and-

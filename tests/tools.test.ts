@@ -77,6 +77,8 @@ const {
   notifyProjectRemoved,
   notifyProjectMemberAdded,
   notifyProjectMemberRemoved,
+  notifyProjectArchived,
+  notifyProjectUnarchived,
   notifySuggestionResolved,
   notifyReportResolved,
   notifyReportStale,
@@ -2672,6 +2674,183 @@ test('SECURITY: notifyProjectMemberRemoved truncates an oversized reason via tru
 
   assert.ok(!calls[0].includes(longReason), 'the full 500-char reason must not appear verbatim');
   assert.match(calls[0], /x{100,140}\.\.\."$/);
+});
+
+// notifyProjectArchived / notifyProjectUnarchived close the one project_*
+// pair notifyProjectMemberAdded/notifyProjectMemberRemoved (#1241) never
+// reached (issue #1395): archiving/unarchiving revokes/restores read access
+// for EVERY current member in one call, not just one member's. Modelled
+// line-for-line on notifyProjectMemberAdded/notifyProjectMemberRemoved,
+// same single-recipient shape and fail-safe suite — the fan-out over the
+// member list is exercised at the tool-handler level further below.
+test('notifyProjectArchived sends a neutral archive DM naming the project', async () => {
+  const calls: Array<[string, string]> = [];
+  const adapter = stubAdapter(async (userId, text) => {
+    calls.push([userId, text]);
+  });
+
+  await notifyProjectArchived(adapter, 'user-1', 'discord', 'Impact Lab');
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'user-1');
+  assert.match(calls[0][1], /archived by an admin/i);
+  assert.match(calls[0][1], /Project: "Impact Lab"/);
+});
+
+test('notifyProjectArchived swallows a DM failure rather than throwing (the archive stays the source of truth)', async () => {
+  const adapter = stubAdapter(async () => {
+    throw new Error('DMs closed');
+  });
+
+  await assert.doesNotReject(notifyProjectArchived(adapter, 'user-1', 'discord', 'Impact Lab'));
+});
+
+test("notifyProjectArchived sends the te reo Māori variant for a caller with a stored 'mi' preference", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyProjectArchived(adapter, 'user-1', 'discord', 'Impact Lab', async () => 'mi');
+
+  assert.match(calls[0], /whakakorehia/);
+  assert.match(calls[0], /Kaupapa: "Impact Lab"/);
+});
+
+test("notifyProjectArchived sends the plain-language variant for a caller with a stored 'plain' response style", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyProjectArchived(
+    adapter,
+    'user-1',
+    'discord',
+    'Impact Lab',
+    async () => 'auto',
+    async () => 'plain',
+  );
+
+  assert.match(calls[0], /^An admin archived a project you're in/);
+});
+
+test("SECURITY: notifyProjectArchived degrades to the English default, rather than throwing or dropping the DM, when the language-preference lookup fails (issue #52's invariant)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyProjectArchived(adapter, 'user-1', 'discord', 'Impact Lab', async () => {
+    throw new Error('DB unreachable');
+  });
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /archived by an admin/i);
+});
+
+test("SECURITY: notifyProjectArchived never consults the response-style lookup once language has resolved to 'mi'", async () => {
+  let respStyleCalls = 0;
+  const adapter = stubAdapter(async () => {});
+
+  await notifyProjectArchived(
+    adapter,
+    'user-1',
+    'discord',
+    'Impact Lab',
+    async () => 'mi',
+    async () => {
+      respStyleCalls += 1;
+      throw new Error('must never be reached when lang is mi');
+    },
+  );
+
+  assert.equal(respStyleCalls, 0);
+});
+
+test('notifyProjectUnarchived sends a neutral restoration DM naming the project', async () => {
+  const calls: Array<[string, string]> = [];
+  const adapter = stubAdapter(async (userId, text) => {
+    calls.push([userId, text]);
+  });
+
+  await notifyProjectUnarchived(adapter, 'user-1', 'discord', 'Impact Lab');
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'user-1');
+  assert.match(calls[0][1], /restored by an admin/i);
+  assert.match(calls[0][1], /Project: "Impact Lab"/);
+});
+
+test('notifyProjectUnarchived swallows a DM failure rather than throwing (the restore stays the source of truth)', async () => {
+  const adapter = stubAdapter(async () => {
+    throw new Error('DMs closed');
+  });
+
+  await assert.doesNotReject(notifyProjectUnarchived(adapter, 'user-1', 'discord', 'Impact Lab'));
+});
+
+test("notifyProjectUnarchived sends the te reo Māori variant for a caller with a stored 'mi' preference", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyProjectUnarchived(adapter, 'user-1', 'discord', 'Impact Lab', async () => 'mi');
+
+  assert.match(calls[0], /whakahokia mai/);
+  assert.match(calls[0], /Kaupapa: "Impact Lab"/);
+});
+
+test("notifyProjectUnarchived sends the plain-language variant for a caller with a stored 'plain' response style", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyProjectUnarchived(
+    adapter,
+    'user-1',
+    'discord',
+    'Impact Lab',
+    async () => 'auto',
+    async () => 'plain',
+  );
+
+  assert.match(calls[0], /^An admin restored a project you're in/);
+});
+
+test("SECURITY: notifyProjectUnarchived degrades to the English default, rather than throwing or dropping the DM, when the language-preference lookup fails (issue #52's invariant)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyProjectUnarchived(adapter, 'user-1', 'discord', 'Impact Lab', async () => {
+    throw new Error('DB unreachable');
+  });
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /restored by an admin/i);
+});
+
+test("SECURITY: notifyProjectUnarchived never consults the response-style lookup once language has resolved to 'mi'", async () => {
+  let respStyleCalls = 0;
+  const adapter = stubAdapter(async () => {});
+
+  await notifyProjectUnarchived(
+    adapter,
+    'user-1',
+    'discord',
+    'Impact Lab',
+    async () => 'mi',
+    async () => {
+      respStyleCalls += 1;
+      throw new Error('must never be reached when lang is mi');
+    },
+  );
+
+  assert.equal(respStyleCalls, 0);
 });
 
 // notifySuggestionResolved holds all of resolve_suggestion's new (issue #116)
@@ -25828,6 +26007,172 @@ test(
       /No archived project/i,
       'unarchiving twice must not claim a second restore',
     );
+  },
+);
+
+test(
+  'SECURITY: project_archive/project_unarchive DM every CURRENT member exactly once, only on the actual ' +
+    'archive/unarchive transition — never on "No active project"/"No archived project", and never a second ' +
+    'time for a no-op re-run (issue #1395 acceptance criteria #1, #2)',
+  { skip },
+  async () => {
+    const { createProject, upsertMember, addProjectMember } =
+      await import('@swampratnz/agent-base/storage/repository.js');
+    const slug = `${RUN}-archive-fanout`;
+    const project = await createProject({ slug, name: 'Fan-out Lab', createdBy: 'test' });
+    assert.ok(project, 'setup: project must be created');
+    const base = RUN.slice(1).slice(0, 14);
+    const memberA = `${base}6011`;
+    const memberB = `${base}6012`;
+    await upsertMember({ platform: 'discord', userId: memberA, role: 'member', addedBy: 'test' });
+    await upsertMember({ platform: 'discord', userId: memberB, role: 'member', addedBy: 'test' });
+    await addProjectMember(project.id, 'discord', memberA, 'test');
+    await addProjectMember(project.id, 'discord', memberB, 'test');
+
+    const dmCalls: Array<[string, string]> = [];
+    const archive = adminProjectToolHandler('project_archive', 'admin', dmCalls);
+    const unarchive = adminProjectToolHandler('project_unarchive', 'admin', dmCalls);
+
+    // No such project: neither tool notifies.
+    await archive.handler({ project: `${slug}-missing` });
+    await unarchive.handler({ project: `${slug}-missing` });
+    assert.equal(dmCalls.length, 0, 'a missing project must never fire a notify DM');
+
+    // Not yet archived: project_unarchive's refusal branch must not notify.
+    await unarchive.handler({ project: slug });
+    assert.equal(dmCalls.length, 0, 'unarchiving an active project must never fire a notify DM');
+
+    // Newly archived: exactly one DM per current member.
+    await archive.handler({ project: slug });
+    assert.equal(dmCalls.length, 2, 'archiving must DM exactly the two current members, once each');
+    assert.deepEqual(dmCalls.map(([userId]) => userId).sort(), [memberA, memberB].sort());
+
+    // Already archived: no additional DM.
+    await archive.handler({ project: slug });
+    assert.equal(
+      dmCalls.length,
+      2,
+      'archiving an already-archived project must not fire a second round of DMs',
+    );
+
+    // Newly restored: exactly one more DM per current member.
+    await unarchive.handler({ project: slug });
+    assert.equal(dmCalls.length, 4, 'unarchiving must DM exactly the two current members, once each');
+
+    // Already unarchived: no additional DM.
+    await unarchive.handler({ project: slug });
+    assert.equal(
+      dmCalls.length,
+      4,
+      'unarchiving an already-active project must not fire a second round of DMs',
+    );
+  },
+);
+
+test(
+  "SECURITY: project_archive/project_unarchive DMs never contain another member's identity — each message " +
+    'names only the project and the fixed notice text (issue #1395 acceptance criterion #4)',
+  { skip },
+  async () => {
+    const { createProject, upsertMember, addProjectMember } =
+      await import('@swampratnz/agent-base/storage/repository.js');
+    const slug = `${RUN}-archive-no-leak`;
+    const project = await createProject({ slug, name: 'No Leak Archive Lab', createdBy: 'test' });
+    assert.ok(project, 'setup: project must be created');
+    const base = RUN.slice(1).slice(0, 14);
+    const memberA = `${base}6021`;
+    const memberB = `${base}6022`;
+    await upsertMember({ platform: 'discord', userId: memberA, role: 'member', addedBy: 'test' });
+    await upsertMember({ platform: 'discord', userId: memberB, role: 'member', addedBy: 'test' });
+    await addProjectMember(project.id, 'discord', memberA, 'test');
+    await addProjectMember(project.id, 'discord', memberB, 'test');
+
+    const dmCalls: Array<[string, string]> = [];
+    const archive = adminProjectToolHandler('project_archive', 'admin', dmCalls);
+    await archive.handler({ project: slug });
+
+    assert.equal(dmCalls.length, 2);
+    for (const [recipient, message] of dmCalls) {
+      const other = recipient === memberA ? memberB : memberA;
+      assert.ok(!message.includes(other), "a member's DM must never contain another member's identity");
+      assert.ok(!message.includes('project-admin-probe'), "a member's DM must never name the acting admin");
+      assert.match(message, /archived by an admin/i);
+      assert.match(message, /Project: "No Leak Archive Lab"/);
+    }
+  },
+);
+
+test(
+  "SECURITY: a WindowClosedError from one recipient's send in project_archive's fan-out never prevents the " +
+    "other recipient from being sent to, nor suppresses that recipient's own independent queue/log (issue " +
+    '#1395 acceptance criterion #5)',
+  { skip },
+  async () => {
+    const { createProject, upsertMember, addProjectMember } =
+      await import('@swampratnz/agent-base/storage/repository.js');
+    const slug = `${RUN}-archive-isolation`;
+    const project = await createProject({ slug, name: 'Isolation Lab', createdBy: 'test' });
+    assert.ok(project, 'setup: project must be created');
+    const base = RUN.slice(1).slice(0, 14);
+    const closedWindowMember = `${base}6031`;
+    const okMember = `${base}6032`;
+    await upsertMember({ platform: 'discord', userId: closedWindowMember, role: 'member', addedBy: 'test' });
+    await upsertMember({ platform: 'discord', userId: okMember, role: 'member', addedBy: 'test' });
+    await addProjectMember(project.id, 'discord', closedWindowMember, 'test');
+    await addProjectMember(project.id, 'discord', okMember, 'test');
+
+    const sent: string[] = [];
+    const queued: Array<{ userId: string; priority: 'system' | 'low' }> = [];
+    const adapter: PlatformAdapter = {
+      platform: 'discord',
+      start: async () => {},
+      stop: async () => {},
+      isConnected: () => true,
+      onMessage: () => {},
+      sendMessage: async () => {},
+      sendDirectMessage: async (userId: string) => {
+        if (userId === closedWindowMember) throw new WindowClosedError(userId);
+        sent.push(userId);
+      },
+      queueForWindowReopen(userId: string, _message: string, priority: 'system' | 'low') {
+        queued.push({ userId, priority });
+      },
+      conversationsForUser: async () => [],
+      adminCapabilities: new Set(),
+      performAdminAction: async () => {
+        throw new Error('not implemented in stub');
+      },
+    };
+    const server = buildToolServer(
+      {
+        platform: 'discord' as const,
+        userId: 'isolation-admin-probe',
+        userName: 'Probe',
+        role: 'admin' as const,
+        conversationId: 'convo-isolation-admin',
+      },
+      adapter,
+    );
+    const archive = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }
+        >;
+      }
+    )._registeredTools['project_archive'];
+
+    const result = await archive.handler({ project: slug });
+
+    assert.match(
+      result.content[0].text,
+      /Archived/i,
+      "one recipient's WindowClosedError must not fail the tool",
+    );
+    assert.deepEqual(sent, [okMember], "the OTHER recipient's send must still go through");
+    assert.equal(queued.length, 1, "the closed-window recipient's send must be queued, not dropped");
+    assert.equal(queued[0]?.userId, closedWindowMember);
+    assert.equal(queued[0]?.priority, 'low');
   },
 );
 
