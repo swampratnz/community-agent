@@ -1996,7 +1996,7 @@ test(
     mockPool(t, { memberRole: 'member', languagePref: 'mi' });
     const miResult = fakeInteraction({ commandName: 'mydata', userId: 'member-mi' });
     await handleInteraction(miResult.interaction as never, adapterDeps(adapter));
-    assert.match(miResult.replies[0].content, /Language preference: te reo Māori/);
+    assert.match(miResult.replies[0].content, /Kōwhiringa reo: te reo Māori/);
 
     mockPool(t, { memberRole: 'member', languagePref: 'en' });
     const enResult = fakeInteraction({ commandName: 'mydata', userId: 'member-en' });
