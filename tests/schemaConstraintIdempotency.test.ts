@@ -167,3 +167,32 @@ test('the module fragment never re-defines a constraint the base package owns (a
       "base one couples this deployment to the framework's internals and breaks on the next base release.",
   );
 });
+
+test('SECURITY: appeal_appellant_stale_notices (issue #1413) is an id-only table with no identity column, and its schema fragment carries the same no-registerPurgeContributor-hook rationale as 89-knowledge-candidate-stale-notices.sql — the settled #1408/#1375 stance this fragment mirrors (acceptance criterion #5)', () => {
+  const fragment = COMMUNITY_MIGRATIONS.find(
+    (f) => f.name === 'nz-community/90-appeal-appellant-stale-notices.sql',
+  );
+  assert.ok(fragment, 'expected fragment 90-appeal-appellant-stale-notices.sql to be registered');
+
+  const createMatch = /CREATE TABLE IF NOT EXISTS appeal_appellant_stale_notices \(([\s\S]*?)\n\);/.exec(
+    fragment.sql,
+  );
+  assert.ok(createMatch, 'could not locate the CREATE TABLE statement');
+  const columnNames = createMatch[1]
+    .split(',')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => line.split(/\s+/)[0]);
+  assert.deepEqual(
+    columnNames,
+    ['appeal_id', 'notified_at'],
+    'the table must carry no appellant identity column — appeal_id and notified_at only, matching the ' +
+      '#1408 precedent (nothing here for forget_me/purge_user_data to erase)',
+  );
+
+  assert.match(
+    fragment.sql,
+    /needs no `registerPurgeContributor` hook/,
+    'the fragment must document the same no-purge-hook rationale as 89-knowledge-candidate-stale-notices.sql',
+  );
+});

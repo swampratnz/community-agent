@@ -73,6 +73,7 @@ export {
   notifyReportWithdrawn,
   notifyAppealFiled,
   notifyAppealResolved,
+  notifyAppealStale,
   notifyKnowledgeTipResolved,
   notifyKnowledgeCandidateStale,
   notifyWarningsCleared,

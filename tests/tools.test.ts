@@ -86,6 +86,7 @@ const {
   notifyReportWithdrawn,
   notifyAppealFiled,
   notifyAppealResolved,
+  notifyAppealStale,
   notifyKnowledgeTipResolved,
   notifyKnowledgeCandidateStale,
   notifyWarningsCleared,
@@ -272,6 +273,8 @@ const { recordAppealWithdrawal, getWithdrawnAppealIds } =
   await import('../src/module/storage/appealWithdrawals.js');
 const { recordReporterStaleNotice, getReporterStaleNoticeIds } =
   await import('../src/module/storage/reportReporterStaleNotices.js');
+const { recordAppellantStaleNotice, getAppellantStaleNoticeIds } =
+  await import('../src/module/storage/appealAppellantStaleNotices.js');
 const { recordFindHelperRequest, listOwnFindHelperRequests } =
   await import('../src/module/storage/findHelperRequests.js');
 const { recordProjectNoteAuthor, countOwnProjectNoteAuthorships } =
@@ -4280,6 +4283,137 @@ test("notifyAppealResolved's adminReason clause renders in te reo Māori for a c
     /Take: "he tauriterite tēnei"/,
     'the reason clause label is te reo, the text is not',
   );
+});
+
+// notifyAppealStale is the appellant-side mid-flight "still being reviewed"
+// notice (issue #1413) `appealStaleAlert.ts` sends, mirroring
+// notifyKnowledgeCandidateStale's #1408 shape verbatim for the appeal queue.
+// Tested directly here the same way notifyAppealResolved is above.
+test('SECURITY: notifyAppealStale sends the DM to exactly the given userId, with no other identity input possible from its signature', async () => {
+  const calls: Array<[string, string]> = [];
+  const adapter = stubAdapter(async (userId, text) => {
+    calls.push([userId, text]);
+  });
+
+  await notifyAppealStale(adapter, 'appellant-1', 'discord');
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'appellant-1', 'the DM goes only to the userId argument, nothing else');
+});
+
+test('SECURITY: notifyAppealStale carries no appeal content — no id, reason, warning count, or admin identity, for any input', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+  const secretAppealId = 'secret-appeal-id-4f2a';
+  const secretReason = 'secret-appeal-reason-text';
+
+  // notifyAppealStale's own signature has no parameter that could even carry
+  // these — this asserts the OUTPUT never contains them regardless, so the
+  // guarantee holds even if a future edit widened the signature carelessly.
+  await notifyAppealStale(adapter, secretReason, 'discord');
+
+  assert.equal(calls.length, 1);
+  assert.ok(!calls[0].includes(secretAppealId), 'appeal id must never appear in the stale-notice DM');
+  assert.ok(!calls[0].includes(secretReason), 'reason must never appear in the stale-notice DM');
+});
+
+test('notifyAppealStale swallows a DM failure rather than throwing', async () => {
+  const adapter = stubAdapter(async () => {
+    throw new Error('DMs closed');
+  });
+
+  await assert.doesNotReject(notifyAppealStale(adapter, 'appellant-1', 'discord'));
+});
+
+test('SECURITY: notifyAppealStale queues via queueForWindowReopen at "low" priority on a WindowClosedError, rather than dropping the DM (issue #644 recovery extended to issue #1413)', async () => {
+  const queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }> = [];
+  const adapter: PlatformAdapter = {
+    ...stubAdapter(async () => {
+      throw new WindowClosedError('appellant-1');
+    }),
+    queueForWindowReopen(userId: string, message: string, priority: 'system' | 'low') {
+      queued.push({ userId, message, priority });
+    },
+  };
+
+  await notifyAppealStale(adapter, 'appellant-1', 'whatsapp');
+
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0]?.userId, 'appellant-1');
+  assert.equal(queued[0]?.priority, 'low');
+});
+
+test("notifyAppealStale sends the te reo Māori variant for a caller with a stored 'mi' preference (issue #331)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAppealStale(adapter, 'appellant-1', 'discord', async () => 'mi');
+
+  assert.match(calls[0], /arotakehia tonu/);
+});
+
+test("notifyAppealStale sends the English default for the default 'auto' preference, byte-identical to today", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAppealStale(adapter, 'appellant-1', 'discord', async () => 'auto');
+
+  assert.match(calls[0], /still being reviewed/);
+});
+
+test("SECURITY: notifyAppealStale degrades to the English default, rather than throwing or dropping the DM, when the language-preference lookup fails (issue #52's invariant extended to issue #1413)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAppealStale(adapter, 'appellant-1', 'discord', async () => {
+    throw new Error('DB unreachable');
+  });
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /still being reviewed/);
+});
+
+test("notifyAppealStale sends the plain-language variant for a caller with a stored 'plain' response style (issue #1212)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAppealStale(
+    adapter,
+    'appellant-1',
+    'discord',
+    async () => 'auto',
+    async () => 'plain',
+  );
+
+  assert.equal(calls[0], 'Your appeal is still being reviewed. Thanks for your patience.');
+});
+
+test("SECURITY: a standing 'mi' language preference wins over a standing 'plain' response style for notifyAppealStale — the te reo variant is sent, never the plain one (issue #1212, precedence: mi > plain > standard)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAppealStale(
+    adapter,
+    'appellant-1',
+    'discord',
+    async () => 'mi',
+    async () => 'plain',
+  );
+
+  assert.match(calls[0], /arotakehia tonu/);
+  assert.doesNotMatch(calls[0], /still being reviewed/);
 });
 
 // notifyWarningsCleared holds all of clear_warnings' new (issue #865)
@@ -32433,6 +32567,60 @@ test(
       [appealA.id, appealB.id, resolved.id],
     ]);
     await pool.query(`DELETE FROM appeal_withdrawals WHERE appeal_id = ANY($1)`, [[appealA.id]]);
+  },
+);
+
+// appeal_appellant_stale_notices accessor (issue #1413): no tool calls this
+// directly — it backs appealStaleAlert.ts's per-tick idempotency check — so
+// it is exercised here directly against the real table, the same way
+// recordReporterStaleNotice/getReporterStaleNoticeIds are exercised above
+// rather than through a dedicated tool.
+test(
+  'recordAppellantStaleNotice returns true only the first time for a given appeal id, and getAppellantStaleNoticeIds reflects the write (issue #1413 acceptance criterion 1)',
+  { skip },
+  async () => {
+    const created = await createModerationAppeal({
+      platform: 'discord',
+      userId: `${RUN}-appellant-stale-notice-accessor`,
+      userName: 'Appellant Accessor',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    assert.ok(created);
+
+    const firstInsert = await recordAppellantStaleNotice(created.id);
+    assert.equal(firstInsert, true, 'the first record for an appeal id must report a fresh insert');
+
+    const secondInsert = await recordAppellantStaleNotice(created.id);
+    assert.equal(secondInsert, false, 'a repeated record for the same appeal id must be a no-op');
+
+    const ids = await getAppellantStaleNoticeIds([created.id]);
+    assert.ok(ids.has(created.id), 'getAppellantStaleNoticeIds must reflect the recorded row');
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [created.id]);
+    await pool.query(`DELETE FROM appeal_appellant_stale_notices WHERE appeal_id = $1`, [created.id]);
+  },
+);
+
+test(
+  'getAppellantStaleNoticeIds: looked up by appeal id only, an id with no recorded notice is absent from the result, and empty input short-circuits without a query',
+  { skip },
+  async () => {
+    assert.deepEqual(await getAppellantStaleNoticeIds([]), new Set());
+
+    const created = await createModerationAppeal({
+      platform: 'discord',
+      userId: `${RUN}-appellant-stale-notice-accessor-absent`,
+      userName: 'Appellant Accessor Absent',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    assert.ok(created);
+
+    const ids = await getAppellantStaleNoticeIds([created.id]);
+    assert.ok(!ids.has(created.id), 'an id with no recorded notice must be absent');
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [created.id]);
   },
 );
 
