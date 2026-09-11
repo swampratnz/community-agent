@@ -52,6 +52,8 @@ test('issue #535 acceptance criterion 2 — IMAGE_GEN_ENABLED=true (others defau
           'mcp__community__dev_team_verify',
           'mcp__community__set_helper_availability',
           'mcp__community__find_helper',
+          'mcp__community__web_research',
+          'mcp__community__summarize_link',
         ].includes(t),
     );
     assert.deepEqual(

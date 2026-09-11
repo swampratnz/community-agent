@@ -1104,6 +1104,8 @@ const FEATURE_FLAGGED_TOOLS = [
   'mcp__community__dev_team_verify',
   'mcp__community__set_helper_availability',
   'mcp__community__find_helper',
+  'mcp__community__web_research',
+  'mcp__community__summarize_link',
 ] as const;
 
 test('SECURITY: AC7 (#755) — enabling the flag (with agent-architecture-review in ENABLED_SKILLS) does not alter allowedTools/disallowedTools beyond the base tools array — no new MCP tool surface', async () => {

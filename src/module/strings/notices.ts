@@ -657,7 +657,8 @@ const NOTICE_ENTRIES = {
       '- Ask admins to review a warning you think was a mistake ("appeal my warning"), or withdraw an ' +
       'appeal you filed\n' +
       '- Ask me for our community guidelines ("what are the rules here?")\n' +
-      '- Answer questions from curated community knowledge — just ask\n' +
+      '- Answer questions from curated community knowledge — just ask — and, where switched on here, look ' +
+      'things up on the web or summarise a link someone posted ("TLDR?")\n' +
       '- Browse the topics our knowledge base covers, if you\'re not sure what to ask ("what do you know about?")\n' +
       '- Ask what\'s most relied on in our knowledge base ("what does the community find most useful?")\n' +
       "- Search our knowledge base using your own published interests as the query, once you've set " +
@@ -696,7 +697,9 @@ const NOTICE_ENTRIES = {
         '- Tono ki ngā kaiwhakahaere kia arotake i tētahi whakatūpato e whakaaro ana koe he pōhēhē ' +
         '("appeal my warning"), tango rānei i tētahi pīra i tukuna e koe\n' +
         '- Pātai mai i ā mātou tikanga hapori ("what are the rules here?")\n' +
-        '- Whakautu pātai mai i te mōhiotanga hapori kua whiriwhiria — pātai noa mai\n' +
+        '- Whakautu pātai mai i te mōhiotanga hapori kua whiriwhiria — pātai noa mai — ā, ina kua ' +
+        'whakakāhia ki konei, rapu i te ipurangi, whakarāpopoto rānei i tētahi hononga i tukuna e tētahi ' +
+        '("TLDR?")\n' +
         '- Tirotiro i ngā kaupapa e kapi ana e tō mātou pātengi mōhiotanga, mehemea kāore koe e mōhio he aha ' +
         'te pātai ("what do you know about?")\n' +
         '- Pātai he aha kei roto i tō mātou pātengi mōhiotanga e tino whakamahia ana e te hapori ("what does ' +

@@ -31,6 +31,8 @@ import { membershipTools } from './membership.js';
 import { discordRolesTools } from './discordRoles.js';
 import { projectsAdminTools } from './projectsAdmin.js';
 import { fetchPageTools } from './fetchPage.js';
+import { webResearchTools } from './webResearch.js';
+import { linkSummaryTools } from './linkSummary.js';
 import { teamSetupTools } from './teamSetup.js';
 import { superAdminTools } from './superAdmin.js';
 import { devTeamTools } from './devTeam.js';
@@ -75,6 +77,8 @@ export const TOOL_REGISTRY: readonly ToolDef<any>[] = [
   ...projectsAdminTools,
   ...teamSetupTools,
   ...fetchPageTools,
+  ...webResearchTools,
+  ...linkSummaryTools,
   ...superAdminTools,
   ...devTeamTools,
   ...imageGenTools,
