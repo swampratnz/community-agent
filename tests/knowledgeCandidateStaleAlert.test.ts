@@ -28,6 +28,7 @@ const {
 } = await import('../src/module/knowledgeCandidateStaleAlert.js');
 const { WindowClosedError } = await import('@swampratnz/agent-base/platforms/whatsapp/cloudAdapter.js');
 const { KNOWLEDGE_CANDIDATE_STALE_ALERT_POLICY_KEY } = await import('../src/module/storage/policies.js');
+const { notifyKnowledgeCandidateStale } = await import('../src/module/agent/tools/notify.js');
 
 type Platform = 'discord' | 'whatsapp';
 type KnowledgeCandidateStatus = 'pending' | 'accepted' | 'declined' | 'withdrawn';
@@ -73,6 +74,17 @@ function candidate(overrides: Partial<KnowledgeCandidate> & { ageHours: number }
 function admins(entries: Array<Partial<AdminIdentity>>): AdminIdentity[] {
   return entries.map((e, i) => ({ platform: 'discord', platformUserId: `admin-${i}`, ...e }));
 }
+
+// Stands in for the real `recordCandidateStaleNotice` (issue #1408): always
+// reports "already notified" (false), so the submitter-notify branch added
+// to makeDefaultKnowledgeCandidateStaleAlertRun's loop is a guaranteed no-op
+// for every test below that isn't specifically exercising the
+// submitter-notify path itself — otherwise the default would fall through to
+// the REAL storage function (a live Postgres query) and the real
+// notifyKnowledgeCandidateStale (a live language-preference lookup), same
+// "deps must be all-or-nothing" hazard tests/reportStaleAlert.test.ts's
+// skipReporterNotice guards against.
+const skipCandidateNotice = async () => false;
 
 function makeAdapter(connected = true): {
   adapter: PlatformAdapter;
@@ -190,6 +202,7 @@ test('SECURITY: the crossing-tick alert DM contains no candidate id, title, cont
     listOpenCandidates,
     listAdminIdentities,
     fakePolicyStore(),
+    skipCandidateNotice,
   );
 
   await runOnce();
@@ -221,6 +234,7 @@ test('makeDefaultKnowledgeCandidateStaleAlertRun: a pending-candidate set with n
     listOpenCandidates,
     listAdminIdentities,
     fakePolicyStore(),
+    skipCandidateNotice,
   );
 
   await runOnce();
@@ -239,6 +253,7 @@ test('makeDefaultKnowledgeCandidateStaleAlertRun: alerts exactly once on the tic
     listOpenCandidates,
     listAdminIdentities,
     fakePolicyStore(),
+    skipCandidateNotice,
   );
 
   await runOnce(); // 0 -> no alert
@@ -268,6 +283,7 @@ test('makeDefaultKnowledgeCandidateStaleAlertRun: the latch re-arms once the sta
     listOpenCandidates,
     listAdminIdentities,
     fakePolicyStore(),
+    skipCandidateNotice,
   );
 
   await runOnce(); // 0 -> 2, crosses
@@ -294,6 +310,7 @@ test('makeDefaultKnowledgeCandidateStaleAlertRun: writes the active marker to th
     listOpenCandidates,
     listAdminIdentities,
     store,
+    skipCandidateNotice,
   );
 
   assert.equal(store.written.length, 0, 'no write before the tick runs');
@@ -314,6 +331,7 @@ test('makeDefaultKnowledgeCandidateStaleAlertRun: restart-safety — a fresh fac
     listOpenCandidates,
     listAdminIdentities,
     store,
+    skipCandidateNotice,
   );
 
   await runOnce();
@@ -334,6 +352,7 @@ test('makeDefaultKnowledgeCandidateStaleAlertRun: re-arm survives a restart — 
     async () => [],
     listAdminIdentities,
     store,
+    skipCandidateNotice,
   );
   await firstProcess(); // count drops to 0 -> re-arm
   assert.equal(dms.length, 0);
@@ -346,6 +365,7 @@ test('makeDefaultKnowledgeCandidateStaleAlertRun: re-arm survives a restart — 
     async () => [candidate({ ageHours: 200 })],
     listAdminIdentities,
     store,
+    skipCandidateNotice,
   );
   await secondProcess();
   assert.equal(dms.length, 1, 'a fresh crossing after the persisted re-arm alerts again');
@@ -366,6 +386,7 @@ test('SECURITY: makeDefaultKnowledgeCandidateStaleAlertRun never threads a membe
     listOpenCandidates,
     listAdminIdentities,
     store,
+    skipCandidateNotice,
   );
 
   await runOnce();
@@ -392,6 +413,7 @@ test('SECURITY: a WindowClosedError for one admin is queued via queueForWindowRe
     listOpenCandidates,
     listAdminIdentities,
     fakePolicyStore(),
+    skipCandidateNotice,
   );
 
   await runOnce();
@@ -411,6 +433,260 @@ test('startKnowledgeCandidateStaleAlert: always-on, no enable flag — creates a
   assert.notEqual(timer, null, 'this job is unconditionally enabled by design');
   if (timer) clearInterval(timer);
 });
+
+// --- submitter-side mid-flight stale notice (issue #1408) ------------------
+
+/** Stands in for `recordCandidateStaleNotice`: an in-memory Set, same
+ * "returns true only the first time" contract the real `INSERT ... ON
+ * CONFLICT DO NOTHING` gives. Also exposes every id it was called with, so a
+ * test can assert it was never called at all for a machine-drafted row. */
+function fakeCandidateNoticeRecorder(): {
+  record: (id: number) => Promise<boolean>;
+  calledWith: number[];
+} {
+  const seen = new Set<number>();
+  const calledWith: number[] = [];
+  return {
+    record: async (id: number) => {
+      calledWith.push(id);
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    },
+    calledWith,
+  };
+}
+
+function fakeNotifyStale(): {
+  notifyStale: (adapter: PlatformAdapter, userId: string, platform: Platform) => Promise<void>;
+  calls: Array<{ userId: string; platform: Platform }>;
+} {
+  const calls: Array<{ userId: string; platform: Platform }> = [];
+  return {
+    notifyStale: async (_adapter, userId, platform) => {
+      calls.push({ userId, platform });
+    },
+    calls,
+  };
+}
+
+test('submitter stale notice: sent exactly once per candidate id — a second tick for the same still-stale candidate does not re-send', async () => {
+  const { adapter } = makeAdapter();
+  const listOpenCandidates = async () => [
+    candidate({ ageHours: 200, id: 5, sourcePlatform: 'discord', sourceUserId: 'submitter-1' }),
+  ];
+  const listAdminIdentities = async () => admins([{}]);
+  const { record: recordCandidateStaleNotice } = fakeCandidateNoticeRecorder();
+  const { notifyStale, calls } = fakeNotifyStale();
+  const runOnce = makeDefaultKnowledgeCandidateStaleAlertRun(
+    [adapter],
+    listOpenCandidates,
+    listAdminIdentities,
+    fakePolicyStore(),
+    recordCandidateStaleNotice,
+    notifyStale,
+  );
+
+  await runOnce();
+  await runOnce();
+
+  assert.deepEqual(calls, [{ userId: 'submitter-1', platform: 'discord' }]);
+});
+
+test(
+  'submitter stale notice: fires independently of the admin crossing latch — an admin backlog already latched ' +
+    'open (shouldAlert false) still gets the submitter notified',
+  async () => {
+    const { adapter, dms } = makeAdapter();
+    const store = fakePolicyStore({ [KNOWLEDGE_CANDIDATE_STALE_ALERT_POLICY_KEY]: 'true' });
+    const listOpenCandidates = async () => [
+      candidate({ ageHours: 200, id: 11, sourcePlatform: 'discord', sourceUserId: 'submitter-1' }),
+    ];
+    const listAdminIdentities = async () => admins([{}]);
+    const { record: recordCandidateStaleNotice } = fakeCandidateNoticeRecorder();
+    const { notifyStale, calls } = fakeNotifyStale();
+    const runOnce = makeDefaultKnowledgeCandidateStaleAlertRun(
+      [adapter],
+      listOpenCandidates,
+      listAdminIdentities,
+      store,
+      recordCandidateStaleNotice,
+      notifyStale,
+    );
+
+    await runOnce();
+
+    assert.equal(dms.length, 0, "the admin's own alert stays latched (already active) and does not re-send");
+    assert.deepEqual(
+      calls,
+      [{ userId: 'submitter-1', platform: 'discord' }],
+      "the submitter notice must not be gated behind the admin's own shouldAlert",
+    );
+  },
+);
+
+test("SECURITY: submitter stale notice is addressed only to the candidate's own sourceUserId, never an admin's id", async () => {
+  const { adapter } = makeAdapter();
+  const listOpenCandidates = async () => [
+    candidate({
+      ageHours: 200,
+      id: 21,
+      sourcePlatform: 'discord',
+      sourceUserId: 'submitter-distinct-from-admin',
+    }),
+  ];
+  const listAdminIdentities = async () => admins([{ platformUserId: 'admin-0' }]);
+  const { record: recordCandidateStaleNotice } = fakeCandidateNoticeRecorder();
+  const { notifyStale, calls } = fakeNotifyStale();
+  const runOnce = makeDefaultKnowledgeCandidateStaleAlertRun(
+    [adapter],
+    listOpenCandidates,
+    listAdminIdentities,
+    fakePolicyStore(),
+    recordCandidateStaleNotice,
+    notifyStale,
+  );
+
+  await runOnce();
+
+  assert.deepEqual(calls, [{ userId: 'submitter-distinct-from-admin', platform: 'discord' }]);
+});
+
+test(
+  'submitter stale notice: a throwing recordCandidateStaleNotice for one candidate is caught, never blocking ' +
+    "another stale candidate's notice or the admin alert",
+  async () => {
+    const { adapter, dms } = makeAdapter();
+    const listOpenCandidates = async () => [
+      candidate({ ageHours: 200, id: 31, sourcePlatform: 'discord', sourceUserId: 'submitter-broken' }),
+      candidate({ ageHours: 200, id: 32, sourcePlatform: 'discord', sourceUserId: 'submitter-fine' }),
+    ];
+    const listAdminIdentities = async () => admins([{}]);
+    const recordCandidateStaleNotice = async (id: number) => {
+      if (id === 31) throw new Error('transient DB blip');
+      return true;
+    };
+    const { notifyStale, calls } = fakeNotifyStale();
+    const runOnce = makeDefaultKnowledgeCandidateStaleAlertRun(
+      [adapter],
+      listOpenCandidates,
+      listAdminIdentities,
+      fakePolicyStore(),
+      recordCandidateStaleNotice,
+      notifyStale,
+    );
+
+    await assert.doesNotReject(runOnce());
+
+    assert.deepEqual(calls, [{ userId: 'submitter-fine', platform: 'discord' }]);
+    assert.equal(dms.length, 1, 'the admin alert must still fire despite one submitter notice failing');
+  },
+);
+
+test(
+  "submitter stale notice: no connected adapter for the candidate's sourcePlatform is a silent skip — no throw, " +
+    'no notify call, and no idempotency row (so a later tick with an adapter can still notify)',
+  async () => {
+    const { adapter: discordAdapter } = makeAdapter(); // no whatsapp adapter registered at all
+    const listOpenCandidates = async () => [
+      candidate({ ageHours: 200, id: 61, sourcePlatform: 'whatsapp', sourceUserId: 'submitter-1' }),
+    ];
+    const listAdminIdentities = async () => admins([{}]);
+    const { record: recordCandidateStaleNotice, calledWith } = fakeCandidateNoticeRecorder();
+    const { notifyStale, calls } = fakeNotifyStale();
+    const runOnce = makeDefaultKnowledgeCandidateStaleAlertRun(
+      [discordAdapter],
+      listOpenCandidates,
+      listAdminIdentities,
+      fakePolicyStore(),
+      recordCandidateStaleNotice,
+      notifyStale,
+    );
+
+    await assert.doesNotReject(runOnce());
+
+    assert.deepEqual(calls, [], 'no notify call when no adapter is registered for the platform');
+    assert.deepEqual(calledWith, [], 'no idempotency row when the notice was never actually sent');
+  },
+);
+
+test(
+  'SECURITY: a stale candidate with a null sourcePlatform OR null sourceUserId (machine-drafted) produces zero ' +
+    'notifyKnowledgeCandidateStale calls and is never even offered to recordCandidateStaleNotice, even past the threshold',
+  async () => {
+    const { adapter } = makeAdapter();
+    const listOpenCandidates = async () => [
+      candidate({ ageHours: 200, id: 41, sourcePlatform: null, sourceUserId: null }),
+      candidate({ ageHours: 200, id: 42, sourcePlatform: null, sourceUserId: 'orphaned-user-id' }),
+      candidate({ ageHours: 200, id: 43, sourcePlatform: 'discord', sourceUserId: null }),
+    ];
+    const listAdminIdentities = async () => admins([{}]);
+    const { record: recordCandidateStaleNotice, calledWith } = fakeCandidateNoticeRecorder();
+    const { notifyStale, calls } = fakeNotifyStale();
+    const runOnce = makeDefaultKnowledgeCandidateStaleAlertRun(
+      [adapter],
+      listOpenCandidates,
+      listAdminIdentities,
+      fakePolicyStore(),
+      recordCandidateStaleNotice,
+      notifyStale,
+    );
+
+    await runOnce();
+
+    assert.deepEqual(calls, [], 'no machine-drafted candidate may ever be notified');
+    assert.deepEqual(
+      calledWith,
+      [],
+      'no machine-drafted candidate may ever reach the idempotency record either',
+    );
+  },
+);
+
+test(
+  'SECURITY: a WindowClosedError from the submitter sendDirectMessage is queued via queueForWindowReopen and ' +
+    "swallowed — never rethrown, and never blocking another candidate's notice in the same tick",
+  async () => {
+    const { adapter, dms, queued } = makeCloudAdapter({
+      'submitter-closed': new WindowClosedError('submitter-closed'),
+    });
+    const listOpenCandidates = async () => [
+      candidate({
+        ageHours: 200,
+        id: 51,
+        sourcePlatform: 'whatsapp',
+        sourceUserId: 'submitter-closed',
+      }),
+      candidate({
+        ageHours: 200,
+        id: 52,
+        sourcePlatform: 'whatsapp',
+        sourceUserId: 'submitter-open',
+      }),
+    ];
+    const listAdminIdentities = async () => admins([{}]);
+    const { record: recordCandidateStaleNotice } = fakeCandidateNoticeRecorder();
+    const runOnce = makeDefaultKnowledgeCandidateStaleAlertRun(
+      [adapter],
+      listOpenCandidates,
+      listAdminIdentities,
+      fakePolicyStore(),
+      recordCandidateStaleNotice,
+      notifyKnowledgeCandidateStale,
+    );
+
+    await assert.doesNotReject(runOnce());
+
+    assert.deepEqual(
+      dms.map((d) => d.userId),
+      ['submitter-open'],
+      'the open-window submitter is still delivered live',
+    );
+    assert.equal(queued.length, 1);
+    assert.equal(queued[0].userId, 'submitter-closed');
+    assert.equal(queued[0].priority, 'low');
+  },
+);
 
 // --- the scan bound ---------------------------------------------------------
 

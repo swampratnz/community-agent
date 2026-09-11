@@ -1089,6 +1089,65 @@ export async function notifyReportStale(
 }
 
 /**
+ * Best-effort, one-time "still being reviewed" DM to a `suggest_knowledge`
+ * tip's submitter while it sits pending past the admin-side staleness
+ * threshold — the mid-flight signal issue #1408 adds between the tip's
+ * submission and `notifyKnowledgeTipResolved`'s end-of-lifecycle DM, mirroring
+ * `notifyReportStale`'s #1375 shape verbatim for the knowledge-candidate
+ * queue.
+ *
+ * Content-free BY CONSTRUCTION (SECURITY): unlike every sibling in this
+ * file, the signature accepts no candidate id, title, content, topic, or
+ * admin identity — only the recipient identity — so there is nothing for
+ * the message body to leak even by accident. The caller
+ * (`knowledgeCandidateStaleAlert.ts`) is solely responsible for deciding
+ * WHICH candidates are stale and for the once-ever idempotency
+ * (`knowledge_candidate_stale_notices`, `INSERT ... ON CONFLICT DO
+ * NOTHING`); this function only ever sends.
+ *
+ * `userId`/`platform` are the two inputs (SECURITY): both come from the
+ * `KnowledgeCandidate` row's own `sourceUserId`/`sourcePlatform` at the one
+ * call site, never from model or admin input, matching
+ * `notifyKnowledgeTipResolved`'s (and `accept_knowledge_candidate`'s) never
+ * caller-redirectable provenance-gated routing.
+ *
+ * Same failure shape as every sibling: honours a standing `'mi'` language
+ * preference (degrading to `'auto'`/English on lookup failure, issue #52's
+ * invariant), and a `WindowClosedError` rejection is queued via
+ * `queueForWindowReopen` at `'low'` priority instead of logged-and-dropped
+ * (issue #602) — any other rejection is logged and swallowed, never thrown,
+ * so one recipient's failure can never abort the stale-alert tick.
+ */
+export async function notifyKnowledgeCandidateStale(
+  adapter: PlatformAdapter,
+  userId: string,
+  platform: Platform,
+  getLangPref: typeof getLanguagePreference = getLanguagePreference,
+  getRespStyle: typeof getResponseStyle = getResponseStyle,
+): Promise<void> {
+  const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
+  const style: ResponseStyle | undefined =
+    lang === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
+  const message =
+    lang === 'mi'
+      ? 'Kei te arotakehia tonu tō tāpiritanga mātauranga — ngā mihi mō tō manawanui e tatari ana.'
+      : style === 'plain'
+        ? 'Your suggested knowledge tip is still being reviewed. Thanks for your patience.'
+        : 'Your suggested knowledge tip is still being reviewed — thanks for your patience while we look into it.';
+  await adapter.sendDirectMessage(userId, message).catch((err) => {
+    if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+      adapter.queueForWindowReopen(userId, message, 'low');
+      logger.warn(
+        { userId: hashId(userId), platform },
+        "Knowledge candidate stale DM: recipient's window is closed, queued for reopen",
+      );
+      return;
+    }
+    logger.warn({ err, userId: hashId(userId) }, 'Knowledge candidate stale DM failed');
+  });
+}
+
+/**
  * Proactive super-admin alert fired the moment a report is filed, instead of
  * relying on an admin to remember to poll `list_reports` (issue #90) — reuses
  * `notifySuperAdmins`, the exact mechanism `audited()` already uses for every

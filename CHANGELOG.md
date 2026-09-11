@@ -51,6 +51,13 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   summarises it. It only opens links a person actually posted in that
   conversation recently — never one it made up — and won't follow a link that
   redirects to a different site. Turned on with `LINK_SUMMARY_ENABLED`.
+- **A knowledge tip you suggest now checks in with you if it's waiting a
+  while.** If a `suggest_knowledge` tip is still pending review after 7 days,
+  you now get a one-time "still being reviewed, thanks for your patience" DM —
+  the same mid-flight reassurance content reports already got (#1375),
+  extended to the knowledge-candidate queue. It never fires for an
+  automatically-drafted candidate (only one you actually submitted), and
+  admins still get their own separate backlog alert unchanged.
 
 ### Security
 - **Dependency: `sharp` raised past the libheif advisory (GHSA-rgj7-g3m4-5g8c).**

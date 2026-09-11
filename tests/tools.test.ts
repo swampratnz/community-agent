@@ -87,6 +87,7 @@ const {
   notifyAppealFiled,
   notifyAppealResolved,
   notifyKnowledgeTipResolved,
+  notifyKnowledgeCandidateStale,
   notifyWarningsCleared,
   notifyKnowledgeEntryFixed,
   buildToolServer,
@@ -3726,6 +3727,142 @@ test("SECURITY: a standing 'mi' language preference wins over a standing 'plain'
   await notifyReportStale(
     adapter,
     'reporter-1',
+    'discord',
+    async () => 'mi',
+    async () => 'plain',
+  );
+
+  assert.match(calls[0], /arotakehia tonu/);
+  assert.doesNotMatch(calls[0], /still being reviewed/);
+});
+
+// notifyKnowledgeCandidateStale is the submitter-side mid-flight "still being
+// reviewed" notice (issue #1408) `knowledgeCandidateStaleAlert.ts` sends,
+// mirroring notifyReportStale's #1375 shape verbatim for the
+// knowledge-candidate queue. Tested directly here the same way
+// notifyReportStale is above.
+test('SECURITY: notifyKnowledgeCandidateStale sends the DM to exactly the given userId, with no other identity input possible from its signature', async () => {
+  const calls: Array<[string, string]> = [];
+  const adapter = stubAdapter(async (userId, text) => {
+    calls.push([userId, text]);
+  });
+
+  await notifyKnowledgeCandidateStale(adapter, 'submitter-1', 'discord');
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'submitter-1', 'the DM goes only to the userId argument, nothing else');
+});
+
+test('SECURITY: notifyKnowledgeCandidateStale carries no candidate content — no id, title, content, topic, or admin identity, for any input', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+  const secretCandidateId = 'secret-candidate-id-4f2a';
+  const secretTitle = 'Secret Candidate Title';
+  const secretContent = 'secret-candidate-content-text';
+  const secretTopic = 'secret-candidate-topic';
+
+  // notifyKnowledgeCandidateStale's own signature has no parameter that could
+  // even carry these — this asserts the OUTPUT never contains them
+  // regardless, so the guarantee holds even if a future edit widened the
+  // signature carelessly.
+  await notifyKnowledgeCandidateStale(adapter, secretTitle, 'discord');
+
+  assert.equal(calls.length, 1);
+  assert.ok(!calls[0].includes(secretCandidateId), 'candidate id must never appear in the stale-notice DM');
+  assert.ok(!calls[0].includes(secretContent), 'content must never appear in the stale-notice DM');
+  assert.ok(!calls[0].includes(secretTopic), 'topic must never appear in the stale-notice DM');
+});
+
+test('notifyKnowledgeCandidateStale swallows a DM failure rather than throwing', async () => {
+  const adapter = stubAdapter(async () => {
+    throw new Error('DMs closed');
+  });
+
+  await assert.doesNotReject(notifyKnowledgeCandidateStale(adapter, 'submitter-1', 'discord'));
+});
+
+test('SECURITY: notifyKnowledgeCandidateStale queues via queueForWindowReopen at "low" priority on a WindowClosedError, rather than dropping the DM (issue #644 recovery extended to issue #1408)', async () => {
+  const queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }> = [];
+  const adapter: PlatformAdapter = {
+    ...stubAdapter(async () => {
+      throw new WindowClosedError('submitter-1');
+    }),
+    queueForWindowReopen(userId: string, message: string, priority: 'system' | 'low') {
+      queued.push({ userId, message, priority });
+    },
+  };
+
+  await notifyKnowledgeCandidateStale(adapter, 'submitter-1', 'whatsapp');
+
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0]?.userId, 'submitter-1');
+  assert.equal(queued[0]?.priority, 'low');
+});
+
+test("notifyKnowledgeCandidateStale sends the te reo Māori variant for a caller with a stored 'mi' preference (issue #331)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyKnowledgeCandidateStale(adapter, 'submitter-1', 'discord', async () => 'mi');
+
+  assert.match(calls[0], /arotakehia tonu/);
+});
+
+test("notifyKnowledgeCandidateStale sends the English default for the default 'auto' preference, byte-identical to today", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyKnowledgeCandidateStale(adapter, 'submitter-1', 'discord', async () => 'auto');
+
+  assert.match(calls[0], /still being reviewed/);
+});
+
+test("SECURITY: notifyKnowledgeCandidateStale degrades to the English default, rather than throwing or dropping the DM, when the language-preference lookup fails (issue #52's invariant extended to issue #1408)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyKnowledgeCandidateStale(adapter, 'submitter-1', 'discord', async () => {
+    throw new Error('DB unreachable');
+  });
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /still being reviewed/);
+});
+
+test("notifyKnowledgeCandidateStale sends the plain-language variant for a caller with a stored 'plain' response style (issue #1212)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyKnowledgeCandidateStale(
+    adapter,
+    'submitter-1',
+    'discord',
+    async () => 'auto',
+    async () => 'plain',
+  );
+
+  assert.equal(calls[0], 'Your suggested knowledge tip is still being reviewed. Thanks for your patience.');
+});
+
+test("SECURITY: a standing 'mi' language preference wins over a standing 'plain' response style for notifyKnowledgeCandidateStale — the te reo variant is sent, never the plain one (issue #1212, precedence: mi > plain > standard)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyKnowledgeCandidateStale(
+    adapter,
+    'submitter-1',
     'discord',
     async () => 'mi',
     async () => 'plain',
