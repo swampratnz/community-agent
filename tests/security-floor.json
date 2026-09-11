@@ -120,7 +120,7 @@
   "knowledgeShortcutRouter.test.ts": 5,
   "knowledgeSourceCheckTool.test.ts": 2,
   "linkCheck.test.ts": 15,
-  "linkSummaryTool.test.ts": 11,
+  "linkSummaryTool.test.ts": 14,
   "lowRatedCaveatRouter.test.ts": 4,
   "memberDigest.test.ts": 25,
   "memberToolLanguageCoverage.test.ts": 1,
