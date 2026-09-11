@@ -26,6 +26,34 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #1355 #1356 #1357 #1341 #1350 #1360 #1381
 -->
 
+## 2026-09-11
+
+### Security
+- **Dependency: `sharp` raised past the libheif advisory (GHSA-rgj7-g3m4-5g8c).**
+  The `overrides` pin moved `^0.35.3` → `^0.35.4`, clearing all three `high`
+  findings `npm audit` reported (the advisory itself, plus the two that were
+  only the same issue rolled up through `@huggingface/transformers` and
+  `@swampratnz/agent-base`). No member-facing behaviour changes.
+
+  On exposure, so the record is honest rather than reassuring: this bot does
+  not appear to reach the vulnerable path. `@huggingface/transformers` is used
+  here only for `feature-extraction` (text embeddings) and
+  `automatic-speech-recognition` (voice notes) — neither is an image pipeline —
+  and an inbound image is handed straight to the model API as base64 without
+  being decoded locally. `sharp` is reachable via Baileys, but on the
+  *outbound* thumbnailing path for media the bot itself sends, not on the
+  inbound path a sender controls. That is a reading of the code, not a proof,
+  and the fix was a one-line version bump, so it was taken regardless.
+
+- **Known and currently unfixable: `adm-zip` (GHSA-vwc7-r8mq-g2x9, moderate).**
+  The advisory covers `>=0.5.9 <=0.6.0` and 0.6.0 is the latest release, so
+  there is no patched version to move to; the repo already pins the newest via
+  `overrides`. It enters the tree through `onnxruntime-node`, which uses it at
+  install time to unpack its own bundled native binaries from a trusted
+  source — not attacker-controlled input. It will clear itself when upstream
+  publishes a fix; recorded here so the four remaining `moderate` findings are
+  not mistaken for something unexamined.
+
 ## 2026-09-10
 
 ### Added
