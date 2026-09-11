@@ -46,6 +46,7 @@
     "tests/jobsRegistry.test.ts",
     "tests/knowledgeForMe.test.ts",
     "tests/knowledgeSourceCheckTool.test.ts",
+    "tests/linkSummaryTool.test.ts",
     "tests/memberDigest.test.ts",
     "tests/memberToolLanguageCoverage.test.ts",
     "tests/noticeDebounce.test.ts",
@@ -67,6 +68,7 @@
     "tests/systemPromptSlots.test.ts",
     "tests/toolRegistry.test.ts",
     "tests/usageCostDigest.test.ts",
+    "tests/webResearchTool.test.ts",
     "tests/whoIsIntoBrowseEmbedCount.test.ts"
   ]
 }

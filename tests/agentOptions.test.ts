@@ -110,6 +110,8 @@ const FEATURE_FLAGGED_TOOLS = [
   'mcp__community__dev_team_verify',
   'mcp__community__set_helper_availability',
   'mcp__community__find_helper',
+  'mcp__community__web_research',
+  'mcp__community__summarize_link',
 ] as const;
 
 test('SECURITY: allowedTools tracks toolsForRole exactly, modulo feature-flag/platform filtering — no drift between rbac.ts and core.ts', () => {
@@ -120,6 +122,12 @@ test('SECURITY: allowedTools tracks toolsForRole exactly, modulo feature-flag/pl
   assert.equal(config.github.enabled, false, 'precondition: github-issue is off in this test process');
   assert.equal(config.devTeam.enabled, false, 'precondition: dev-team is off in this test process');
   assert.equal(config.findHelper.enabled, false, 'precondition: find-helper is off in this test process');
+  assert.equal(config.webResearch.enabled, false, 'precondition: web research is off in this test process');
+  assert.equal(
+    config.linkSummary.enabled,
+    false,
+    'precondition: link summaries are off in this test process',
+  );
   for (const role of ['guest', 'member', 'admin', 'super_admin'] as const) {
     for (const platform of ['discord', 'whatsapp'] as const) {
       const opts = buildQueryOptions(role, 'prompt', {}, null, 'conv-1', platform);

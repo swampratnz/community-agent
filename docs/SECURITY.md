@@ -179,6 +179,34 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   and a content-type allowlist. The returned body is wrapped by `untrusted()`
   — the same quarantine as recalled chat content, newline flattening included,
   because a fetched page is the most attacker-shaped input this bot accepts.
+- **Member web research (`web_research`, opt-in) keeps the member turn free
+  of `WebSearch` rather than relaxing it.** It runs ONE isolated `query()`
+  whose prompt is the question and nothing else — no history, no member data,
+  no module tools, `settingSources: []`, exactly `WebSearch`, never `WebFetch`
+  — so an instruction planted in a search result lands in a context with
+  nothing to exfiltrate and no tool that can act. The answer returns through
+  `untrusted()` with https-only sources. The handler refuses unless a
+  `knowledge_search` earlier in the same turn found nothing above the
+  relevance floor (`turnState.knowledgeSearchMissed`), so the curated base is
+  always consulted first. It carries a per-caller daily cap and dedup window,
+  a turn ceiling and a wall-clock timeout, and its spend is the
+  `web_research` background job, watched by the cost-spike alert. The
+  question text is never logged or persisted. **Residual:** the question is
+  model-composed, so an injection could try to smuggle conversation text into
+  it; it reaches the platform's own search backend, not a host of the
+  attacker's choosing, and is length-capped.
+- **Member link summaries (`summarize_link`, opt-in) remove URL composition
+  rather than trusting it.** A URL is fetched only if it appears in a recent
+  INBOUND (person-authored) message in the caller's own conversation, and it
+  is the posted form that is fetched — the model selects among links the room
+  has already seen and cannot add a byte to one. The bot's own messages never
+  count, which closes the "say an exfiltration URL, then fetch it" loop. The
+  fetch runs over `safeFetch` with the posted URL's host as the entire
+  allowlist, so every guard above applies and a cross-host redirect is
+  refused; the page returns quarantined. **Residual:** fetching tells the
+  poster the bot fetched their link (a beacon from the bot's egress address),
+  and an injection could choose WHICH posted link to fetch — a few bits per
+  call, bounded by the daily cap.
 - **Structural RBAC (three tiers)**: `allowedTools` is computed from the
   *sender's* resolved tier (super_admin > admin > member > guest), not from
   anything in the message. A lower tier's turn never has higher-tier tools
