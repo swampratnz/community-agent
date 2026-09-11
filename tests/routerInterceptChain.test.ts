@@ -48,6 +48,7 @@ test('SECURITY: PRE_TURN_SPINE is frozen and lists the security-ordered pre-turn
       'gated-guest',
       'record-inbound',
       'confirm-intercept',
+      'arm-shell',
       'escalation-confirm',
       'addressed-gate',
       'pause',

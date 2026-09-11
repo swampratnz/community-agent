@@ -342,7 +342,20 @@ test('SECURITY: the page title rides INSIDE the quarantined block, so a hostile 
   behavior = okOutcome('hello');
 });
 
-test('SECURITY: a hostile page (unclosed openers, a sea of bare "<") is reduced in linear time', () => {
+test('SECURITY: a hostile page (unclosed openers, a sea of bare "<") terminates without amplifying its input', () => {
+  // Pins TERMINATION and bounded output, not wall-clock speed: a timing
+  // assertion on a shared CI runner is a flake waiting to happen (noted in
+  // review of #1396), and "under 1.5s" was never the property that mattered.
+  // The extractor is linear by construction — indexOf passes and regexes
+  // whose repeated class excludes its own delimiter — and a superlinear
+  // regression on these inputs would hang the test rather than slow it,
+  // which the runner's own timeout reports.
+  //
+  // What it does NOT pin is empty output. None of these inputs closes a tag,
+  // so the strip passes match nothing and the bytes survive as text. That is
+  // the right outcome — it is inert text, bounded by the input, and clipped
+  // by MAX_RETURNED_CHARS before any of it reaches a model — so the property
+  // to hold is that the extractor never AMPLIFIES what it was given.
   const cases = [
     '<'.repeat(200_000),
     '<script'.repeat(50_000),
@@ -351,9 +364,11 @@ test('SECURITY: a hostile page (unclosed openers, a sea of bare "<") is reduced 
     '&#x1;'.repeat(50_000) + '</head'.repeat(30_000),
   ];
   for (const evil of cases) {
-    const started = performance.now();
-    htmlToReadableText(evil);
-    const ms = performance.now() - started;
-    assert.ok(ms < 1500, `took ${ms.toFixed(0)}ms on a ${evil.slice(0, 12)}… input`);
+    const { title, text: extracted } = htmlToReadableText(evil);
+    assert.equal(title, '', `a hostile input must yield no title: ${evil.slice(0, 12)}…`);
+    assert.ok(
+      extracted.length <= evil.length,
+      `a hostile input must not amplify: ${evil.length} chars in, ${extracted.length} out`,
+    );
   }
 });

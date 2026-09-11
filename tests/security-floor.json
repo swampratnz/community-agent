@@ -89,7 +89,7 @@
   "evalAnswersCitationCheck.test.ts": 5,
   "evalAnswersOffCi.test.ts": 2,
   "evalAnswersScopeSafety.test.ts": 2,
-  "fetchPageTool.test.ts": 12,
+  "fetchPageTool.test.ts": 13,
   "findHelperRequests.test.ts": 1,
   "findHelperTools.test.ts": 14,
   "gatedNotice.router.test.ts": 10,
