@@ -500,6 +500,54 @@ const NOTICE_ENTRIES = {
       plain: "An admin removed your access to a project's shared memory on NZ Claude Community.",
     },
   },
+  // --- project_archive / project_unarchive whole-project notify DMs
+  // (agent/tools/notify.ts, issue #1395) ---
+  /**
+   * The neutral archive DM for the admin-tier `project_archive` — static,
+   * same non-interpolation shape as `projectMemberRemovedMessage` above: the
+   * project name is appended only as a distinct, quoted,
+   * `truncateForEcho`-capped clause (see `notifyProjectArchived` in
+   * notify.ts). Sent to every CURRENT member of the project, not just one —
+   * archiving revokes read access for all of them at once, the one
+   * project_* revoke `projectMemberRemovedMessage` above did not reach.
+   * Unconditional, same rationale as `projectMemberRemovedMessage` —
+   * archiving is ordinary, reversible team-access housekeeping, not
+   * moderation.
+   */
+  projectArchivedMessage: {
+    base:
+      "A project you're a member of on NZ Claude Community was archived by an admin — its shared memory " +
+      "can't be read until it's restored.",
+    language: {
+      mi:
+        'I whakakorehia (archived) tētahi kaupapa e whai wāhi ana koe i NZ Claude Community e tētahi ' +
+        'kaiwhakahaere — kāore e taea te pānui i ōna mahara tiritahi kia whakahokia mai anō rā anō.',
+    },
+    style: {
+      plain:
+        "An admin archived a project you're in on NZ Claude Community — you can't read its shared memory until it's restored.",
+    },
+  },
+  /**
+   * The neutral restoration DM for the admin-tier `project_unarchive` — the
+   * mirror-image of `projectArchivedMessage` above, same non-interpolation
+   * shape and same every-current-member fan-out (see `notifyProjectUnarchived`
+   * in notify.ts). Unconditional, same rationale as `projectArchivedMessage`.
+   */
+  projectUnarchivedMessage: {
+    base:
+      "A project you're a member of on NZ Claude Community was restored by an admin — its shared memory " +
+      'can be read again.',
+    language: {
+      mi:
+        'Kua whakahokia mai e tētahi kaiwhakahaere tētahi kaupapa e whai wāhi ana koe i NZ Claude Community ' +
+        '— ka taea anō te pānui i ōna mahara tiritahi.',
+    },
+    style: {
+      plain:
+        "An admin restored a project you're in on NZ Claude Community — you can read its shared memory again.",
+    },
+  },
   // --- find_helper / share_project / request_project_connection peer-DM
   // recipient notifications (agent/tools/social.ts, issue #1245) ---
   /**
