@@ -440,6 +440,13 @@ function mockPool(
     // listBlockedUsers' read (issue #1145's /blockedlist) — the only query
     // against this table in this file, so no specific-first disambiguation is
     // needed, matching countAccessRequests' single-table simplicity above.
+    // agent-base's slash-dispatch gate (0.6.5) point-looks-up the CALLER on the
+    // block list before any handler runs. That is the caller's own row, never
+    // the list, so it must not be answered with /blockedlist's fixture rows —
+    // doing so would read every seeded caller as blocked and silence them.
+    if (sql.includes('SELECT 1 FROM blocked_users')) {
+      return { rows: [], rowCount: 0 };
+    }
     if (sql.includes('FROM blocked_users')) {
       return { rows: opts.blockedUserRows ?? [], rowCount: 0 };
     }
@@ -3231,7 +3238,11 @@ test(
     assert.equal(replies[0].ephemeral, true);
     assert.match(replies[0].content, /don't have access/i);
     assert.ok(
-      !calls.some((c) => c.sql.includes('FROM blocked_users')),
+      // The list read (listBlockedUsers), not the base gate's point lookup of
+      // the caller's own block status, which runs for every caller.
+      !calls.some(
+        (c) => c.sql.includes('FROM blocked_users') && !c.sql.includes('SELECT 1 FROM blocked_users'),
+      ),
       'no blocked-users repository read must run for a rejected caller',
     );
   },
@@ -3256,7 +3267,11 @@ test(
       'a member-tier caller must be denied, not just a guest',
     );
     assert.ok(
-      !calls.some((c) => c.sql.includes('FROM blocked_users')),
+      // The list read (listBlockedUsers), not the base gate's point lookup of
+      // the caller's own block status, which runs for every caller.
+      !calls.some(
+        (c) => c.sql.includes('FROM blocked_users') && !c.sql.includes('SELECT 1 FROM blocked_users'),
+      ),
       'no blocked-users repository read must run for a member-tier caller',
     );
   },
@@ -4843,7 +4858,14 @@ test('SECURITY: /kb resolves the caller role BEFORE it searches knowledge, and s
   const retrievalIdx = calls.findIndex(
     (c) => c.sql.includes('UPDATE knowledge') && c.sql.includes('retrieval_count'),
   );
-  assert.ok(roleIdx === 0, 'the role must be resolved before any other DB call');
+  // Since agent-base 0.6.5 the slash-dispatch gate checks the caller's own
+  // block status first (zero footprint for a blocked caller); that point
+  // lookup is the ONLY read allowed to precede role resolution.
+  assert.ok(roleIdx >= 0, 'the role must be resolved');
+  assert.ok(
+    calls.slice(0, roleIdx).every((c) => c.sql.includes('SELECT 1 FROM blocked_users')),
+    'the role must be resolved before any other DB call except the base block-list gate',
+  );
   assert.ok(searchIdx > roleIdx, 'searchKnowledge must run only after role resolution');
   assert.ok(retrievalIdx > searchIdx, 'recordKnowledgeRetrieval must run only after searchKnowledge');
 });

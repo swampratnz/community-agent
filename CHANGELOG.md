@@ -39,6 +39,17 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   "tell the person an admin action affected" pattern `project_add_member`/
   `project_remove_member` already have (#1241). Each member sees only the
   project name and a fixed notice — never the rest of the roster.
+- **Web research for members (off by default).** When the community knowledge
+  base has no answer — release news, third-party tools, "is X out yet?" — the
+  bot can look it up on the web and answer with its sources. It always checks
+  the knowledge base first, runs the search in a separate sandboxed step that
+  can't see the conversation, and has a small daily limit per member. An
+  operator turns it on with `WEB_RESEARCH_ENABLED`.
+- **Link summaries (off by default).** Ask "TLDR?" or "what does that link
+  say?" about a link someone posted in the chat, and the bot reads the page and
+  summarises it. It only opens links a person actually posted in that
+  conversation recently — never one it made up — and won't follow a link that
+  redirects to a different site. Turned on with `LINK_SUMMARY_ENABLED`.
 
 ### Security
 - **Dependency: `sharp` raised past the libheif advisory (GHSA-rgj7-g3m4-5g8c).**

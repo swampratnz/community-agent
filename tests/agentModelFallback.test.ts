@@ -44,6 +44,8 @@ const FEATURE_FLAGGED_TOOLS = [
   'mcp__community__dev_team_verify',
   'mcp__community__set_helper_availability',
   'mcp__community__find_helper',
+  'mcp__community__web_research',
+  'mcp__community__summarize_link',
 ] as const;
 
 test('config: AGENT_MODEL_FALLBACK set resolves to config.llm.fallbackModel (issue #738)', () => {

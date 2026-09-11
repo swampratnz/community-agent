@@ -7673,7 +7673,9 @@ test('community_info reply stays concise, not a wall of text (issue #92)', async
   // again for issue #1287's knowledge_for_me line, and again for issue
   // #1344's withdraw_project_note clause (folded into the existing project
   // line, not a new one).
-  assert.ok(replyText.length < 2510, `reply should stay short; was ${replyText.length} chars`);
+  // Bumped again for the member web_research/summarize_link clause (folded into
+  // the existing knowledge bullet, not a new one).
+  assert.ok(replyText.length < 2600, `reply should stay short; was ${replyText.length} chars`);
 });
 
 test('community_info appends the full ADMIN_CAPABILITIES_TEXT rundown for admin/super_admin callers, on top of the member content (issue #367)', async () => {
@@ -7807,6 +7809,8 @@ const MEMBER_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__find_helper', /can someone help with/i],
   ['mcp__community__request_project_connection', /looking for collaborators/i],
   ['mcp__community__community_digest', /community digest on demand/i],
+  ['mcp__community__web_research', /look things up on the web/i],
+  ['mcp__community__summarize_link', /summarise a link someone posted/i],
 ]);
 // community_info is self-referential — it describes every OTHER member
 // tool, so it needs no line about itself.
@@ -7863,7 +7867,8 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
     '- Ask admins to review a warning you think was a mistake ("appeal my warning"), or withdraw an ' +
     'appeal you filed\n' +
     '- Ask me for our community guidelines ("what are the rules here?")\n' +
-    '- Answer questions from curated community knowledge — just ask\n' +
+    '- Answer questions from curated community knowledge — just ask — and, where switched on here, look ' +
+    'things up on the web or summarise a link someone posted ("TLDR?")\n' +
     '- Browse the topics our knowledge base covers, if you\'re not sure what to ask ("what do you know about?")\n' +
     '- Ask what\'s most relied on in our knowledge base ("what does the community find most useful?")\n' +
     "- Search our knowledge base using your own published interests as the query, once you've set " +
@@ -8088,7 +8093,9 @@ test('community_info: admin reply stays under a hard char cap, not a wall of tex
   // bumped once more for issue #1377's welcome_message read-back clause
   // (consolidated into the existing guidelines/welcome-message bullet, not a
   // new bullet).
-  assert.ok(adminReply.length < 5170, `admin reply should stay short; was ${adminReply.length} chars`);
+  // Bumped once more alongside the member cap for the web_research/
+  // summarize_link clause (the admin reply includes the full member content).
+  assert.ok(adminReply.length < 5230, `admin reply should stay short; was ${adminReply.length} chars`);
 });
 
 test('SECURITY: community_info member-tier and guest-tier replies never name an admin/super_admin-only tool or contain any ADMIN_CAPABILITIES_TEXT-unique line (issue #367, issue #311)', async () => {
@@ -8242,8 +8249,10 @@ test('community_info: super_admin reply stays under a hard char cap, not a wall 
   // knowledge_for_me line; bumped once more alongside the member cap for
   // issue #1344's withdraw_project_note clause; bumped once more alongside
   // the admin cap for issue #1377's welcome_message read-back clause.
+  // Bumped once more alongside the member/admin caps for the web_research/
+  // summarize_link clause.
   assert.ok(
-    superAdminReply.length < 5820,
+    superAdminReply.length < 5880,
     `super_admin reply should stay short; was ${superAdminReply.length} chars`,
   );
 });
@@ -17575,8 +17584,8 @@ test('feature_flags: FEATURE_FLAG_MAP covers every *_ENABLED env var in config.t
   const envVars = extractEnabledEnvVars(configSource);
   assert.equal(
     envVars.length,
-    49,
-    "the pinned count is the proposal's own evidence — a change here is itself signal worth noticing (28 at #559; +3 for ENGAGEMENT_ALERT/USAGE_COST_DIGEST/AUTO_RETRACT_REPLY landing alongside #582; +1 for MEMBER_DIGEST_ENABLED landing with #645; +1 for BACKGROUND_JOB_COST_ALERT_ENABLED landing with #610; +1 for KNOWLEDGE_GAP_ALERT_ENABLED landing with #650; +1 for KNOWLEDGE_STALE_ALERT_ENABLED landing with #701; +1 for FIND_HELPER_ENABLED landing with #729; +1 for RELEASE_WATCH_ENABLED landing with #733; +1 for KNOWLEDGE_ANSWER_CANDIDATE_ENABLED landing with #726; +1 for DISCORD_VOICE_ENABLED landing with #732; +1 for AGENT_SKILLS_ENABLED landing with #741; +1 for DISCORD_SLASH_COMMANDS_ENABLED landing with #744; +1 for IMAGE_INPUT_ENABLED landing with #783; +1 for ADMIN_LEVERAGE_ALERT_ENABLED landing with #785; +1 for WHATSAPP_TEXT_COMMANDS_ENABLED landing with #859; +1 for WHATSAPP_IMAGE_INPUT_ENABLED landing with #879; +1 for REPEAT_QUESTION_ALERT_ENABLED landing with #887; +1 for WHATSAPP_CLOUD_IMAGE_INPUT_ENABLED landing with #891; +1 for WHATSAPP_CLOUD_VOICE_ENABLED landing with #910; +1 for TEXT_INPUT_ENABLED landing with agent-base #44)",
+    51,
+    "the pinned count is the proposal's own evidence — a change here is itself signal worth noticing (28 at #559; +3 for ENGAGEMENT_ALERT/USAGE_COST_DIGEST/AUTO_RETRACT_REPLY landing alongside #582; +1 for MEMBER_DIGEST_ENABLED landing with #645; +1 for BACKGROUND_JOB_COST_ALERT_ENABLED landing with #610; +1 for KNOWLEDGE_GAP_ALERT_ENABLED landing with #650; +1 for KNOWLEDGE_STALE_ALERT_ENABLED landing with #701; +1 for FIND_HELPER_ENABLED landing with #729; +1 for RELEASE_WATCH_ENABLED landing with #733; +1 for KNOWLEDGE_ANSWER_CANDIDATE_ENABLED landing with #726; +1 for DISCORD_VOICE_ENABLED landing with #732; +1 for AGENT_SKILLS_ENABLED landing with #741; +1 for DISCORD_SLASH_COMMANDS_ENABLED landing with #744; +1 for IMAGE_INPUT_ENABLED landing with #783; +1 for ADMIN_LEVERAGE_ALERT_ENABLED landing with #785; +1 for WHATSAPP_TEXT_COMMANDS_ENABLED landing with #859; +1 for WHATSAPP_IMAGE_INPUT_ENABLED landing with #879; +1 for REPEAT_QUESTION_ALERT_ENABLED landing with #887; +1 for WHATSAPP_CLOUD_IMAGE_INPUT_ENABLED landing with #891; +1 for WHATSAPP_CLOUD_VOICE_ENABLED landing with #910; +1 for TEXT_INPUT_ENABLED landing with agent-base #44; +2 for WEB_RESEARCH_ENABLED/LINK_SUMMARY_ENABLED landing with agent-base 0.6.5)",
   );
   assertFeatureFlagEnvVarsCovered(envVars, FEATURE_FLAG_MAP);
   assert.equal(

@@ -44,6 +44,15 @@ declare module '@swampratnz/agent-base/agent/turnState.js' {
      * PER_USER`) — never on a declined-by-cap call (issue #808).
      */
     humanHelpRequested?: boolean;
+    /**
+     * Set `true` when a `knowledge_search` call this turn found nothing that
+     * cleared the relevance floor — semantically OR via the lexical fallback.
+     * Read by `web_research`, which refuses unless it is set, so the knowledge
+     * base is always consulted before the web. Sticky for the turn. Tool-to-
+     * tool only: never surfaced on the reply, so it deliberately has no
+     * `TurnStateBag` twin and no finalizer spread below.
+     */
+    knowledgeSearchMissed?: boolean;
   }
 
   /**

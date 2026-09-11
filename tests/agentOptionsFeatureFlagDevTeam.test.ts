@@ -57,6 +57,8 @@ test('issue #535 acceptance criterion 2 — DEV_TEAM_ENABLED=true (others defaul
         'mcp__community__suggest_issue',
         'mcp__community__set_helper_availability',
         'mcp__community__find_helper',
+        'mcp__community__web_research',
+        'mcp__community__summarize_link',
       ].includes(t),
   );
   assert.deepEqual(
