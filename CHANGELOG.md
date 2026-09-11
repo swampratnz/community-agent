@@ -73,7 +73,7 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 
 ### Changed
 
-- **Dave sounds more like a person and less like a helpdesk.** He no longer opens replies with a greeting and your name every time, skips bold headings and mini-documents in chat, varies how he starts, and keeps thank-yous short instead of recapping. Kiwi slang is now occasional rather than a verbal tic. In a side-by-side on ten sample messages, greetings dropped from half of replies to none, use of the person's name from 7 in 10 to 1 in 10, and bold from 4 in 10 to none.
+- **Dave sounds more like a person and less like a helpdesk.** He no longer opens with a greeting and your name every time or signs off with "anything else I can help with?", keeps chat replies short and plain (no bold headings or mini-documents), plays along with banter instead of answering it like a policy, and says what he can't do in plain words rather than explaining his internals. Kiwi slang is now occasional rather than a verbal tic. In a side-by-side on fifteen sample messages, replies ending in a question fell from 40% to 13%, greetings from 53% to none, use of the person's name from 67% to 13%, bold from 27% to none, and the median reply halved (312 to 155 characters).
 
 ## 2026-09-10
 
