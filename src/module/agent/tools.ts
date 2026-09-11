@@ -74,6 +74,7 @@ export {
   notifyAppealFiled,
   notifyAppealResolved,
   notifyKnowledgeTipResolved,
+  notifyKnowledgeCandidateStale,
   notifyWarningsCleared,
   notifyKnowledgeEntryFixed,
 } from './tools/notify.js';
