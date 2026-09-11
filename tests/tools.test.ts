@@ -25696,6 +25696,76 @@ test('SECURITY: every project-management tool refuses a below-admin caller befor
   }
 });
 
+test("SECURITY: project_info's no-arg listing still refuses a below-admin caller before the new per-project member read runs (issue #1389 AC #6)", async () => {
+  // The tier assert sits before the args.project branch, so this covers
+  // the NEW no-arg code path specifically, distinct from the generic
+  // slug-branch check above — the per-project listProjectMembers read
+  // introduced by this diff must never be reachable pre-assertAtLeast.
+  for (const role of ['guest', 'member'] as const) {
+    await assert.rejects(
+      () => adminProjectToolHandler('project_info', role).handler({}),
+      /Permission denied/,
+      `project_info with no argument must refuse a ${role}-tier caller`,
+    );
+  }
+});
+
+test(
+  "project_info's no-arg listing shows each active project's member count, matching the slug branch's own count exactly and using correct singular/plural (issue #1389 acceptance criteria 1, 2)",
+  { skip },
+  async () => {
+    const { createProject, addProjectMember } = await import('@swampratnz/agent-base/storage/repository.js');
+    const emptySlug = `${RUN}-noarg-empty`;
+    const soloSlug = `${RUN}-noarg-solo`;
+    const teamSlug = `${RUN}-noarg-team`;
+    const empty = await createProject({ slug: emptySlug, name: 'No Members Yet Lab', createdBy: 'test' });
+    const solo = await createProject({ slug: soloSlug, name: 'Solo Member Lab', createdBy: 'test' });
+    const team = await createProject({ slug: teamSlug, name: 'Two Member Lab', createdBy: 'test' });
+    assert.ok(empty && solo && team, 'setup: all three projects must be created');
+
+    // A fixed-length base, matching the notify-gating test below rather than
+    // the `${RUN.slice(1)}NNN.slice(0, 19)` convention used elsewhere in this
+    // file. RUN.slice(1) is 18-19 chars whenever RUN's random component has
+    // its usual 5-6 digits, so appending a 3-digit suffix and slicing back to
+    // 19 truncates the suffix away entirely and memberA === memberB: "Two
+    // Member Lab" then holds ONE member and the (2 members) assertion fails.
+    // Measured at 9991 collisions in 10000 RUN values.
+    const base = RUN.slice(1).slice(0, 14);
+    const memberA = `${base}3011`;
+    const memberB = `${base}3012`;
+    await addProjectMember(solo.id, 'discord', memberA, 'test');
+    await addProjectMember(team.id, 'discord', memberA, 'test');
+    await addProjectMember(team.id, 'discord', memberB, 'test');
+
+    const infoTool = adminProjectToolHandler('project_info', 'admin');
+    const listing = (await infoTool.handler({})).content[0].text;
+
+    assert.match(
+      listing,
+      new RegExp(`- ${empty.name} \\[${emptySlug}\\] \\(0 members\\)`),
+      'a project with no members renders "(0 members)", never omitted or blank',
+    );
+    assert.match(
+      listing,
+      new RegExp(`- ${solo.name} \\[${soloSlug}\\] \\(1 member\\)`),
+      'a single-member project uses the singular "member", not "members"',
+    );
+    assert.match(
+      listing,
+      new RegExp(`- ${team.name} \\[${teamSlug}\\] \\(2 members\\)`),
+      'a two-member project uses the plural "members"',
+    );
+
+    // Cross-branch consistency (AC #2): the count shown in the no-arg
+    // listing must never drift from what this SAME tool's own slug branch
+    // reports for the same project in the same DB state.
+    const detail = (await infoTool.handler({ project: teamSlug })).content[0].text;
+    const detailMatch = detail.match(/Members \((\d+)\):/);
+    assert.ok(detailMatch, 'the slug branch must report a Members(N) count');
+    assert.equal(detailMatch[1], '2', 'the two branches must report the identical member count');
+  },
+);
+
 test(
   'SECURITY: project_add_member refuses a target who is not already a community member (docs/SECURITY.md layer 3 — without it a membership row exists for an identity that never passed add_member, which open mode reaches at guest tier)',
   { skip },
