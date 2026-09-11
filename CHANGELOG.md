@@ -29,6 +29,17 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-09-11
 
 ### Added
+- **Linking or unlinking a member's identities now tells the people it
+  affects.** (#1393) `link_member` permanently expands what a single
+  `forget_me`/`purge_user_data` call erases — from then on, either linked
+  identity's request erases both — and `unlink_member` reverses that, but
+  neither ever told the member(s). Both identities now get a short, fixed DM
+  on a successful link (no reason, no admin identity, and never naming the
+  other identity), and the targeted identity gets one on a successful
+  unlink, mirroring `remove_member`'s (#1334) and `revoke_admin`'s (#1317)
+  existing DMs for the last silent pair in this family. A failed DM never
+  reverses the link/unlink or changes the admin's reported success — it just
+  adds a short note to the admin's own reply.
 - **Web research for members (off by default).** When the community knowledge
   base has no answer — release news, third-party tools, "is X out yet?" — the
   bot can look it up on the web and answer with its sources. It always checks
