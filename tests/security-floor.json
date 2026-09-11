@@ -44,6 +44,7 @@
   "autoAnswerRouter.test.ts": 4,
   "autoAnswerThreadFollowupRouter.test.ts": 8,
   "autoAnswerUsageRouter.test.ts": 1,
+  "autoMergeReadyLabel.test.ts": 2,
   "backgroundJobCost.test.ts": 3,
   "backgroundJobCostAlert.test.ts": 2,
   "backgroundJobs.test.ts": 16,

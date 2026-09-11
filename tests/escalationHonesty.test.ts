@@ -157,6 +157,20 @@ const STALLS: Array<{ name: string; summary: string }> = [
     name: 'a deferral phrased as a check-back',
     summary: 'Tests are running in the background; I will check back once they finish.',
   },
+  {
+    // The live miss that added the third arm (autofix on PR #1390). It
+    // contains no wait word and no deferral verb — it simply reports work as
+    // in flight — so the first two arms both walked past it. The agent's
+    // fix was never committed and a human had to read the truncated summary
+    // to notice it had stalled at all.
+    name: 'autofix on #1390 (work described as in flight, no wait word)',
+    summary:
+      "I've identified the CI failure and applied a fix. Here's a summary while the security test suite finishes running in the background:",
+  },
+  {
+    name: 'autofix on #1390, as actually truncated at the 1500-byte cap',
+    summary: '- `test:security` — running now in the',
+  },
 ];
 
 /**
@@ -172,6 +186,17 @@ const NEAR_MISS_STOPS: string[] = [
   'I could not finish this once the CI logs landed',
   'Once these tests land I expect green, but the failure is real and I did not push',
   'The reviewer asked that this land in a separate PR, so I did not finish here',
+  // The control for the third arm: a PAST-TENSE report of background work is
+  // a finished diagnosis, not a stall. This is why that arm keys on "running
+  // in the background" rather than the bare "in the background".
+  'I ran the suite in the background and it failed for a real reason, so I stopped.',
+  // The tense-ambiguity control, from the review of the PR that added the
+  // third arm. This one uses the LITERAL phrase the first draft matched
+  // ("running in the background") in a completed report — which is why that
+  // draft would have flagged it, and why the arm now keys on present-tense
+  // forms only. The control above sidesteps the phrase entirely and so never
+  // exercised this.
+  'The suite finished running in the background and reported two real failures I could not fix, so I stopped.',
 ];
 
 test('SECURITY: the escalation flags every known stall shape', { skip }, () => {

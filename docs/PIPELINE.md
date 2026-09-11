@@ -187,7 +187,12 @@ Create them once: **Actions → "Setup pipeline labels" → Run workflow**, or
   LGTM, no stop labels) is labelled `human-merge-ready` and gets one
   marker-guarded comment asking a maintainer to press merge — the loop still
   never merges it itself, and it keeps scanning so a non-governance PR later
-  in the queue can still merge that run. It merges **exactly one
+  in the queue can still merge that run. The label is revoked again the
+  moment any of those gates stops holding, because its comment promises a
+  merge button and that promise expires: #1382 wore it for 22 hours while
+  CONFLICTING, with the conflict resolver's own failed attempt leaving no
+  mark on it. The explanatory comment is still posted at most once per PR;
+  only the label tracks live state. It merges **exactly one
   PR per run**: afterwards `main` has advanced, so it dispatches the conflict
   resolver to rebase whatever now conflicts, and the next PR only re-qualifies
   once it is green against the new `main` — so a PR is never merged except

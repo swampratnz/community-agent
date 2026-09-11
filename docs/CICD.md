@@ -422,6 +422,7 @@ What happens when each thing fails, in order of who gets there first:
 | Review says "Changes requested" | `pipeline-pr-revise.yml`, ≤2 attempts | `needs-human` | human |
 | Review says "Needs a human decision" | review labels `needs-human` directly | — | human |
 | PR green + LGTM but touches a governance path | automerge labels `human-merge-ready` + one comment | keeps scanning for other PRs | human merges |
+| A `human-merge-ready` PR stops qualifying (CONFLICTING, CI red, LGTM staledated, stop label) | automerge revokes the label on its next tick | re-asserted when it qualifies again; the comment is not re-posted | the label never outlives its claim (#1382) |
 | Merged PR has no changelog entry | `changelog-coverage.yml` opens/refreshes one self-closing tracking issue | `changelog-autofill.yml` drafts a PR 30 min later | human merges the autofill PR |
 | Merged branch left behind | `branch-janitor.yml` weekly, ancestry- or all-PRs-merged only | never touches never-PR'd or `-ckpt-` refs | `extra` dispatch input |
 
