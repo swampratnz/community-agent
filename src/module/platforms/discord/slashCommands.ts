@@ -687,6 +687,89 @@ async function handleKbHelpful(
 }
 
 /**
+ * `knowledge_for_me` is structurally in MEMBER_TOOLS but adds its own
+ * runtime floor (`minTier: 'member'`), same shape as `/kbtopics`/
+ * `/kbhelpful` above — mirrored here via `toolsForRole` + `atLeast`.
+ * Reuses that tool's own read pipeline verbatim (knowledgeMember.ts): the
+ * caller's OWN published interests (self-scoped to `interaction.user.id`,
+ * never another identity's — issue #1411 SECURITY criterion 5) fed into
+ * searchKnowledge, then the same low-rated/conflict caveat lookups and
+ * recordKnowledgeRetrieval call the tool makes, rendered through the same
+ * formatKnowledgeSearchResults. No options — there is nothing to take one
+ * for, `knowledge_for_me`'s schema is `{}`. Deliberately does NOT stamp
+ * `turnState.lastKnowledgeHitId`/`staleKnowledgeAlertIds` — there is no
+ * turnState outside an agent turn, matching every other shortcut in this
+ * file.
+ */
+async function handleKbForMe(
+  interaction: ChatInputCommandInteraction,
+  deps: SlashCommandDeps,
+): Promise<void> {
+  await deferEphemeral(interaction);
+  const role = await resolveRole('discord', interaction.user.id);
+  if (
+    !toolsForRole(role, 'discord').includes('mcp__community__knowledge_for_me') ||
+    !atLeast(role, 'member')
+  ) {
+    await replyEphemeral(interaction, NOT_AUTHORIZED_TEXT, deps);
+    return;
+  }
+  const interestsByOwner = await getPublishedInterestsForOwners([
+    { platform: 'discord', userId: interaction.user.id },
+  ]);
+  const interestsText = interestsByOwner.get(`discord:${interaction.user.id}`);
+  let message: string;
+  if (!interestsText) {
+    const language = await getLanguagePreference('discord', interaction.user.id);
+    message = formatWhoIsIntoEmptyText('noProfile', language);
+  } else {
+    const hits = await searchKnowledge(interestsText, {
+      platform: 'discord',
+      conversationId: interaction.channelId,
+    });
+    const relevantIds = hits
+      .filter((h) => h.similarity >= KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD)
+      .map((h) => h.id);
+    // Fire-and-forget usage tracking, byte-for-byte the same call
+    // knowledge_for_me's own handler makes on its identically-computed
+    // relevantIds (issue #1411 acceptance criterion 6).
+    recordKnowledgeRetrieval(relevantIds).catch((err) =>
+      logger.warn({ err }, 'Knowledge retrieval count update failed'),
+    );
+    const hasConflict =
+      relevantIds.length >= 2
+        ? await hasConflictAmongIds(relevantIds).catch((err) => {
+            logger.warn({ err }, 'Knowledge conflict check failed; omitting the conflict note');
+            return false;
+          })
+        : false;
+    const lowRatedIds =
+      config.behaviour.knowledgeLowRatedCaveatMinUnhelpful > 0 && relevantIds.length > 0
+        ? await areKnowledgeEntriesLowRated(
+            relevantIds,
+            config.behaviour.knowledgeLowRatedCaveatMinUnhelpful,
+          ).catch((err) => {
+            logger.warn({ err }, 'Knowledge low-rated caveat lookup failed; omitting the caveat');
+            return new Set<number>();
+          })
+        : new Set<number>();
+    // No language argument (defaults to 'auto') — byte-for-byte the same
+    // formatKnowledgeSearchResults call knowledge_for_me's own handler makes
+    // on its found-hits branch; only the noProfile empty-state above
+    // threads the caller's language preference.
+    message = formatKnowledgeSearchResults(
+      hits,
+      config.adminDigest.knowledgeStaleDays,
+      config.adminDigest.knowledgeStaleMaxAgeDays,
+      hasConflict,
+      lowRatedIds,
+    );
+  }
+  recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
+  await replyEphemeral(interaction, message, deps);
+}
+
+/**
  * `review_queue` is structurally in ADMIN_TOOLS — the first admin-tier
  * shortcut in this file (issue #1095; reports line added #1207, onboarding
  * line #1216) — mirrored here via `toolsForRole` + `atLeast(role, 'admin')`,
@@ -1203,6 +1286,14 @@ export function bindCommunitySlashCommands(adapter: PlatformAdapter): void {
         .setDescription('Show which community knowledge entries are most relied on.')
         .toJSON(),
     handle: handleKbHelpful,
+  });
+  bindDiscordCommand('kbforme', {
+    build: () =>
+      new SlashCommandBuilder()
+        .setName('kbforme')
+        .setDescription('Search the knowledge base using your own published interests as the query.')
+        .toJSON(),
+    handle: handleKbForMe,
   });
   bindDiscordCommand('reviewqueue', {
     build: () =>

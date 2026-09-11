@@ -36,8 +36,10 @@ import {
   oldestOpenReportAgeDays,
   oldestPendingCandidateAgeDays,
   oldestPendingSuggestionAgeDays,
+  recordKnowledgeRetrieval,
   resolveLinkedIdentities,
   rosterCounts,
+  searchKnowledge,
 } from '@swampratnz/agent-base/storage/repository.js';
 import {
   formatAccessRequestsList,
@@ -46,6 +48,7 @@ import {
   formatCommunityInfoText,
   formatFeatureFlags,
   formatInterestResults,
+  formatKnowledgeSearchResults,
   formatKnowledgeTopics,
   formatListProjectsEmptyText,
   formatMostHelpfulKnowledge,
@@ -56,6 +59,7 @@ import {
   formatReviewQueueSummaryWithoutReports,
   formatTopKnowledgeList,
   formatWhoIsIntoEmptyText,
+  KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD,
   LIST_PROJECTS_DEFAULT_LIMIT,
   MOST_HELPFUL_KNOWLEDGE_FETCH_CAP,
   rankKnowledgeByRetrieval,
@@ -89,9 +93,11 @@ import { notice } from './strings/notices.js';
  * `featureflags` (issue #1183, the fifth — and the first at the
  * `super_admin` floor rather than `admin`), `admindigest` (issue #1194, the
  * sixth), `adminlist` (issue #1218, the seventh, and the second at the
- * `super_admin` floor), and `accessrequests` (issue #1346, the eighth)
- * appended — also safe for the WhatsApp side because every `!` matcher is
- * anchored and mutually exclusive.
+ * `super_admin` floor), `accessrequests` (issue #1346, the eighth), and
+ * `kbforme` (issue #1411, closing the last member-tier zero-argument
+ * browse-tool shortcut gap in the `kb*` family) appended — also safe for
+ * the WhatsApp side because every `!` matcher is anchored and mutually
+ * exclusive.
  *
  * The Discord halves are BOUND by `bindCommunitySlashCommands()`
  * (slashCommands.ts), which `createConfiguredAdapters()` calls — never at
@@ -462,6 +468,84 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
           : false;
       const language = await deps.getLangPref(msg.platform, msg.userId);
       return formatMostHelpfulKnowledge(ranked, language, lowRatedIds, hasConflict);
+    },
+  },
+  {
+    // Anchored, argument-rejecting matcher, same discipline as `kbtopics`/
+    // `kbhelpful` above (issue #1411 SECURITY criterion 4): `!kbforme
+    // anything` falls through to TEXT_COMMAND_UNMATCHED rather than
+    // matching, so no message-supplied text can ever reach the interests
+    // lookup or searchKnowledge (there is no argument for it to leak into —
+    // knowledge_for_me's schema is `{}` — but the anchoring still keeps a
+    // trailing command on the same line, e.g. `!kbforme; !purge_user_data`,
+    // from being misread as one unmatched command that falls through to the
+    // model with attacker-adjacent text unconsumed). Reuses
+    // knowledge_for_me's own read pipeline verbatim (knowledgeMember.ts):
+    // self-scoped interests lookup (SECURITY criterion 5 — keyed solely on
+    // the caller's own (platform, userId), same as `!whois mine` above),
+    // then searchKnowledge + the same low-rated/conflict caveat lookups and
+    // recordKnowledgeRetrieval call the tool makes, so this zero-model-call
+    // shortcut never diverges from the tool it mirrors (same invariant
+    // `!kbhelpful`'s issue #1087 established). Deliberately does NOT touch
+    // `turnState.lastKnowledgeHitId`/`staleKnowledgeAlertIds` — there is no
+    // turnState outside an agent turn, matching every other shortcut in this
+    // family (issue #1411 acceptance criterion 7).
+    name: 'kbforme',
+    platforms: ['discord', 'whatsapp'],
+    whatsapp: async (text, msg, role, deps) => {
+      if (!/^!kbforme$/i.test(text)) return TEXT_COMMAND_UNMATCHED;
+      if (!atLeast(role, 'member')) return null;
+      const interestsByOwner = await getPublishedInterestsForOwners([
+        { platform: msg.platform, userId: msg.userId },
+      ]);
+      const interestsText = interestsByOwner.get(`${msg.platform}:${msg.userId}`);
+      if (!interestsText) {
+        const language = await deps.getLangPref(msg.platform, msg.userId);
+        return formatWhoIsIntoEmptyText('noProfile', language);
+      }
+      const hits = await searchKnowledge(interestsText, {
+        platform: msg.platform,
+        conversationId: msg.conversationId,
+      });
+      const relevantIds = hits
+        .filter((h) => h.similarity >= KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD)
+        .map((h) => h.id);
+      // Fire-and-forget usage tracking, byte-for-byte the same call
+      // knowledge_for_me's own handler makes on its identically-computed
+      // relevantIds (issue #1411 acceptance criterion 6) — no-ops for an
+      // empty id array, so a no-hit call issues no retrieval write.
+      recordKnowledgeRetrieval(relevantIds).catch((err) =>
+        logger.warn({ err }, 'Knowledge retrieval count update failed'),
+      );
+      const hasConflict =
+        relevantIds.length >= 2
+          ? await hasConflictAmongIds(relevantIds).catch((err) => {
+              logger.warn({ err }, 'Knowledge conflict check failed; omitting the conflict note');
+              return false;
+            })
+          : false;
+      const lowRatedIds =
+        config.behaviour.knowledgeLowRatedCaveatMinUnhelpful > 0 && relevantIds.length > 0
+          ? await areKnowledgeEntriesLowRated(
+              relevantIds,
+              config.behaviour.knowledgeLowRatedCaveatMinUnhelpful,
+            ).catch((err) => {
+              logger.warn({ err }, 'Knowledge low-rated caveat lookup failed; omitting the caveat');
+              return new Set<number>();
+            })
+          : new Set<number>();
+      // No language argument (defaults to 'auto') — byte-for-byte the same
+      // formatKnowledgeSearchResults call knowledge_for_me's own handler
+      // makes on its found-hits branch, which (like knowledge_search's own
+      // identical call) never threads the caller's language preference into
+      // this renderer; only the noProfile empty-state above does.
+      return formatKnowledgeSearchResults(
+        hits,
+        config.adminDigest.knowledgeStaleDays,
+        config.adminDigest.knowledgeStaleMaxAgeDays,
+        hasConflict,
+        lowRatedIds,
+      );
     },
   },
   {
