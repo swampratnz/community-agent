@@ -71,6 +71,10 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 
 - **Link summaries now read the page, not its scaffolding.** Dave was handed raw HTML cut at 12,000 characters. On many sites, GitHub repo pages included, that is all `<head>` boilerplate, so he had nothing real to summarise and could fill the gap with guesses. He now gets the page's readable text (the article or main content first, with scripts, styles and navigation dropped). A page with no readable text, such as a JavaScript-only app or a login wall, now gets an honest "I couldn't read that" instead of a made-up summary.
 
+### Changed
+
+- **Dave sounds more like a person and less like a helpdesk.** He no longer opens replies with a greeting and your name every time, skips bold headings and mini-documents in chat, varies how he starts, and keeps thank-yous short instead of recapping. Kiwi slang is now occasional rather than a verbal tic. In a side-by-side on ten sample messages, greetings dropped from half of replies to none, use of the person's name from 7 in 10 to 1 in 10, and bold from 4 in 10 to none.
+
 ## 2026-09-10
 
 ### Added
