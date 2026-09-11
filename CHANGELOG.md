@@ -44,6 +44,12 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   (#1408) already got, extended to the appeal queue. It fires independently of
   the admins' own separate backlog alert, and never fires for an appeal you
   withdrew yourself.
+- **`my_data` now replies fully in te reo Māori too.** (#1419) Members with a
+  standing te reo Māori preference already got a fully translated
+  `my_warnings`/`my_submissions` — `my_data` (and its `!mydata`/`/mydata`
+  shortcuts) was the last of the three still showing English labels around a
+  translated language-preference value. Every label now matches your
+  preference; the underlying numbers and settings it reports are unchanged.
 
 ## 2026-09-11
 

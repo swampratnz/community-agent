@@ -41621,6 +41621,220 @@ test(
   },
 );
 
+// issue #1419: formatMyDataText was the last self-service renderer in this
+// file with zero `mi` support — formatMyWarningsText/formatMySubmissionsText
+// already had it. These pure-function tests need no DB, unlike most of the
+// my_data tests above/below (which exercise the tool handler end to end).
+const MY_DATA_MI_RICH_SUMMARY = {
+  ownMessages: 11,
+  repliesToThem: 22,
+  knowledgeEntries: 33,
+  reportsFiled: 44,
+  suggestionsFiled: 55,
+  projectsShared: 66,
+  interestsPublished: 77,
+  responseStyle: 'plain' as const,
+};
+
+// Every fixed English label formatMyDataText can render, across all three
+// forms of the daily-reply-limit branch — used below to assert none survive
+// into the 'mi' render (acceptance criterion 1).
+const MY_DATA_ENGLISH_LABELS = [
+  "Messages you've sent:",
+  'Replies the bot has sent you:',
+  'Knowledge entries sourced from you:',
+  "Content reports you've filed:",
+  "Suggestions you've filed:",
+  'Appeals filed:',
+  'Knowledge tips filed:',
+  'Connection requests sent:',
+  'Help requests sent:',
+  'Interest match alerts:',
+  'Project notes authored:',
+  "Projects you've shared:",
+  'Interests published (who_is_into):',
+  'Response style preference:',
+  'Language preference:',
+  'Daily reply limit:',
+  'Replies in the last 24h:',
+  'For your active warnings, use my_warnings',
+];
+
+test(
+  'formatMyDataText renders EVERY fixed label in te reo Māori for a caller with language "mi", across all ' +
+    'three forms of the daily-reply-limit line — exempt, none configured, and used/limit (issue #1419 ' +
+    'acceptance criterion 1)',
+  () => {
+    const cases: Array<['super_admin' | 'member', number, number | null]> = [
+      ['super_admin', 5, null], // exempt
+      ['member', 0, null], // none configured
+      ['member', 5, 3], // used / limit, under
+      ['member', 5, 5], // used / limit, at limit ("reached today's limit")
+    ];
+    for (const [role, limit, used] of cases) {
+      const output = formatMyDataText(MY_DATA_MI_RICH_SUMMARY, role, limit, used, 'mi', 1, 2, 3, 4, true, 5);
+      for (const label of MY_DATA_ENGLISH_LABELS) {
+        assert.ok(
+          !output.includes(label),
+          `mi render must not contain the English label "${label}": ${output}`,
+        );
+      }
+      assert.match(output, /Āu karere kua tukuna: 11/);
+      assert.match(output, /Ngā whakautu kua tukuna mai e te kaiāwhina ki a koe: 22/);
+      assert.match(output, /Ngā whakaurunga mōhiotanga nā koe: 33/);
+      assert.match(output, /Āu pūrongo kua tukuna: 44/);
+      assert.match(output, /Āu taunakitanga kua tukuna: 55/);
+      assert.match(output, /Ngā pīra kua tukuna: 1/);
+      assert.match(output, /Ngā tohutohu mōhiotanga kua tukuna: 2/);
+      assert.match(output, /Ngā tono hononga kua tukuna: 3/);
+      assert.match(output, /Ngā tono āwhina kua tukuna: 4/);
+      assert.match(output, /Ngā whakatūpato taunekeneke hiahia: kua tākina/);
+      assert.match(output, /Ngā tuhinga kaupapa i tuhia e koe: 5/);
+      assert.match(output, /Ngā kaupapa kua tohaina e koe: 66/);
+      assert.match(output, /Ngā hiahia kua whakaputaina \(who_is_into\): āe/);
+      assert.match(output, /Kōwhiringa momo whakautu: plain/);
+      assert.match(output, /Kōwhiringa reo: te reo Māori/);
+      assert.match(output, /my_warnings/);
+      assert.match(output, /my_submissions/);
+      if (role === 'super_admin') {
+        assert.match(output, /Te tepe whakautu o ia rā: kāore e pā ana \(he kaiwhakahaere matua\)\./);
+      } else if (limit === 0) {
+        assert.match(output, /Te tepe whakautu o ia rā: kāore i whakaritea\./);
+      } else {
+        assert.match(output, new RegExp(`Ngā whakautu i ngā haora 24 kua hipa: ${used} / ${limit}`));
+        if (used !== null && used >= limit) {
+          assert.match(output, / — kua eke koe ki te tepe o tēnei rā\./);
+        }
+      }
+    }
+  },
+);
+
+test(
+  "formatMyDataText's output for language 'en' and for an unset/undefined preference is byte-identical to " +
+    "today's main — the mi branches above must never perturb either (issue #1419 acceptance criterion 2)",
+  () => {
+    const enOutput = formatMyDataText(MY_DATA_MI_RICH_SUMMARY, 'member', 5, 3, 'en', 1, 2, 3, 4, true, 5);
+    assert.equal(
+      enOutput,
+      [
+        "Messages you've sent: 11",
+        'Replies the bot has sent you: 22',
+        'Knowledge entries sourced from you: 33',
+        "Content reports you've filed: 44",
+        "Suggestions you've filed: 55",
+        'Appeals filed: 1',
+        'Knowledge tips filed: 2',
+        'Connection requests sent: 3',
+        'Help requests sent: 4',
+        'Interest match alerts: on',
+        'Project notes authored: 5',
+        "Projects you've shared: 66",
+        'Interests published (who_is_into): yes',
+        'Response style preference: plain',
+        'Language preference: NZ English',
+        'Replies in the last 24h: 3 / 5',
+        '',
+        'For your active warnings, use my_warnings. For the status of a specific report or suggestion, use my_submissions.',
+      ].join('\n'),
+    );
+
+    const unsetOutput = formatMyDataText(
+      MY_DATA_MI_RICH_SUMMARY,
+      'super_admin',
+      0,
+      null,
+      'auto',
+      1,
+      2,
+      3,
+      4,
+      true,
+      5,
+    );
+    assert.match(unsetOutput, /Language preference: none set \(auto-detected per message\)/);
+    assert.match(unsetOutput, /Daily reply limit: exempt \(super admin\)\./);
+    assert.doesNotMatch(unsetOutput, /Kōwhiringa|Ngā |Āu /);
+  },
+);
+
+test(
+  'SECURITY: formatMyDataText\'s "mi" and "en" renders carry the same underlying data values in the same ' +
+    'order for identical input — same counts, same booleans, same daily-limit numbers, same number of lines, ' +
+    'so translation changes labels only and can never silently drop, reorder, or alter a data line, including ' +
+    'the daily-reply-limit line (issue #1419 acceptance criterion 4)',
+  () => {
+    const cases: Array<['super_admin' | 'member', number, number | null]> = [
+      ['super_admin', 5, null],
+      ['member', 0, null],
+      ['member', 5, 3],
+    ];
+    for (const [role, limit, used] of cases) {
+      const enOutput = formatMyDataText(
+        MY_DATA_MI_RICH_SUMMARY,
+        role,
+        limit,
+        used,
+        'en',
+        1,
+        2,
+        3,
+        4,
+        true,
+        5,
+      );
+      const miOutput = formatMyDataText(
+        MY_DATA_MI_RICH_SUMMARY,
+        role,
+        limit,
+        used,
+        'mi',
+        1,
+        2,
+        3,
+        4,
+        true,
+        5,
+      );
+      const enLines = enOutput.split('\n');
+      const miLines = miOutput.split('\n');
+      assert.equal(miLines.length, enLines.length, 'mi and en renders must have the same number of lines');
+      const extractNumbers = (s: string) => s.match(/\d+/g) ?? [];
+      for (let i = 0; i < enLines.length; i++) {
+        assert.deepEqual(
+          extractNumbers(miLines[i]),
+          extractNumbers(enLines[i]),
+          `line ${i} must carry the same numbers in mi and en: "${miLines[i]}" vs "${enLines[i]}"`,
+        );
+      }
+      // Booleans, decoded from each language's own fixed vocabulary.
+      assert.equal(enOutput.includes('Interest match alerts: on'), miOutput.includes('kua tākina'));
+      assert.equal(enOutput.includes('Interests published (who_is_into): yes'), miOutput.includes('): āe'));
+      // The daily-reply-limit line specifically must survive in both.
+      const dailyLimitLineIndexEn = enLines.findIndex((l) =>
+        role === 'super_admin'
+          ? l.includes('exempt')
+          : limit === 0
+            ? l.includes('none configured')
+            : l.includes('Replies in the last 24h'),
+      );
+      const dailyLimitLineIndexMi = miLines.findIndex((l) =>
+        role === 'super_admin'
+          ? l.includes('kāore e pā ana')
+          : limit === 0
+            ? l.includes('kāore i whakaritea')
+            : l.includes('Ngā whakautu i ngā haora 24 kua hipa'),
+      );
+      assert.notEqual(dailyLimitLineIndexEn, -1, 'en render must have a daily-reply-limit line');
+      assert.equal(
+        dailyLimitLineIndexMi,
+        dailyLimitLineIndexEn,
+        'mi render must have the same line at the same index',
+      );
+    }
+  },
+);
+
 test(
   "my_data's Language preference line reflects the caller's own set_language_preference state exactly, " +
     "symmetric with the Response style preference line, for the 'mi', 'en' and unset states (issue #1030 " +
@@ -41634,7 +41848,7 @@ test(
 
     await setLanguagePreferenceHandler({ platform: 'whatsapp', userId }).handler({ language: 'mi' });
     const miOutput = (await myDataHandler(userId).handler()).content[0]?.text ?? '';
-    assert.match(miOutput, /Language preference: te reo Māori/);
+    assert.match(miOutput, /Kōwhiringa reo: te reo Māori/);
 
     await setLanguagePreferenceHandler({ platform: 'whatsapp', userId }).handler({ language: 'en' });
     const enOutput = (await myDataHandler(userId).handler()).content[0]?.text ?? '';

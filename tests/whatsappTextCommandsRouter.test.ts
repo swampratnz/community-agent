@@ -1977,7 +1977,7 @@ test(
     "symmetric between the 'mi', 'en' and unset states (issue #1030 acceptance criterion 1)",
   async (t) => {
     for (const [languagePref, expected] of [
-      ['mi', 'Language preference: te reo Māori'],
+      ['mi', 'Kōwhiringa reo: te reo Māori'],
       ['en', 'Language preference: NZ English'],
       [undefined, 'Language preference: none set (auto-detected per message)'],
     ] as const) {
