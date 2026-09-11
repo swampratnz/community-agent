@@ -5,6 +5,7 @@ import { safeFetch } from '@swampratnz/agent-base/util/safeFetch.js';
 import { makeSlidingWindowReserver } from '@swampratnz/agent-base/util/rateReservation.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 import { text, untrusted } from './helpers.js';
+import { htmlToReadableText, MIN_READABLE_CHARS } from './linkSummary.js';
 
 /**
  * Admin-facing page fetching, built OVER the base's guarded egress primitive
@@ -147,12 +148,30 @@ export const fetchPageTools = [
 
           switch (outcome.kind) {
             case 'ok': {
-              const clipped = outcome.text.slice(0, MAX_RETURNED_CHARS);
+              // HTML is reduced to its readable text first, reusing
+              // summarize_link's extractor (issue #1396): raw markup spends
+              // the whole budget on <head> scaffolding — a GitHub repo page's
+              // <head> alone is ~31k chars, its README ~288k in — so an admin
+              // got page furniture and the model filled the gap with guesses.
+              // Plain text and JSON pass through untouched, as before.
+              const isHtml = /html/i.test(outcome.contentType);
+              const page = isHtml ? htmlToReadableText(outcome.text) : { title: '', text: outcome.text };
+              if (isHtml && page.text.length < MIN_READABLE_CHARS) {
+                body = null;
+                throw new Error(
+                  `it returned almost no readable text (${outcome.finalUrl} likely needs JavaScript or a ` +
+                    'login). Say so rather than describing the page.',
+                );
+              }
+              const clipped = page.text.slice(0, MAX_RETURNED_CHARS);
               const note =
-                outcome.text.length > MAX_RETURNED_CHARS
-                  ? ` [truncated to ${MAX_RETURNED_CHARS} chars of ${outcome.bytes} bytes]`
+                page.text.length > MAX_RETURNED_CHARS
+                  ? ` [truncated to the first ${MAX_RETURNED_CHARS} of ${page.text.length} readable chars]`
                   : '';
-              body = `${outcome.finalUrl}${note}\n${untrusted('Page content', clipped)}`;
+              // The page title is attacker-controlled, so it rides INSIDE the
+              // quarantine with the body, never in the plaintext preamble.
+              const quarantined = page.title ? `TITLE: ${page.title} | ${clipped}` : clipped;
+              body = `${outcome.finalUrl}${note}\n${untrusted('Page content', quarantined)}`;
               return `fetched ${outcome.finalUrl} (${outcome.bytes} bytes)`;
             }
             // The three failure kinds THROW rather than return. `audited` only
