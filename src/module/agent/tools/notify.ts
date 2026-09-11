@@ -1395,6 +1395,63 @@ export async function notifyAppealStale(
 }
 
 /**
+ * Suggester-side mid-flight "still being reviewed" DM (issue #1415), mirroring
+ * `notifyAppealStale`'s #1413 shape verbatim for the `suggest_improvement`
+ * queue — the fourth and last member-contribution queue with a stale-alert
+ * job to get this treatment.
+ *
+ * Content-free BY CONSTRUCTION (SECURITY): the signature accepts no
+ * suggestion id, content, or admin identity — only the recipient identity —
+ * so there is nothing for the message body to leak even by accident. The
+ * caller (`suggestionStaleAlert.ts`) is solely responsible for deciding
+ * WHICH suggestions are stale and for the once-ever idempotency
+ * (`suggestion_submitter_stale_notices`, `INSERT ... ON CONFLICT DO
+ * NOTHING`); this function only ever sends.
+ *
+ * `userId`/`platform` are the two inputs (SECURITY): both come from the
+ * `Suggestion` row's own `userId`/`platform` at the one call site, the same
+ * fields `resolve_suggestion` already uses to route its own resolution DM
+ * (`notifySuggestionResolved`) — never from model or admin input, never
+ * caller-redirectable.
+ *
+ * Same failure shape as every sibling: honours a standing `'mi'` language
+ * preference (degrading to `'auto'`/English on lookup failure, issue #52's
+ * invariant) and the `'plain'` response-style preference (issue #1212), and
+ * a `WindowClosedError` rejection is queued via `queueForWindowReopen` at
+ * `'low'` priority instead of logged-and-dropped (issue #602) — any other
+ * rejection is logged and swallowed, never thrown, so one recipient's
+ * failure can never abort the stale-alert tick.
+ */
+export async function notifySuggestionStale(
+  adapter: PlatformAdapter,
+  userId: string,
+  platform: Platform,
+  getLangPref: typeof getLanguagePreference = getLanguagePreference,
+  getRespStyle: typeof getResponseStyle = getResponseStyle,
+): Promise<void> {
+  const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
+  const style: ResponseStyle | undefined =
+    lang === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
+  const message =
+    lang === 'mi'
+      ? 'Kei te arotakehia tonu tō whakaaro — ngā mihi mō tō manawanui e tatari ana.'
+      : style === 'plain'
+        ? 'Your suggestion is still being reviewed. Thanks for your patience.'
+        : 'Your suggestion is still being reviewed — thanks for your patience while we look into it.';
+  await adapter.sendDirectMessage(userId, message).catch((err) => {
+    if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+      adapter.queueForWindowReopen(userId, message, 'low');
+      logger.warn(
+        { userId: hashId(userId), platform },
+        "Suggestion stale DM: recipient's window is closed, queued for reopen",
+      );
+      return;
+    }
+    logger.warn({ err, userId: hashId(userId) }, 'Suggestion stale DM failed');
+  });
+}
+
+/**
  * Best-effort confirmation DM to a member when their `suggest_knowledge` tip
  * (issue #633) is resolved via `accept_knowledge_candidate`/
  * `decline_knowledge_candidate` — closes #633's own named-and-unbuilt growth

@@ -275,6 +275,8 @@ const { recordReporterStaleNotice, getReporterStaleNoticeIds } =
   await import('../src/module/storage/reportReporterStaleNotices.js');
 const { recordAppellantStaleNotice, getAppellantStaleNoticeIds } =
   await import('../src/module/storage/appealAppellantStaleNotices.js');
+const { recordSuggesterStaleNotice, getSuggesterStaleNoticeIds } =
+  await import('../src/module/storage/suggestionSubmitterStaleNotices.js');
 const { recordFindHelperRequest, listOwnFindHelperRequests } =
   await import('../src/module/storage/findHelperRequests.js');
 const { recordProjectNoteAuthor, countOwnProjectNoteAuthorships } =
@@ -32621,6 +32623,56 @@ test(
     assert.ok(!ids.has(created.id), 'an id with no recorded notice must be absent');
 
     await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [created.id]);
+  },
+);
+
+// suggestion_submitter_stale_notices accessor (issue #1415): no tool calls
+// this directly — it backs suggestionStaleAlert.ts's per-tick idempotency
+// check — so it is exercised here directly against the real table, the
+// same way recordAppellantStaleNotice/getAppellantStaleNoticeIds are
+// exercised above rather than through a dedicated tool.
+test(
+  'recordSuggesterStaleNotice returns true only the first time for a given suggestion id, and getSuggesterStaleNoticeIds reflects the write (issue #1415 acceptance criterion 4)',
+  { skip },
+  async () => {
+    const created = await createSuggestion({
+      platform: 'discord',
+      userId: `${RUN}-suggester-stale-notice-accessor`,
+      content: 'stale notice accessor coverage',
+    });
+    assert.ok(created);
+
+    const firstInsert = await recordSuggesterStaleNotice(created.id);
+    assert.equal(firstInsert, true, 'the first record for a suggestion id must report a fresh insert');
+
+    const secondInsert = await recordSuggesterStaleNotice(created.id);
+    assert.equal(secondInsert, false, 'a repeated record for the same suggestion id must be a no-op');
+
+    const ids = await getSuggesterStaleNoticeIds([created.id]);
+    assert.ok(ids.has(created.id), 'getSuggesterStaleNoticeIds must reflect the recorded row');
+
+    await pool.query(`DELETE FROM suggestions WHERE id = $1`, [created.id]);
+    await pool.query(`DELETE FROM suggestion_submitter_stale_notices WHERE suggestion_id = $1`, [created.id]);
+  },
+);
+
+test(
+  'getSuggesterStaleNoticeIds: looked up by suggestion id only, an id with no recorded notice is absent from the result, and empty input short-circuits without a query',
+  { skip },
+  async () => {
+    assert.deepEqual(await getSuggesterStaleNoticeIds([]), new Set());
+
+    const created = await createSuggestion({
+      platform: 'discord',
+      userId: `${RUN}-suggester-stale-notice-accessor-absent`,
+      content: 'stale notice accessor absence coverage',
+    });
+    assert.ok(created);
+
+    const ids = await getSuggesterStaleNoticeIds([created.id]);
+    assert.ok(!ids.has(created.id), 'an id with no recorded notice must be absent');
+
+    await pool.query(`DELETE FROM suggestions WHERE id = $1`, [created.id]);
   },
 );
 
