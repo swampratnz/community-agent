@@ -12,7 +12,7 @@ import {
   searchKnowledge,
   searchKnowledgeLexical,
 } from '@swampratnz/agent-base/storage/repository.js';
-import { relayLanguageNote, text, untrusted } from './helpers.js';
+import { relayLanguageNote, text, untrustedWeb } from './helpers.js';
 
 /**
  * Member web research, built as an ISOLATED sub-turn rather than by widening
@@ -30,7 +30,7 @@ import { relayLanguageNote, text, untrusted } from './helpers.js';
  *     built-in `WebSearch` (never `WebFetch`). An instruction planted in a
  *     search result reaches a context with nothing worth exfiltrating and no
  *     tool that can act on anything.
- *  2. **The answer comes back quarantined** through `untrusted()` — the same
+ *  2. **The answer comes back quarantined** through `untrustedWeb()` — the same flattening
  *     wrapper as recalled chat and fetched pages — with sources filtered to
  *     https and capped before the model ever sees them. That filtering is
  *     the control: the prompt's citation rule is scoped to knowledge_search's
@@ -154,7 +154,7 @@ export function formatWebResearchForModel(result: WebResearchResult): string {
     result.sources.length > 0
       ? result.sources.map((s, i) => `[${i + 1}] ${s.title ? `${s.title} — ` : ''}${s.url}`).join(' ; ')
       : 'none returned';
-  return untrusted('Web research result', `${result.answer} SOURCES: ${sources}`);
+  return untrustedWeb('Web research result', `${result.answer} SOURCES: ${sources}`);
 }
 
 /**
