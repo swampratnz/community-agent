@@ -184,6 +184,15 @@ export const knowledgeMemberTools = [
           );
         }
       }
+      // Web-research gate: record that this turn consulted the knowledge base
+      // and found nothing usable (no hit cleared the floor, semantically or
+      // lexically). `web_research` refuses unless this is set. Sticky — a
+      // later qualifying call in the same turn never clears it, because the
+      // question web_research answers may be a different sub-question from
+      // the one that later hit.
+      if (turnState && relevantIds.length === 0 && lexicalHits.length === 0) {
+        turnState.knowledgeSearchMissed = true;
+      }
       const finalHits: Array<KnowledgeSearchHit & { viaLexical?: boolean }> =
         lexicalHits.length > 0 ? [...hits, ...lexicalHits.map((h) => ({ ...h, viaLexical: true }))] : hits;
       // Real-time stale-knowledge admin nudge (issue #701): computed over

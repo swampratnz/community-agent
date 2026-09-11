@@ -40,6 +40,17 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   (that pair notifies one member at a time; this is the whole-project
   equivalent). No new data is collected or retained, and the admin's own
   reply is unchanged either way.
+- **Web research for members (off by default).** When the community knowledge
+  base has no answer — release news, third-party tools, "is X out yet?" — the
+  bot can look it up on the web and answer with its sources. It always checks
+  the knowledge base first, runs the search in a separate sandboxed step that
+  can't see the conversation, and has a small daily limit per member. An
+  operator turns it on with `WEB_RESEARCH_ENABLED`.
+- **Link summaries (off by default).** Ask "TLDR?" or "what does that link
+  say?" about a link someone posted in the chat, and the bot reads the page and
+  summarises it. It only opens links a person actually posted in that
+  conversation recently — never one it made up — and won't follow a link that
+  redirects to a different site. Turned on with `LINK_SUMMARY_ENABLED`.
 
 ### Security
 - **Dependency: `sharp` raised past the libheif advisory (GHSA-rgj7-g3m4-5g8c).**
@@ -66,6 +77,10 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   source — not attacker-controlled input. It will clear itself when upstream
   publishes a fix; recorded here so the four remaining `moderate` findings are
   not mistaken for something unexamined.
+
+### Fixed
+
+- **Link summaries now read the page, not its scaffolding.** Dave was handed raw HTML cut at 12,000 characters. On many sites, GitHub repo pages included, that is all `<head>` boilerplate, so he had nothing real to summarise and could fill the gap with guesses. He now gets the page's readable text (the article or main content first, with scripts, styles and navigation dropped). A page with no readable text, such as a JavaScript-only app or a login wall, now gets an honest "I couldn't read that" instead of a made-up summary.
 
 ## 2026-09-10
 
