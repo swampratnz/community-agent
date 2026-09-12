@@ -220,6 +220,14 @@ test('the top-level slot order is the frozen base constant (charter → guidelin
       'human-style',
       'context',
       'role-note',
+      // Renders only while a super admin has armed the mutating built-ins in
+      // this conversation (agent-base 0.8.0). Its position is load-bearing in
+      // two ways: the arming statement sits with the RBAC framing rather than
+      // among the late style blocks, and because it changes the prompt bytes,
+      // arming forces a fresh session — which is what makes the armed tool
+      // surface reach the model at all (0.7.0's armed turns resumed the
+      // unarmed session and so ran with no shell).
+      'shell-arming',
       'code-policy',
       'response-style',
       'language-preference',
