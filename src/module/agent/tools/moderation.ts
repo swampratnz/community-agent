@@ -71,6 +71,21 @@ const LIST_BLOCKED_MEMBERS_SCAN_LIMIT = 200;
  */
 const LIST_MEMBER_WARNINGS_SCAN_LIMIT = 200;
 
+/**
+ * Unlike LIST_MUTED_MEMBERS_SCAN_LIMIT/LIST_MEMBER_WARNINGS_SCAN_LIMIT above,
+ * this is 100, not 200: `recentModerationEntries` itself clamps whatever
+ * `limit` it is given to a hard max of 100
+ * (`Math.min(Math.max(Math.trunc(limit) || 20, 1), 100)`), unlike
+ * `listMemberWarnings`/`listMutedMembers`/`listBlockedUsers`, which pass
+ * `limit` straight to SQL with no cap. Requesting 200 here would silently
+ * scan only 100 anyway, so the oldestFirst truncation caveat below (armed at
+ * exactly this constant) would never fire, and this tool's own `limit`
+ * field already documents the same ceiling ("max 100") for the same reason.
+ * The follow-up #1371's own "Alternatives considered" section explicitly
+ * named and deferred this tool (issue #1426).
+ */
+const MODERATION_HISTORY_SCAN_LIMIT = 100;
+
 export const moderationTools = [
   defineTool({
     name: 'moderate',
@@ -537,24 +552,59 @@ export const moderationTools = [
       limit: z.number().optional().describe('Max entries (default 20, max 100)'),
       targetUserId: z.string().optional().describe('Only show actions taken against this member'),
       actionKind: z.enum(MODERATION_ACTION_KINDS).optional().describe('Only show actions of this kind'),
+      oldestFirst: z
+        .boolean()
+        .optional()
+        .describe(
+          'Order by createdAt ascending (earliest action first) instead of the default newest-first — ' +
+            'use this to tell a slow-building pattern (actions months apart, now accelerating) from a ' +
+            'single recent flare-up. Approximate for a conversation/member with a long history: only scans ' +
+            `the ${MODERATION_HISTORY_SCAN_LIMIT} most recent matching actions before sorting, so if that ` +
+            'many or more match, the true earliest may fall outside what was scanned — the response says so ' +
+            'explicitly when this happens.',
+        ),
     },
     handler: async (args, { caller, callerScope }) => {
       assertAtLeast(caller.role, 'admin', 'moderation_history');
       const allowed = await callerScope();
-      const rows = await recentModerationEntries(
-        allowed,
-        args.limit ?? 20,
-        args.targetUserId,
-        args.actionKind,
-      );
+      // oldestFirst: true takes exactly one bounded read (never a second
+      // call) and sorts/slices in JS — see MODERATION_HISTORY_SCAN_LIMIT
+      // above. False/omitted stays byte-identical to before this field
+      // existed, using the identical single-call shape as before.
+      const scanned = args.oldestFirst
+        ? await recentModerationEntries(
+            allowed,
+            MODERATION_HISTORY_SCAN_LIMIT,
+            args.targetUserId,
+            args.actionKind,
+          )
+        : null;
+      const rows = scanned
+        ? [...scanned]
+            .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+            .slice(0, args.limit ?? 20)
+        : await recentModerationEntries(allowed, args.limit ?? 20, args.targetUserId, args.actionKind);
       if (rows.length === 0) return text('No moderation actions recorded (within your conversations).');
+      // Truncation caveat (mirrors list_member_warnings'/list_muted_members'/
+      // list_blocked_members' above): `scanned` hitting exactly
+      // MODERATION_HISTORY_SCAN_LIMIT means this query may match more
+      // actions than the single bounded scan could see, so the "oldest"
+      // rows below only ever come from the most recent
+      // MODERATION_HISTORY_SCAN_LIMIT ones — the genuine earliest could be
+      // outside that window and missing here.
+      const truncationCaveat =
+        scanned && scanned.length === MODERATION_HISTORY_SCAN_LIMIT
+          ? ` ⚠️ oldestFirst caveat: moderation_history found ${MODERATION_HISTORY_SCAN_LIMIT}+ actions ` +
+            `matching this query, so only the ${MODERATION_HISTORY_SCAN_LIMIT} most recent ones were ` +
+            'scanned before sorting — the true oldest may not be shown above.'
+          : '';
       return text(
         rows
           .map(
             (r) =>
               `[${r.createdAt.toISOString()}] ${r.platform} ${r.conversationId ?? 'unknown'} — ${r.actorUserId} → ${r.actionKind}${r.targetUserId ? ` (${r.targetUserId})` : ''} ${r.success ? '✓' : '✗'} ${r.result ?? ''}`,
           )
-          .join('\n'),
+          .join('\n') + truncationCaveat,
       );
     },
   }),
