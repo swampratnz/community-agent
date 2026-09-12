@@ -13319,6 +13319,354 @@ test(
   },
 );
 
+// moderation_history oldestFirst (issue #1426) — the follow-up #1371's own
+// "Alternatives considered" section explicitly named and deferred: mirrors
+// list_member_warnings' oldestFirst above (same file, same pattern).
+// recentModerationEntries (agent-base) has no ordering parameter, so this is
+// implemented module-side as a single bounded fetch + JS sort, same as the
+// three siblings above. Unlike them, though, recentModerationEntries clamps
+// its own `limit` argument to a hard max of 100
+// (Math.min(Math.max(Math.trunc(limit) || 20, 1), 100)) — so
+// MODERATION_HISTORY_SCAN_LIMIT is 100 here, not the 200 used by the three
+// siblings above; see that constant's own comment in
+// src/module/agent/tools/moderation.ts for why 200 would silently scan only
+// 100 anyway and leave the truncation caveat below unreachable.
+const MODERATION_HISTORY_SCAN_LIMIT = 100;
+
+function moderationHistoryHandler(
+  role: 'member' | 'admin',
+  userId = 'admin-moderation-history',
+  conversationId = 'convo-moderation-history',
+) {
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId,
+      userName: 'Admin',
+      role,
+      conversationId,
+    },
+    stubAdapter(async () => {}),
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: {
+            limit?: number;
+            targetUserId?: string;
+            actionKind?: string;
+            oldestFirst?: boolean;
+          }) => Promise<{
+            content: Array<{ type: string; text: string }>;
+            isError?: boolean;
+          }>;
+        }
+      >;
+    }
+  )._registeredTools['moderation_history'];
+}
+
+async function insertAuditRow(row: {
+  actorUserId: string;
+  actionKind: string;
+  targetUserId?: string | null;
+  conversationId: string;
+  result?: string | null;
+  createdAt?: Date;
+}) {
+  await pool.query(
+    `INSERT INTO admin_audit (platform, actor_user_id, action_kind, target_user_id, conversation_id, success, result, created_at)
+     VALUES ('discord', $1, $2, $3, $4, true, $5, COALESCE($6, now()))`,
+    [
+      row.actorUserId,
+      row.actionKind,
+      row.targetUserId ?? null,
+      row.conversationId,
+      row.result ?? null,
+      row.createdAt ?? null,
+    ],
+  );
+}
+
+test(
+  'moderation_history: oldestFirst orders by createdAt ascending, sliced to limit ?? 20; omitted/false stays ' +
+    'byte-identical to the default newest-first order (issue #1426 acceptance criteria 1, 2, 4)',
+  { skip },
+  async () => {
+    const conv = `${RUN}-modhistory-order`;
+    try {
+      await insertAuditRow({
+        actorUserId: 'admin-1',
+        actionKind: 'warn_user',
+        targetUserId: 'target-1',
+        conversationId: conv,
+        result: 'strike-older',
+        createdAt: new Date(Date.now() - 2 * 86_400_000),
+      });
+      await insertAuditRow({
+        actorUserId: 'admin-1',
+        actionKind: 'warn_user',
+        targetUserId: 'target-1',
+        conversationId: conv,
+        result: 'strike-newer',
+        createdAt: new Date(Date.now() - 1 * 86_400_000),
+      });
+
+      const defaultOrder = await moderationHistoryHandler('admin', 'admin-1', conv).handler({});
+      const defaultText = defaultOrder.content[0]?.text ?? '';
+      assert.ok(
+        defaultText.indexOf('strike-newer') < defaultText.indexOf('strike-older'),
+        'default (no oldestFirst) lists the newest action before the oldest one, unchanged from before this issue',
+      );
+
+      const explicitFalse = await moderationHistoryHandler('admin', 'admin-1', conv).handler({
+        oldestFirst: false,
+      });
+      assert.equal(
+        explicitFalse.content[0]?.text,
+        defaultText,
+        'oldestFirst: false must render byte-identical to the omitted-field default',
+      );
+
+      const oldestFirstOrder = await moderationHistoryHandler('admin', 'admin-1', conv).handler({
+        oldestFirst: true,
+      });
+      const oldestFirstText = oldestFirstOrder.content[0]?.text ?? '';
+      assert.ok(
+        oldestFirstText.indexOf('strike-older') < oldestFirstText.indexOf('strike-newer'),
+        'oldestFirst: true lists the earliest action before the more recent one',
+      );
+      assert.doesNotMatch(
+        oldestFirstText,
+        /oldestFirst caveat/i,
+        'a scan well under MODERATION_HISTORY_SCAN_LIMIT must not carry the "may be incomplete" caveat',
+      );
+    } finally {
+      await pool.query(`DELETE FROM admin_audit WHERE conversation_id = $1`, [conv]);
+    }
+  },
+);
+
+test(
+  'moderation_history: oldestFirst appends an explicit caveat when the scan hits ' +
+    'MODERATION_HISTORY_SCAN_LIMIT, since that many matching actions means the genuinely earliest one could ' +
+    'sit outside the single bounded scan and never surface — the tool must say so rather than silently ' +
+    'reporting a mid-recent row as "oldest"; the default (non-oldestFirst) path never carries the caveat ' +
+    '(issue #1426 acceptance criterion 6)',
+  { skip },
+  async (t) => {
+    const conv = `${RUN}-modhistory-scanlimit-caveat`;
+    const now = Date.now();
+    const syntheticRows = Array.from({ length: MODERATION_HISTORY_SCAN_LIMIT }, (_, i) => ({
+      created_at: new Date(now - i * 1000),
+      platform: 'discord',
+      actor_user_id: 'admin-1',
+      action_kind: 'warn_user',
+      target_user_id: null,
+      conversation_id: conv,
+      success: true,
+      result: `entry-${i}`,
+    }));
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && /FROM admin_audit\b/.test(sql)) {
+        return Promise.resolve({ rows: syntheticRows, rowCount: syntheticRows.length });
+      }
+      return (realQuery as (...a: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+    try {
+      const result = await moderationHistoryHandler('admin', 'admin-1', conv).handler({ oldestFirst: true });
+      const rendered = result.content[0]?.text ?? '';
+      assert.match(
+        rendered,
+        /oldestFirst caveat/i,
+        'hitting the scan limit must surface an explicit caveat that the true oldest row may not be shown',
+      );
+      assert.match(
+        rendered,
+        /moderation_history/,
+        'the caveat should name this tool, same wording pattern as list_member_warnings/list_muted_members',
+      );
+      assert.match(
+        rendered,
+        new RegExp(String(MODERATION_HISTORY_SCAN_LIMIT)),
+        'the caveat should name the scan-limit constant so an admin understands the bound',
+      );
+
+      const defaultResult = await moderationHistoryHandler('admin', 'admin-1', conv).handler({});
+      assert.doesNotMatch(
+        defaultResult.content[0]?.text ?? '',
+        /oldestFirst caveat/i,
+        'the default (non-oldestFirst) path must never carry the caveat, regardless of underlying volume',
+      );
+    } finally {
+      t.mock.restoreAll();
+    }
+  },
+);
+
+test(
+  'SECURITY: moderation_history queries admin_audit exactly once regardless of oldestFirst, binding the SQL ' +
+    'LIMIT to args.limit ?? 20 on the default path and to the module-local scan-limit constant (100) — never ' +
+    'an unbounded scan — only when oldestFirst: true (issue #1426 acceptance criteria 2, 3)',
+  { skip },
+  async (t) => {
+    const conv = `${RUN}-modhistory-scanlimit-security`;
+    await insertAuditRow({ actorUserId: 'admin-1', actionKind: 'warn_user', conversationId: conv });
+    try {
+      for (const args of [{}, { oldestFirst: false }, { oldestFirst: true }] as const) {
+        const calls: unknown[][] = [];
+        const realQuery = pool.query.bind(pool);
+        t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+          if (typeof sql === 'string' && /FROM admin_audit\b/.test(sql)) calls.push(rest);
+          return (realQuery as (...a: unknown[]) => unknown)(sql, ...rest);
+        }) as typeof pool.query);
+        try {
+          await moderationHistoryHandler('admin', 'admin-1', conv).handler(args);
+          assert.equal(
+            calls.length,
+            1,
+            `moderation_history must query admin_audit exactly once for ${JSON.stringify(args)}`,
+          );
+          const params = calls[0][0] as unknown[];
+          assert.equal(
+            params[params.length - 1],
+            args.oldestFirst ? MODERATION_HISTORY_SCAN_LIMIT : 20,
+            args.oldestFirst
+              ? 'oldestFirst: true must bind the module-local MODERATION_HISTORY_SCAN_LIMIT (100) to the SQL ' +
+                  'LIMIT parameter, never an unbounded scan'
+              : 'the default/oldestFirst:false path must bind args.limit ?? 20, never the scan-limit constant',
+          );
+        } finally {
+          t.mock.restoreAll();
+        }
+      }
+    } finally {
+      await pool.query(`DELETE FROM admin_audit WHERE conversation_id = $1`, [conv]);
+    }
+  },
+);
+
+test(
+  'moderation_history: oldestFirst passes targetUserId/actionKind through to the single bounded query ' +
+    'unchanged, and the sorted/sliced output contains only matching rows (issue #1426 acceptance criterion 5)',
+  { skip },
+  async () => {
+    const conv = `${RUN}-modhistory-filters`;
+    const target = `${RUN}-modhistory-filter-target`;
+    try {
+      await insertAuditRow({
+        actorUserId: 'admin-1',
+        actionKind: 'warn_user',
+        targetUserId: target,
+        conversationId: conv,
+        result: 'matching-older',
+        createdAt: new Date(Date.now() - 2 * 86_400_000),
+      });
+      await insertAuditRow({
+        actorUserId: 'admin-1',
+        actionKind: 'warn_user',
+        targetUserId: target,
+        conversationId: conv,
+        result: 'matching-newer',
+        createdAt: new Date(Date.now() - 1 * 86_400_000),
+      });
+      // Non-matching (different target AND different actionKind) — must never surface.
+      await insertAuditRow({
+        actorUserId: 'admin-1',
+        actionKind: 'ban_user',
+        targetUserId: 'other-target',
+        conversationId: conv,
+        result: 'non-matching',
+        createdAt: new Date(Date.now() - 3 * 86_400_000),
+      });
+
+      const result = await moderationHistoryHandler('admin', 'admin-1', conv).handler({
+        oldestFirst: true,
+        targetUserId: target,
+        actionKind: 'warn_user',
+      });
+      const text = result.content[0]?.text ?? '';
+      assert.match(text, /matching-older/);
+      assert.match(text, /matching-newer/);
+      assert.doesNotMatch(text, /non-matching/, 'a row failing either filter must never surface');
+      assert.ok(
+        text.indexOf('matching-older') < text.indexOf('matching-newer'),
+        'the filtered output must still be sorted ascending',
+      );
+    } finally {
+      await pool.query(`DELETE FROM admin_audit WHERE conversation_id = $1`, [conv]);
+    }
+  },
+);
+
+test(
+  'SECURITY: a member-tier caller invoking moderation_history with oldestFirst: true is refused before any ' +
+    'repository read — admin_audit is never queried on the refused path (issue #1426 acceptance criterion 7)',
+  async (t) => {
+    const calls: unknown[][] = [];
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && /FROM admin_audit\b/.test(sql)) calls.push(rest);
+      return (realQuery as (...a: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+    try {
+      const registeredTool = moderationHistoryHandler('member');
+      await assert.rejects(() => registeredTool.handler({ oldestFirst: true }), /Permission denied/);
+      assert.equal(calls.length, 0, 'a refused caller must never reach the admin_audit query');
+    } finally {
+      t.mock.restoreAll();
+    }
+  },
+);
+
+test(
+  "SECURITY: moderation_history's conversation scope is preserved identically on both paths — requesting " +
+    "oldestFirst can never surface an action from a conversation outside the caller admin's callerScope() " +
+    '(issue #1426 acceptance criterion 8)',
+  { skip },
+  async () => {
+    const inScope = `${RUN}-modhistory-scope-in`;
+    const outOfScope = `${RUN}-modhistory-scope-out`;
+    try {
+      await insertAuditRow({
+        actorUserId: 'admin-1',
+        actionKind: 'warn_user',
+        conversationId: inScope,
+        result: 'in-scope-entry',
+      });
+      await insertAuditRow({
+        actorUserId: 'admin-1',
+        actionKind: 'warn_user',
+        conversationId: outOfScope,
+        result: 'out-of-scope-entry',
+      });
+
+      const defaultResult = await moderationHistoryHandler('admin', 'admin-1', inScope).handler({});
+      assert.match(defaultResult.content[0]?.text ?? '', /in-scope-entry/);
+      assert.doesNotMatch(
+        defaultResult.content[0]?.text ?? '',
+        /out-of-scope-entry/,
+        'SECURITY: default path must never surface an action from outside callerScope()',
+      );
+
+      const oldestFirstResult = await moderationHistoryHandler('admin', 'admin-1', inScope).handler({
+        oldestFirst: true,
+      });
+      assert.match(oldestFirstResult.content[0]?.text ?? '', /in-scope-entry/);
+      assert.doesNotMatch(
+        oldestFirstResult.content[0]?.text ?? '',
+        /out-of-scope-entry/,
+        'SECURITY: oldestFirst: true must never widen visibility past callerScope()',
+      );
+    } finally {
+      await pool.query(`DELETE FROM admin_audit WHERE conversation_id = ANY($1)`, [[inScope, outOfScope]]);
+    }
+  },
+);
+
 // list_muted_members (issue #487): enumerates currently-muted members by
 // identity — the growth path #403 named and deferred for the digest's bare
 // count. Uses a run-scoped fake platform (see tests/moderationRepo.test.ts'
