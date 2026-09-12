@@ -50,6 +50,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   shortcuts) was the last of the three still showing English labels around a
   translated language-preference value. Every label now matches your
   preference; the underlying numbers and settings it reports are unchanged.
+- **If you've asked to join and are still waiting, the bot now checks in.**
+  (#1421) If your access request is still pending after 7 days, you now get a
+  one-time "still being reviewed, thanks for your patience" DM — the same
+  mid-flight reassurance content reports (#1375), knowledge tips (#1408),
+  moderation appeals (#1413) and suggestions already got, extended to the
+  access-request queue (the only one of the five where you're a guest, not
+  yet a member). It fires independently of admins' own separate backlog
+  alert.
 
 ## 2026-09-11
 

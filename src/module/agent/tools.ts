@@ -74,6 +74,7 @@ export {
   notifyAppealFiled,
   notifyAppealResolved,
   notifyAppealStale,
+  notifyAccessRequestStale,
   notifyKnowledgeTipResolved,
   notifyKnowledgeCandidateStale,
   notifyWarningsCleared,
