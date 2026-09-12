@@ -37,6 +37,7 @@ export const COMMUNITY_SCHEMA_FRAGMENTS = [
   '89-knowledge-candidate-stale-notices.sql',
   '90-appeal-appellant-stale-notices.sql',
   '91-suggestion-submitter-stale-notices.sql',
+  '92-access-request-stale-notices.sql',
 ] as const;
 
 const schemaDir = dirname(fileURLToPath(import.meta.url));
