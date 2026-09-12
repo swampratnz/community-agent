@@ -125,7 +125,10 @@ export function makeDefaultAccessRequestStaleAlertRun(
     listAccessRequests(ACCESS_REQUEST_STALE_ALERT_SCAN_LIMIT),
   listAdminIdentities: () => Promise<AdminIdentity[]> = listAdmins,
   latchDeps?: CrossingLatchDeps,
-  recordStaleNotice: (platform: Platform, userId: string) => Promise<boolean> = recordAccessRequestStaleNoticeDefault,
+  recordStaleNotice: (
+    platform: Platform,
+    userId: string,
+  ) => Promise<boolean> = recordAccessRequestStaleNoticeDefault,
   notifyStale: (
     adapter: PlatformAdapter,
     userId: string,
@@ -166,7 +169,9 @@ export function makeDefaultAccessRequestStaleAlertRun(
     }
 
     try {
-      await pruneStaleNotices(requests.map((request) => ({ platform: request.platform, userId: request.userId })));
+      await pruneStaleNotices(
+        requests.map((request) => ({ platform: request.platform, userId: request.userId })),
+      );
     } catch (err) {
       logger.warn({ err }, 'Access request stale alert: notice-table prune failed');
     }

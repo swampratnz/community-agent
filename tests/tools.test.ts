@@ -87,6 +87,7 @@ const {
   notifyAppealFiled,
   notifyAppealResolved,
   notifyAppealStale,
+  notifyAccessRequestStale,
   notifyKnowledgeTipResolved,
   notifyKnowledgeCandidateStale,
   notifyWarningsCleared,
@@ -4409,6 +4410,148 @@ test("SECURITY: a standing 'mi' language preference wins over a standing 'plain'
   await notifyAppealStale(
     adapter,
     'appellant-1',
+    'discord',
+    async () => 'mi',
+    async () => 'plain',
+  );
+
+  assert.match(calls[0], /arotakehia tonu/);
+  assert.doesNotMatch(calls[0], /still being reviewed/);
+});
+
+// notifyAccessRequestStale is the guest-side mid-flight "still being
+// reviewed" notice (issue #1421) `accessRequestStaleAlert.ts` sends —
+// the fifth and last review_queue queue to get this treatment, and the
+// only one whose waiting party is a guest rather than a member. Tested
+// directly here the same way notifyReportStale/notifyAppealStale are above.
+test('SECURITY: notifyAccessRequestStale sends the DM to exactly the given userId, with no other identity input possible from its signature', async () => {
+  const calls: Array<[string, string]> = [];
+  const adapter = stubAdapter(async (userId, text) => {
+    calls.push([userId, text]);
+  });
+
+  await notifyAccessRequestStale(adapter, 'guest-1', 'discord');
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'guest-1', 'the DM goes only to the userId argument, nothing else');
+});
+
+test('SECURITY: notifyAccessRequestStale carries no request content — no reason, wait-time figure, or admin identity, for any input', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+  const secretReason = 'secret-access-request-reason-text';
+  const secretAdminId = 'secret-admin-id-4f2a';
+  const secretWaitFigure = '999h';
+
+  // notifyAccessRequestStale's own signature has no parameter that could
+  // even carry these — this asserts the OUTPUT never contains them
+  // regardless, so the guarantee holds even if a future edit widened the
+  // signature carelessly.
+  await notifyAccessRequestStale(adapter, secretAdminId, 'discord');
+
+  assert.equal(calls.length, 1);
+  assert.ok(!calls[0].includes(secretReason), 'request reason must never appear in the stale-notice DM');
+  assert.ok(
+    !calls[0].includes(secretWaitFigure),
+    'a wait-time figure must never appear in the stale-notice DM',
+  );
+  assert.ok(
+    calls[0] ===
+      'Your access request is still being reviewed — thanks for your patience while we look into it.',
+    'the message must be the fixed, content-free template — no interpolation at all',
+  );
+});
+
+test('notifyAccessRequestStale swallows a DM failure rather than throwing', async () => {
+  const adapter = stubAdapter(async () => {
+    throw new Error('DMs closed');
+  });
+
+  await assert.doesNotReject(notifyAccessRequestStale(adapter, 'guest-1', 'discord'));
+});
+
+test('SECURITY: notifyAccessRequestStale queues via queueForWindowReopen at "low" priority on a WindowClosedError, rather than dropping the DM (issue #644 recovery extended to issue #1421)', async () => {
+  const queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }> = [];
+  const adapter: PlatformAdapter = {
+    ...stubAdapter(async () => {
+      throw new WindowClosedError('guest-1');
+    }),
+    queueForWindowReopen(userId: string, message: string, priority: 'system' | 'low') {
+      queued.push({ userId, message, priority });
+    },
+  };
+
+  await notifyAccessRequestStale(adapter, 'guest-1', 'whatsapp');
+
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0]?.userId, 'guest-1');
+  assert.equal(queued[0]?.priority, 'low');
+});
+
+test("notifyAccessRequestStale sends the te reo Māori variant for a caller with a stored 'mi' preference (issue #331)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAccessRequestStale(adapter, 'guest-1', 'discord', async () => 'mi');
+
+  assert.match(calls[0], /arotakehia tonu/);
+});
+
+test("notifyAccessRequestStale sends the English default for the default 'auto' preference, byte-identical to today", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAccessRequestStale(adapter, 'guest-1', 'discord', async () => 'auto');
+
+  assert.match(calls[0], /still being reviewed/);
+});
+
+test("SECURITY: notifyAccessRequestStale degrades to the English default, rather than throwing or dropping the DM, when the language-preference lookup fails (issue #52's invariant extended to issue #1421)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAccessRequestStale(adapter, 'guest-1', 'discord', async () => {
+    throw new Error('DB unreachable');
+  });
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /still being reviewed/);
+});
+
+test("notifyAccessRequestStale sends the plain-language variant for a caller with a stored 'plain' response style (issue #1212)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAccessRequestStale(
+    adapter,
+    'guest-1',
+    'discord',
+    async () => 'auto',
+    async () => 'plain',
+  );
+
+  assert.equal(calls[0], 'Your access request is still being reviewed. Thanks for your patience.');
+});
+
+test("SECURITY: a standing 'mi' language preference wins over a standing 'plain' response style for notifyAccessRequestStale — the te reo variant is sent, never the plain one (issue #1212, precedence: mi > plain > standard)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAccessRequestStale(
+    adapter,
+    'guest-1',
     'discord',
     async () => 'mi',
     async () => 'plain',

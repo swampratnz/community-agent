@@ -28,6 +28,7 @@ const {
 } = await import('../src/module/accessRequestStaleAlert.js');
 const { WindowClosedError } = await import('@swampratnz/agent-base/platforms/whatsapp/cloudAdapter.js');
 const { ACCESS_REQUEST_STALE_ALERT_POLICY_KEY } = await import('../src/module/storage/policies.js');
+const { notifyAccessRequestStale } = await import('../src/module/agent/tools/notify.js');
 
 type Platform = 'discord' | 'whatsapp';
 type AccessRequest = {
@@ -60,6 +61,23 @@ function accessRequest(overrides: Partial<AccessRequest> & { ageHours: number })
 function admins(entries: Array<Partial<AdminIdentity>>): AdminIdentity[] {
   return entries.map((e, i) => ({ platform: 'discord', platformUserId: `admin-${i}`, ...e }));
 }
+
+// Stands in for the real `recordAccessRequestStaleNotice` (issue #1421):
+// always reports "already notified" (false), so the guest-notice branch
+// added to makeDefaultAccessRequestStaleAlertRun's loop is a guaranteed
+// no-op for every test below that isn't specifically exercising the
+// guest-notice path itself — otherwise the default would fall through to the
+// REAL storage function (a live Postgres query), matching
+// tests/appealStaleAlert.test.ts's skipAppellantNotice guard.
+const skipGuestStaleNotice = async () => false;
+
+// Stands in for the real `pruneAccessRequestStaleNotices` (issue #1421):
+// unlike the record/notify defaults above, the real prune runs
+// UNCONDITIONALLY every tick (never gated behind a stale check), so every
+// test below that doesn't specifically exercise the prune path must inject
+// this no-op instead of letting the default fall through to a live Postgres
+// DELETE — the exact "deps must be all-or-nothing" hazard CLAUDE.md calls out.
+const noopPruneStaleNotices = async () => {};
 
 function makeAdapter(connected = true): {
   adapter: PlatformAdapter;
@@ -173,6 +191,9 @@ test('SECURITY: the crossing-tick alert DM contains no guest userName, userId, o
     listPendingAccessRequests,
     listAdminIdentities,
     fakePolicyStore(),
+    skipGuestStaleNotice,
+    undefined,
+    noopPruneStaleNotices,
   );
 
   await runOnce();
@@ -201,6 +222,9 @@ test('makeDefaultAccessRequestStaleAlertRun: a pending-access-request set with n
     listPendingAccessRequests,
     listAdminIdentities,
     fakePolicyStore(),
+    skipGuestStaleNotice,
+    undefined,
+    noopPruneStaleNotices,
   );
 
   await runOnce();
@@ -230,6 +254,9 @@ test('makeDefaultAccessRequestStaleAlertRun: an access request exactly at the th
     listPendingAccessRequests,
     listAdminIdentities,
     fakePolicyStore(),
+    skipGuestStaleNotice,
+    undefined,
+    noopPruneStaleNotices,
   );
 
   await runOnce();
@@ -248,6 +275,9 @@ test('makeDefaultAccessRequestStaleAlertRun: alerts exactly once on the tick the
     listPendingAccessRequests,
     listAdminIdentities,
     fakePolicyStore(),
+    skipGuestStaleNotice,
+    undefined,
+    noopPruneStaleNotices,
   );
 
   await runOnce(); // 0 -> no alert
@@ -277,6 +307,9 @@ test('makeDefaultAccessRequestStaleAlertRun: the latch re-arms once the stale co
     listPendingAccessRequests,
     listAdminIdentities,
     fakePolicyStore(),
+    skipGuestStaleNotice,
+    undefined,
+    noopPruneStaleNotices,
   );
 
   await runOnce(); // 0 -> 2, crosses
@@ -303,6 +336,9 @@ test('makeDefaultAccessRequestStaleAlertRun: writes the active marker to the pol
     listPendingAccessRequests,
     listAdminIdentities,
     store,
+    skipGuestStaleNotice,
+    undefined,
+    noopPruneStaleNotices,
   );
 
   assert.equal(store.written.length, 0, 'no write before the tick runs');
@@ -326,6 +362,9 @@ test('makeDefaultAccessRequestStaleAlertRun: restart-safety — a fresh factory 
     listPendingAccessRequests,
     listAdminIdentities,
     store,
+    skipGuestStaleNotice,
+    undefined,
+    noopPruneStaleNotices,
   );
 
   await runOnce();
@@ -346,6 +385,9 @@ test('makeDefaultAccessRequestStaleAlertRun: re-arm survives a restart — the m
     async () => [],
     listAdminIdentities,
     store,
+    skipGuestStaleNotice,
+    undefined,
+    noopPruneStaleNotices,
   );
   await firstProcess(); // count drops to 0 -> re-arm
   assert.equal(dms.length, 0);
@@ -358,6 +400,9 @@ test('makeDefaultAccessRequestStaleAlertRun: re-arm survives a restart — the m
     async () => [accessRequest({ ageHours: 200 })],
     listAdminIdentities,
     store,
+    skipGuestStaleNotice,
+    undefined,
+    noopPruneStaleNotices,
   );
   await secondProcess();
   assert.equal(dms.length, 1, 'a fresh crossing after the persisted re-arm alerts again');
@@ -378,6 +423,9 @@ test('SECURITY: makeDefaultAccessRequestStaleAlertRun never threads a member/adm
     listPendingAccessRequests,
     listAdminIdentities,
     store,
+    skipGuestStaleNotice,
+    undefined,
+    noopPruneStaleNotices,
   );
 
   await runOnce();
@@ -403,6 +451,9 @@ test('an access request resolved before crossing the threshold never contributes
     listPendingAccessRequests,
     listAdminIdentities,
     fakePolicyStore(),
+    skipGuestStaleNotice,
+    undefined,
+    noopPruneStaleNotices,
   );
 
   await runOnce();
@@ -429,6 +480,9 @@ test('SECURITY: a WindowClosedError for one admin is queued via queueForWindowRe
     listPendingAccessRequests,
     listAdminIdentities,
     fakePolicyStore(),
+    skipGuestStaleNotice,
+    undefined,
+    noopPruneStaleNotices,
   );
 
   await runOnce();
@@ -447,6 +501,348 @@ test('startAccessRequestStaleAlert: always-on, no enable flag — creates a time
   const timer = startAccessRequestStaleAlert([], async () => {});
   assert.notEqual(timer, null, 'this job is unconditionally enabled by design');
   if (timer) clearInterval(timer);
+});
+
+// --- guest-side mid-flight stale notice (issue #1421) -----------------------
+
+/** Mirrors tests/appealStaleAlert.test.ts's fakeAppellantNoticeRecorder. */
+function fakeGuestNoticeRecorder(): {
+  record: (platform: Platform, userId: string) => Promise<boolean>;
+  calledWith: Array<{ platform: Platform; userId: string }>;
+} {
+  const seen = new Set<string>();
+  const calledWith: Array<{ platform: Platform; userId: string }> = [];
+  return {
+    record: async (platform: Platform, userId: string) => {
+      calledWith.push({ platform, userId });
+      const key = `${platform}:${userId}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    },
+    calledWith,
+  };
+}
+
+function fakeNotifyStale(): {
+  notifyStale: (adapter: PlatformAdapter, userId: string, platform: Platform) => Promise<void>;
+  calls: Array<{ userId: string; platform: Platform }>;
+} {
+  const calls: Array<{ userId: string; platform: Platform }> = [];
+  return {
+    notifyStale: async (_adapter, userId, platform) => {
+      calls.push({ userId, platform });
+    },
+    calls,
+  };
+}
+
+function fakePruneRecorder(): {
+  prune: (activeKeys: readonly { platform: Platform; userId: string }[]) => Promise<void>;
+  calls: Array<readonly { platform: Platform; userId: string }[]>;
+} {
+  const calls: Array<readonly { platform: Platform; userId: string }[]> = [];
+  return {
+    prune: async (activeKeys) => {
+      calls.push(activeKeys);
+    },
+    calls,
+  };
+}
+
+test('SECURITY: guest stale notice sent exactly once per (platform, userId) — a second tick for the same still-stale request does not re-send (issue #1421 acceptance criterion)', async () => {
+  const { adapter } = makeAdapter();
+  const listPendingAccessRequests = async () => [
+    accessRequest({ ageHours: 200, platform: 'discord', userId: 'guest-1' }),
+  ];
+  const listAdminIdentities = async () => admins([{}]);
+  const { record: recordStaleNotice } = fakeGuestNoticeRecorder();
+  const { notifyStale, calls } = fakeNotifyStale();
+  const runOnce = makeDefaultAccessRequestStaleAlertRun(
+    [adapter],
+    listPendingAccessRequests,
+    listAdminIdentities,
+    fakePolicyStore(),
+    recordStaleNotice,
+    notifyStale,
+    noopPruneStaleNotices,
+  );
+
+  await runOnce();
+  await runOnce();
+
+  assert.deepEqual(calls, [{ userId: 'guest-1', platform: 'discord' }]);
+});
+
+test(
+  'guest stale notice: fires independently of the admin crossing latch — an admin backlog already latched ' +
+    'open (shouldAlert false) still gets the guest notified',
+  async () => {
+    const { adapter, dms } = makeAdapter();
+    const store = fakePolicyStore({ [ACCESS_REQUEST_STALE_ALERT_POLICY_KEY]: 'true' });
+    const listPendingAccessRequests = async () => [
+      accessRequest({ ageHours: 200, platform: 'discord', userId: 'guest-1' }),
+    ];
+    const listAdminIdentities = async () => admins([{}]);
+    const { record: recordStaleNotice } = fakeGuestNoticeRecorder();
+    const { notifyStale, calls } = fakeNotifyStale();
+    const runOnce = makeDefaultAccessRequestStaleAlertRun(
+      [adapter],
+      listPendingAccessRequests,
+      listAdminIdentities,
+      store,
+      recordStaleNotice,
+      notifyStale,
+      noopPruneStaleNotices,
+    );
+
+    await runOnce();
+
+    assert.equal(dms.length, 0, "the admin's own alert stays latched (already active) and does not re-send");
+    assert.deepEqual(
+      calls,
+      [{ userId: 'guest-1', platform: 'discord' }],
+      "the guest notice must not be gated behind the admin's own shouldAlert",
+    );
+  },
+);
+
+test("SECURITY: guest stale notice is addressed only to the request's own userId, never an admin's id", async () => {
+  const { adapter } = makeAdapter();
+  const listPendingAccessRequests = async () => [
+    accessRequest({ ageHours: 200, platform: 'discord', userId: 'guest-distinct-from-admin' }),
+  ];
+  const listAdminIdentities = async () => admins([{ platformUserId: 'admin-0' }]);
+  const { record: recordStaleNotice } = fakeGuestNoticeRecorder();
+  const { notifyStale, calls } = fakeNotifyStale();
+  const runOnce = makeDefaultAccessRequestStaleAlertRun(
+    [adapter],
+    listPendingAccessRequests,
+    listAdminIdentities,
+    fakePolicyStore(),
+    recordStaleNotice,
+    notifyStale,
+    noopPruneStaleNotices,
+  );
+
+  await runOnce();
+
+  assert.deepEqual(calls, [{ userId: 'guest-distinct-from-admin', platform: 'discord' }]);
+});
+
+test(
+  'guest stale notice: a throwing recordStaleNotice for one request is caught, never blocking another stale ' +
+    "request's notice or the admin alert",
+  async () => {
+    const { adapter, dms } = makeAdapter();
+    const listPendingAccessRequests = async () => [
+      accessRequest({ ageHours: 200, platform: 'discord', userId: 'guest-broken' }),
+      accessRequest({ ageHours: 200, platform: 'discord', userId: 'guest-fine' }),
+    ];
+    const listAdminIdentities = async () => admins([{}]);
+    const recordStaleNotice = async (_platform: Platform, userId: string) => {
+      if (userId === 'guest-broken') throw new Error('transient DB blip');
+      return true;
+    };
+    const { notifyStale, calls } = fakeNotifyStale();
+    const runOnce = makeDefaultAccessRequestStaleAlertRun(
+      [adapter],
+      listPendingAccessRequests,
+      listAdminIdentities,
+      fakePolicyStore(),
+      recordStaleNotice,
+      notifyStale,
+      noopPruneStaleNotices,
+    );
+
+    await assert.doesNotReject(runOnce());
+
+    assert.deepEqual(calls, [{ userId: 'guest-fine', platform: 'discord' }]);
+    assert.equal(dms.length, 1, 'the admin alert must still fire despite one guest notice failing');
+  },
+);
+
+test(
+  "guest stale notice: no connected adapter for the request's platform is a silent skip — no throw, " +
+    'no notify call, and no idempotency row (so a later tick with an adapter can still notify)',
+  async () => {
+    const { adapter: discordAdapter } = makeAdapter(); // no whatsapp adapter registered at all
+    const listPendingAccessRequests = async () => [
+      accessRequest({ ageHours: 200, platform: 'whatsapp', userId: 'guest-1' }),
+    ];
+    const listAdminIdentities = async () => admins([{}]);
+    const { record: recordStaleNotice, calledWith } = fakeGuestNoticeRecorder();
+    const { notifyStale, calls } = fakeNotifyStale();
+    const runOnce = makeDefaultAccessRequestStaleAlertRun(
+      [discordAdapter],
+      listPendingAccessRequests,
+      listAdminIdentities,
+      fakePolicyStore(),
+      recordStaleNotice,
+      notifyStale,
+      noopPruneStaleNotices,
+    );
+
+    await assert.doesNotReject(runOnce());
+
+    assert.deepEqual(calls, [], 'no notify call when no adapter is registered for the platform');
+    assert.deepEqual(calledWith, [], 'no idempotency row when the notice was never actually sent');
+  },
+);
+
+test(
+  'SECURITY: a WindowClosedError from the guest sendDirectMessage is queued via queueForWindowReopen and ' +
+    "swallowed — never rethrown, and never blocking another request's notice in the same tick",
+  async () => {
+    const { adapter, dms, queued } = makeCloudAdapter({
+      'guest-closed': new WindowClosedError('guest-closed'),
+    });
+    const listPendingAccessRequests = async () => [
+      accessRequest({ ageHours: 200, platform: 'whatsapp', userId: 'guest-closed' }),
+      accessRequest({ ageHours: 200, platform: 'whatsapp', userId: 'guest-open' }),
+    ];
+    const listAdminIdentities = async () => admins([{}]);
+    const { record: recordStaleNotice } = fakeGuestNoticeRecorder();
+    const runOnce = makeDefaultAccessRequestStaleAlertRun(
+      [adapter],
+      listPendingAccessRequests,
+      listAdminIdentities,
+      fakePolicyStore(),
+      recordStaleNotice,
+      notifyAccessRequestStale,
+      noopPruneStaleNotices,
+    );
+
+    await assert.doesNotReject(runOnce());
+
+    assert.deepEqual(
+      dms.map((d) => d.userId),
+      ['guest-open'],
+      'the open-window guest is still delivered live',
+    );
+    assert.equal(queued.length, 1);
+    assert.equal(queued[0].userId, 'guest-closed');
+    assert.equal(queued[0].priority, 'low');
+  },
+);
+
+test(
+  'SECURITY: recordAccessRequestStaleNotice commits BEFORE the send — a WindowClosedError at send time never ' +
+    'causes a later tick to re-notify the same request',
+  async () => {
+    const { adapter, dms, queued } = makeCloudAdapter({
+      'guest-closed': new WindowClosedError('guest-closed'),
+    });
+    const listPendingAccessRequests = async () => [
+      accessRequest({ ageHours: 200, platform: 'whatsapp', userId: 'guest-closed' }),
+    ];
+    const listAdminIdentities = async () => admins([{}]);
+    const { record: recordStaleNotice, calledWith } = fakeGuestNoticeRecorder();
+    const runOnce = makeDefaultAccessRequestStaleAlertRun(
+      [adapter],
+      listPendingAccessRequests,
+      listAdminIdentities,
+      fakePolicyStore(),
+      recordStaleNotice,
+      notifyAccessRequestStale,
+      noopPruneStaleNotices,
+    );
+
+    await runOnce();
+    await runOnce();
+
+    assert.equal(dms.length, 0, 'both ticks hit the closed window');
+    assert.equal(
+      queued.length,
+      1,
+      'the row committed on tick 1 (before the send) makes tick 2 skip the send entirely, so no second reopen notice is queued',
+    );
+    assert.deepEqual(
+      calledWith,
+      [
+        { platform: 'whatsapp', userId: 'guest-closed' },
+        { platform: 'whatsapp', userId: 'guest-closed' },
+      ],
+      'the ON CONFLICT DO NOTHING insert is attempted every tick, but only inserts (and only sends) on the first',
+    );
+  },
+);
+
+// --- notice-table prune (issue #1421) ---------------------------------------
+
+test('SECURITY: pruneAccessRequestStaleNotices is called every tick against the FULL pending set, not just the stale subset', async () => {
+  const { adapter } = makeAdapter();
+  const listPendingAccessRequests = async () => [
+    accessRequest({ ageHours: 200, platform: 'discord', userId: 'stale-guest' }),
+    accessRequest({ ageHours: 1, platform: 'discord', userId: 'fresh-guest' }),
+  ];
+  const listAdminIdentities = async () => admins([{}]);
+  const { prune, calls } = fakePruneRecorder();
+  const runOnce = makeDefaultAccessRequestStaleAlertRun(
+    [adapter],
+    listPendingAccessRequests,
+    listAdminIdentities,
+    fakePolicyStore(),
+    skipGuestStaleNotice,
+    undefined,
+    prune,
+  );
+
+  await runOnce();
+
+  assert.equal(calls.length, 1, 'prune must run exactly once per tick');
+  assert.deepEqual(
+    [...calls[0]].sort((a, b) => a.userId.localeCompare(b.userId)),
+    [
+      { platform: 'discord', userId: 'fresh-guest' },
+      { platform: 'discord', userId: 'stale-guest' },
+    ],
+    'prune must be called with the FULL pending set, including the non-stale request',
+  );
+});
+
+test('SECURITY: pruneAccessRequestStaleNotices still runs, and the admin alert still fires, when the stale set is empty', async () => {
+  const { adapter, dms } = makeAdapter();
+  const listPendingAccessRequests = async () => [];
+  const listAdminIdentities = async () => admins([{}]);
+  const { prune, calls } = fakePruneRecorder();
+  const runOnce = makeDefaultAccessRequestStaleAlertRun(
+    [adapter],
+    listPendingAccessRequests,
+    listAdminIdentities,
+    fakePolicyStore(),
+    skipGuestStaleNotice,
+    undefined,
+    prune,
+  );
+
+  await runOnce();
+
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0], []);
+  assert.equal(dms.length, 0, 'nothing pending never trips the admin alert');
+});
+
+test('SECURITY: a throwing pruneAccessRequestStaleNotices never suppresses the admin alert (nor a guest notice)', async () => {
+  const { adapter, dms } = makeAdapter();
+  const listPendingAccessRequests = async () => [accessRequest({ ageHours: 200 })];
+  const listAdminIdentities = async () => admins([{}]);
+  const throwingPrune = async () => {
+    throw new Error('transient DB blip');
+  };
+  const runOnce = makeDefaultAccessRequestStaleAlertRun(
+    [adapter],
+    listPendingAccessRequests,
+    listAdminIdentities,
+    fakePolicyStore(),
+    skipGuestStaleNotice,
+    undefined,
+    throwingPrune,
+  );
+
+  await assert.doesNotReject(runOnce());
+
+  assert.equal(dms.length, 1, 'the admin alert must still fire despite the prune call failing');
 });
 
 // --- the scan bound ---------------------------------------------------------

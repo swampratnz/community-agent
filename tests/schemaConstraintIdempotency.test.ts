@@ -225,3 +225,47 @@ test('SECURITY: suggestion_submitter_stale_notices (issue #1415) is an id-only t
     'the fragment must document the same no-purge-hook rationale as 90-appeal-appellant-stale-notices.sql',
   );
 });
+
+test("SECURITY: access_request_stale_notices (issue #1421) DOES carry requester identity (platform, platform_user_id) and its schema fragment documents the opposite rationale from its 88-91 id-only siblings — it follows 84-find-helper-requests.sql's registered-purge-hook precedent instead (acceptance criterion)", () => {
+  const fragment = COMMUNITY_MIGRATIONS.find(
+    (f) => f.name === 'nz-community/92-access-request-stale-notices.sql',
+  );
+  assert.ok(fragment, 'expected fragment 92-access-request-stale-notices.sql to be registered');
+
+  const createMatch = /CREATE TABLE IF NOT EXISTS access_request_stale_notices \(([\s\S]*?)\n\);/.exec(
+    fragment.sql,
+  );
+  assert.ok(createMatch, 'could not locate the CREATE TABLE statement');
+  // Unlike its 88-91 siblings, this table's CREATE has a trailing
+  // `PRIMARY KEY (platform, platform_user_id)` line whose own internal comma
+  // would otherwise be mis-split into two spurious "columns" — drop any line
+  // starting with PRIMARY before splitting on commas.
+  const columnNames = createMatch[1]
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith('PRIMARY'))
+    .join(' ')
+    .split(',')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => line.split(/\s+/)[0]);
+  assert.deepEqual(
+    columnNames,
+    ['platform', 'platform_user_id', 'notified_at'],
+    'unlike its 88-91 id-only siblings, this table must carry the requester identity pair — access requests ' +
+      'have no anonymous numeric id to key idempotency on instead',
+  );
+
+  assert.doesNotMatch(
+    fragment.sql,
+    /needs no `registerPurgeContributor` hook/,
+    'this fragment must NOT claim the no-purge-hook rationale its id-only 88-91 siblings use — it carries ' +
+      'identity and therefore needs the opposite stance',
+  );
+  assert.match(
+    fragment.sql,
+    /84-find-helper-requests\.sql/,
+    "the fragment must point at 84-find-helper-requests.sql's registered-purge-hook precedent, not the " +
+      '88-91 no-hook stance',
+  );
+});
