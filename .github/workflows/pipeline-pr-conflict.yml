@@ -473,7 +473,7 @@ jobs:
         if: steps.precheck.outputs.proceed == 'true' && steps.fastpath.outputs.resolved == 'true'
         id: fastpush
         continue-on-error: true # the verify step below is the source of truth
-        uses: anthropics/claude-code-action@9c5ddab2e6d17b83ea679153b31f1d5f023cf636 # v1.0.217
+        uses: anthropics/claude-code-action@19dda84776b3518d98b8798e591daee763049ed3 # v1.0.220
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/community_agent_test
           DISCORD_BOT_TOKEN: ci-dummy-token
@@ -514,7 +514,7 @@ jobs:
         if: steps.precheck.outputs.proceed == 'true' && steps.fastpath.outputs.resolved != 'true'
         id: fix
         continue-on-error: true # the verify step below is the source of truth
-        uses: anthropics/claude-code-action@9c5ddab2e6d17b83ea679153b31f1d5f023cf636 # v1.0.217
+        uses: anthropics/claude-code-action@19dda84776b3518d98b8798e591daee763049ed3 # v1.0.220
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/community_agent_test
           DISCORD_BOT_TOKEN: ci-dummy-token
