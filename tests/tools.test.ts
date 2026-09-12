@@ -13379,7 +13379,14 @@ async function insertAuditRow(row: {
   await pool.query(
     `INSERT INTO admin_audit (platform, actor_user_id, action_kind, target_user_id, conversation_id, success, result, created_at)
      VALUES ('discord', $1, $2, $3, $4, true, $5, COALESCE($6, now()))`,
-    [row.actorUserId, row.actionKind, row.targetUserId ?? null, row.conversationId, row.result ?? null, row.createdAt ?? null],
+    [
+      row.actorUserId,
+      row.actionKind,
+      row.targetUserId ?? null,
+      row.conversationId,
+      row.result ?? null,
+      row.createdAt ?? null,
+    ],
   );
 }
 
