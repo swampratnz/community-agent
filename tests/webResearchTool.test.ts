@@ -62,6 +62,7 @@ mock.module('@swampratnz/agent-base/storage/repository/adminStats.js', {
 });
 
 let languagePref: 'auto' | 'en' | 'mi' = 'auto';
+let languagePrefCalls = 0;
 let knowledgeHits: Array<{ id: number; similarity: number }> = [];
 let lexicalHits: Array<{ id: number }> = [];
 let knowledgeThrows = false;
@@ -69,7 +70,10 @@ const realRepo = await import('@swampratnz/agent-base/storage/repository.js');
 mock.module('@swampratnz/agent-base/storage/repository.js', {
   namedExports: {
     ...realRepo,
-    getLanguagePreference: async () => languagePref,
+    getLanguagePreference: async () => {
+      languagePrefCalls += 1;
+      return languagePref;
+    },
     searchKnowledge: async () => {
       if (knowledgeThrows) throw new Error('knowledge lookup down');
       return knowledgeHits;
@@ -78,8 +82,12 @@ mock.module('@swampratnz/agent-base/storage/repository.js', {
   },
 });
 
-const { webResearchTools, parseWebResearchResult } = await import('../src/module/agent/tools/webResearch.js');
+const { webResearchTools, parseWebResearchResult, formatWebResearchText } =
+  await import('../src/module/agent/tools/webResearch.js');
 const { COMMUNITY_TOOL_TIERS } = await import('../src/module/agent/tools/index.js');
+const { config } = await import('@swampratnz/agent-base/config.js');
+/** The config type marks this readonly; the runtime object is a plain, unfrozen literal. */
+const mutableWebResearchConfig = config.webResearch as { enabled: boolean };
 
 const tool = webResearchTools[0];
 
@@ -303,6 +311,215 @@ test('a standing te reo Māori preference prefixes the relay note; the default a
   const en = await tool.handler({ question: 'language check two' }, ctx('member', missed()));
   assert.doesNotMatch(textOf(en), /te reo Māori/);
 });
+
+test(
+  'formatWebResearchText renders te reo Māori for all 7 web_research refusal/error outcomes when language ' +
+    "is 'mi', and the exact pre-existing English string for 'auto'/'en' otherwise — the limit interpolation " +
+    'is unchanged in both languages (issue #1429)',
+  () => {
+    const cases: Array<[Parameters<typeof formatWebResearchText>[0], string]> = [
+      [{ kind: 'not_enabled' }, 'Refusing: web research is not enabled on this deployment.'],
+      [
+        { kind: 'knowledge_search_first' },
+        'Refusing: search the community knowledge base with knowledge_search first. Use web_research only ' +
+          'when that found nothing relevant for this question.',
+      ],
+      [
+        { kind: 'precheck_failed' },
+        'Could not check the community knowledge base first, so web research was not run. Say so, and ' +
+          'do not guess an answer.',
+      ],
+      [
+        { kind: 'already_covered' },
+        'Refusing: the community knowledge base has material on this question. Answer from ' +
+          'knowledge_search (call it with this question if you have not) instead of the web.',
+      ],
+      [
+        { kind: 'dedup' },
+        'Refusing: you researched that exact question moments ago — reuse that result instead.',
+      ],
+      [{ kind: 'daily_limit', limit: 2 }, "You've hit today's web-research limit (2). Try again tomorrow."],
+      [{ kind: 'research_failed' }, 'Web research failed this time. Say so, and do not guess an answer.'],
+    ];
+    for (const language of ['auto', 'en'] as const) {
+      for (const [outcome, expectedEnglish] of cases) {
+        assert.equal(formatWebResearchText(outcome, language), expectedEnglish);
+      }
+    }
+    for (const [outcome] of cases) {
+      const mi = formatWebResearchText(outcome, 'mi');
+      const en = formatWebResearchText(outcome, 'auto');
+      assert.notEqual(mi, en, `mi variant must differ from English for ${JSON.stringify(outcome)}`);
+    }
+  },
+);
+
+test(
+  "the not-enabled and knowledge-search-first refusals honour a caller's standing 'mi' language preference " +
+    'via the handler, byte-identical to English otherwise (issue #1429)',
+  async () => {
+    resetResult();
+    // not-enabled: config.webResearch.enabled is a plain mutable object (not
+    // frozen), toggled here and restored in `finally` so no other test in
+    // this file — which all assume it is on — is affected.
+    mutableWebResearchConfig.enabled = false;
+    try {
+      languagePref = 'mi';
+      const mi = await tool.handler({ question: 'is it off?' }, ctx('member', missed(), 'lang-off-mi'));
+      assert.equal(textOf(mi), formatWebResearchText({ kind: 'not_enabled' }, 'mi'));
+      languagePref = 'auto';
+      const en = await tool.handler({ question: 'is it off?' }, ctx('member', missed(), 'lang-off-en'));
+      assert.equal(textOf(en), 'Refusing: web research is not enabled on this deployment.');
+    } finally {
+      mutableWebResearchConfig.enabled = true;
+    }
+
+    languagePref = 'mi';
+    const mi = await tool.handler(
+      { question: 'never searched knowledge first' },
+      ctx('member', undefined, 'lang-ks-mi'),
+    );
+    assert.equal(textOf(mi), formatWebResearchText({ kind: 'knowledge_search_first' }, 'mi'));
+    languagePref = 'auto';
+    const en = await tool.handler(
+      { question: 'never searched knowledge first' },
+      ctx('member', undefined, 'lang-ks-en'),
+    );
+    assert.equal(
+      textOf(en),
+      'Refusing: search the community knowledge base with knowledge_search first. Use web_research only ' +
+        'when that found nothing relevant for this question.',
+    );
+  },
+);
+
+test(
+  "the knowledge-precheck-failure and already-covered refusals honour a caller's standing 'mi' language " +
+    'preference via the handler, byte-identical to English otherwise (issue #1429)',
+  async () => {
+    resetResult();
+    knowledgeThrows = true;
+    languagePref = 'mi';
+    let mi = await tool.handler({ question: 'precheck down mi' }, ctx('member', missed(), 'lang-pre-mi'));
+    assert.equal(textOf(mi), formatWebResearchText({ kind: 'precheck_failed' }, 'mi'));
+    languagePref = 'auto';
+    let en = await tool.handler({ question: 'precheck down en' }, ctx('member', missed(), 'lang-pre-en'));
+    assert.equal(
+      textOf(en),
+      'Could not check the community knowledge base first, so web research was not run. Say so, and ' +
+        'do not guess an answer.',
+    );
+    knowledgeThrows = false;
+
+    knowledgeHits = [{ id: 1, similarity: realRepo.KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD + 0.01 }];
+    languagePref = 'mi';
+    mi = await tool.handler({ question: 'already covered mi' }, ctx('member', missed(), 'lang-cov-mi'));
+    assert.equal(textOf(mi), formatWebResearchText({ kind: 'already_covered' }, 'mi'));
+    languagePref = 'auto';
+    en = await tool.handler({ question: 'already covered en' }, ctx('member', missed(), 'lang-cov-en'));
+    assert.equal(
+      textOf(en),
+      'Refusing: the community knowledge base has material on this question. Answer from ' +
+        'knowledge_search (call it with this question if you have not) instead of the web.',
+    );
+    knowledgeHits = [];
+  },
+);
+
+test(
+  'SECURITY: the dedup and daily-limit refusals localise to te reo Māori and still fire under a standing ' +
+    "'mi' preference — localisation must never become a bypass (issue #1429)",
+  async () => {
+    resetResult();
+    languagePref = 'mi';
+    const first = await tool.handler(
+      { question: 'same question for dedup' },
+      ctx('member', missed(), 'lang-dedup-mi'),
+    );
+    assert.equal(first.isError, false);
+    const repeatMi = await tool.handler(
+      { question: 'same question for dedup' },
+      ctx('member', missed(), 'lang-dedup-mi'),
+    );
+    assert.equal(
+      repeatMi.isError,
+      true,
+      'SECURITY: a repeat within the dedup window is still refused under mi',
+    );
+    assert.equal(textOf(repeatMi), formatWebResearchText({ kind: 'dedup' }, 'mi'));
+
+    languagePref = 'auto';
+    await tool.handler({ question: 'another dedup question' }, ctx('member', missed(), 'lang-dedup-en'));
+    const repeatEn = await tool.handler(
+      { question: 'another dedup question' },
+      ctx('member', missed(), 'lang-dedup-en'),
+    );
+    assert.equal(repeatEn.isError, true);
+    assert.equal(
+      textOf(repeatEn),
+      'Refusing: you researched that exact question moments ago — reuse that result instead.',
+    );
+
+    // daily limit: WEB_RESEARCH_DAILY_LIMIT=2 — two distinct questions, then a third over the cap.
+    languagePref = 'mi';
+    for (const q of ['cap question one mi', 'cap question two mi']) {
+      const ok = await tool.handler({ question: q }, ctx('member', missed(), 'lang-cap-mi'));
+      assert.equal(ok.isError, false);
+    }
+    const capped = await tool.handler(
+      { question: 'cap question three mi' },
+      ctx('member', missed(), 'lang-cap-mi'),
+    );
+    assert.equal(capped.isError, true, 'SECURITY: the daily cap still fires under a standing mi preference');
+    assert.equal(textOf(capped), formatWebResearchText({ kind: 'daily_limit', limit: 2 }, 'mi'));
+
+    languagePref = 'auto';
+    for (const q of ['cap question one en', 'cap question two en']) {
+      await tool.handler({ question: q }, ctx('member', missed(), 'lang-cap-en'));
+    }
+    const cappedEn = await tool.handler(
+      { question: 'cap question three en' },
+      ctx('member', missed(), 'lang-cap-en'),
+    );
+    assert.equal(cappedEn.isError, true);
+    assert.equal(textOf(cappedEn), "You've hit today's web-research limit (2). Try again tomorrow.");
+  },
+);
+
+test(
+  "the research-failed error honours a caller's standing 'mi' language preference via the handler, " +
+    'byte-identical to English otherwise (issue #1429)',
+  async () => {
+    resetResult();
+    throwFromQuery = new Error('boom');
+    languagePref = 'mi';
+    const mi = await tool.handler({ question: 'this will fail mi' }, ctx('member', missed(), 'lang-fail-mi'));
+    assert.equal(textOf(mi), formatWebResearchText({ kind: 'research_failed' }, 'mi'));
+    languagePref = 'auto';
+    const en = await tool.handler({ question: 'this will fail en' }, ctx('member', missed(), 'lang-fail-en'));
+    assert.equal(textOf(en), 'Web research failed this time. Say so, and do not guess an answer.');
+    resetResult();
+  },
+);
+
+test(
+  'SECURITY: web_research reads getLanguagePreference exactly once per handler invocation, ahead of every ' +
+    'refusal branch — not added per-string (issue #1429)',
+  async () => {
+    resetResult();
+    languagePref = 'mi';
+
+    let before = languagePrefCalls;
+    await tool.handler({ question: 'once check one' }, ctx('member', undefined, 'lang-once-1'));
+    assert.equal(languagePrefCalls, before + 1);
+
+    before = languagePrefCalls;
+    await tool.handler({ question: 'once check two' }, ctx('member', missed(), 'lang-once-2'));
+    assert.equal(languagePrefCalls, before + 1);
+
+    languagePref = 'auto';
+  },
+);
 
 const FLOOR = realRepo.KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD;
 
