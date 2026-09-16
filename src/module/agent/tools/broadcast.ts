@@ -3,7 +3,7 @@ import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
 import { config } from '@swampratnz/agent-base/config.js';
 import { makeSlidingWindowReserver } from '@swampratnz/agent-base/util/rateReservation.js';
 import { isKnownConversation, isKnownMessage } from '@swampratnz/agent-base/storage/repository.js';
-import { text, unreachableConversationRefusal } from './helpers.js';
+import { sanitizeConfirmText, text, unreachableConversationRefusal } from './helpers.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 /**
@@ -381,7 +381,7 @@ export const broadcastTools = [
     readOnlyHint: false,
     schema: {
       threadId: z.string().describe('The thread id to archive'),
-      reason: z.string().optional().describe('Optional note for the audit log'),
+      reason: z.string().max(500).optional().describe('Optional note for the audit log'),
     },
     handler: async (args, { caller, adapter, callerScope, audited, requireConfirm }) => {
       assertAtLeast(caller.role, 'admin', 'archive_thread');
@@ -398,7 +398,12 @@ export const broadcastTools = [
       ) {
         return text(unreachableConversationRefusal(args.threadId), true);
       }
-      const params = { reason: args.reason };
+      // reason is interpolated into the model-visible CONFIRM text below, so
+      // sanitize it the same way moderate's reason and delete_message's
+      // content preview already are (issue #227/#312 quarantine-escape
+      // class) before it reaches either that string or params.
+      const sanitizedReason = args.reason ? sanitizeConfirmText(args.reason) : args.reason;
+      const params = { reason: sanitizedReason };
       const run = async () => {
         const { success, result } = await audited({
           actionKind: 'archive_thread',
@@ -415,7 +420,7 @@ export const broadcastTools = [
       };
 
       return requireConfirm(
-        `archive_thread on ${args.threadId}${args.reason ? ` (reason: ${args.reason})` : ''}`,
+        `archive_thread on ${args.threadId}${sanitizedReason ? ` (reason: ${sanitizedReason})` : ''}`,
         'admin',
         run,
       );
