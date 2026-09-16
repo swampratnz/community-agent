@@ -73,6 +73,18 @@ export function untrusted(label: string, body: string): string {
 }
 
 /**
+ * Strip `<`, `>`, `"`, `\r`, `\n` from attacker-controlled text before it
+ * enters a model-visible CONFIRM prompt — the quarantine-escape class fixed
+ * for `delete_message`'s content preview (issue #227 review, #312) and
+ * widened here to every other free-text field that reaches the same CONFIRM
+ * string, so a planted newline/angle-bracket/quote can't fake a tag or a
+ * second "Reply CONFIRM" block.
+ */
+export function sanitizeConfirmText(body: string): string {
+  return body.replace(/[<>"\r\n]/g, ' ');
+}
+
+/**
  * Best-known display name for a target user, sanitized before it can reach
  * model-visible tool text (confirmation prompts, audit echoes) — resolveDisplayName
  * and args.displayName both ultimately trace back to an attacker-controlled

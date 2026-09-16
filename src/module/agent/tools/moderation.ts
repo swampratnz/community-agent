@@ -20,6 +20,7 @@ import {
 import {
   formatBlockedMembersList,
   formatMutedMembersList,
+  sanitizeConfirmText,
   text,
   unreachableConversationRefusal,
   untrusted,
@@ -107,8 +108,14 @@ export const moderationTools = [
         ])
         .describe('The moderation action to perform'),
       targetUserId: z.string().describe('Platform user id to act on (message author for delete_message)'),
-      reason: z.string().describe('Reason, for the audit log and the affected user'),
-      durationMinutes: z.number().optional().describe('For timeouts: duration in minutes'),
+      reason: z.string().min(1).max(500).describe('Reason, for the audit log and the affected user'),
+      durationMinutes: z
+        .number()
+        .int()
+        .min(1)
+        .max(40320)
+        .optional()
+        .describe('For timeouts: duration in minutes (max 40320 — the 28-day Discord timeout cap)'),
       messageId: z.string().optional().describe('For delete_message: the platform message id to delete'),
       conversationId: z
         .string()
@@ -186,8 +193,15 @@ export const moderationTools = [
         const lang = await getLangPref(caller.platform, args.targetUserId).catch(() => 'auto' as const);
         warnLanguage = lang === 'mi' ? 'mi' : undefined;
       }
+      // reason reaches an audit row and, for every action but warn_user, the
+      // model-visible CONFIRM prompt text below — sanitize it the same way
+      // delete_message's content preview already is (issue #227/#312
+      // quarantine-escape class): an admin's ordinary "warn them for saying
+      // X" turn can have the model paraphrase/quote the flagged member's own
+      // untrusted message straight into this field.
+      const sanitizedReason = sanitizeConfirmText(args.reason);
       const params = {
-        reason: args.reason,
+        reason: sanitizedReason,
         durationMinutes: args.durationMinutes,
         messageId: args.messageId,
         // Read only by the WhatsApp adapters' block_user case — the DB row's
@@ -239,7 +253,7 @@ export const moderationTools = [
             platform: caller.platform,
             targetUserId: args.targetUserId,
             issuedByUserId: caller.userId,
-            reason: args.reason,
+            reason: sanitizedReason,
           }).catch((err) => {
             logger.warn(
               { err, targetUserId: hashId(args.targetUserId) },
@@ -273,13 +287,13 @@ export const moderationTools = [
             // bracket/quote can't fake a tag or a second "Reply CONFIRM"
             // block (the quarantine-escape class from issue #227, flagged in
             // PR review for #312).
-            const sanitized = content.replace(/[<>"\r\n]/g, ' ');
+            const sanitized = sanitizeConfirmText(content);
             messageSuffix += ` ("${sanitized.slice(0, 80)}${sanitized.length > 80 ? '…' : ''}")`;
           }
         }
       }
       return requireConfirm(
-        `${args.action} on ${args.targetUserId} in ${targetConversation}${messageSuffix} (reason: ${args.reason})`,
+        `${args.action} on ${args.targetUserId} in ${targetConversation}${messageSuffix} (reason: ${sanitizedReason})`,
         'admin',
         run,
       );
@@ -294,7 +308,7 @@ export const moderationTools = [
     readOnlyHint: false,
     schema: {
       targetUserId: z.string().describe('Platform user id whose warnings to clear'),
-      reason: z.string().optional().describe('Optional note for the audit log'),
+      reason: z.string().max(500).optional().describe('Optional note for the audit log'),
     },
     handler: async (args, { caller, adapter, audited }) => {
       assertAtLeast(caller.role, 'admin', 'clear_warnings');
