@@ -4,6 +4,7 @@ import { logger } from '@swampratnz/agent-base/logger.js';
 import { resolveRole } from '@swampratnz/agent-base/auth/roles.js';
 import { atLeast, toolsForRole } from '@swampratnz/agent-base/auth/rbac.js';
 import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
+import { getWithdrawnAppealIds } from '../../storage/appealWithdrawals.js';
 import { listOwnFindHelperRequests } from '../../storage/findHelperRequests.js';
 import { getCommunityGuidelines, getCommunityGuidelinesMi } from '../../storage/policies.js';
 import { getWithdrawnSuggestionIds } from '../../storage/suggestionWithdrawals.js';
@@ -531,6 +532,8 @@ async function handleMySubmissions(
     suggestions.length > 0
       ? await getWithdrawnSuggestionIds(suggestions.map((s) => s.id))
       : new Set<number>();
+  const withdrawnAppealIds =
+    appeals.length > 0 ? await getWithdrawnAppealIds(appeals.map((a) => a.id)) : new Set<number>();
   const message = formatMySubmissionsText(
     suggestions,
     reports,
@@ -539,10 +542,7 @@ async function handleMySubmissions(
     connectionRequests,
     language,
     withdrawnSuggestionIds,
-    // No appeal-withdrawal consult here (pre-existing gap, unrelated to issue
-    // #1313) — passing the same empty default formatMySubmissionsText itself
-    // uses keeps this positional call correct now findHelperRequests follows.
-    new Set<number>(),
+    withdrawnAppealIds,
     findHelperRequests,
   );
   recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
