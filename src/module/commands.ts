@@ -4,6 +4,7 @@ import { logger } from '@swampratnz/agent-base/logger.js';
 import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 import { buildAdminDigestForAdmin } from './adminDigest.js';
 import { oldestNotMemberAgeDays } from './rosterStaleAlert.js';
+import { getWithdrawnAppealIds } from './storage/appealWithdrawals.js';
 import { listOwnFindHelperRequests } from './storage/findHelperRequests.js';
 import { getWithdrawnSuggestionIds } from './storage/suggestionWithdrawals.js';
 import {
@@ -324,6 +325,8 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
         suggestions.length > 0
           ? await getWithdrawnSuggestionIds(suggestions.map((s) => s.id))
           : new Set<number>();
+      const withdrawnAppealIds =
+        appeals.length > 0 ? await getWithdrawnAppealIds(appeals.map((a) => a.id)) : new Set<number>();
       return formatMySubmissionsText(
         suggestions,
         reports,
@@ -332,11 +335,7 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
         connectionRequests,
         language,
         withdrawnSuggestionIds,
-        // No appeal-withdrawal consult here (pre-existing gap, unrelated to
-        // issue #1313) — passing the same empty default formatMySubmissionsText
-        // itself uses keeps this positional call correct now findHelperRequests
-        // follows it.
-        new Set<number>(),
+        withdrawnAppealIds,
         findHelperRequests,
       );
     },

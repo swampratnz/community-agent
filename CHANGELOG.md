@@ -26,6 +26,17 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #1355 #1356 #1357 #1341 #1350 #1360 #1381
 -->
 
+## 2026-09-18
+
+### Fixed
+- **Withdrawing a moderation appeal now shows up as withdrawn when you check
+  your own submissions via `!mysubmissions`/`/mysubmissions`, not just when
+  you ask in chat.** These two shortcuts already got this right for a
+  withdrawn suggestion; a withdrawn appeal was still rendering its stale
+  `[open]` status because the same fix was never threaded through for
+  appeals. Both now match what the full `my_submissions` tool has always
+  shown.
+
 ## 2026-09-12
 
 ### Added
