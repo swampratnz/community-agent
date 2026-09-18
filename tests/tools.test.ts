@@ -162,6 +162,8 @@ const {
   formatRequestHumanHelpText,
   formatSuggestImprovementText,
   formatWithdrawSuggestionText,
+  resolveFeedbackLanguageAndStyle,
+  resolveReportsMemberLanguageAndStyle,
   TOP_KNOWLEDGE_FETCH_CAP,
   KNOWLEDGE_FIX_NOTIFY_CAP,
   KNOWLEDGE_FIX_NOTIFY_FETCH_CAP,
@@ -32981,6 +32983,25 @@ test(
 );
 
 test(
+  "formatWithdrawSuggestionText's 'plain' style renders a materially shorter English string than the " +
+    "default for every outcome, is byte-identical to the default when style is 'standard'/undefined, and " +
+    "'mi' wins over 'plain' regardless of style (issue #1436)",
+  () => {
+    for (const ids of [[], [42], [1, 2]] as const) {
+      const defaultText = formatWithdrawSuggestionText(ids as number[], 'en', undefined);
+      assert.equal(formatWithdrawSuggestionText(ids as number[], 'en', 'standard'), defaultText);
+      const plainText = formatWithdrawSuggestionText(ids as number[], 'en', 'plain');
+      assert.notEqual(plainText, defaultText);
+      assert.ok(plainText.length < defaultText.length, `plain must be shorter for ids=${ids}`);
+    }
+    assert.equal(
+      formatWithdrawSuggestionText([42], 'mi', 'plain'),
+      formatWithdrawSuggestionText([42], 'mi', 'standard'),
+    );
+  },
+);
+
+test(
   "withdraw_suggestion marks the caller's own still-'new' suggestion withdrawn and confirms it (two-outcome " +
     'shape: none-to-withdraw, then withdrew); a second call finds nothing left pending (issue #1243 ' +
     'acceptance criteria 1, 2)',
@@ -33126,6 +33147,25 @@ test(
     const miOne = formatWithdrawAppealText([42], 'mi');
     assert.notEqual(miOne, formatWithdrawAppealText([42], 'en'));
     assert.match(miOne, /#42/);
+  },
+);
+
+test(
+  "formatWithdrawAppealText's 'plain' style renders a materially shorter English string than the default " +
+    "for every outcome, is byte-identical to the default when style is 'standard'/undefined, and 'mi' wins " +
+    "over 'plain' regardless of style (issue #1436)",
+  () => {
+    for (const ids of [[], [42], [1, 2]] as const) {
+      const defaultText = formatWithdrawAppealText(ids as number[], 'en', undefined);
+      assert.equal(formatWithdrawAppealText(ids as number[], 'en', 'standard'), defaultText);
+      const plainText = formatWithdrawAppealText(ids as number[], 'en', 'plain');
+      assert.notEqual(plainText, defaultText);
+      assert.ok(plainText.length < defaultText.length, `plain must be shorter for ids=${ids}`);
+    }
+    assert.equal(
+      formatWithdrawAppealText([42], 'mi', 'plain'),
+      formatWithdrawAppealText([42], 'mi', 'standard'),
+    );
   },
 );
 
@@ -33381,6 +33421,34 @@ test(
 );
 
 test(
+  "formatSuggestImprovementText's 'plain' style renders a materially shorter English string than the " +
+    "default for both outcomes, is byte-identical to the default when style is 'standard'/undefined, and " +
+    "'mi' wins over 'plain' regardless of style (issue #1436)",
+  () => {
+    const defaultRateLimited = formatSuggestImprovementText({ recorded: false }, 5, 'en', undefined);
+    assert.equal(formatSuggestImprovementText({ recorded: false }, 5, 'en', 'standard'), defaultRateLimited);
+    const plainRateLimited = formatSuggestImprovementText({ recorded: false }, 5, 'en', 'plain');
+    assert.notEqual(plainRateLimited, defaultRateLimited);
+    assert.ok(plainRateLimited.length < defaultRateLimited.length);
+
+    const defaultRecorded = formatSuggestImprovementText({ recorded: true, id: 42 }, 5, 'en', undefined);
+    assert.equal(
+      formatSuggestImprovementText({ recorded: true, id: 42 }, 5, 'en', 'standard'),
+      defaultRecorded,
+    );
+    const plainRecorded = formatSuggestImprovementText({ recorded: true, id: 42 }, 5, 'en', 'plain');
+    assert.notEqual(plainRecorded, defaultRecorded);
+    assert.ok(plainRecorded.length < defaultRecorded.length);
+    assert.match(plainRecorded, /#42/);
+
+    assert.equal(
+      formatSuggestImprovementText({ recorded: true, id: 42 }, 5, 'mi', 'plain'),
+      formatSuggestImprovementText({ recorded: true, id: 42 }, 5, 'mi', 'standard'),
+    );
+  },
+);
+
+test(
   "formatRateAnswerText renders te reo Māori for all four outcomes when language is 'mi', and the exact " +
     "pre-existing English string for 'auto'/'en' otherwise — the daily-limit interpolation is unchanged " +
     'in both languages (issue #1147 acceptance criteria 1, 3, 4)',
@@ -33416,6 +33484,29 @@ test(
 );
 
 test(
+  "formatRateAnswerText's 'plain' style renders a materially shorter English string than the default for " +
+    "all four outcomes, is byte-identical to the default when style is 'standard'/undefined, and 'mi' wins " +
+    "over 'plain' regardless of style (issue #1436)",
+  () => {
+    const outcomes = ['no_recent_answer', 'rate_limited', { helpful: true }, { helpful: false }] as const;
+    for (const outcome of outcomes) {
+      const defaultText = formatRateAnswerText(outcome, 20, 'en', undefined);
+      assert.equal(formatRateAnswerText(outcome, 20, 'en', 'standard'), defaultText);
+      const plainText = formatRateAnswerText(outcome, 20, 'en', 'plain');
+      assert.notEqual(plainText, defaultText);
+      assert.ok(
+        plainText.length < defaultText.length,
+        `plain must be shorter for ${JSON.stringify(outcome)}`,
+      );
+    }
+    assert.equal(
+      formatRateAnswerText('rate_limited', 20, 'mi', 'plain'),
+      formatRateAnswerText('rate_limited', 20, 'mi', 'standard'),
+    );
+  },
+);
+
+test(
   "formatRequestHumanHelpText renders te reo Māori for both outcomes when language is 'mi', and the exact " +
     "pre-existing English string for 'auto'/'en' otherwise — the daily-limit interpolation is unchanged in " +
     'both languages (issue #1147 acceptance criteria 1, 3, 4)',
@@ -33438,6 +33529,25 @@ test(
     const miRateLimited = formatRequestHumanHelpText('rate_limited', 3, 'mi');
     assert.notEqual(miRateLimited, formatRequestHumanHelpText('rate_limited', 3, 'en'));
     assert.match(miRateLimited, /\b3\b/);
+  },
+);
+
+test(
+  "formatRequestHumanHelpText's 'plain' style renders a materially shorter English string than the default " +
+    "for both outcomes, is byte-identical to the default when style is 'standard'/undefined, and 'mi' wins " +
+    "over 'plain' regardless of style (issue #1436)",
+  () => {
+    for (const outcome of ['recorded', 'rate_limited'] as const) {
+      const defaultText = formatRequestHumanHelpText(outcome, 3, 'en', undefined);
+      assert.equal(formatRequestHumanHelpText(outcome, 3, 'en', 'standard'), defaultText);
+      const plainText = formatRequestHumanHelpText(outcome, 3, 'en', 'plain');
+      assert.notEqual(plainText, defaultText);
+      assert.ok(plainText.length < defaultText.length, `plain must be shorter for ${outcome}`);
+    }
+    assert.equal(
+      formatRequestHumanHelpText('rate_limited', 3, 'mi', 'plain'),
+      formatRequestHumanHelpText('rate_limited', 3, 'mi', 'standard'),
+    );
   },
 );
 
@@ -33467,6 +33577,31 @@ test(
 );
 
 test(
+  "formatReportContentText's 'plain' style renders a materially shorter English string than the default " +
+    "for both outcomes, is byte-identical to the default when style is 'standard'/undefined, and 'mi' wins " +
+    "over 'plain' regardless of style (issue #1436)",
+  () => {
+    const defaultRateLimited = formatReportContentText({ recorded: false }, 5, 'en', undefined);
+    assert.equal(formatReportContentText({ recorded: false }, 5, 'en', 'standard'), defaultRateLimited);
+    const plainRateLimited = formatReportContentText({ recorded: false }, 5, 'en', 'plain');
+    assert.notEqual(plainRateLimited, defaultRateLimited);
+    assert.ok(plainRateLimited.length < defaultRateLimited.length);
+
+    const defaultRecorded = formatReportContentText({ recorded: true, id: 7 }, 5, 'en', undefined);
+    assert.equal(formatReportContentText({ recorded: true, id: 7 }, 5, 'en', 'standard'), defaultRecorded);
+    const plainRecorded = formatReportContentText({ recorded: true, id: 7 }, 5, 'en', 'plain');
+    assert.notEqual(plainRecorded, defaultRecorded);
+    assert.ok(plainRecorded.length < defaultRecorded.length);
+    assert.match(plainRecorded, /#7/);
+
+    assert.equal(
+      formatReportContentText({ recorded: true, id: 7 }, 5, 'mi', 'plain'),
+      formatReportContentText({ recorded: true, id: 7 }, 5, 'mi', 'standard'),
+    );
+  },
+);
+
+test(
   'formatWithdrawReportText renders te reo Māori for the none/singular/plural outcomes when language is ' +
     "'mi', and the exact pre-existing English string for 'auto'/'en' otherwise — the withdrawn-id list is " +
     'unchanged in both languages (issue #1147 acceptance criteria 1, 3, 4)',
@@ -33490,6 +33625,25 @@ test(
     const miPlural = formatWithdrawReportText([7, 9], 'mi');
     assert.notEqual(miPlural, formatWithdrawReportText([7, 9], 'en'));
     assert.match(miPlural, /#7, #9/);
+  },
+);
+
+test(
+  "formatWithdrawReportText's 'plain' style renders a materially shorter English string than the default " +
+    "for every outcome, is byte-identical to the default when style is 'standard'/undefined, and 'mi' wins " +
+    "over 'plain' regardless of style (issue #1436)",
+  () => {
+    for (const ids of [[], [7], [7, 9]] as const) {
+      const defaultText = formatWithdrawReportText(ids as number[], 'en', undefined);
+      assert.equal(formatWithdrawReportText(ids as number[], 'en', 'standard'), defaultText);
+      const plainText = formatWithdrawReportText(ids as number[], 'en', 'plain');
+      assert.notEqual(plainText, defaultText);
+      assert.ok(plainText.length < defaultText.length, `plain must be shorter for ids=${ids}`);
+    }
+    assert.equal(
+      formatWithdrawReportText([7], 'mi', 'plain'),
+      formatWithdrawReportText([7], 'mi', 'standard'),
+    );
   },
 );
 
@@ -33523,6 +33677,103 @@ test(
       formatAppealModerationText('sent', 24, 'mi'),
       formatAppealModerationText('sent', 24, 'en'),
     );
+  },
+);
+
+test(
+  "formatAppealModerationText's 'plain' style renders a materially shorter English string than the " +
+    "default for all three outcomes, is byte-identical to the default when style is 'standard'/undefined, " +
+    "and 'mi' wins over 'plain' regardless of style (issue #1436)",
+  () => {
+    for (const outcome of ['no_active_warnings', 'rate_limited', 'sent'] as const) {
+      const defaultText = formatAppealModerationText(outcome, 24, 'en', undefined);
+      assert.equal(formatAppealModerationText(outcome, 24, 'en', 'standard'), defaultText);
+      const plainText = formatAppealModerationText(outcome, 24, 'en', 'plain');
+      assert.notEqual(plainText, defaultText);
+      assert.ok(plainText.length < defaultText.length, `plain must be shorter for ${outcome}`);
+    }
+    assert.equal(
+      formatAppealModerationText('sent', 24, 'mi', 'plain'),
+      formatAppealModerationText('sent', 24, 'mi', 'standard'),
+    );
+  },
+);
+
+test(
+  "SECURITY: resolveFeedbackLanguageAndStyle (feedback.ts's suggest_improvement/rate_answer/" +
+    "request_human_help/withdraw_suggestion call sites) degrades to 'standard' style — not a thrown " +
+    'error, not a dropped reply — when the injected getResponseStyle rejects, the same fail-safe ' +
+    "notify.ts's own getRespStyle call sites pin (issue #1436 acceptance criterion 5)",
+  async () => {
+    const result = await resolveFeedbackLanguageAndStyle(
+      'discord',
+      'user-1',
+      async () => 'en',
+      async () => {
+        throw new Error('response-style lookup unavailable');
+      },
+    );
+    assert.equal(result.language, 'en');
+    assert.equal(result.style, 'standard');
+  },
+);
+
+test(
+  'SECURITY: resolveFeedbackLanguageAndStyle never consults the injected getResponseStyle once language has ' +
+    "resolved to 'mi' — no style DB read on the 'mi' path, mirroring notify.ts's pinned precedence (issue " +
+    '#1436)',
+  async () => {
+    let respStyleCalls = 0;
+    const result = await resolveFeedbackLanguageAndStyle(
+      'discord',
+      'user-1',
+      async () => 'mi',
+      async () => {
+        respStyleCalls += 1;
+        throw new Error('must never be reached when lang is mi');
+      },
+    );
+    assert.equal(respStyleCalls, 0);
+    assert.equal(result.style, undefined);
+  },
+);
+
+test(
+  "SECURITY: resolveReportsMemberLanguageAndStyle (reportsMember.ts's report_content/withdraw_report/" +
+    "appeal_moderation/withdraw_appeal call sites) degrades to 'standard' style — not a thrown error, not a " +
+    "dropped reply — when the injected getResponseStyle rejects, the same fail-safe notify.ts's own " +
+    'getRespStyle call sites pin (issue #1436 acceptance criterion 5)',
+  async () => {
+    const result = await resolveReportsMemberLanguageAndStyle(
+      'discord',
+      'user-1',
+      async () => 'en',
+      async () => {
+        throw new Error('response-style lookup unavailable');
+      },
+    );
+    assert.equal(result.language, 'en');
+    assert.equal(result.style, 'standard');
+  },
+);
+
+test(
+  'SECURITY: resolveReportsMemberLanguageAndStyle never consults the injected getResponseStyle once ' +
+    "language has resolved to 'mi' — no style DB read on the 'mi' path, mirroring notify.ts's pinned " +
+    'precedence (issue #1436)',
+  async () => {
+    let respStyleCalls = 0;
+    const result = await resolveReportsMemberLanguageAndStyle(
+      'discord',
+      'user-1',
+      async () => 'mi',
+      async () => {
+        respStyleCalls += 1;
+        throw new Error('must never be reached when lang is mi');
+      },
+    );
+    assert.equal(respStyleCalls, 0);
+    assert.equal(result.style, undefined);
   },
 );
 
