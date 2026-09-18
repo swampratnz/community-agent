@@ -94,6 +94,7 @@ export {
   formatReportContentText,
   formatWithdrawAppealText,
   formatWithdrawReportText,
+  resolveReportsMemberLanguageAndStyle,
 } from './tools/reportsMember.js';
 export {
   HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER,
@@ -101,6 +102,7 @@ export {
   formatRequestHumanHelpText,
   formatSuggestImprovementText,
   formatWithdrawSuggestionText,
+  resolveFeedbackLanguageAndStyle,
 } from './tools/feedback.js';
 export {
   ALLOWED_REACTION_EMOJI,

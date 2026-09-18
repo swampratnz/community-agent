@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { Platform } from '@swampratnz/agent-base/platforms/types.js';
 import { assertAtLeast, atLeast } from '@swampratnz/agent-base/auth/tiers.js';
 import { config } from '@swampratnz/agent-base/config.js';
 import { logger } from '@swampratnz/agent-base/logger.js';
@@ -11,12 +12,14 @@ import {
   createSuggestion,
   findKnowledgeCoveringTopic,
   getLanguagePreference,
+  getResponseStyle,
   KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY,
   listOwnSuggestions,
   RATE_ANSWER_DAILY_LIMIT,
   SUGGESTION_MAX_CHARS,
   SUGGESTION_RATE_LIMIT_PER_DAY,
   type LanguagePreference,
+  type ResponseStyle,
 } from '@swampratnz/agent-base/storage/repository.js';
 import { makeSlidingWindowReserver } from '@swampratnz/agent-base/util/rateReservation.js';
 import { recordHumanHelpRequest } from '../../storage/humanHelpRequestLog.js';
@@ -28,27 +31,59 @@ import { text } from './helpers.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 /**
+ * Resolves the caller's language + `'plain'`-style preference for this
+ * file's four formatters (issue #1436) — the direct-reply-side counterpart
+ * to `notify.ts`'s own call sites, same precedence/fail-safe shape: `style`
+ * is only consulted once `'mi'` is ruled out (it takes precedence, so
+ * there's no style DB read on the `'mi'` path), and a lookup failure
+ * degrades to `'standard'` rather than throwing. `getLangPref`/`getRespStyle`
+ * are the same injectable-resolver seam `notify.ts` uses for its own
+ * `getRespStyle` parameter, so the fail-safe is testable without live
+ * Postgres.
+ */
+export async function resolveFeedbackLanguageAndStyle(
+  platform: Platform,
+  userId: string,
+  getLangPref: typeof getLanguagePreference = getLanguagePreference,
+  getRespStyle: typeof getResponseStyle = getResponseStyle,
+): Promise<{ language: LanguagePreference; style: ResponseStyle | undefined }> {
+  const language = await getLangPref(platform, userId);
+  const style: ResponseStyle | undefined =
+    language === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
+  return { language, style };
+}
+
+/**
  * Pure render for `suggest_improvement`'s two outcomes — same "language
  * threaded as an explicit parameter" shape as `formatMyWarningsText`
  * (issue #1147), reusing `selfService.ts`'s pattern rather than inventing a
  * new one. The interpolated id/limit are identical in both languages; only
- * surrounding prose swaps.
+ * surrounding prose swaps. `style` (issue #1436) adds a shorter, simpler
+ * English variant when `'plain'` — consulted only once `'mi'` is ruled out,
+ * since `'mi'` wins regardless of `style` (mirrors `notify.ts`'s pinned
+ * precedence rule); the `'mi'`/default-English branches are unchanged.
  */
 export function formatSuggestImprovementText(
   outcome: { recorded: true; id: number } | { recorded: false },
   limit: number,
   language: LanguagePreference,
+  style: ResponseStyle | undefined,
 ): string {
   const mi = language === 'mi';
+  const plain = style === 'plain';
   if (!outcome.recorded) {
     return mi
       ? `Kua tukuna kētia e koe ${limit} ngā taunakitanga i roto i ngā haora 24 kua hipa. Tēnā koa, tatari i mua i te tuku i tētahi atu.`
-      : `You've already filed ${limit} suggestions in the last 24 hours. Please wait before filing another.`;
+      : plain
+        ? `You've sent ${limit} suggestions today. Please wait and try again later.`
+        : `You've already filed ${limit} suggestions in the last 24 hours. Please wait before filing another.`;
   }
   return mi
     ? `Kua tuhia te Taunakitanga #${outcome.id}. Ka arotakehia ēnei e tētahi kaiwhakahaere tangata — mauruuru ` +
         'mō te whakaaro, engari kāore he oati mō te mea ka hangaia, āhea rānei.'
-    : `Suggestion #${outcome.id} recorded. A human maintainer reviews these — thanks for the idea, but no ` +
+    : plain
+      ? `Suggestion #${outcome.id} saved. A person will look at it soon. We can't promise it will be built.`
+      : `Suggestion #${outcome.id} recorded. A human maintainer reviews these — thanks for the idea, but no ` +
         'promises on if/when it gets built.';
 }
 
@@ -58,72 +93,103 @@ export function formatSuggestImprovementText(
  * (reportsMember.ts) and `formatWithdrawKnowledgeTipConfirmText`
  * (knowledgeMember.ts, via helpers.ts). `ids` is already scoped to the
  * caller's own still-`'new'`, not-yet-withdrawn suggestions by the handler;
- * this function does no scoping itself, only formatting.
+ * this function does no scoping itself, only formatting. `style` (issue
+ * #1436), same `'mi'`-wins-over-`'plain'` precedence as every formatter in
+ * this file.
  */
-export function formatWithdrawSuggestionText(ids: number[], language: LanguagePreference): string {
+export function formatWithdrawSuggestionText(
+  ids: number[],
+  language: LanguagePreference,
+  style: ResponseStyle | undefined,
+): string {
   const mi = language === 'mi';
+  const plain = style === 'plain';
   if (ids.length === 0) {
     return mi
       ? 'Kāore he taunakitanga e tatari ana hei tango māu.'
-      : 'You have no pending suggestions to withdraw.';
+      : plain
+        ? 'You have no suggestions to withdraw.'
+        : 'You have no pending suggestions to withdraw.';
   }
   const list = ids.map((id) => `#${id}`).join(', ');
   return mi
     ? `Kua tangohia ${ids.length > 1 ? 'ō taunakitanga' : 'tō taunakitanga'} ${list}. Kāore ēnei e arotakehia.`
-    : `Withdrew your suggestion${ids.length > 1 ? 's' : ''} ${list}. They won't be reviewed.`;
+    : plain
+      ? `Withdrew suggestion${ids.length > 1 ? 's' : ''} ${list}. No one will review ${ids.length > 1 ? 'them' : 'it'}.`
+      : `Withdrew your suggestion${ids.length > 1 ? 's' : ''} ${list}. They won't be reviewed.`;
 }
 
 /**
  * Pure render for `rate_answer`'s four outcomes (issue #1147), mirroring
  * `formatMyWarningsText`'s shape. `RATE_ANSWER_DAILY_LIMIT` and the boolean
- * outcome are unchanged interpolations in both languages.
+ * outcome are unchanged interpolations in both languages. `style` (issue
+ * #1436), same `'mi'`-wins-over-`'plain'` precedence as every formatter in
+ * this file.
  */
 export function formatRateAnswerText(
   outcome: 'no_recent_answer' | 'rate_limited' | { helpful: boolean },
   limit: number,
   language: LanguagePreference,
+  style: ResponseStyle | undefined,
 ): string {
   const mi = language === 'mi';
+  const plain = style === 'plain';
   if (outcome === 'no_recent_answer') {
     return mi
       ? 'Kāore aku whakautu tata nei hei arotake i roto i tēnei kōrero.'
-      : "I don't have a recent answer of mine to rate in this conversation yet.";
+      : plain
+        ? "I don't have a recent answer to rate yet."
+        : "I don't have a recent answer of mine to rate in this conversation yet.";
   }
   if (outcome === 'rate_limited') {
     return mi
       ? `Kua arotakehia kētia e koe ${limit} ngā whakautu i roto i ngā haora 24 kua hipa. Tēnā koa, tatari i ` +
           'mua i te arotake i tētahi atu.'
-      : `You've already rated ${limit} answers in the last 24 hours. Please wait before rating another.`;
+      : plain
+        ? `You've rated ${limit} answers today. Please wait and try again later.`
+        : `You've already rated ${limit} answers in the last 24 hours. Please wait before rating another.`;
   }
   return outcome.helpful
     ? mi
       ? 'Mauruuru, he pai te āwhina!'
-      : 'Thanks, glad that helped!'
+      : plain
+        ? 'Glad it helped!'
+        : 'Thanks, glad that helped!'
     : mi
       ? 'Mauruuru mō te whakahoki kōrero, kua tuhia.'
-      : 'Thanks for the feedback, noted.';
+      : plain
+        ? 'Thanks, noted.'
+        : 'Thanks for the feedback, noted.';
 }
 
 /**
  * Pure render for `request_human_help`'s two outcomes (issue #1147).
  * `HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER` is an unchanged interpolation.
+ * `style` (issue #1436), same `'mi'`-wins-over-`'plain'` precedence as every
+ * formatter in this file.
  */
 export function formatRequestHumanHelpText(
   outcome: 'recorded' | 'rate_limited',
   limit: number,
   language: LanguagePreference,
+  style: ResponseStyle | undefined,
 ): string {
   const mi = language === 'mi';
+  const plain = style === 'plain';
   if (outcome === 'rate_limited') {
     return mi
       ? `Kua tono kētia koe ${limit} ngā wā mō te kōrero ki tētahi tangata i roto i ngā haora 24 kua hipa. ` +
           'Tēnā koa, tatari i mua i te tono anō.'
-      : `You've already asked to talk to a human ${limit} times in the last 24 hours. Please wait before ` +
+      : plain
+        ? `You've asked for a human ${limit} times today. Please wait and try again later.`
+        : `You've already asked to talk to a human ${limit} times in the last 24 hours. Please wait before ` +
           'asking again.';
   }
   return mi
     ? 'Kua mau — kua tohu ahau i tēnei mō tētahi kaiwhakahaere hapori hei whai kōrero mai.'
-    : "Got it — I've flagged this for a community admin to follow up.";
+    : plain
+      ? 'Got it. A community admin will follow up.'
+      : "Got it — I've flagged this for a community admin to follow up.";
 }
 
 /**
@@ -181,10 +247,10 @@ export const feedbackTools = [
         displayName: caller.userName,
         content: args.content,
       });
-      const language = await getLanguagePreference(caller.platform, caller.userId);
+      const { language, style } = await resolveFeedbackLanguageAndStyle(caller.platform, caller.userId);
       if (!created) {
         return text(
-          formatSuggestImprovementText({ recorded: false }, SUGGESTION_RATE_LIMIT_PER_DAY, language),
+          formatSuggestImprovementText({ recorded: false }, SUGGESTION_RATE_LIMIT_PER_DAY, language, style),
           true,
         );
       }
@@ -193,6 +259,7 @@ export const feedbackTools = [
           { recorded: true, id: created.id },
           SUGGESTION_RATE_LIMIT_PER_DAY,
           language,
+          style,
         ),
       );
     },
@@ -231,12 +298,12 @@ export const feedbackTools = [
         comment: args.comment,
       });
       if (created === 'no_recent_answer') {
-        const language = await getLanguagePreference(caller.platform, caller.userId);
-        return text(formatRateAnswerText('no_recent_answer', RATE_ANSWER_DAILY_LIMIT, language), true);
+        const { language, style } = await resolveFeedbackLanguageAndStyle(caller.platform, caller.userId);
+        return text(formatRateAnswerText('no_recent_answer', RATE_ANSWER_DAILY_LIMIT, language, style), true);
       }
       if (created === 'rate_limited') {
-        const language = await getLanguagePreference(caller.platform, caller.userId);
-        return text(formatRateAnswerText('rate_limited', RATE_ANSWER_DAILY_LIMIT, language), true);
+        const { language, style } = await resolveFeedbackLanguageAndStyle(caller.platform, caller.userId);
+        return text(formatRateAnswerText('rate_limited', RATE_ANSWER_DAILY_LIMIT, language, style), true);
       }
       // Real-time admin escalation (issue #598): only a genuinely-recorded
       // thumbs-down sets the turn-scoped flag — never a positive rating, and
@@ -338,8 +405,8 @@ export const feedbackTools = [
           logger.warn({ err }, 'rate_answer knowledge-candidate drafting failed; rating already recorded');
         }
       }
-      const language = await getLanguagePreference(caller.platform, caller.userId);
-      return text(formatRateAnswerText({ helpful: args.helpful }, RATE_ANSWER_DAILY_LIMIT, language));
+      const { language, style } = await resolveFeedbackLanguageAndStyle(caller.platform, caller.userId);
+      return text(formatRateAnswerText({ helpful: args.helpful }, RATE_ANSWER_DAILY_LIMIT, language, style));
     },
   }),
 
@@ -371,9 +438,14 @@ export const feedbackTools = [
       // never sets the flag router.ts acts on.
       const key = `${caller.platform}:${caller.userId}`;
       if (!reserveHumanHelpRequestSlot(key, HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER)) {
-        const language = await getLanguagePreference(caller.platform, caller.userId);
+        const { language, style } = await resolveFeedbackLanguageAndStyle(caller.platform, caller.userId);
         return text(
-          formatRequestHumanHelpText('rate_limited', HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER, language),
+          formatRequestHumanHelpText(
+            'rate_limited',
+            HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER,
+            language,
+            style,
+          ),
           true,
         );
       }
@@ -398,8 +470,10 @@ export const feedbackTools = [
       // stop the flag set above from reaching the router's live escalation
       // (SECURITY, issue #1364 criterion 4).
       recordHumanHelpRequest().catch((err) => logger.warn({ err }, 'recordHumanHelpRequest failed'));
-      const language = await getLanguagePreference(caller.platform, caller.userId);
-      return text(formatRequestHumanHelpText('recorded', HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER, language));
+      const { language, style } = await resolveFeedbackLanguageAndStyle(caller.platform, caller.userId);
+      return text(
+        formatRequestHumanHelpText('recorded', HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER, language, style),
+      );
     },
   }),
 
@@ -433,15 +507,16 @@ export const feedbackTools = [
       const alreadyWithdrawn =
         pending.length > 0 ? await getWithdrawnSuggestionIds(pending.map((s) => s.id)) : new Set<number>();
       const toWithdraw = pending.filter((s) => !alreadyWithdrawn.has(s.id));
-      const language = await getLanguagePreference(caller.platform, caller.userId);
+      const { language, style } = await resolveFeedbackLanguageAndStyle(caller.platform, caller.userId);
       if (toWithdraw.length === 0) {
-        return text(formatWithdrawSuggestionText([], language), true);
+        return text(formatWithdrawSuggestionText([], language, style), true);
       }
       await Promise.all(toWithdraw.map((s) => recordSuggestionWithdrawal(s.id)));
       return text(
         formatWithdrawSuggestionText(
           toWithdraw.map((s) => s.id),
           language,
+          style,
         ),
       );
     },
