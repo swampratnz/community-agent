@@ -26,6 +26,17 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #1355 #1356 #1357 #1341 #1350 #1360 #1381
 -->
 
+## 2026-09-20
+
+### Added
+- **Assigning or removing a cosmetic community role (a regional tag,
+  "verified builder", etc.) now DMs the member it happened to.** Previously
+  `assign_community_role`/`remove_community_role` only told the acting
+  admin — the one remaining grant/revoke action in the bot where the
+  affected member learned nothing. The DM names the role as a Discord
+  mention and honours the member's language/response-style preferences,
+  same as every other grant/revoke notification.
+
 ## 2026-09-18
 
 ### Fixed

@@ -548,6 +548,45 @@ const NOTICE_ENTRIES = {
         "An admin restored a project you're in on NZ Claude Community — you can read its shared memory again.",
     },
   },
+  // --- assign_community_role / remove_community_role grant-and-revoke DMs
+  // (agent/tools/notify.ts, issue #1439) ---
+  /**
+   * The neutral grant DM for the admin-tier `assign_community_role` —
+   * static, same non-interpolation shape as `projectMemberAddedMessage`
+   * above: the role is never interpolated into this translated base string,
+   * only appended afterward as a distinct Discord role-mention clause (see
+   * `notifyCommunityRoleAssigned` in notify.ts) — `discordRoles.ts` is
+   * Discord-only, so `<@&roleId>` renders client-side as the role's own
+   * current name/colour with no extra API call. Unconditional: like every
+   * sibling grant DM in this file, there is no moderation-silence rationale
+   * for an ordinary cosmetic-role grant.
+   */
+  communityRoleAssignedMessage: {
+    base: 'You were given a community role on NZ Claude Community:',
+    language: {
+      mi: 'I whakawhiwhia koe ki tētahi tūranga hapori i NZ Claude Community:',
+    },
+    style: {
+      plain: 'An admin gave you a community role on NZ Claude Community:',
+    },
+  },
+  /**
+   * The neutral revoke DM for the admin-tier `remove_community_role` —
+   * static, same non-interpolation shape as `communityRoleAssignedMessage`
+   * above (see `notifyCommunityRoleRemoved` in notify.ts). Unconditional,
+   * same rationale as `communityRoleAssignedMessage` — a cosmetic-role strip
+   * is ordinary housekeeping, not moderation, and reads as unexplained/unfair
+   * if left silent (issue #1439).
+   */
+  communityRoleRemovedMessage: {
+    base: 'A community role was removed from you on NZ Claude Community:',
+    language: {
+      mi: 'I tangohia tētahi tūranga hapori i a koe i NZ Claude Community:',
+    },
+    style: {
+      plain: 'An admin removed a community role from you on NZ Claude Community:',
+    },
+  },
   // --- find_helper / share_project / request_project_connection peer-DM
   // recipient notifications (agent/tools/social.ts, issue #1245) ---
   /**

@@ -92,6 +92,8 @@ const {
   notifyKnowledgeCandidateStale,
   notifyWarningsCleared,
   notifyKnowledgeEntryFixed,
+  notifyCommunityRoleAssigned,
+  notifyCommunityRoleRemoved,
   buildToolServer,
   formatAccessRequestsList,
   formatAdminRoster,
@@ -530,7 +532,10 @@ function stubAdapter(sendDirectMessage: PlatformAdapter['sendDirectMessage']): P
  * lets the tools.ts layer (RBAC, allowlist gate, target validation, CONFIRM,
  * audit) be exercised independently of the real Discord client.
  */
-function stubDiscordRoleAdapter(performAdminAction: PlatformAdapter['performAdminAction']): PlatformAdapter {
+function stubDiscordRoleAdapter(
+  performAdminAction: PlatformAdapter['performAdminAction'],
+  sendDirectMessage: PlatformAdapter['sendDirectMessage'] = async () => {},
+): PlatformAdapter {
   return {
     platform: 'discord',
     start: async () => {},
@@ -538,7 +543,7 @@ function stubDiscordRoleAdapter(performAdminAction: PlatformAdapter['performAdmi
     isConnected: () => true,
     onMessage: () => {},
     sendMessage: async () => {},
-    sendDirectMessage: async () => {},
+    sendDirectMessage,
     conversationsForUser: async () => [],
     adminCapabilities: new Set(['assign_community_role', 'remove_community_role', 'list_assignable_roles']),
     performAdminAction,
@@ -2858,6 +2863,287 @@ test("SECURITY: notifyProjectUnarchived never consults the response-style lookup
   );
 
   assert.equal(respStyleCalls, 0);
+});
+
+// notifyCommunityRoleAssigned / notifyCommunityRoleRemoved close the one
+// remaining grant/revoke pair in this codebase with no notification path in
+// either direction (issue #1439) — modelled line-for-line on
+// notifyProjectMemberAdded/notifyProjectMemberRemoved above, but the trailing
+// clause is a Discord role mention rather than a quoted, truncateForEcho-
+// capped name.
+test('notifyCommunityRoleAssigned sends a neutral grant DM naming the role as a Discord role mention', async () => {
+  const calls: Array<[string, string]> = [];
+  const adapter = stubAdapter(async (userId, text) => {
+    calls.push([userId, text]);
+  });
+
+  await notifyCommunityRoleAssigned(adapter, 'user-1', 'discord', 'role-cosmetic-1');
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'user-1');
+  assert.match(calls[0][1], /given a community role/i);
+  assert.match(calls[0][1], /<@&role-cosmetic-1>$/);
+});
+
+test('notifyCommunityRoleAssigned swallows a DM failure rather than throwing (the grant stays the source of truth)', async () => {
+  const adapter = stubAdapter(async () => {
+    throw new Error('DMs closed');
+  });
+
+  await assert.doesNotReject(notifyCommunityRoleAssigned(adapter, 'user-1', 'discord', 'role-cosmetic-1'));
+});
+
+test("notifyCommunityRoleAssigned sends the te reo Māori variant for a caller with a stored 'mi' preference", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyCommunityRoleAssigned(adapter, 'user-1', 'discord', 'role-cosmetic-1', async () => 'mi');
+
+  assert.match(calls[0], /whakawhiwhia/);
+  assert.match(calls[0], /<@&role-cosmetic-1>$/);
+});
+
+test("notifyCommunityRoleAssigned sends the plain-language variant for a caller with a stored 'plain' response style", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyCommunityRoleAssigned(
+    adapter,
+    'user-1',
+    'discord',
+    'role-cosmetic-1',
+    async () => 'auto',
+    async () => 'plain',
+  );
+
+  assert.match(calls[0], /^An admin gave you a community role/);
+});
+
+test("SECURITY: notifyCommunityRoleAssigned degrades to the English default, rather than throwing or dropping the DM, when the language-preference lookup fails (issue #52's invariant)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyCommunityRoleAssigned(adapter, 'user-1', 'discord', 'role-cosmetic-1', async () => {
+    throw new Error('DB unreachable');
+  });
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /given a community role/i);
+});
+
+test("SECURITY: notifyCommunityRoleAssigned degrades to the English default, rather than throwing or dropping the DM, when the response-style lookup fails (issue #52's invariant)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyCommunityRoleAssigned(
+    adapter,
+    'user-1',
+    'discord',
+    'role-cosmetic-1',
+    async () => 'auto',
+    async () => {
+      throw new Error('DB unreachable');
+    },
+  );
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /given a community role/i);
+});
+
+test("SECURITY: notifyCommunityRoleAssigned never consults the response-style lookup once language has resolved to 'mi'", async () => {
+  let respStyleCalls = 0;
+  const adapter = stubAdapter(async () => {});
+
+  await notifyCommunityRoleAssigned(
+    adapter,
+    'user-1',
+    'discord',
+    'role-cosmetic-1',
+    async () => 'mi',
+    async () => {
+      respStyleCalls += 1;
+      throw new Error('must never be reached when lang is mi');
+    },
+  );
+
+  assert.equal(respStyleCalls, 0);
+});
+
+test('SECURITY: notifyCommunityRoleAssigned queues via queueForWindowReopen at "low" priority on a WindowClosedError, rather than dropping the DM (issue #1439, #644 recovery extended)', async () => {
+  const queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }> = [];
+  const adapter: PlatformAdapter = {
+    ...stubAdapter(async () => {
+      throw new WindowClosedError('user-1');
+    }),
+    queueForWindowReopen(userId: string, message: string, priority: 'system' | 'low') {
+      queued.push({ userId, message, priority });
+    },
+  };
+
+  await notifyCommunityRoleAssigned(adapter, 'user-1', 'discord', 'role-cosmetic-1');
+
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0]?.userId, 'user-1');
+  assert.equal(queued[0]?.priority, 'low');
+});
+
+test(
+  'SECURITY: notifyCommunityRoleAssigned/notifyCommunityRoleRemoved render no acting-admin identity or ' +
+    'free-text — each variant is fixed copy plus only the (already-allowlisted) roleId as a Discord role ' +
+    "mention, never interpolated with the target's own userId or any other value (issue #1439)",
+  async () => {
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (_userId, message) => {
+      calls.push(message);
+    });
+
+    await notifyCommunityRoleAssigned(adapter, 'user-1', 'discord', 'role-cosmetic-1');
+    await notifyCommunityRoleRemoved(adapter, 'user-1', 'discord', 'role-cosmetic-1');
+    await notifyCommunityRoleAssigned(adapter, 'user-1', 'discord', 'role-cosmetic-1', async () => 'mi');
+    await notifyCommunityRoleRemoved(adapter, 'user-1', 'discord', 'role-cosmetic-1', async () => 'mi');
+
+    for (const message of calls) {
+      assert.doesNotMatch(message, /user-1/, 'the target userId must never be echoed into the DM body');
+      assert.doesNotMatch(message, /admin/i, 'no acting-admin identity or reference may appear in the DM');
+      assert.match(
+        message,
+        /^\S[\s\S]*<@&role-cosmetic-1>$/,
+        'the message must be fixed copy followed by exactly the role mention',
+      );
+    }
+  },
+);
+
+test('notifyCommunityRoleRemoved sends a neutral revoke DM naming the role as a Discord role mention', async () => {
+  const calls: Array<[string, string]> = [];
+  const adapter = stubAdapter(async (userId, text) => {
+    calls.push([userId, text]);
+  });
+
+  await notifyCommunityRoleRemoved(adapter, 'user-1', 'discord', 'role-cosmetic-1');
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'user-1');
+  assert.match(calls[0][1], /removed from you/i);
+  assert.match(calls[0][1], /<@&role-cosmetic-1>$/);
+});
+
+test('notifyCommunityRoleRemoved swallows a DM failure rather than throwing (the removal stays the source of truth)', async () => {
+  const adapter = stubAdapter(async () => {
+    throw new Error('DMs closed');
+  });
+
+  await assert.doesNotReject(notifyCommunityRoleRemoved(adapter, 'user-1', 'discord', 'role-cosmetic-1'));
+});
+
+test("notifyCommunityRoleRemoved sends the te reo Māori variant for a caller with a stored 'mi' preference", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyCommunityRoleRemoved(adapter, 'user-1', 'discord', 'role-cosmetic-1', async () => 'mi');
+
+  assert.match(calls[0], /tangohia/);
+  assert.match(calls[0], /<@&role-cosmetic-1>$/);
+});
+
+test("notifyCommunityRoleRemoved sends the plain-language variant for a caller with a stored 'plain' response style", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyCommunityRoleRemoved(
+    adapter,
+    'user-1',
+    'discord',
+    'role-cosmetic-1',
+    async () => 'auto',
+    async () => 'plain',
+  );
+
+  assert.match(calls[0], /^An admin removed a community role from you/);
+});
+
+test("SECURITY: notifyCommunityRoleRemoved degrades to the English default, rather than throwing or dropping the DM, when the language-preference lookup fails (issue #52's invariant)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyCommunityRoleRemoved(adapter, 'user-1', 'discord', 'role-cosmetic-1', async () => {
+    throw new Error('DB unreachable');
+  });
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /removed from you/i);
+});
+
+test("SECURITY: notifyCommunityRoleRemoved degrades to the English default, rather than throwing or dropping the DM, when the response-style lookup fails (issue #52's invariant)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyCommunityRoleRemoved(
+    adapter,
+    'user-1',
+    'discord',
+    'role-cosmetic-1',
+    async () => 'auto',
+    async () => {
+      throw new Error('DB unreachable');
+    },
+  );
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /removed from you/i);
+});
+
+test("SECURITY: notifyCommunityRoleRemoved never consults the response-style lookup once language has resolved to 'mi'", async () => {
+  let respStyleCalls = 0;
+  const adapter = stubAdapter(async () => {});
+
+  await notifyCommunityRoleRemoved(
+    adapter,
+    'user-1',
+    'discord',
+    'role-cosmetic-1',
+    async () => 'mi',
+    async () => {
+      respStyleCalls += 1;
+      throw new Error('must never be reached when lang is mi');
+    },
+  );
+
+  assert.equal(respStyleCalls, 0);
+});
+
+test('SECURITY: notifyCommunityRoleRemoved queues via queueForWindowReopen at "low" priority on a WindowClosedError, rather than dropping the DM (issue #1439, #644 recovery extended)', async () => {
+  const queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }> = [];
+  const adapter: PlatformAdapter = {
+    ...stubAdapter(async () => {
+      throw new WindowClosedError('user-1');
+    }),
+    queueForWindowReopen(userId: string, message: string, priority: 'system' | 'low') {
+      queued.push({ userId, message, priority });
+    },
+  };
+
+  await notifyCommunityRoleRemoved(adapter, 'user-1', 'discord', 'role-cosmetic-1');
+
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0]?.userId, 'user-1');
+  assert.equal(queued[0]?.priority, 'low');
 });
 
 // notifySuggestionResolved holds all of resolve_suggestion's new (issue #116)
@@ -43213,6 +43499,134 @@ test(
     );
     assert.equal(rows.length, 1);
     assert.equal(rows[0].success, true);
+  },
+);
+
+test(
+  'SECURITY: assign_community_role/remove_community_role fire their notify DM only on the actual assign/remove ' +
+    'transition — never before requireConfirm executes, on the unsupported-platform refusal, the off-allowlist ' +
+    'refusal, or the unknown-target refusal (issue #1439 acceptance criterion #3)',
+  { skip },
+  async () => {
+    const targetUserId = `${COMMUNITY_ROLE_HANDLER_USER}-notify-gating`;
+    await upsertMember({ platform: 'discord', userId: targetUserId, role: 'member', addedBy: 'admin-1' });
+
+    const dmCalls: Array<[string, string]> = [];
+    const adapter = stubDiscordRoleAdapter(
+      async (action) => `ok:${action.kind}`,
+      async (userId, message) => {
+        dmCalls.push([userId, message]);
+      },
+    );
+    const unsupportedAdapter = stubAdapter(async (userId, message) => {
+      dmCalls.push([userId, message]);
+    });
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'admin-1',
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: 'convo-role-notify-gating',
+    };
+
+    // Unsupported platform (no community-role capability): no DM.
+    await toolFrom(buildToolServer(caller, unsupportedAdapter), 'assign_community_role').handler({
+      userId: targetUserId,
+      roleId: 'role-cosmetic-1',
+    });
+    assert.equal(dmCalls.length, 0, 'an unsupported platform must never fire a notify DM');
+
+    // Off-allowlist role: no DM, no pending action.
+    const server = buildToolServer(caller, adapter);
+    await toolFrom(server, 'assign_community_role').handler({
+      userId: targetUserId,
+      roleId: 'role-not-on-list',
+    });
+    assert.equal(dmCalls.length, 0, 'an off-allowlist role must never fire a notify DM');
+
+    // Unknown target: no DM, no pending action.
+    await toolFrom(server, 'assign_community_role').handler({
+      userId: `${targetUserId}-unknown`,
+      roleId: 'role-cosmetic-1',
+    });
+    assert.equal(dmCalls.length, 0, 'an unknown target must never fire a notify DM');
+
+    // CONFIRM requested but not yet executed: no DM.
+    const assignResult = await toolFrom(server, 'assign_community_role').handler({
+      userId: targetUserId,
+      roleId: 'role-cosmetic-1',
+    });
+    assert.match(assignResult.content[0].text, /CONFIRM/);
+    assert.equal(
+      dmCalls.length,
+      0,
+      'a CONFIRM request that has not executed yet must never fire a notify DM',
+    );
+
+    // Executed: exactly one DM.
+    const assignPending = takePendingAction('discord', 'convo-role-notify-gating', 'admin-1');
+    assert.ok(assignPending, 'assign_community_role must register a pending action');
+    await assignPending?.execute();
+    assert.equal(dmCalls.length, 1, 'a successful assign must fire exactly one notify DM');
+    assert.equal(dmCalls[0][0], targetUserId, 'the DM must reach only the target member');
+    assert.match(dmCalls[0][1], /<@&role-cosmetic-1>$/);
+
+    // remove_community_role: same CONFIRM-gating, then exactly one more DM.
+    const removeResult = await toolFrom(server, 'remove_community_role').handler({
+      userId: targetUserId,
+      roleId: 'role-cosmetic-1',
+    });
+    assert.match(removeResult.content[0].text, /CONFIRM/);
+    assert.equal(
+      dmCalls.length,
+      1,
+      'a CONFIRM request that has not executed yet must never fire a second DM',
+    );
+
+    const removePending = takePendingAction('discord', 'convo-role-notify-gating', 'admin-1');
+    assert.ok(removePending, 'remove_community_role must register a pending action');
+    await removePending?.execute();
+    assert.equal(dmCalls.length, 2, 'a successful remove must fire exactly one more notify DM');
+    assert.equal(dmCalls[1][0], targetUserId, 'the DM must reach only the target member');
+    assert.match(dmCalls[1][1], /<@&role-cosmetic-1>$/);
+  },
+);
+
+test(
+  'SECURITY: assign_community_role/remove_community_role never fire their notify DM when performAdminAction ' +
+    'itself throws — a failed grant/revoke must not tell the member it happened (issue #1439 acceptance criterion #2)',
+  { skip },
+  async () => {
+    const targetUserId = `${COMMUNITY_ROLE_HANDLER_USER}-notify-failed-action`;
+    await upsertMember({ platform: 'discord', userId: targetUserId, role: 'member', addedBy: 'admin-1' });
+
+    const dmCalls: Array<[string, string]> = [];
+    const adapter = stubDiscordRoleAdapter(
+      async () => {
+        throw new Error('Discord API unavailable');
+      },
+      async (userId, message) => {
+        dmCalls.push([userId, message]);
+      },
+    );
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'admin-1',
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: 'convo-role-notify-failed',
+    };
+    const server = buildToolServer(caller, adapter);
+
+    await toolFrom(server, 'assign_community_role').handler({
+      userId: targetUserId,
+      roleId: 'role-cosmetic-1',
+    });
+    const pending = takePendingAction('discord', 'convo-role-notify-failed', 'admin-1');
+    assert.ok(pending);
+    const execResult = await pending?.execute();
+    assert.match(execResult ?? '', /Failed:/);
+    assert.equal(dmCalls.length, 0, 'a failed performAdminAction must never fire a notify DM');
   },
 );
 
