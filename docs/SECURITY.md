@@ -2398,6 +2398,16 @@ power, independent of anything `resolveRole` does. Controls:
   advertise `assign_community_role`/`remove_community_role` in
   `adminCapabilities`, so the tools reply with an unsupported-platform
   message rather than erroring.
+- **Member notification (issue #1439)**: on a successful grant/removal, a
+  best-effort DM tells the affected member, naming the role as a Discord role
+  mention (`<@&roleId>`) so Discord itself renders its current name/colour
+  client-side. The DM body is built only from the tool's own already-validated
+  `(userId, platform, roleId)` — `roleId` is allowlist-checked before this
+  point, so it is never free-form or model-authored text, and the message
+  names no third party or acting admin (pinned by `SECURITY:` tests). Same
+  fire-and-forget, `WindowClosedError`-queues-for-reopen contract as every
+  other grant/revoke notify in `notify.ts`; a failed send never blocks or
+  changes the admin-facing reply.
 
 **Role-hierarchy requirement (operational, fail-safe)**: the bot's own
 managed Discord role must sit **above** every role listed in

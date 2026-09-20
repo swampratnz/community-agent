@@ -883,6 +883,93 @@ export async function notifyProjectUnarchived(
 }
 
 /**
+ * Best-effort orientation DM to a member granted a cosmetic Discord role via
+ * `assign_community_role` (issue #1439) — closes the one remaining
+ * grant/revoke pair in this codebase where the affected member learned
+ * nothing (`discordRoles.ts`'s own header notes these tools are orthogonal to
+ * the RBAC tiers, which is exactly why they were never swept into the
+ * notify.ts-adjacent sweep that produced every sibling above). Modelled
+ * line-for-line on `notifyProjectMemberAdded` above: fire-and-forget,
+ * `.catch(logger.warn)`, never blocks or changes the calling tool's own
+ * reported outcome, and fires unconditionally — an admin-named role, not a
+ * free-text moderation reason, so there is no reason-gated silent path here.
+ * The base text (`strings/notices.ts`'s `communityRoleAssignedMessage`) is
+ * never interpolated with the role id; the role is appended only as a
+ * distinct Discord role-mention (`<@&roleId>`), which Discord itself renders
+ * as the role's current name/colour client-side with no extra API call.
+ * `discordRoles.ts` is Discord-only and `roleId` is always allowlist-checked
+ * (`config.discord.assignableRoleIds`) before this point, so it is never
+ * free-form or model-authored text. Honours the target's standing `'mi'`
+ * language preference, degrading to `'auto'`/English on a lookup failure
+ * (issue #52's invariant); `getRespStyle` is consulted only once `'mi'` is
+ * ruled out, degrading to `'standard'` on failure (issue #1212's shape) —
+ * both resolvers are appended last, same convention every sibling in this
+ * file uses to keep positional call sites stable. A `WindowClosedError`
+ * rejection is queued via `queueForWindowReopen` at `'low'` priority instead
+ * of dropped (issue #644 recovery); any other rejection is logged and
+ * swallowed. Exported separately so it's unit-testable without the MCP
+ * tool-call transport, same convention as every sibling notify function.
+ */
+export async function notifyCommunityRoleAssigned(
+  adapter: PlatformAdapter,
+  userId: string,
+  platform: Platform,
+  roleId: string,
+  getLangPref: typeof getLanguagePreference = getLanguagePreference,
+  getRespStyle: typeof getResponseStyle = getResponseStyle,
+): Promise<void> {
+  const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
+  const style: ResponseStyle | undefined =
+    lang === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
+  const base = notice('communityRoleAssignedMessage', { language: lang, style });
+  const message = `${base} <@&${roleId}>`;
+  await adapter.sendDirectMessage(userId, message).catch((err) => {
+    if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+      adapter.queueForWindowReopen(userId, message, 'low');
+      logger.warn(
+        { userId: hashId(userId), platform },
+        "Community role-assigned DM: recipient's window is closed, queued for reopen",
+      );
+      return;
+    }
+    logger.warn({ err, userId: hashId(userId) }, 'Community role-assigned DM failed');
+  });
+}
+
+/**
+ * The revoke-side counterpart to `notifyCommunityRoleAssigned` above (issue
+ * #1439), for `remove_community_role` — same shape, same unconditional-fire
+ * rationale, and the same fail-safe language/style lookups, `WindowClosedError`
+ * recovery, and swallow-and-log-everything-else shape as
+ * `notifyCommunityRoleAssigned` above.
+ */
+export async function notifyCommunityRoleRemoved(
+  adapter: PlatformAdapter,
+  userId: string,
+  platform: Platform,
+  roleId: string,
+  getLangPref: typeof getLanguagePreference = getLanguagePreference,
+  getRespStyle: typeof getResponseStyle = getResponseStyle,
+): Promise<void> {
+  const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
+  const style: ResponseStyle | undefined =
+    lang === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
+  const base = notice('communityRoleRemovedMessage', { language: lang, style });
+  const message = `${base} <@&${roleId}>`;
+  await adapter.sendDirectMessage(userId, message).catch((err) => {
+    if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+      adapter.queueForWindowReopen(userId, message, 'low');
+      logger.warn(
+        { userId: hashId(userId), platform },
+        "Community role-removed DM: recipient's window is closed, queued for reopen",
+      );
+      return;
+    }
+    logger.warn({ err, userId: hashId(userId) }, 'Community role-removed DM failed');
+  });
+}
+
+/**
  * Best-effort confirmation DM to a member when their suggest_improvement
  * submission is resolved — closes the "suggestion box into the void" gap
  * (issue #116), mirroring notifyMemberApproved's shape exactly: fire-and-

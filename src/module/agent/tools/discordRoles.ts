@@ -4,6 +4,7 @@ import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
 import { config } from '@swampratnz/agent-base/config.js';
 import { getMemberRole } from '@swampratnz/agent-base/storage/repository.js';
 import { resolveSanitizedLabel, text } from './helpers.js';
+import { notifyCommunityRoleAssigned, notifyCommunityRoleRemoved } from './notify.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 // --- Cosmetic community roles (issue #232) ----------------------------------
@@ -63,6 +64,13 @@ export const discordRolesTools = [
               params: { roleId: args.roleId },
             }),
         });
+        // Best-effort notification to the affected member (issue #1439) —
+        // fired only on the actual grant, never on a refusal/early-return
+        // above and never on a failed performAdminAction; never blocks or
+        // changes the admin-facing reply above.
+        if (success) {
+          await notifyCommunityRoleAssigned(adapter, args.userId, caller.platform, args.roleId);
+        }
         return success ? `Done: ${result}` : `Failed: ${result}`;
       });
     },
@@ -101,6 +109,14 @@ export const discordRolesTools = [
               params: { roleId: args.roleId },
             }),
         });
+        // Best-effort notification to the affected member (issue #1439) —
+        // symmetric with assign_community_role above: fired only on the
+        // actual removal, never on a refusal/early-return above and never on
+        // a failed performAdminAction; never blocks or changes the
+        // admin-facing reply above.
+        if (success) {
+          await notifyCommunityRoleRemoved(adapter, args.userId, caller.platform, args.roleId);
+        }
         return success ? `Done: ${result}` : `Failed: ${result}`;
       });
     },
