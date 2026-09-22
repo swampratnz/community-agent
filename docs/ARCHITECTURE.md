@@ -467,7 +467,17 @@ memory**:
    excludes the entry being edited from its own candidate set, is purely
    advisory (the edit always proceeds, matching #93's nudge-not-block
    decision), and stays admin-tier + CONFIRM-gated exactly as before (issue
-   #584). `scope` (`'global'` | a platform | a conversation id) is
+   #584). Both tools now also nudge on the sibling conflict band (issue
+   #1445): when a write lands with no near-duplicate match, it checks
+   `listKnowledgeConflictCandidates` (the same query `list_knowledge_conflicts`
+   runs on manual audit) for a same-scope conflict-candidate pair involving
+   the written entry and, if found, appends a distinctly-worded "may
+   conflict" note instead of the near-duplicate "looks similar" one — closing
+   the write-time gap `list_knowledge_conflicts`' own doc comment called out,
+   with the same fail-soft/advisory/CONFIRM-unaffected shape as the
+   near-duplicate nudge. The two nudges are mutually exclusive per write: a
+   near-duplicate match always takes precedence and the conflict lookup is
+   skipped entirely when one is found. `scope` (`'global'` | a platform | a conversation id) is
    enforced at retrieval time: `knowledge_search` only ever surfaces
    `'global'` entries plus entries scoped to the caller's own platform or
    conversation (see docs/SECURITY.md, issue #106). `list_knowledge` is the
