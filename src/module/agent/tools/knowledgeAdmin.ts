@@ -212,10 +212,12 @@ async function findConflictNudgeMatch(
   scope: string | undefined,
   entryId: number,
 ): Promise<KnowledgeConflictPair | undefined> {
-  const pairs = await listKnowledgeConflictCandidates(scope, KNOWLEDGE_CONFLICT_NUDGE_FETCH_LIMIT).catch((err) => {
-    logger.warn({ err }, 'Knowledge conflict-nudge lookup failed; omitting the conflict note');
-    return [];
-  });
+  const pairs = await listKnowledgeConflictCandidates(scope, KNOWLEDGE_CONFLICT_NUDGE_FETCH_LIMIT).catch(
+    (err) => {
+      logger.warn({ err }, 'Knowledge conflict-nudge lookup failed; omitting the conflict note');
+      return [];
+    },
+  );
   return pairs.find((p) => p.aId === entryId || p.bId === entryId);
 }
 
