@@ -36758,6 +36758,237 @@ test(
   },
 );
 
+// audit_view oldestFirst (issue #1443) — the last of the moderation.ts
+// oldestFirst sweep (#1255/#1259/#1261/#1265/#1371/#1379/#1426) applied to
+// the one super-admin history tool it never reached. recentAuditEntries
+// (agent-base) has no ordering parameter and always queries newest-first, so
+// this is implemented module-side as a single bounded fetch + JS sort — same
+// shape as moderation_history's own oldestFirst above, unscoped (audit_view
+// is global, not conversation-scoped) so there is no callerScope() filter to
+// preserve.
+const AUDIT_VIEW_SCAN_LIMIT = 100;
+
+function auditViewHandler(role: 'member' | 'admin' | 'super_admin', userId = 'super-audit-view-caller') {
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId,
+      userName: 'SuperAdmin',
+      role,
+      conversationId: 'convo-audit-view',
+    },
+    stubAdapter(async () => {}),
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: { limit?: number; oldestFirst?: boolean }) => Promise<{
+            content: Array<{ type: string; text: string }>;
+            isError?: boolean;
+          }>;
+        }
+      >;
+    }
+  )._registeredTools['audit_view'];
+}
+
+test(
+  'audit_view: oldestFirst orders by createdAt ascending, sliced to limit ?? 20; omitted/false stays ' +
+    'byte-identical to the default newest-first order (issue #1443 acceptance criteria 1, 2)',
+  { skip },
+  async (t) => {
+    // audit_view is unscoped (global, not conversation-scoped like
+    // moderation_history) by design — a super admin sees the whole audit
+    // log. Real inserts would be drowned out by the rest of this suite's
+    // concurrent admin_audit writes within AUDIT_VIEW_SCAN_LIMIT's fixed
+    // 100-row window, so this mocks pool.query with a small controlled row
+    // set instead, same technique as the scan-limit caveat test below.
+    const now = Date.now();
+    const syntheticRows = [
+      {
+        created_at: new Date(now - 1000),
+        platform: 'discord',
+        actor_user_id: 'admin-1',
+        action_kind: 'set_policy',
+        target_user_id: null,
+        success: true,
+        result: 'entry-newer',
+      },
+      {
+        created_at: new Date(now - 2000),
+        platform: 'discord',
+        actor_user_id: 'admin-1',
+        action_kind: 'set_policy',
+        target_user_id: null,
+        success: true,
+        result: 'entry-older',
+      },
+    ];
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && /FROM admin_audit\b/.test(sql)) {
+        return Promise.resolve({ rows: syntheticRows, rowCount: syntheticRows.length });
+      }
+      return (realQuery as (...a: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+    try {
+      const defaultOrder = await auditViewHandler('super_admin').handler({});
+      const defaultText = defaultOrder.content[0]?.text ?? '';
+      assert.ok(
+        defaultText.indexOf('entry-newer') < defaultText.indexOf('entry-older'),
+        'default (no oldestFirst) lists the newest entry before the oldest one, unchanged from before this issue',
+      );
+
+      const explicitFalse = await auditViewHandler('super_admin').handler({ oldestFirst: false });
+      assert.equal(
+        explicitFalse.content[0]?.text,
+        defaultText,
+        'oldestFirst: false must render byte-identical to the omitted-field default',
+      );
+
+      const oldestFirstOrder = await auditViewHandler('super_admin').handler({ oldestFirst: true });
+      const oldestFirstText = oldestFirstOrder.content[0]?.text ?? '';
+      assert.ok(
+        oldestFirstText.indexOf('entry-older') < oldestFirstText.indexOf('entry-newer'),
+        'oldestFirst: true lists the earliest entry before the more recent one',
+      );
+      assert.doesNotMatch(
+        oldestFirstText,
+        /oldestFirst caveat/i,
+        'a scan well under AUDIT_VIEW_SCAN_LIMIT must not carry the "may be incomplete" caveat',
+      );
+    } finally {
+      t.mock.restoreAll();
+    }
+  },
+);
+
+test(
+  'audit_view: oldestFirst appends an explicit caveat when the scan hits AUDIT_VIEW_SCAN_LIMIT, since that ' +
+    'many entries means the genuinely earliest one could sit outside the single bounded scan and never ' +
+    'surface — the tool must say so rather than silently reporting a mid-recent row as "oldest"; the default ' +
+    '(non-oldestFirst) path never carries the caveat (issue #1443 acceptance criterion 4)',
+  { skip },
+  async (t) => {
+    const now = Date.now();
+    const syntheticRows = Array.from({ length: AUDIT_VIEW_SCAN_LIMIT }, (_, i) => ({
+      created_at: new Date(now - i * 1000),
+      platform: 'discord',
+      actor_user_id: 'admin-1',
+      action_kind: 'set_policy',
+      target_user_id: null,
+      success: true,
+      result: `entry-${i}`,
+    }));
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && /FROM admin_audit\b/.test(sql)) {
+        return Promise.resolve({ rows: syntheticRows, rowCount: syntheticRows.length });
+      }
+      return (realQuery as (...a: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+    try {
+      const result = await auditViewHandler('super_admin').handler({ oldestFirst: true });
+      const rendered = result.content[0]?.text ?? '';
+      assert.match(
+        rendered,
+        /oldestFirst caveat/i,
+        'hitting the scan limit must surface an explicit caveat that the true oldest row may not be shown',
+      );
+      assert.match(
+        rendered,
+        /audit_view/,
+        'the caveat should name this tool, same wording pattern as moderation_history',
+      );
+      assert.match(
+        rendered,
+        new RegExp(String(AUDIT_VIEW_SCAN_LIMIT)),
+        'the caveat should name the scan-limit constant so a super admin understands the bound',
+      );
+
+      const defaultResult = await auditViewHandler('super_admin').handler({});
+      assert.doesNotMatch(
+        defaultResult.content[0]?.text ?? '',
+        /oldestFirst caveat/i,
+        'the default (non-oldestFirst) path must never carry the caveat, regardless of underlying volume',
+      );
+    } finally {
+      t.mock.restoreAll();
+    }
+  },
+);
+
+test(
+  'SECURITY: audit_view queries admin_audit exactly once regardless of oldestFirst, binding the SQL LIMIT ' +
+    'to args.limit ?? 20 on the default path and to the module-local scan-limit constant (100) — never an ' +
+    'unbounded scan — only when oldestFirst: true (issue #1443 acceptance criterion 3)',
+  { skip },
+  async (t) => {
+    const actor = `${RUN}-audit-view-scanlimit-security`;
+    await pool.query(
+      `INSERT INTO admin_audit (platform, actor_user_id, action_kind, success, result)
+       VALUES ('discord', $1, 'set_policy', true, 'entry')`,
+      [actor],
+    );
+    try {
+      for (const args of [{}, { oldestFirst: false }, { oldestFirst: true }] as const) {
+        const calls: unknown[][] = [];
+        const realQuery = pool.query.bind(pool);
+        t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+          if (typeof sql === 'string' && /FROM admin_audit\b/.test(sql)) calls.push(rest);
+          return (realQuery as (...a: unknown[]) => unknown)(sql, ...rest);
+        }) as typeof pool.query);
+        try {
+          await auditViewHandler('super_admin').handler(args);
+          assert.equal(
+            calls.length,
+            1,
+            `audit_view must query admin_audit exactly once for ${JSON.stringify(args)}`,
+          );
+          const params = calls[0][0] as unknown[];
+          assert.equal(
+            params[params.length - 1],
+            args.oldestFirst ? AUDIT_VIEW_SCAN_LIMIT : 20,
+            args.oldestFirst
+              ? 'oldestFirst: true must bind the module-local AUDIT_VIEW_SCAN_LIMIT (100) to the SQL LIMIT ' +
+                  'parameter, never an unbounded scan'
+              : 'the default/oldestFirst:false path must bind args.limit ?? 20, never the scan-limit constant',
+          );
+        } finally {
+          t.mock.restoreAll();
+        }
+      }
+    } finally {
+      await pool.query(`DELETE FROM admin_audit WHERE actor_user_id = $1`, [actor]);
+    }
+  },
+);
+
+test(
+  "SECURITY: audit_view's minTier stays super_admin and a below-tier caller is refused even with " +
+    'oldestFirst: true — the new param cannot be used to route around the existing tier gate, and no ' +
+    'admin_audit row is ever read on the refused path (issue #1443 acceptance criterion 5)',
+  async (t) => {
+    const calls: unknown[][] = [];
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && /FROM admin_audit\b/.test(sql)) calls.push(rest);
+      return (realQuery as (...a: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+    try {
+      for (const role of ['member', 'admin'] as const) {
+        const registeredTool = auditViewHandler(role);
+        await assert.rejects(() => registeredTool.handler({ oldestFirst: true }), /Permission denied/);
+      }
+      assert.equal(calls.length, 0, 'a refused caller must never reach the admin_audit query');
+    } finally {
+      t.mock.restoreAll();
+    }
+  },
+);
+
 test(
   'SECURITY: a successful save_knowledge call fires the real-time notifySuperAdmins alert, and a failed one does not — the invariant audited() already guarantees for every sibling tool, verified here for save_knowledge specifically (issue #1201 acceptance criterion 6)',
   { skip },

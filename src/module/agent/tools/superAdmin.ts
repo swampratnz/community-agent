@@ -86,6 +86,22 @@ async function resetSessionsForRoleChange(platform: Platform, userId: string, ac
   }
 }
 
+/**
+ * `recentAuditEntries` (agent-base) has no ordering parameter and always
+ * queries newest-first, same constraint as `moderation.ts`'s five sibling
+ * history tools. So `oldestFirst: true` below can only ever fetch the newest
+ * AUDIT_VIEW_SCAN_LIMIT rows (one bounded call, never a second) and sort that
+ * window ascending by `createdAt` in JS — the same bounded, precedent-accepted
+ * tradeoff the `*_SCAN_LIMIT` constants in moderation.ts describe (issue
+ * #1443, mirroring #1255/#1259/#1261/#1265/#1371/#1379/#1426). The handler
+ * surfaces a caveat whenever the scan hits this limit, rather than silently
+ * reporting a mid-recent row as "oldest". 100, matching
+ * MODERATION_HISTORY_SCAN_LIMIT rather than the 200 used by the other
+ * siblings, since audit_view has no per-repository-function clamp to worry
+ * about either way — 100 is simply a reasonable bound for a single scan.
+ */
+const AUDIT_VIEW_SCAN_LIMIT = 100;
+
 /** suggest_issue filings per super admin, for the rolling calendar-day cap. */
 const reserveIssueDaily = makeCalendarDayReserver();
 
@@ -236,18 +252,51 @@ export const superAdminTools = [
     description: 'Show recent privileged actions from the audit log. Super admin only.',
     minTier: 'super_admin',
     readOnlyHint: true,
-    schema: { limit: z.number().optional().describe('Max entries (default 20)') },
+    schema: {
+      limit: z.number().optional().describe('Max entries (default 20)'),
+      oldestFirst: z
+        .boolean()
+        .optional()
+        .describe(
+          'Order by createdAt ascending (earliest action first) instead of the default newest-first — ' +
+            'use this to tell a slow-building pattern from a sudden spike. Approximate for a large audit ' +
+            `log: only scans the ${AUDIT_VIEW_SCAN_LIMIT} most recent entries before sorting, so if that ` +
+            'many or more exist, the true earliest may fall outside what was scanned — the response says ' +
+            'so explicitly when this happens.',
+        ),
+    },
     handler: async (args, { caller }) => {
       assertAtLeast(caller.role, 'super_admin', 'audit_view');
-      const rows = await recentAuditEntries(args.limit ?? 20);
+      // oldestFirst: true takes exactly one bounded read (never a second
+      // call) and sorts/slices in JS — see AUDIT_VIEW_SCAN_LIMIT above.
+      // False/omitted stays byte-identical to before this field existed,
+      // using the identical single-call shape as before.
+      const scanned = args.oldestFirst ? await recentAuditEntries(AUDIT_VIEW_SCAN_LIMIT) : null;
+      const rows = scanned
+        ? [...scanned]
+            .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+            .slice(0, args.limit ?? 20)
+        : await recentAuditEntries(args.limit ?? 20);
       if (rows.length === 0) return text('Audit log is empty.');
+      // Truncation caveat (mirrors moderation.ts's *_SCAN_LIMIT siblings):
+      // `scanned` hitting exactly AUDIT_VIEW_SCAN_LIMIT means the audit log
+      // may hold more entries than the single bounded scan could see, so the
+      // "oldest" rows below only ever come from the most recent
+      // AUDIT_VIEW_SCAN_LIMIT ones — the genuine earliest could be outside
+      // that window and missing here.
+      const truncationCaveat =
+        scanned && scanned.length === AUDIT_VIEW_SCAN_LIMIT
+          ? ` ⚠️ oldestFirst caveat: audit_view found ${AUDIT_VIEW_SCAN_LIMIT}+ entries in the audit log, ` +
+            `so only the ${AUDIT_VIEW_SCAN_LIMIT} most recent ones were scanned before sorting — the true ` +
+            'oldest may not be shown above.'
+          : '';
       return text(
         rows
           .map(
             (r) =>
               `[${r.createdAt.toISOString()}] ${r.platform} ${r.actorUserId} → ${r.actionKind}${r.targetUserId ? ` (${r.targetUserId})` : ''} ${r.success ? '✓' : '✗'} ${r.result ?? ''}`,
           )
-          .join('\n'),
+          .join('\n') + truncationCaveat,
       );
     },
   }),
