@@ -37616,6 +37616,135 @@ test(
 );
 
 test(
+  "SECURITY: update_knowledge's conflict-nudge lookup, called with scope OMITTED (the call shape almost every real edit uses — editing title/content only), never surfaces a conflict-band match that lives in a scope different from the edited entry's own real (retained), non-default scope (issue #1445)",
+  { skip },
+  async (t) => {
+    const scopeA = `${RUN}-update-conflict-cross-scope-a`;
+    const scopeB = `${RUN}-update-conflict-cross-scope-b`;
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-update-conflict-cross-scope-admin`,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: `${RUN}-update-conflict-cross-scope-convo`,
+    };
+    const server = buildToolServer(caller, adapter);
+    const tools = (
+      server.instance as unknown as {
+        _registeredTools: Record<string, { handler: (args: Record<string, unknown>) => Promise<unknown> }>;
+      }
+    )._registeredTools;
+
+    // The edited entry's real, retained scope is A throughout — update_knowledge
+    // is called below WITHOUT a scope argument (the "leave unchanged" case).
+    const { id: editedId } = await saveKnowledge({
+      title: 'Meetup schedule',
+      content: 'We meet monthly on the first Tuesday at the community hall.',
+      scope: scopeA,
+    });
+
+    const newTitle = 'How the roster rotation works';
+    const newContent = 'The roster assigns hosts weekly and resets automatically every month.';
+    const contentEmbedding = await embed(`${newTitle}\n${newContent}`);
+    const midBandVec = atCosineSimilarity(contentEmbedding, 0.7); // inside [0.55, 0.92)
+
+    // The would-be conflict partner lives in scope B — never scope A, the
+    // edited entry's own real scope.
+    const { rows: bRows } = await pool.query(
+      `INSERT INTO knowledge (scope, title, content, embedding) VALUES ($1,$2,$3,$4) RETURNING id`,
+      [
+        scopeB,
+        'Cross-scope fixture (must never leak into scope A)',
+        'unrelated filler',
+        pgvector.toSql(midBandVec),
+      ],
+    );
+    const crossScopeId = Number(bRows[0].id);
+
+    const realQuery = pool.query.bind(pool);
+    const conflictLookupScopes: unknown[] = [];
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && sql.includes('1 - (a.embedding <=> b.embedding) < $3')) {
+        conflictLookupScopes.push((rest[0] as unknown[])[0]);
+      }
+      return (realQuery as (...a: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+
+    let reply: string | undefined;
+    try {
+      // scope deliberately omitted — the call shape update_knowledge uses
+      // almost every time (editing title/content only, per its own schema
+      // doc: "New scope; omit to leave unchanged").
+      await tools['update_knowledge'].handler({ id: editedId, title: newTitle, content: newContent });
+      reply = await takePendingAction('discord', caller.conversationId, caller.userId)?.execute();
+    } finally {
+      t.mock.restoreAll();
+    }
+
+    assert.ok(
+      conflictLookupScopes.length >= 1 && conflictLookupScopes.every((s) => s === null),
+      'this call shape genuinely omits scope (the lookup runs unscoped/null) — confirms the test exercises ' +
+        "update_knowledge's actual common call shape, not an accidentally-scoped one",
+    );
+    assert.doesNotMatch(
+      reply ?? '',
+      /may conflict/,
+      'SECURITY: with scope omitted, a conflict-band match living in a scope different from the edited ' +
+        "entry's own real scope must never surface a nudge",
+    );
+    assert.doesNotMatch(
+      reply ?? '',
+      new RegExp(`#${crossScopeId}\\b`),
+      'SECURITY: the cross-scope entry id must never be named',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE scope = ANY($1)`, [[scopeA, scopeB]]);
+  },
+);
+
+test(
+  'save_knowledge renders no nudge of either kind when real, unrelated content matches neither similarity band (issue #1445 acceptance criterion 5)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-nudge-no-match-scope`;
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-nudge-no-match-admin`,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: `${RUN}-nudge-no-match-convo`,
+    };
+    const server = buildToolServer(caller, adapter);
+    const tools = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }
+        >;
+      }
+    )._registeredTools;
+
+    const result = await tools['save_knowledge'].handler({
+      title: 'Completely unrelated fixture, nothing else in this suite is about this topic',
+      content:
+        'Deliberately generic filler content chosen not to land near any other fixture in embedding space.',
+      scope,
+    });
+    const reply = result.content[0]?.text ?? '';
+
+    assert.match(
+      reply,
+      /^Saved knowledge entry #\d+\.$/,
+      'no nudge of either kind is appended when neither similarity band is cleared',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE scope = $1`, [scope]);
+  },
+);
+
+test(
   "SECURITY: a conflict-nudge lookup failure is caught and logged, and never fails, delays, or changes save_knowledge's own success outcome — only the optional nudge line is omitted (issue #1445 acceptance criterion 7)",
   { skip },
   async (t) => {

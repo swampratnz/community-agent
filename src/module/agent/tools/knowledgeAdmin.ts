@@ -201,7 +201,12 @@ async function notifyUnhelpfulRatersFixed(
 // for the largest single page it will ever return. A scope with more
 // conflict-band pairs than that may still miss one involving this entry —
 // the same accepted bounded-cost tradeoff TOP_KNOWLEDGE_FETCH_CAP documents
-// above for this community's expected KB size.
+// above for this community's expected KB size. That tradeoff assumes a
+// scope-narrowed candidate set: true for save_knowledge's typical explicit
+// `scope` call, but update_knowledge's typical call OMITS `scope` (see the
+// comment above), so this 100-pair cap there competes against every pair in
+// the ENTIRE knowledge base across all scopes, not just the edited entry's
+// own — a materially tighter bound as the whole KB (not one scope) grows.
 //
 // Fail-soft: a lookup failure is caught, logged, and treated as "no match"
 // so it can never affect the write's own success outcome, mirroring
