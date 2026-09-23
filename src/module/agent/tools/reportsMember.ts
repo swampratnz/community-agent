@@ -6,16 +6,16 @@ import {
   countRecentDmReportsByReporterAndTarget,
   createContentReport,
   createModerationAppeal,
-  getLanguagePreference,
   isKnownUser,
   listOwnAppeals,
   REPORT_RATE_LIMIT_PER_DAY,
   withdrawOwnReports,
   type LanguagePreference,
+  type ResponseStyle,
 } from '@swampratnz/agent-base/storage/repository.js';
 import { makeCooldownReserver } from '@swampratnz/agent-base/util/rateReservation.js';
 import { getWithdrawnAppealIds, recordAppealWithdrawal } from '../../storage/appealWithdrawals.js';
-import { text } from './helpers.js';
+import { resolveRecipientNoticeSelection, text } from './helpers.js';
 import { ackReportedMessage, notifyAppealFiled, notifyReportFiled, notifyReportWithdrawn } from './notify.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
@@ -23,68 +23,99 @@ import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
  * Pure render for `report_content`'s two outcomes — same shape as
  * `feedback.ts`'s formatters (issue #1147), reusing `selfService.ts`'s
  * language-as-parameter pattern. `id`/`limit` are unchanged interpolations.
+ * `style` (issue #1436) adds a shorter, simpler English variant when
+ * `'plain'` — consulted only once `'mi'` is ruled out, since `'mi'` wins
+ * regardless of `style` (mirrors `notify.ts`'s pinned precedence rule); the
+ * `'mi'`/default-English branches are unchanged.
  */
 export function formatReportContentText(
   outcome: { recorded: true; id: number } | { recorded: false },
   limit: number,
   language: LanguagePreference,
+  style: ResponseStyle | undefined,
 ): string {
   const mi = language === 'mi';
+  const plain = style === 'plain';
   if (!outcome.recorded) {
     return mi
       ? `Kua tukuna kētia e koe ${limit} ngā pūrongo i roto i ngā haora 24 kua hipa. Tēnā koa, tatari i mua i ` +
           'te tuku i tētahi atu, whakapā tika rānei ki tētahi kaiwhakahaere mehemea he mea whawhati-tata tēnei.'
-      : `You've already submitted ${limit} reports in the last 24 hours. Please wait before submitting ` +
+      : plain
+        ? `You've sent ${limit} reports today. Please wait and try again later. If it's urgent, contact an admin.`
+        : `You've already submitted ${limit} reports in the last 24 hours. Please wait before submitting ` +
           'another, or contact an admin directly if this is urgent.';
   }
   return mi
     ? `Kua tuhia te Pūrongo #${outcome.id} mō ngā kaiwhakahaere o tēnei kōrero. Mauruuru mō te tohu mai.`
-    : `Report #${outcome.id} recorded for this conversation's admins. Thanks for flagging it.`;
+    : plain
+      ? `Report #${outcome.id} saved. The admins can see it. Thanks for telling us.`
+      : `Report #${outcome.id} recorded for this conversation's admins. Thanks for flagging it.`;
 }
 
 /**
  * Pure render for `withdraw_report`'s outcomes — none-to-withdraw, and
  * withdrew (singular/plural). The withdrawn-id list is an unchanged
- * interpolation in both languages.
+ * interpolation in both languages. `style` (issue #1436), same
+ * `'mi'`-wins-over-`'plain'` precedence as every formatter in this file.
  */
-export function formatWithdrawReportText(ids: number[], language: LanguagePreference): string {
+export function formatWithdrawReportText(
+  ids: number[],
+  language: LanguagePreference,
+  style: ResponseStyle | undefined,
+): string {
   const mi = language === 'mi';
+  const plain = style === 'plain';
   if (ids.length === 0) {
-    return mi ? 'Kāore he pūrongo tuwhera hei tango māu.' : 'You have no open reports to withdraw.';
+    return mi
+      ? 'Kāore he pūrongo tuwhera hei tango māu.'
+      : plain
+        ? 'You have no reports to withdraw.'
+        : 'You have no open reports to withdraw.';
   }
   const list = ids.map((id) => `#${id}`).join(', ');
   return mi
     ? `Kua tangohia ${ids.length > 1 ? 'ō pūrongo' : 'tō pūrongo'} ${list}. Kāore ēnei e mahia; kua ` +
         'whakamōhiotia ngā kaiwhakahaere mō te tangohanga.'
-    : `Withdrew your report${ids.length > 1 ? 's' : ''} ${list}. They won't be actioned; the admins have ` +
+    : plain
+      ? `Withdrew report${ids.length > 1 ? 's' : ''} ${list}. No action will be taken. The admins know.`
+      : `Withdrew your report${ids.length > 1 ? 's' : ''} ${list}. They won't be actioned; the admins have ` +
         'been notified of the withdrawal.';
 }
 
 /**
  * Pure render for `appeal_moderation`'s three outcomes. `cooldownHours` is
- * an unchanged interpolation in both languages.
+ * an unchanged interpolation in both languages. `style` (issue #1436), same
+ * `'mi'`-wins-over-`'plain'` precedence as every formatter in this file.
  */
 export function formatAppealModerationText(
   outcome: 'no_active_warnings' | 'rate_limited' | 'sent',
   cooldownHours: number,
   language: LanguagePreference,
+  style: ResponseStyle | undefined,
 ): string {
   const mi = language === 'mi';
+  const plain = style === 'plain';
   if (outcome === 'no_active_warnings') {
     return mi
       ? 'Kāore āu whakatūpato e mahi tonu ana hei pīra māu i tēnei wā.'
-      : "You don't currently have any active warnings to appeal.";
+      : plain
+        ? 'You have no active warnings to appeal.'
+        : "You don't currently have any active warnings to appeal.";
   }
   if (outcome === 'rate_limited') {
     return mi
       ? `Kua tono kētia koe mō tētahi arotake i te wā tata nei — tēnā koa, tatari i mua i te pīra anō (kotahi ` +
           `ia ${cooldownHours}h).`
-      : `You've already asked for a review recently — please wait before appealing again (once per ` +
+      : plain
+        ? `You asked for a review recently. Please wait ${cooldownHours} hours, then try again.`
+        : `You've already asked for a review recently — please wait before appealing again (once per ` +
           `${cooldownHours}h).`;
   }
   return mi
     ? 'Kua tukuna tō pīra ki ngā kaiwhakahaere mō te arotake. Ka whai kōrero mai rātou mehemea e hiahiatia ana.'
-    : "Your appeal has been sent to the admins for review. They'll follow up if needed.";
+    : plain
+      ? 'Your appeal was sent to the admins. They will follow up if needed.'
+      : "Your appeal has been sent to the admins for review. They'll follow up if needed.";
 }
 
 /**
@@ -93,17 +124,29 @@ export function formatAppealModerationText(
  * above / `formatWithdrawSuggestionText` (feedback.ts) / `formatWithdrawKnowledgeTipConfirmText`
  * (knowledgeMember.ts), issue #1278. `ids` is already scoped to the caller's
  * own still-`'open'`, not-yet-withdrawn appeals by the handler; this function
- * does no scoping itself, only formatting.
+ * does no scoping itself, only formatting. `style` (issue #1436), same
+ * `'mi'`-wins-over-`'plain'` precedence as every formatter in this file.
  */
-export function formatWithdrawAppealText(ids: number[], language: LanguagePreference): string {
+export function formatWithdrawAppealText(
+  ids: number[],
+  language: LanguagePreference,
+  style: ResponseStyle | undefined,
+): string {
   const mi = language === 'mi';
+  const plain = style === 'plain';
   if (ids.length === 0) {
-    return mi ? 'Kāore he pīra tuwhera hei tango māu.' : 'You have no open appeals to withdraw.';
+    return mi
+      ? 'Kāore he pīra tuwhera hei tango māu.'
+      : plain
+        ? 'You have no appeals to withdraw.'
+        : 'You have no open appeals to withdraw.';
   }
   const list = ids.map((id) => `#${id}`).join(', ');
   return mi
     ? `Kua tangohia ${ids.length > 1 ? 'ō pīra' : 'tō pīra'} ${list}. Kāore ēnei e arotakehia.`
-    : `Withdrew your appeal${ids.length > 1 ? 's' : ''} ${list}. They won't be reviewed.`;
+    : plain
+      ? `Withdrew appeal${ids.length > 1 ? 's' : ''} ${list}. No one will review ${ids.length > 1 ? 'them' : 'it'}.`
+      : `Withdrew your appeal${ids.length > 1 ? 's' : ''} ${list}. They won't be reviewed.`;
 }
 
 /**
@@ -177,8 +220,11 @@ export const reportsMemberTools = [
         isDirect: caller.isDirect,
       });
       if (!created) {
-        const language = await getLanguagePreference(caller.platform, caller.userId);
-        return text(formatReportContentText({ recorded: false }, REPORT_RATE_LIMIT_PER_DAY, language), true);
+        const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
+        return text(
+          formatReportContentText({ recorded: false }, REPORT_RATE_LIMIT_PER_DAY, language, style),
+          true,
+        );
       }
       // Only computed for a DM report naming a known target — exactly the
       // case the accused-admin exclusion applies to (issue #305). Inclusive
@@ -199,9 +245,14 @@ export const reportsMemberTools = [
         recentSameTargetCount,
       });
       ackReportedMessage(adapter, caller.platform, caller.conversationId, args.messageId);
-      const language = await getLanguagePreference(caller.platform, caller.userId);
+      const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
       return text(
-        formatReportContentText({ recorded: true, id: created.id }, REPORT_RATE_LIMIT_PER_DAY, language),
+        formatReportContentText(
+          { recorded: true, id: created.id },
+          REPORT_RATE_LIMIT_PER_DAY,
+          language,
+          style,
+        ),
       );
     },
   }),
@@ -219,16 +270,16 @@ export const reportsMemberTools = [
     schema: {},
     handler: async (_args, { caller, adapterFor }) => {
       const ids = await withdrawOwnReports(caller.platform, caller.userId);
-      const language = await getLanguagePreference(caller.platform, caller.userId);
+      const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
       if (ids.length === 0) {
-        return text(formatWithdrawReportText(ids, language), true);
+        return text(formatWithdrawReportText(ids, language, style), true);
       }
       void notifyReportWithdrawn(adapterFor, {
         ids,
         reporterUserId: caller.userId,
         reporterName: caller.userName,
       });
-      return text(formatWithdrawReportText(ids, language));
+      return text(formatWithdrawReportText(ids, language, style));
     },
   }),
 
@@ -265,13 +316,13 @@ export const reportsMemberTools = [
       // could supply to check or appeal on behalf of another user.
       const active = await countActiveWarnings(caller.platform, caller.userId);
       if (active === 0) {
-        const language = await getLanguagePreference(caller.platform, caller.userId);
-        return text(formatAppealModerationText('no_active_warnings', 0, language), true);
+        const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
+        return text(formatAppealModerationText('no_active_warnings', 0, language, style), true);
       }
       const cooldownHours = config.moderation.appealCooldownHours;
       if (!reserveAppealSlot(`${caller.platform}:${caller.userId}`, cooldownHours)) {
-        const language = await getLanguagePreference(caller.platform, caller.userId);
-        return text(formatAppealModerationText('rate_limited', cooldownHours, language), true);
+        const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
+        return text(formatAppealModerationText('rate_limited', cooldownHours, language, style), true);
       }
       // Durable record FIRST (issue #554) — a missed/dismissed DM must never
       // erase the appeal with no trace. Awaited, not fire-and-forget: the
@@ -292,8 +343,8 @@ export const reportsMemberTools = [
         strikeLimit: config.moderation.strikeLimit,
         reason: args.reason,
       });
-      const language = await getLanguagePreference(caller.platform, caller.userId);
-      return text(formatAppealModerationText('sent', cooldownHours, language));
+      const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
+      return text(formatAppealModerationText('sent', cooldownHours, language, style));
     },
   }),
 
@@ -326,15 +377,16 @@ export const reportsMemberTools = [
       const alreadyWithdrawn =
         pending.length > 0 ? await getWithdrawnAppealIds(pending.map((a) => a.id)) : new Set<number>();
       const toWithdraw = pending.filter((a) => !alreadyWithdrawn.has(a.id));
-      const language = await getLanguagePreference(caller.platform, caller.userId);
+      const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
       if (toWithdraw.length === 0) {
-        return text(formatWithdrawAppealText([], language), true);
+        return text(formatWithdrawAppealText([], language, style), true);
       }
       await Promise.all(toWithdraw.map((a) => recordAppealWithdrawal(a.id)));
       return text(
         formatWithdrawAppealText(
           toWithdraw.map((a) => a.id),
           language,
+          style,
         ),
       );
     },
