@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import type { Platform } from '@swampratnz/agent-base/platforms/types.js';
 import { assertAtLeast, atLeast } from '@swampratnz/agent-base/auth/tiers.js';
 import { config } from '@swampratnz/agent-base/config.js';
 import { logger } from '@swampratnz/agent-base/logger.js';
@@ -11,8 +10,6 @@ import {
   createKnowledgeTip,
   createSuggestion,
   findKnowledgeCoveringTopic,
-  getLanguagePreference,
-  getResponseStyle,
   KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY,
   listOwnSuggestions,
   RATE_ANSWER_DAILY_LIMIT,
@@ -27,31 +24,8 @@ import {
   getWithdrawnSuggestionIds,
   recordSuggestionWithdrawal,
 } from '../../storage/suggestionWithdrawals.js';
-import { text } from './helpers.js';
+import { resolveRecipientNoticeSelection, text } from './helpers.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
-
-/**
- * Resolves the caller's language + `'plain'`-style preference for this
- * file's four formatters (issue #1436) — the direct-reply-side counterpart
- * to `notify.ts`'s own call sites, same precedence/fail-safe shape: `style`
- * is only consulted once `'mi'` is ruled out (it takes precedence, so
- * there's no style DB read on the `'mi'` path), and a lookup failure
- * degrades to `'standard'` rather than throwing. `getLangPref`/`getRespStyle`
- * are the same injectable-resolver seam `notify.ts` uses for its own
- * `getRespStyle` parameter, so the fail-safe is testable without live
- * Postgres.
- */
-export async function resolveFeedbackLanguageAndStyle(
-  platform: Platform,
-  userId: string,
-  getLangPref: typeof getLanguagePreference = getLanguagePreference,
-  getRespStyle: typeof getResponseStyle = getResponseStyle,
-): Promise<{ language: LanguagePreference; style: ResponseStyle | undefined }> {
-  const language = await getLangPref(platform, userId);
-  const style: ResponseStyle | undefined =
-    language === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
-  return { language, style };
-}
 
 /**
  * Pure render for `suggest_improvement`'s two outcomes — same "language
@@ -247,7 +221,7 @@ export const feedbackTools = [
         displayName: caller.userName,
         content: args.content,
       });
-      const { language, style } = await resolveFeedbackLanguageAndStyle(caller.platform, caller.userId);
+      const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
       if (!created) {
         return text(
           formatSuggestImprovementText({ recorded: false }, SUGGESTION_RATE_LIMIT_PER_DAY, language, style),
@@ -298,11 +272,11 @@ export const feedbackTools = [
         comment: args.comment,
       });
       if (created === 'no_recent_answer') {
-        const { language, style } = await resolveFeedbackLanguageAndStyle(caller.platform, caller.userId);
+        const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
         return text(formatRateAnswerText('no_recent_answer', RATE_ANSWER_DAILY_LIMIT, language, style), true);
       }
       if (created === 'rate_limited') {
-        const { language, style } = await resolveFeedbackLanguageAndStyle(caller.platform, caller.userId);
+        const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
         return text(formatRateAnswerText('rate_limited', RATE_ANSWER_DAILY_LIMIT, language, style), true);
       }
       // Real-time admin escalation (issue #598): only a genuinely-recorded
@@ -405,7 +379,7 @@ export const feedbackTools = [
           logger.warn({ err }, 'rate_answer knowledge-candidate drafting failed; rating already recorded');
         }
       }
-      const { language, style } = await resolveFeedbackLanguageAndStyle(caller.platform, caller.userId);
+      const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
       return text(formatRateAnswerText({ helpful: args.helpful }, RATE_ANSWER_DAILY_LIMIT, language, style));
     },
   }),
@@ -438,7 +412,7 @@ export const feedbackTools = [
       // never sets the flag router.ts acts on.
       const key = `${caller.platform}:${caller.userId}`;
       if (!reserveHumanHelpRequestSlot(key, HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER)) {
-        const { language, style } = await resolveFeedbackLanguageAndStyle(caller.platform, caller.userId);
+        const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
         return text(
           formatRequestHumanHelpText(
             'rate_limited',
@@ -470,7 +444,7 @@ export const feedbackTools = [
       // stop the flag set above from reaching the router's live escalation
       // (SECURITY, issue #1364 criterion 4).
       recordHumanHelpRequest().catch((err) => logger.warn({ err }, 'recordHumanHelpRequest failed'));
-      const { language, style } = await resolveFeedbackLanguageAndStyle(caller.platform, caller.userId);
+      const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
       return text(
         formatRequestHumanHelpText('recorded', HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER, language, style),
       );
@@ -507,7 +481,7 @@ export const feedbackTools = [
       const alreadyWithdrawn =
         pending.length > 0 ? await getWithdrawnSuggestionIds(pending.map((s) => s.id)) : new Set<number>();
       const toWithdraw = pending.filter((s) => !alreadyWithdrawn.has(s.id));
-      const { language, style } = await resolveFeedbackLanguageAndStyle(caller.platform, caller.userId);
+      const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
       if (toWithdraw.length === 0) {
         return text(formatWithdrawSuggestionText([], language, style), true);
       }

@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import type { Platform } from '@swampratnz/agent-base/platforms/types.js';
 import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
 import { config } from '@swampratnz/agent-base/config.js';
 import {
@@ -7,8 +6,6 @@ import {
   countRecentDmReportsByReporterAndTarget,
   createContentReport,
   createModerationAppeal,
-  getLanguagePreference,
-  getResponseStyle,
   isKnownUser,
   listOwnAppeals,
   REPORT_RATE_LIMIT_PER_DAY,
@@ -18,32 +15,9 @@ import {
 } from '@swampratnz/agent-base/storage/repository.js';
 import { makeCooldownReserver } from '@swampratnz/agent-base/util/rateReservation.js';
 import { getWithdrawnAppealIds, recordAppealWithdrawal } from '../../storage/appealWithdrawals.js';
-import { text } from './helpers.js';
+import { resolveRecipientNoticeSelection, text } from './helpers.js';
 import { ackReportedMessage, notifyAppealFiled, notifyReportFiled, notifyReportWithdrawn } from './notify.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
-
-/**
- * Resolves the caller's language + `'plain'`-style preference for this
- * file's four formatters (issue #1436) — the direct-reply-side counterpart
- * to `notify.ts`'s own call sites, same precedence/fail-safe shape: `style`
- * is only consulted once `'mi'` is ruled out (it takes precedence, so
- * there's no style DB read on the `'mi'` path), and a lookup failure
- * degrades to `'standard'` rather than throwing. `getLangPref`/`getRespStyle`
- * are the same injectable-resolver seam `notify.ts` uses for its own
- * `getRespStyle` parameter, so the fail-safe is testable without live
- * Postgres.
- */
-export async function resolveReportsMemberLanguageAndStyle(
-  platform: Platform,
-  userId: string,
-  getLangPref: typeof getLanguagePreference = getLanguagePreference,
-  getRespStyle: typeof getResponseStyle = getResponseStyle,
-): Promise<{ language: LanguagePreference; style: ResponseStyle | undefined }> {
-  const language = await getLangPref(platform, userId);
-  const style: ResponseStyle | undefined =
-    language === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
-  return { language, style };
-}
 
 /**
  * Pure render for `report_content`'s two outcomes — same shape as
@@ -246,10 +220,7 @@ export const reportsMemberTools = [
         isDirect: caller.isDirect,
       });
       if (!created) {
-        const { language, style } = await resolveReportsMemberLanguageAndStyle(
-          caller.platform,
-          caller.userId,
-        );
+        const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
         return text(
           formatReportContentText({ recorded: false }, REPORT_RATE_LIMIT_PER_DAY, language, style),
           true,
@@ -274,7 +245,7 @@ export const reportsMemberTools = [
         recentSameTargetCount,
       });
       ackReportedMessage(adapter, caller.platform, caller.conversationId, args.messageId);
-      const { language, style } = await resolveReportsMemberLanguageAndStyle(caller.platform, caller.userId);
+      const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
       return text(
         formatReportContentText(
           { recorded: true, id: created.id },
@@ -299,7 +270,7 @@ export const reportsMemberTools = [
     schema: {},
     handler: async (_args, { caller, adapterFor }) => {
       const ids = await withdrawOwnReports(caller.platform, caller.userId);
-      const { language, style } = await resolveReportsMemberLanguageAndStyle(caller.platform, caller.userId);
+      const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
       if (ids.length === 0) {
         return text(formatWithdrawReportText(ids, language, style), true);
       }
@@ -345,18 +316,12 @@ export const reportsMemberTools = [
       // could supply to check or appeal on behalf of another user.
       const active = await countActiveWarnings(caller.platform, caller.userId);
       if (active === 0) {
-        const { language, style } = await resolveReportsMemberLanguageAndStyle(
-          caller.platform,
-          caller.userId,
-        );
+        const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
         return text(formatAppealModerationText('no_active_warnings', 0, language, style), true);
       }
       const cooldownHours = config.moderation.appealCooldownHours;
       if (!reserveAppealSlot(`${caller.platform}:${caller.userId}`, cooldownHours)) {
-        const { language, style } = await resolveReportsMemberLanguageAndStyle(
-          caller.platform,
-          caller.userId,
-        );
+        const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
         return text(formatAppealModerationText('rate_limited', cooldownHours, language, style), true);
       }
       // Durable record FIRST (issue #554) — a missed/dismissed DM must never
@@ -378,7 +343,7 @@ export const reportsMemberTools = [
         strikeLimit: config.moderation.strikeLimit,
         reason: args.reason,
       });
-      const { language, style } = await resolveReportsMemberLanguageAndStyle(caller.platform, caller.userId);
+      const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
       return text(formatAppealModerationText('sent', cooldownHours, language, style));
     },
   }),
@@ -412,7 +377,7 @@ export const reportsMemberTools = [
       const alreadyWithdrawn =
         pending.length > 0 ? await getWithdrawnAppealIds(pending.map((a) => a.id)) : new Set<number>();
       const toWithdraw = pending.filter((a) => !alreadyWithdrawn.has(a.id));
-      const { language, style } = await resolveReportsMemberLanguageAndStyle(caller.platform, caller.userId);
+      const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
       if (toWithdraw.length === 0) {
         return text(formatWithdrawAppealText([], language, style), true);
       }

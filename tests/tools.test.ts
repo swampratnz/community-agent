@@ -164,8 +164,6 @@ const {
   formatRequestHumanHelpText,
   formatSuggestImprovementText,
   formatWithdrawSuggestionText,
-  resolveFeedbackLanguageAndStyle,
-  resolveReportsMemberLanguageAndStyle,
   TOP_KNOWLEDGE_FETCH_CAP,
   KNOWLEDGE_FIX_NOTIFY_CAP,
   KNOWLEDGE_FIX_NOTIFY_FETCH_CAP,
@@ -33982,84 +33980,6 @@ test(
       formatAppealModerationText('sent', 24, 'mi', 'plain'),
       formatAppealModerationText('sent', 24, 'mi', 'standard'),
     );
-  },
-);
-
-test(
-  "SECURITY: resolveFeedbackLanguageAndStyle (feedback.ts's suggest_improvement/rate_answer/" +
-    "request_human_help/withdraw_suggestion call sites) degrades to 'standard' style — not a thrown " +
-    'error, not a dropped reply — when the injected getResponseStyle rejects, the same fail-safe ' +
-    "notify.ts's own getRespStyle call sites pin (issue #1436 acceptance criterion 5)",
-  async () => {
-    const result = await resolveFeedbackLanguageAndStyle(
-      'discord',
-      'user-1',
-      async () => 'en',
-      async () => {
-        throw new Error('response-style lookup unavailable');
-      },
-    );
-    assert.equal(result.language, 'en');
-    assert.equal(result.style, 'standard');
-  },
-);
-
-test(
-  'SECURITY: resolveFeedbackLanguageAndStyle never consults the injected getResponseStyle once language has ' +
-    "resolved to 'mi' — no style DB read on the 'mi' path, mirroring notify.ts's pinned precedence (issue " +
-    '#1436)',
-  async () => {
-    let respStyleCalls = 0;
-    const result = await resolveFeedbackLanguageAndStyle(
-      'discord',
-      'user-1',
-      async () => 'mi',
-      async () => {
-        respStyleCalls += 1;
-        throw new Error('must never be reached when lang is mi');
-      },
-    );
-    assert.equal(respStyleCalls, 0);
-    assert.equal(result.style, undefined);
-  },
-);
-
-test(
-  "SECURITY: resolveReportsMemberLanguageAndStyle (reportsMember.ts's report_content/withdraw_report/" +
-    "appeal_moderation/withdraw_appeal call sites) degrades to 'standard' style — not a thrown error, not a " +
-    "dropped reply — when the injected getResponseStyle rejects, the same fail-safe notify.ts's own " +
-    'getRespStyle call sites pin (issue #1436 acceptance criterion 5)',
-  async () => {
-    const result = await resolveReportsMemberLanguageAndStyle(
-      'discord',
-      'user-1',
-      async () => 'en',
-      async () => {
-        throw new Error('response-style lookup unavailable');
-      },
-    );
-    assert.equal(result.language, 'en');
-    assert.equal(result.style, 'standard');
-  },
-);
-
-test(
-  'SECURITY: resolveReportsMemberLanguageAndStyle never consults the injected getResponseStyle once ' +
-    "language has resolved to 'mi' — no style DB read on the 'mi' path, mirroring notify.ts's pinned " +
-    'precedence (issue #1436)',
-  async () => {
-    let respStyleCalls = 0;
-    const result = await resolveReportsMemberLanguageAndStyle(
-      'discord',
-      'user-1',
-      async () => 'mi',
-      async () => {
-        respStyleCalls += 1;
-        throw new Error('must never be reached when lang is mi');
-      },
-    );
-    assert.equal(respStyleCalls, 0);
-    assert.equal(result.style, undefined);
   },
 );
 
