@@ -1980,7 +1980,7 @@ test("notifyMemberLinked sends the te reo Māori variant for a caller with a sto
 
   await notifyMemberLinked(adapter, 'user-1', 'discord', async () => 'mi');
 
-  assert.match(calls[0], /Kua hono ō tuakiri Discord me WhatsApp/);
+  assert.match(calls[0], /Kua honoa tēnei pūkete me tētahi atu pūkete/);
   assert.doesNotMatch(calls[0], /have been linked as the same person/);
 });
 
@@ -17865,6 +17865,79 @@ test(
       await pool.query(
         `DELETE FROM community_users WHERE (platform = 'discord' AND platform_user_id = $1) ` +
           `OR (platform = 'whatsapp' AND platform_user_id = $2)`,
+        [targetA, targetB],
+      );
+      await pool.query(`DELETE FROM admin_audit WHERE target_user_id LIKE $1`, [`%${targetA}%`]);
+    }
+  },
+);
+
+test(
+  'SECURITY: link_member on two identities of the SAME platform DMs both, and neither DM names a platform — ' +
+    'the tool only refuses a literal self-link, so the notice must not claim a Discord/WhatsApp pairing ' +
+    '(issue #1393, found in review)',
+  { skip },
+  async () => {
+    const now = Date.now();
+    const targetA = `${now}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    const targetB = `${now}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    const adminUserId = `admin-link-member-same-platform-${targetA}`;
+    const conversationId = `convo-link-member-same-platform-${targetA}`;
+    const discordCalls: Array<[string, string]> = [];
+    const discordAdapter = stubAdapter(async (userId, message) => {
+      discordCalls.push([userId, message]);
+    });
+    const caller = {
+      platform: 'discord' as const,
+      userId: adminUserId,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId,
+    };
+    const server = buildToolServer(caller, discordAdapter, () => discordAdapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['link_member'];
+
+    try {
+      await upsertMember({ platform: 'discord', userId: targetA, role: 'member', addedBy: adminUserId });
+      await upsertMember({ platform: 'discord', userId: targetB, role: 'member', addedBy: adminUserId });
+
+      await registeredTool.handler({
+        platformA: 'discord',
+        userIdA: targetA,
+        platformB: 'discord',
+        userIdB: targetB,
+      });
+      const pending = takePendingAction('discord', conversationId, adminUserId);
+      assert.ok(pending, 'link_member must register a pending action, not execute directly');
+      const reply = await pending?.execute();
+
+      assert.match(reply ?? '', /^Linked discord:.+ and discord:.+: linked as person #\d+\.$/);
+      // The audited action also DMs the super admins through the same
+      // adapter; only the two linked identities' DMs are under test here.
+      const linkDms = discordCalls.filter(([userId]) => userId === targetA || userId === targetB);
+      assert.deepEqual(
+        linkDms.map(([userId]) => userId).sort(),
+        [targetA, targetB].sort(),
+        'both same-platform identities get the link DM',
+      );
+      for (const [, message] of linkDms) {
+        assert.match(message, /have been linked as the same person/i);
+        assert.doesNotMatch(
+          message,
+          /discord|whatsapp/i,
+          'the notice must not assert a cross-platform pairing',
+        );
+      }
+    } finally {
+      await pool.query(
+        `DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id IN ($1, $2)`,
         [targetA, targetB],
       );
       await pool.query(`DELETE FROM admin_audit WHERE target_user_id LIKE $1`, [`%${targetA}%`]);

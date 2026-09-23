@@ -413,22 +413,25 @@ const NOTICE_ENTRIES = {
    * The link-side counterpart to `memberRemovedMessage` above — static, no
    * per-row content to interpolate. SECURITY: never names the OTHER linked
    * identity's platform/userId/handle, nor the acting admin — that is the
-   * one real privacy hazard this notice could otherwise introduce.
+   * one real privacy hazard this notice could otherwise introduce. Also
+   * deliberately platform-neutral: `link_member` only refuses a literal
+   * self-link, so two identities on the SAME platform can be linked, and a
+   * "your Discord and WhatsApp identities" wording would then be false.
    */
   memberLinkedMessage: {
     base:
-      'Your Discord and WhatsApp identities on NZ Claude Community have been linked as the same person by ' +
-      'an admin. From now on, a data-deletion request (forget_me) from either one erases both. Contact an ' +
+      'This account and another account on NZ Claude Community have been linked as the same person by an ' +
+      'admin. From now on, a data-deletion request (forget_me) from either one erases both. Contact an ' +
       "admin if this wasn't expected.",
     language: {
       mi:
-        'Kua hono ō tuakiri Discord me WhatsApp i NZ Claude Community hei tangata kotahi e tētahi ' +
-        'kaiwhakahaere. Mai i tēnei wā, ka mukua ngā raraunga o ērā tuakiri e rua e tētahi tono ' +
+        'Kua honoa tēnei pūkete me tētahi atu pūkete i NZ Claude Community hei tangata kotahi e tētahi ' +
+        'kaiwhakahaere. Mai i tēnei wā, ka mukua ngā raraunga o ngā pūkete e rua e tētahi tono ' +
         'muku-raraunga (forget_me) mai i tētahi. Whakapā atu ki tētahi kaiwhakahaere mēnā kāore i tika tēnei.',
     },
     style: {
       plain:
-        'Your Discord and WhatsApp identities on NZ Claude Community have been linked as one person by an ' +
+        'This account and another account on NZ Claude Community have been linked as one person by an ' +
         'admin. A forget_me request from either one now deletes data for both. Contact an admin if this ' +
         "wasn't expected.",
     },
