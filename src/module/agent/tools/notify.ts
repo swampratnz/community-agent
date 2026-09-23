@@ -883,6 +883,93 @@ export async function notifyProjectUnarchived(
 }
 
 /**
+ * Best-effort orientation DM to a member granted a cosmetic Discord role via
+ * `assign_community_role` (issue #1439) — closes the one remaining
+ * grant/revoke pair in this codebase where the affected member learned
+ * nothing (`discordRoles.ts`'s own header notes these tools are orthogonal to
+ * the RBAC tiers, which is exactly why they were never swept into the
+ * notify.ts-adjacent sweep that produced every sibling above). Modelled
+ * line-for-line on `notifyProjectMemberAdded` above: fire-and-forget,
+ * `.catch(logger.warn)`, never blocks or changes the calling tool's own
+ * reported outcome, and fires unconditionally — an admin-named role, not a
+ * free-text moderation reason, so there is no reason-gated silent path here.
+ * The base text (`strings/notices.ts`'s `communityRoleAssignedMessage`) is
+ * never interpolated with the role id; the role is appended only as a
+ * distinct Discord role-mention (`<@&roleId>`), which Discord itself renders
+ * as the role's current name/colour client-side with no extra API call.
+ * `discordRoles.ts` is Discord-only and `roleId` is always allowlist-checked
+ * (`config.discord.assignableRoleIds`) before this point, so it is never
+ * free-form or model-authored text. Honours the target's standing `'mi'`
+ * language preference, degrading to `'auto'`/English on a lookup failure
+ * (issue #52's invariant); `getRespStyle` is consulted only once `'mi'` is
+ * ruled out, degrading to `'standard'` on failure (issue #1212's shape) —
+ * both resolvers are appended last, same convention every sibling in this
+ * file uses to keep positional call sites stable. A `WindowClosedError`
+ * rejection is queued via `queueForWindowReopen` at `'low'` priority instead
+ * of dropped (issue #644 recovery); any other rejection is logged and
+ * swallowed. Exported separately so it's unit-testable without the MCP
+ * tool-call transport, same convention as every sibling notify function.
+ */
+export async function notifyCommunityRoleAssigned(
+  adapter: PlatformAdapter,
+  userId: string,
+  platform: Platform,
+  roleId: string,
+  getLangPref: typeof getLanguagePreference = getLanguagePreference,
+  getRespStyle: typeof getResponseStyle = getResponseStyle,
+): Promise<void> {
+  const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
+  const style: ResponseStyle | undefined =
+    lang === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
+  const base = notice('communityRoleAssignedMessage', { language: lang, style });
+  const message = `${base} <@&${roleId}>`;
+  await adapter.sendDirectMessage(userId, message).catch((err) => {
+    if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+      adapter.queueForWindowReopen(userId, message, 'low');
+      logger.warn(
+        { userId: hashId(userId), platform },
+        "Community role-assigned DM: recipient's window is closed, queued for reopen",
+      );
+      return;
+    }
+    logger.warn({ err, userId: hashId(userId) }, 'Community role-assigned DM failed');
+  });
+}
+
+/**
+ * The revoke-side counterpart to `notifyCommunityRoleAssigned` above (issue
+ * #1439), for `remove_community_role` — same shape, same unconditional-fire
+ * rationale, and the same fail-safe language/style lookups, `WindowClosedError`
+ * recovery, and swallow-and-log-everything-else shape as
+ * `notifyCommunityRoleAssigned` above.
+ */
+export async function notifyCommunityRoleRemoved(
+  adapter: PlatformAdapter,
+  userId: string,
+  platform: Platform,
+  roleId: string,
+  getLangPref: typeof getLanguagePreference = getLanguagePreference,
+  getRespStyle: typeof getResponseStyle = getResponseStyle,
+): Promise<void> {
+  const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
+  const style: ResponseStyle | undefined =
+    lang === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
+  const base = notice('communityRoleRemovedMessage', { language: lang, style });
+  const message = `${base} <@&${roleId}>`;
+  await adapter.sendDirectMessage(userId, message).catch((err) => {
+    if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+      adapter.queueForWindowReopen(userId, message, 'low');
+      logger.warn(
+        { userId: hashId(userId), platform },
+        "Community role-removed DM: recipient's window is closed, queued for reopen",
+      );
+      return;
+    }
+    logger.warn({ err, userId: hashId(userId) }, 'Community role-removed DM failed');
+  });
+}
+
+/**
  * Best-effort confirmation DM to a member when their suggest_improvement
  * submission is resolved — closes the "suggestion box into the void" gap
  * (issue #116), mirroring notifyMemberApproved's shape exactly: fire-and-
@@ -1391,6 +1478,118 @@ export async function notifyAppealStale(
       return;
     }
     logger.warn({ err, userId: hashId(userId) }, 'Appeal stale DM failed');
+  });
+}
+
+/**
+ * Suggester-side mid-flight "still being reviewed" DM (issue #1415), mirroring
+ * `notifyAppealStale`'s #1413 shape verbatim for the `suggest_improvement`
+ * queue — the fourth and last member-contribution queue with a stale-alert
+ * job to get this treatment.
+ *
+ * Content-free BY CONSTRUCTION (SECURITY): the signature accepts no
+ * suggestion id, content, or admin identity — only the recipient identity —
+ * so there is nothing for the message body to leak even by accident. The
+ * caller (`suggestionStaleAlert.ts`) is solely responsible for deciding
+ * WHICH suggestions are stale and for the once-ever idempotency
+ * (`suggestion_submitter_stale_notices`, `INSERT ... ON CONFLICT DO
+ * NOTHING`); this function only ever sends.
+ *
+ * `userId`/`platform` are the two inputs (SECURITY): both come from the
+ * `Suggestion` row's own `userId`/`platform` at the one call site, the same
+ * fields `resolve_suggestion` already uses to route its own resolution DM
+ * (`notifySuggestionResolved`) — never from model or admin input, never
+ * caller-redirectable.
+ *
+ * Same failure shape as every sibling: honours a standing `'mi'` language
+ * preference (degrading to `'auto'`/English on lookup failure, issue #52's
+ * invariant) and the `'plain'` response-style preference (issue #1212), and
+ * a `WindowClosedError` rejection is queued via `queueForWindowReopen` at
+ * `'low'` priority instead of logged-and-dropped (issue #602) — any other
+ * rejection is logged and swallowed, never thrown, so one recipient's
+ * failure can never abort the stale-alert tick.
+ */
+export async function notifySuggestionStale(
+  adapter: PlatformAdapter,
+  userId: string,
+  platform: Platform,
+  getLangPref: typeof getLanguagePreference = getLanguagePreference,
+  getRespStyle: typeof getResponseStyle = getResponseStyle,
+): Promise<void> {
+  const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
+  const style: ResponseStyle | undefined =
+    lang === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
+  const message =
+    lang === 'mi'
+      ? 'Kei te arotakehia tonu tō whakaaro — ngā mihi mō tō manawanui e tatari ana.'
+      : style === 'plain'
+        ? 'Your suggestion is still being reviewed. Thanks for your patience.'
+        : 'Your suggestion is still being reviewed — thanks for your patience while we look into it.';
+  await adapter.sendDirectMessage(userId, message).catch((err) => {
+    if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+      adapter.queueForWindowReopen(userId, message, 'low');
+      logger.warn(
+        { userId: hashId(userId), platform },
+        "Suggestion stale DM: recipient's window is closed, queued for reopen",
+      );
+      return;
+    }
+    logger.warn({ err, userId: hashId(userId) }, 'Suggestion stale DM failed');
+  });
+}
+
+/**
+ * Guest-side mid-flight "still being reviewed" DM (issue #1421), mirroring
+ * `notifyAppealStale`'s #1413 shape verbatim for the `access_requests` queue
+ * — the fifth and last `review_queue` queue, and the only one whose waiting
+ * party is a guest rather than a member, to get this treatment.
+ *
+ * Content-free BY CONSTRUCTION (SECURITY): the signature accepts no request
+ * reason, wait-time figure, or admin identity — only the recipient identity
+ * — so there is nothing for the message body to leak even by accident. The
+ * caller (`accessRequestStaleAlert.ts`) is solely responsible for deciding
+ * WHICH requests are stale and for the once-ever idempotency
+ * (`access_request_stale_notices`, `INSERT ... ON CONFLICT DO NOTHING`);
+ * this function only ever sends.
+ *
+ * `userId`/`platform` are the two inputs (SECURITY): both come from the
+ * `AccessRequest` row's own `userId`/`platform` at the one call site, never
+ * from model or admin input, never caller-redirectable.
+ *
+ * Same failure shape as every sibling: honours a standing `'mi'` language
+ * preference (degrading to `'auto'`/English on lookup failure, issue #52's
+ * invariant) and the `'plain'` response-style preference (issue #1212), and
+ * a `WindowClosedError` rejection is queued via `queueForWindowReopen` at
+ * `'low'` priority instead of logged-and-dropped (issue #602) — any other
+ * rejection is logged and swallowed, never thrown, so one recipient's
+ * failure can never abort the stale-alert tick.
+ */
+export async function notifyAccessRequestStale(
+  adapter: PlatformAdapter,
+  userId: string,
+  platform: Platform,
+  getLangPref: typeof getLanguagePreference = getLanguagePreference,
+  getRespStyle: typeof getResponseStyle = getResponseStyle,
+): Promise<void> {
+  const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
+  const style: ResponseStyle | undefined =
+    lang === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
+  const message =
+    lang === 'mi'
+      ? 'Kei te arotakehia tonu tō tono uru — ngā mihi mō tō manawanui e tatari ana.'
+      : style === 'plain'
+        ? 'Your access request is still being reviewed. Thanks for your patience.'
+        : 'Your access request is still being reviewed — thanks for your patience while we look into it.';
+  await adapter.sendDirectMessage(userId, message).catch((err) => {
+    if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+      adapter.queueForWindowReopen(userId, message, 'low');
+      logger.warn(
+        { userId: hashId(userId), platform },
+        "Access request stale DM: recipient's window is closed, queued for reopen",
+      );
+      return;
+    }
+    logger.warn({ err, userId: hashId(userId) }, 'Access request stale DM failed');
   });
 }
 

@@ -23,12 +23,42 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #868 #896 #899 #904 #949 #950 #951 #952 #953 #954 #955 #956 #957 #958 #961
 #963 #964 #965 #968 #971 #983 #988 #989 #991 #992 #994 #1017 #1071 #1086
 #1122 #1123 #1132 #1232 #1236 #1248 #1281 #1284 #1304 #1308 #1310
-#1355 #1356 #1357 #1341 #1350 #1360 #1381 #1391
+#1355 #1356 #1357 #1341 #1350 #1360 #1381 #1391 #1441
 -->
+
+## 2026-09-20
+
+### Added
+- **Assigning or removing a cosmetic community role (a regional tag,
+  "verified builder", etc.) now DMs the member it happened to.** Previously
+  `assign_community_role`/`remove_community_role` only told the acting
+  admin — the one remaining grant/revoke action in the bot where the
+  affected member learned nothing. The DM names the role as a Discord
+  mention and honours the member's language/response-style preferences,
+  same as every other grant/revoke notification.
+
+## 2026-09-18
+
+### Fixed
+- **Withdrawing a moderation appeal now shows up as withdrawn when you check
+  your own submissions via `!mysubmissions`/`/mysubmissions`, not just when
+  you ask in chat.** These two shortcuts already got this right for a
+  withdrawn suggestion; a withdrawn appeal was still rendering its stale
+  `[open]` status because the same fix was never threaded through for
+  appeals. Both now match what the full `my_submissions` tool has always
+  shown.
 
 ## 2026-09-12
 
 ### Added
+- **A suggestion you submitted now checks in with you if it's waiting a
+  while.** If your `suggest_improvement` idea is still pending after 7 days,
+  you now get a one-time "still being reviewed, thanks for your patience" DM —
+  the same mid-flight reassurance content reports (#1375), knowledge tips
+  (#1408) and moderation appeals (#1413) already got, extended to the last
+  remaining member-contribution queue. It fires independently of the admins'
+  own separate backlog alert, and never fires for a suggestion you withdrew
+  yourself.
 - **A moderation appeal you filed now checks in with you if it's waiting a
   while.** (#1414) If your `appeal_moderation` appeal is still open after 72 hours,
   you now get a one-time "still being reviewed, thanks for your patience" DM —
@@ -36,6 +66,20 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   (#1408) already got, extended to the appeal queue. It fires independently of
   the admins' own separate backlog alert, and never fires for an appeal you
   withdrew yourself.
+- **`my_data` now replies fully in te reo Māori too.** (#1419) Members with a
+  standing te reo Māori preference already got a fully translated
+  `my_warnings`/`my_submissions` — `my_data` (and its `!mydata`/`/mydata`
+  shortcuts) was the last of the three still showing English labels around a
+  translated language-preference value. Every label now matches your
+  preference; the underlying numbers and settings it reports are unchanged.
+- **If you've asked to join and are still waiting, the bot now checks in.**
+  (#1421) If your access request is still pending after 7 days, you now get a
+  one-time "still being reviewed, thanks for your patience" DM — the same
+  mid-flight reassurance content reports (#1375), knowledge tips (#1408),
+  moderation appeals (#1413) and suggestions already got, extended to the
+  access-request queue (the only one of the five where you're a guest, not
+  yet a member). It fires independently of admins' own separate backlog
+  alert.
 
 ## 2026-09-11
 

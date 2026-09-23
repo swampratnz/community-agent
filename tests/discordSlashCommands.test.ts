@@ -179,6 +179,8 @@ function mockPool(
     reportRows?: PoolRow[];
     /** `listOwnAppeals`' rows (issue #1018), raw snake_case DB shape. */
     appealRows?: PoolRow[];
+    /** `getWithdrawnAppealIds`' ids (issue #1434) — which of `appealRows`' ids have been withdrawn. */
+    withdrawnAppealIds?: number[];
     /** `listOwnKnowledgeCandidates`' rows (issue #1018), raw snake_case DB shape. */
     knowledgeCandidateRows?: PoolRow[];
     /** `listOwnProjectConnectionRequests`' rows (issue #1018), raw snake_case DB shape. */
@@ -360,6 +362,11 @@ function mockPool(
     }
     if (sql.includes('FROM moderation_appeals')) {
       return { rows: opts.appealRows ?? [], rowCount: 0 };
+    }
+    // getWithdrawnAppealIds (issue #1434) — distinct table name from the
+    // plain 'FROM moderation_appeals' browse above (order doesn't matter).
+    if (sql.includes('FROM appeal_withdrawals')) {
+      return { rows: (opts.withdrawnAppealIds ?? []).map((id) => ({ appeal_id: id })), rowCount: 0 };
     }
     // listRoster('not_members', ...) — the row-returning onboarding-queue-age
     // query behind oldestNotMemberAgeDays (issue #1330), told apart from
@@ -1894,6 +1901,97 @@ test('/mysubmissions renders a withdrawn suggestion as [withdrawn], matching the
   assert.doesNotMatch(replies[0].content, /#7 \[new\]/);
 });
 
+test('/mysubmissions renders a withdrawn appeal as [withdrawn], matching the my_submissions tool handler for the same DB state (issue #1434 — threading getWithdrawnAppealIds through this shortcut too, the appeal-side counterpart of #1243)', async (t) => {
+  const createdAt = new Date('2026-08-01T00:00:00Z');
+  mockPool(t, {
+    memberRole: 'member',
+    appealRows: [
+      {
+        id: 4,
+        platform: 'discord',
+        user_id: 'member-1',
+        user_name: 'Member One',
+        reason: 'retracted by the member',
+        active_warnings: 1,
+        strike_limit: 3,
+        status: 'open',
+        created_at: createdAt,
+        resolved_by: null,
+        resolved_at: null,
+      },
+    ],
+    withdrawnAppealIds: [4],
+  });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({ commandName: 'mysubmissions', userId: 'member-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  const expectedAppeals = [
+    {
+      id: 4,
+      platform: 'discord' as const,
+      userId: 'member-1',
+      userName: 'Member One',
+      reason: 'retracted by the member',
+      activeWarnings: 1,
+      strikeLimit: 3,
+      status: 'open' as const,
+      createdAt,
+      resolvedBy: null,
+      resolvedAt: null,
+    },
+  ];
+  assert.equal(
+    replies[0].content,
+    await adapterDeps(adapter).filtered(
+      formatMySubmissionsText([], [], expectedAppeals, [], [], 'auto', new Set(), new Set([4])),
+    ),
+  );
+  assert.match(replies[0].content, /#4 \[withdrawn\] retracted by the member/);
+  assert.doesNotMatch(replies[0].content, /#4 \[open\]/);
+});
+
+test("SECURITY: /mysubmissions queries appeal_withdrawals only for the caller's own appeal ids — a withdrawn id belonging to another member, never returned by listOwnAppeals, can never reach the query or influence rendering (issue #1434 SECURITY criterion 5)", async (t) => {
+  const createdAt = new Date('2026-08-01T00:00:00Z');
+  const calls = mockPool(t, {
+    memberRole: 'member',
+    appealRows: [
+      {
+        id: 4,
+        platform: 'discord',
+        user_id: 'member-1',
+        user_name: 'Member One',
+        reason: 'still open',
+        active_warnings: 1,
+        strike_limit: 3,
+        status: 'open',
+        created_at: createdAt,
+        resolved_by: null,
+        resolved_at: null,
+      },
+    ],
+    // Only id 4 (the caller's own appeal) is configured as withdrawn here —
+    // if the handler ever queried a wider or caller-supplied id set (e.g. a
+    // cross-member id like 99), this mock would have no way to reveal it, so
+    // the assertion below checks the query's ACTUAL params instead.
+    withdrawnAppealIds: [4],
+  });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction } = fakeInteraction({ commandName: 'mysubmissions', userId: 'member-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  const withdrawalCall = calls.find((c) => c.sql.includes('FROM appeal_withdrawals'));
+  assert.ok(withdrawalCall, 'getWithdrawnAppealIds must be queried when the caller has appeals');
+  assert.deepEqual(
+    withdrawalCall.params[0],
+    [4],
+    "SECURITY: the id set queried must be exactly listOwnAppeals' own ids for this caller — never a " +
+      'cross-member or caller-supplied id',
+  );
+});
+
 test('SECURITY: a guest caller is rejected on /mysubmissions without any of the five self-scoped reads ever being invoked (issue #1018)', async (t) => {
   const calls = mockPool(t, { memberRole: null });
   const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
@@ -1996,7 +2094,7 @@ test(
     mockPool(t, { memberRole: 'member', languagePref: 'mi' });
     const miResult = fakeInteraction({ commandName: 'mydata', userId: 'member-mi' });
     await handleInteraction(miResult.interaction as never, adapterDeps(adapter));
-    assert.match(miResult.replies[0].content, /Language preference: te reo Māori/);
+    assert.match(miResult.replies[0].content, /Kōwhiringa reo: te reo Māori/);
 
     mockPool(t, { memberRole: 'member', languagePref: 'en' });
     const enResult = fakeInteraction({ commandName: 'mydata', userId: 'member-en' });

@@ -1866,6 +1866,111 @@ test('!mysubmissions renders a withdrawn suggestion as [withdrawn], matching the
   assert.doesNotMatch(sent[0].text, /#7 \[new\]/);
 });
 
+test('!mysubmissions renders a withdrawn appeal as [withdrawn], matching the my_submissions tool handler for the same DB state (issue #1434 — threading getWithdrawnAppealIds through this shortcut too, the appeal-side counterpart of #1243)', async (t) => {
+  const createdAt = new Date('2026-08-01T00:00:00Z');
+  t.mock.method(pool, 'query', (async (sql: string) => {
+    if (sql.includes('SELECT role FROM community_users')) return { rows: [{ role: 'member' }], rowCount: 0 };
+    if (sql.includes('FROM appeal_withdrawals')) return { rows: [{ appeal_id: 4 }], rowCount: 0 };
+    if (sql.includes('FROM moderation_appeals')) {
+      return {
+        rows: [
+          {
+            id: 4,
+            platform: 'whatsapp',
+            user_id: 'member-1',
+            user_name: 'Member One',
+            reason: 'retracted by the member',
+            active_warnings: 1,
+            strike_limit: 3,
+            status: 'open',
+            created_at: createdAt,
+            resolved_by: null,
+            resolved_at: null,
+          },
+        ],
+        rowCount: 0,
+      };
+    }
+    return { rows: [], rowCount: 0 };
+  }) as typeof pool.query);
+  const router = makeRouter({ runTurn: throwingRunTurn });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!mysubmissions', userId: 'member-1' }));
+
+  const expectedAppeals = [
+    {
+      id: 4,
+      platform: 'whatsapp' as const,
+      userId: 'member-1',
+      userName: 'Member One',
+      reason: 'retracted by the member',
+      activeWarnings: 1,
+      strikeLimit: 3,
+      status: 'open' as const,
+      createdAt,
+      resolvedBy: null,
+      resolvedAt: null,
+    },
+  ];
+  assert.equal(
+    sent[0].text,
+    formatMySubmissionsText([], [], expectedAppeals, [], [], 'auto', new Set(), new Set([4])),
+  );
+  assert.match(sent[0].text, /#4 \[withdrawn\] retracted by the member/);
+  assert.doesNotMatch(sent[0].text, /#4 \[open\]/);
+});
+
+test("SECURITY: !mysubmissions queries appeal_withdrawals only for the caller's own appeal ids — a withdrawn id belonging to another member, never returned by listOwnAppeals, can never reach the query or influence rendering (issue #1434 SECURITY criterion 5)", async (t) => {
+  const createdAt = new Date('2026-08-01T00:00:00Z');
+  const calls: Array<{ sql: string; params: unknown[] }> = [];
+  t.mock.method(pool, 'query', (async (sql: string, params: unknown[] = []) => {
+    calls.push({ sql, params });
+    if (sql.includes('SELECT role FROM community_users')) return { rows: [{ role: 'member' }], rowCount: 0 };
+    // Only id 4 (the caller's own appeal) is configured as withdrawn here —
+    // if the handler ever queried a wider or caller-supplied id set (e.g. a
+    // cross-member id like 99), this mock would have no way to reveal it, so
+    // the assertion below checks the query's ACTUAL params instead.
+    if (sql.includes('FROM appeal_withdrawals')) return { rows: [{ appeal_id: 4 }], rowCount: 0 };
+    if (sql.includes('FROM moderation_appeals')) {
+      return {
+        rows: [
+          {
+            id: 4,
+            platform: 'whatsapp',
+            user_id: 'member-1',
+            user_name: 'Member One',
+            reason: 'still open',
+            active_warnings: 1,
+            strike_limit: 3,
+            status: 'open',
+            created_at: createdAt,
+            resolved_by: null,
+            resolved_at: null,
+          },
+        ],
+        rowCount: 0,
+      };
+    }
+    return { rows: [], rowCount: 0 };
+  }) as typeof pool.query);
+  const router = makeRouter({ runTurn: throwingRunTurn });
+  const { adapter, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!mysubmissions', userId: 'member-1' }));
+
+  const withdrawalCall = calls.find((c) => c.sql.includes('FROM appeal_withdrawals'));
+  assert.ok(withdrawalCall, 'getWithdrawnAppealIds must be queried when the caller has appeals');
+  assert.deepEqual(
+    withdrawalCall.params[0],
+    [4],
+    "SECURITY: the id set queried must be exactly listOwnAppeals' own ids for this caller — never a " +
+      'cross-member or caller-supplied id',
+  );
+});
+
 test('a bare "!mysubmissionsx" (no space, unrecognised) is not matched as the !mysubmissions command — anchored matcher (issue #1018 SECURITY criterion 5)', async (t) => {
   mockPoolRole(t, 'member');
   const router = makeRouter({});
@@ -1977,7 +2082,7 @@ test(
     "symmetric between the 'mi', 'en' and unset states (issue #1030 acceptance criterion 1)",
   async (t) => {
     for (const [languagePref, expected] of [
-      ['mi', 'Language preference: te reo Māori'],
+      ['mi', 'Kōwhiringa reo: te reo Māori'],
       ['en', 'Language preference: NZ English'],
       [undefined, 'Language preference: none set (auto-detected per message)'],
     ] as const) {

@@ -7,6 +7,7 @@ import { makeSlidingWindowReserver } from '@swampratnz/agent-base/util/rateReser
 import {
   getLanguagePreference,
   recentConversationHistory,
+  type LanguagePreference,
 } from '@swampratnz/agent-base/storage/repository.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 import { relayLanguageNote, text, untrustedWeb } from './helpers.js';
@@ -266,6 +267,82 @@ export function findPostedUrl(
   return null;
 }
 
+/**
+ * Pure render for `summarize_link`'s 9 refusal/error outcomes (issue #1429) —
+ * same "one function per tool, outcome as a parameter" shape as
+ * `formatReactToMessageText`/`formatFindHelperText`. The one dynamic-content
+ * reply (the fetched page itself) stays outside this function: it is built
+ * with `relayLanguageNote()` directly, as it always has been, because that
+ * content can't be pre-written in `mi`.
+ */
+export function formatLinkSummaryText(
+  outcome:
+    | { kind: 'not_enabled' }
+    | { kind: 'invalid_url'; url: string }
+    | { kind: 'non_https' }
+    | { kind: 'no_posted_link'; lookbackHours: number }
+    | { kind: 'dedup' }
+    | { kind: 'daily_limit'; limit: number }
+    | { kind: 'http_error'; status: number }
+    | { kind: 'unreachable'; reason: string }
+    | { kind: 'blocked'; reason: string; detail?: string },
+  language: LanguagePreference,
+): string {
+  const mi = language === 'mi';
+  switch (outcome.kind) {
+    case 'not_enabled':
+      return mi
+        ? 'Kāore e whakaaetia: kāore i whakahohea ngā whakarāpopototanga hononga i tēnei tūmau.'
+        : 'Refusing: link summaries are not enabled on this deployment.';
+    case 'invalid_url':
+      return mi
+        ? `Kāore e whakaaetia: ehara "${outcome.url}" i te URL whaimana.`
+        : `Refusing: "${outcome.url}" is not a valid URL.`;
+    case 'non_https':
+      return mi
+        ? 'Kāore e whakaaetia: ko ngā hononga https anake ka taea te whakatuwhera.'
+        : 'Refusing: only https links can be opened.';
+    case 'no_posted_link':
+      return mi
+        ? `Kāore e whakaaetia: ka taea anake e au te whakatuwhera i tētahi hononga i whakairia e tētahi ` +
+            `tangata ki tēnei kōrero i roto i ngā haora ${outcome.lookbackHours} kua hipa. Tonoa rātou kia ` +
+            'whakapiri mai i konei.'
+        : `Refusing: I can only open a link that a person posted in this conversation in the last ` +
+            `${outcome.lookbackHours}h. Ask them to paste it here.`;
+    case 'dedup':
+      return mi
+        ? 'Kāore e whakaaetia: nāu anō tērā hononga tonu i whakatuwhera i ngā meneti kua pahemo — ' +
+            'whakamahia anō tērā hua.'
+        : 'Refusing: you opened that exact link moments ago — reuse that result instead.';
+    case 'daily_limit':
+      return mi
+        ? `Kua eke koe ki te tepe whakarāpopototanga hononga o tēnei rā (${outcome.limit}). ` +
+            'Whakamātauria anō āpōpō.'
+        : `You've hit today's link-summary limit (${outcome.limit}). Try again tomorrow.`;
+    case 'http_error':
+      return mi
+        ? `I whakautu te pae ${outcome.status} mō tērā hononga.`
+        : `The site answered ${outcome.status} for that link.`;
+    case 'unreachable':
+      return mi
+        ? `Kāore i taea te tae atu ki tērā hononga (${outcome.reason}).`
+        : `Could not reach that link (${outcome.reason}).`;
+    case 'blocked': {
+      const detailSuffix = outcome.detail ? `: ${outcome.detail}` : '';
+      if (outcome.reason === 'host-not-allowed') {
+        return mi
+          ? `I ārairia e te kaupapahere (${outcome.reason}${detailSuffix}). Ka ārahina te hononga ki ` +
+              'tētahi pae kē — tonoa te hononga whakamutunga, kātahi ka whakairia mai tērā.'
+          : `Refused by policy (${outcome.reason}${detailSuffix}). The link redirects to a different site — ` +
+              'ask for the final link and post that instead.';
+      }
+      return mi
+        ? `I ārairia e te kaupapahere (${outcome.reason}${detailSuffix}).`
+        : `Refused by policy (${outcome.reason}${detailSuffix}).`;
+    }
+  }
+}
+
 export const linkSummaryTools = [
   defineTool({
     name: 'summarize_link',
@@ -283,20 +360,26 @@ export const linkSummaryTools = [
     },
     handler: async (args, { caller }) => {
       assertAtLeast(caller.role, 'member', 'summarize_link');
+      // Read once, ahead of every refusal branch (issue #1429) — not only on
+      // the success path — so a standing 'mi' preference is honoured by
+      // refusals too, not just the fetched-page reply.
+      const language = await getLanguagePreference(caller.platform, caller.userId).catch(
+        () => 'auto' as const,
+      );
       // Re-checked in-handler as well as via featureFlag, as fetch_page does:
       // an egress tool must not depend on surface filtering alone.
       if (!config.linkSummary.enabled) {
-        return text('Refusing: link summaries are not enabled on this deployment.', true);
+        return text(formatLinkSummaryText({ kind: 'not_enabled' }, language), true);
       }
 
       let requested: URL;
       try {
         requested = new URL(args.url);
       } catch {
-        return text(`Refusing: "${args.url}" is not a valid URL.`, true);
+        return text(formatLinkSummaryText({ kind: 'invalid_url', url: args.url }, language), true);
       }
       if (requested.protocol !== 'https:') {
-        return text('Refusing: only https links can be opened.', true);
+        return text(formatLinkSummaryText({ kind: 'non_https' }, language), true);
       }
 
       // Provenance BEFORE any quota is spent: always the caller's own real
@@ -311,21 +394,17 @@ export const linkSummaryTools = [
       );
       const posted = findPostedUrl(args.url, history);
       if (!posted) {
-        return text(
-          `Refusing: I can only open a link that a person posted in this conversation in the last ` +
-            `${lookbackHours}h. Ask them to paste it here.`,
-          true,
-        );
+        return text(formatLinkSummaryText({ kind: 'no_posted_link', lookbackHours }, language), true);
       }
       const target = new URL(posted);
 
       const dedupKey = `${caller.platform}:${caller.userId}:${target.href}`;
       if (!reserveLinkDedup(dedupKey, 1)) {
-        return text('Refusing: you opened that exact link moments ago — reuse that result instead.', true);
+        return text(formatLinkSummaryText({ kind: 'dedup' }, language), true);
       }
       const limit = config.linkSummary.dailyLimit;
       if (limit > 0 && !reserveLinkDaily(`${caller.platform}:${caller.userId}`, limit)) {
-        return text(`You've hit today's link-summary limit (${limit}). Try again tomorrow.`, true);
+        return text(formatLinkSummaryText({ kind: 'daily_limit', limit }, language), true);
       }
 
       const outcome = await safeFetch(target.href, {
@@ -366,9 +445,6 @@ export const linkSummaryTools = [
             page.text.length > MAX_RETURNED_CHARS
               ? ` [truncated to the first ${MAX_RETURNED_CHARS} of ${page.text.length} readable chars]`
               : '';
-          const language = await getLanguagePreference(caller.platform, caller.userId).catch(
-            () => 'auto' as const,
-          );
           // The title is attacker-controlled, so it rides INSIDE the quarantine.
           const body = page.title ? `TITLE: ${page.title} | ${clipped}` : clipped;
           return text(
@@ -377,20 +453,19 @@ export const linkSummaryTools = [
           );
         }
         case 'http-error':
-          return text(`The site answered ${outcome.status} for that link.`, true);
+          return text(formatLinkSummaryText({ kind: 'http_error', status: outcome.status }, language), true);
         case 'unreachable':
-          return text(`Could not reach that link (${outcome.reason}).`, true);
-        case 'blocked': {
-          const base = `Refused by policy (${outcome.reason}${outcome.detail ? `: ${outcome.detail}` : ''}).`;
+          return text(formatLinkSummaryText({ kind: 'unreachable', reason: outcome.reason }, language), true);
+        case 'blocked':
           // With the posted host as the entire allowlist, host-not-allowed can
           // only mean a redirect to a different site.
           return text(
-            outcome.reason === 'host-not-allowed'
-              ? `${base} The link redirects to a different site — ask for the final link and post that instead.`
-              : base,
+            formatLinkSummaryText(
+              { kind: 'blocked', reason: outcome.reason, detail: outcome.detail },
+              language,
+            ),
             true,
           );
-        }
       }
     },
   }),
