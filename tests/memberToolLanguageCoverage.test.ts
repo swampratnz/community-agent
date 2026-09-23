@@ -44,7 +44,12 @@ test(
       if (!/minTier:\s*'member'/.test(source)) continue;
       memberFiles.push(file);
       if (ALLOWLIST.has(file)) continue;
-      if (!source.includes('getLanguagePreference')) {
+      // `resolveRecipientNoticeSelection` (helpers.ts, issue #1245) wraps
+      // getLanguagePreference and resolves the response style with it, so a
+      // file that resolves through the helper honours the standing preference
+      // too — feedback.ts and reportsMember.ts moved to it for #1436 rather
+      // than carry a private copy of the same lookup.
+      if (!source.includes('getLanguagePreference') && !source.includes('resolveRecipientNoticeSelection')) {
         uncovered.push(file);
       }
     }
