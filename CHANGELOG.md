@@ -23,14 +23,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #868 #896 #899 #904 #949 #950 #951 #952 #953 #954 #955 #956 #957 #958 #961
 #963 #964 #965 #968 #971 #983 #988 #989 #991 #992 #994 #1017 #1071 #1086
 #1122 #1123 #1132 #1232 #1236 #1248 #1281 #1284 #1304 #1308 #1310
-#1355 #1356 #1357 #1341 #1350 #1360 #1381 #1391 #1441
+#1355 #1356 #1357 #1341 #1350 #1360 #1381 #1391 #1441 #1382
 -->
 
 ## 2026-09-20
 
 ### Added
 - **Assigning or removing a cosmetic community role (a regional tag,
-  "verified builder", etc.) now DMs the member it happened to.** Previously
+  "verified builder", etc.) now DMs the member it happened to.** (#1440) Previously
   `assign_community_role`/`remove_community_role` only told the acting
   admin — the one remaining grant/revoke action in the bot where the
   affected member learned nothing. The DM names the role as a Discord
@@ -42,11 +42,23 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ### Fixed
 - **Withdrawing a moderation appeal now shows up as withdrawn when you check
   your own submissions via `!mysubmissions`/`/mysubmissions`, not just when
-  you ask in chat.** These two shortcuts already got this right for a
+  you ask in chat.** (#1435) These two shortcuts already got this right for a
   withdrawn suggestion; a withdrawn appeal was still rendering its stale
   `[open]` status because the same fix was never threaded through for
   appeals. Both now match what the full `my_submissions` tool has always
   shown.
+
+## 2026-09-17
+
+### Security
+- **A moderation reason can no longer smuggle text into the confirmation
+  prompt or the member's warning DM.** (#1433) `moderate`'s `reason` is now
+  capped at 500 characters and stripped of angle brackets, quotes and line
+  breaks before it reaches the CONFIRM prompt, the audit log or the member's
+  DM — the same treatment `delete_message`'s content preview already got —
+  and `durationMinutes` is bounded to Discord's 28-day timeout ceiling.
+  `clear_warnings` and `archive_thread` reasons get the same cap, and
+  `archive_thread`'s the same sanitising.
 
 ## 2026-09-12
 
@@ -80,6 +92,15 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   access-request queue (the only one of the five where you're a guest, not
   yet a member). It fires independently of admins' own separate backlog
   alert.
+
+### Fixed
+- **A super admin's `arm shell` now takes effect on the very next turn.**
+  (#1423) Arming recorded the window, but the turn that followed resumed the
+  conversation session opened seconds earlier, before the arming — and a
+  resumed session keeps the tool surface it started with, so the bot
+  truthfully answered that it had no shell. An armed window is now part of
+  what identifies a session, so the first turn after arming starts fresh
+  with the armed tools in place. Unarmed turns are byte-for-byte unchanged.
 
 ## 2026-09-11
 
