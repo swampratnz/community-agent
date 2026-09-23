@@ -9,8 +9,10 @@ import {
 import { alertAdmins } from './appealStaleAlert.js';
 import { persistedCrossingLatch, type CrossingLatchDeps } from './crossingLatch.js';
 import { KNOWLEDGE_CANDIDATE_STALE_ALERT_POLICY_KEY } from './storage/policies.js';
+import { recordCandidateStaleNotice as recordCandidateStaleNoticeDefault } from './storage/knowledgeCandidateStaleNotices.js';
+import { notifyKnowledgeCandidateStale } from './agent/tools/notify.js';
 import type { JobSpec } from '@swampratnz/agent-base/jobs/types.js';
-import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
+import type { Platform, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
 /**
  * Staleness threshold (issue #1073, mirroring `appealStaleAlert.ts`'s #1020
@@ -73,6 +75,27 @@ function staleKnowledgeCandidates(
  * `persistedCrossingLatch`'s own doc comment. `listOpenCandidates`/
  * `listAdminIdentities`/`latchDeps` are injectable so tests can drive the
  * latch across ticks with no real DB and no timers.
+ *
+ * Also sends the SUBMITTER their own one-time "still being reviewed" DM
+ * (issue #1408, mirroring `reportStaleAlert.ts`'s #1375 mechanism verbatim)
+ * for each candidate in `stale` whose `sourcePlatform`/`sourceUserId` are
+ * both non-null — evaluated right after `stale` is computed, unconditionally,
+ * INDEPENDENT of the admin crossing latch below: an admin backlog already
+ * latched open (so `step.shouldAlert` is false) must not silently suppress
+ * the signal to a submitter who has never been notified about this
+ * particular candidate before. A null `sourcePlatform`/`sourceUserId` means
+ * a machine-drafted candidate with no submitter to notify — the same
+ * condition `accept_knowledge_candidate`/`decline_knowledge_candidate`
+ * already gate their resolution DM on — so it is skipped entirely: no
+ * record, no notify call. Idempotency is `recordCandidateStaleNotice`'s
+ * `INSERT ... ON CONFLICT DO NOTHING` alone — no second latch — so a
+ * candidate already flagged (by an earlier tick) is a no-op. Routed via
+ * `adapters.find` on the candidate's OWN `sourcePlatform`, never any
+ * caller-supplied value; a missing/disconnected adapter for that platform is
+ * a silent skip, matching every sibling job's adapter-missing handling. A
+ * failure recording or sending one candidate's notice is caught per-candidate
+ * so it can never suppress the notice to any other stale candidate's
+ * submitter, nor the admin alert below.
  */
 export function makeDefaultKnowledgeCandidateStaleAlertRun(
   adapters: readonly PlatformAdapter[],
@@ -80,12 +103,45 @@ export function makeDefaultKnowledgeCandidateStaleAlertRun(
     listKnowledgeCandidates('pending', KNOWLEDGE_CANDIDATE_STALE_ALERT_SCAN_LIMIT, true),
   listAdminIdentities: () => Promise<AdminIdentity[]> = listAdmins,
   latchDeps?: CrossingLatchDeps,
+  recordCandidateStaleNotice: (candidateId: number) => Promise<boolean> = recordCandidateStaleNoticeDefault,
+  notifyStale: (
+    adapter: PlatformAdapter,
+    userId: string,
+    platform: Platform,
+  ) => Promise<void> = notifyKnowledgeCandidateStale,
 ): () => Promise<void> {
   const latch = persistedCrossingLatch(KNOWLEDGE_CANDIDATE_STALE_ALERT_POLICY_KEY, latchDeps);
   return async () => {
     const now = Date.now();
     const candidates = await listOpenCandidates();
     const stale = staleKnowledgeCandidates(candidates, now);
+
+    // Submitter-side mid-flight notice (issue #1408) — independent of the
+    // admin crossing latch below (see the function doc comment): every
+    // still-stale, member-sourced candidate is offered a one-time notice
+    // every tick, gated only by the ON CONFLICT DO NOTHING insert.
+    for (const staleCandidate of stale) {
+      if (!staleCandidate.sourcePlatform || !staleCandidate.sourceUserId) continue;
+      const sourcePlatform = staleCandidate.sourcePlatform;
+      const sourceUserId = staleCandidate.sourceUserId;
+      // Mirrors every sibling job's adapter-missing handling: resolved BEFORE
+      // recordCandidateStaleNotice, so a candidate whose submitter platform
+      // has no connected adapter is never marked as notified — it stays
+      // eligible for a real notice on a later tick, once an adapter exists.
+      const adapter = adapters.find((a) => a.platform === sourcePlatform && a.isConnected());
+      if (!adapter) continue;
+      try {
+        const isFirstNotice = await recordCandidateStaleNotice(staleCandidate.id);
+        if (!isFirstNotice) continue;
+        await notifyStale(adapter, sourceUserId, sourcePlatform);
+      } catch (err) {
+        logger.warn(
+          { err, platform: sourcePlatform, candidateId: staleCandidate.id },
+          'Knowledge candidate stale alert: submitter notice failed',
+        );
+      }
+    }
+
     const step = await latch.step(stale.length);
     if (!step.shouldAlert) return;
 

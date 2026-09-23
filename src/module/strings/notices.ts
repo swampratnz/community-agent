@@ -545,6 +545,93 @@ const NOTICE_ENTRIES = {
       plain: "An admin removed your access to a project's shared memory on NZ Claude Community.",
     },
   },
+  // --- project_archive / project_unarchive whole-project notify DMs
+  // (agent/tools/notify.ts, issue #1395) ---
+  /**
+   * The neutral archive DM for the admin-tier `project_archive` — static,
+   * same non-interpolation shape as `projectMemberRemovedMessage` above: the
+   * project name is appended only as a distinct, quoted,
+   * `truncateForEcho`-capped clause (see `notifyProjectArchived` in
+   * notify.ts). Sent to every CURRENT member of the project, not just one —
+   * archiving revokes read access for all of them at once, the one
+   * project_* revoke `projectMemberRemovedMessage` above did not reach.
+   * Unconditional, same rationale as `projectMemberRemovedMessage` —
+   * archiving is ordinary, reversible team-access housekeeping, not
+   * moderation.
+   */
+  projectArchivedMessage: {
+    base:
+      "A project you're a member of on NZ Claude Community was archived by an admin — its shared memory " +
+      "can't be read until it's restored.",
+    language: {
+      mi:
+        'I whakakorehia (archived) tētahi kaupapa e whai wāhi ana koe i NZ Claude Community e tētahi ' +
+        'kaiwhakahaere — kāore e taea te pānui i ōna mahara tiritahi kia whakahokia mai anō rā anō.',
+    },
+    style: {
+      plain:
+        "An admin archived a project you're in on NZ Claude Community — you can't read its shared memory until it's restored.",
+    },
+  },
+  /**
+   * The neutral restoration DM for the admin-tier `project_unarchive` — the
+   * mirror-image of `projectArchivedMessage` above, same non-interpolation
+   * shape and same every-current-member fan-out (see `notifyProjectUnarchived`
+   * in notify.ts). Unconditional, same rationale as `projectArchivedMessage`.
+   */
+  projectUnarchivedMessage: {
+    base:
+      "A project you're a member of on NZ Claude Community was restored by an admin — its shared memory " +
+      'can be read again.',
+    language: {
+      mi:
+        'Kua whakahokia mai e tētahi kaiwhakahaere tētahi kaupapa e whai wāhi ana koe i NZ Claude Community ' +
+        '— ka taea anō te pānui i ōna mahara tiritahi.',
+    },
+    style: {
+      plain:
+        "An admin restored a project you're in on NZ Claude Community — you can read its shared memory again.",
+    },
+  },
+  // --- assign_community_role / remove_community_role grant-and-revoke DMs
+  // (agent/tools/notify.ts, issue #1439) ---
+  /**
+   * The neutral grant DM for the admin-tier `assign_community_role` —
+   * static, same non-interpolation shape as `projectMemberAddedMessage`
+   * above: the role is never interpolated into this translated base string,
+   * only appended afterward as a distinct Discord role-mention clause (see
+   * `notifyCommunityRoleAssigned` in notify.ts) — `discordRoles.ts` is
+   * Discord-only, so `<@&roleId>` renders client-side as the role's own
+   * current name/colour with no extra API call. Unconditional: like every
+   * sibling grant DM in this file, there is no moderation-silence rationale
+   * for an ordinary cosmetic-role grant.
+   */
+  communityRoleAssignedMessage: {
+    base: 'You were given a community role on NZ Claude Community:',
+    language: {
+      mi: 'I whakawhiwhia koe ki tētahi tūranga hapori i NZ Claude Community:',
+    },
+    style: {
+      plain: 'An admin gave you a community role on NZ Claude Community:',
+    },
+  },
+  /**
+   * The neutral revoke DM for the admin-tier `remove_community_role` —
+   * static, same non-interpolation shape as `communityRoleAssignedMessage`
+   * above (see `notifyCommunityRoleRemoved` in notify.ts). Unconditional,
+   * same rationale as `communityRoleAssignedMessage` — a cosmetic-role strip
+   * is ordinary housekeeping, not moderation, and reads as unexplained/unfair
+   * if left silent (issue #1439).
+   */
+  communityRoleRemovedMessage: {
+    base: 'A community role was removed from you on NZ Claude Community:',
+    language: {
+      mi: 'I tangohia tētahi tūranga hapori i a koe i NZ Claude Community:',
+    },
+    style: {
+      plain: 'An admin removed a community role from you on NZ Claude Community:',
+    },
+  },
   // --- find_helper / share_project / request_project_connection peer-DM
   // recipient notifications (agent/tools/social.ts, issue #1245) ---
   /**
@@ -886,7 +973,8 @@ const NOTICE_ENTRIES = {
    * added to both variants by issue #1044/#1034, closing a gap where it
    * shipped without ever being added to this list. `!kbhelpful` (issue
    * #1087) was added to both variants in the SAME PR as the command itself,
-   * precisely to avoid repeating that gap.
+   * precisely to avoid repeating that gap. `!kbforme` (issue #1411) follows
+   * the same discipline.
    */
   whatsappTextCommands: {
     base:
@@ -898,6 +986,7 @@ const NOTICE_ENTRIES = {
       '- `!status` — check for a known Anthropic outage\n' +
       '- `!kbtopics` — browse what the knowledge base covers\n' +
       '- `!kbhelpful` — see the most relied-on knowledge entries\n' +
+      '- `!kbforme` — knowledge search using your own published interests\n' +
       '- `!warnings` — your own active warning count\n' +
       '- `!mysubmissions` — status of your filed suggestions/reports\n' +
       '- `!mydata` — what the bot has stored about you\n' +
@@ -912,6 +1001,7 @@ const NOTICE_ENTRIES = {
         '- `!status` — tirotiro mehemea he raru mōhiotia nā Anthropic\n' +
         '- `!kbtopics` — tirotiro i ngā kaupapa e kapi ana e te pātengi mōhiotanga\n' +
         '- `!kbhelpful` — tiro i ngā mōhiotanga e whakawhirinaki nuitia ana\n' +
+        '- `!kbforme` — rapu mōhiotanga mā ō hiahia kua whakaputaina\n' +
         '- `!warnings` — te tatau o ō whakatūpato e mahi tonu ana\n' +
         '- `!mysubmissions` — te āhua o ō tono/pūrongo kua tukuna\n' +
         '- `!mydata` — he aha kua rongoātia e ahau mōu\n' +

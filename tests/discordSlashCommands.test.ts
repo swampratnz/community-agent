@@ -71,6 +71,7 @@ const {
   formatAdminRoster,
   formatBlockedMembersList,
   formatFeatureFlags,
+  formatKnowledgeSearchResults,
   formatKnowledgeTopics,
   formatListProjectsEmptyText,
   formatMostHelpfulKnowledge,
@@ -85,7 +86,8 @@ const {
   TOP_KNOWLEDGE_FETCH_CAP,
   buildToolServer,
 } = await import('../src/module/agent/tools.js');
-const { listKnowledge, upsertMember } = await import('@swampratnz/agent-base/storage/repository.js');
+const { listKnowledge, searchKnowledge, upsertMember } =
+  await import('@swampratnz/agent-base/storage/repository.js');
 const { EVENTS_LIST_LIMIT, formatListEventsEmptyText, formatUpcomingEvents } =
   await import('../src/module/agent/tools/info.js');
 const { createConfiguredAdapters } = await import('../src/module/platforms/factories.js');
@@ -177,6 +179,8 @@ function mockPool(
     reportRows?: PoolRow[];
     /** `listOwnAppeals`' rows (issue #1018), raw snake_case DB shape. */
     appealRows?: PoolRow[];
+    /** `getWithdrawnAppealIds`' ids (issue #1434) — which of `appealRows`' ids have been withdrawn. */
+    withdrawnAppealIds?: number[];
     /** `listOwnKnowledgeCandidates`' rows (issue #1018), raw snake_case DB shape. */
     knowledgeCandidateRows?: PoolRow[];
     /** `listOwnProjectConnectionRequests`' rows (issue #1018), raw snake_case DB shape. */
@@ -358,6 +362,11 @@ function mockPool(
     }
     if (sql.includes('FROM moderation_appeals')) {
       return { rows: opts.appealRows ?? [], rowCount: 0 };
+    }
+    // getWithdrawnAppealIds (issue #1434) — distinct table name from the
+    // plain 'FROM moderation_appeals' browse above (order doesn't matter).
+    if (sql.includes('FROM appeal_withdrawals')) {
+      return { rows: (opts.withdrawnAppealIds ?? []).map((id) => ({ appeal_id: id })), rowCount: 0 };
     }
     // listRoster('not_members', ...) — the row-returning onboarding-queue-age
     // query behind oldestNotMemberAgeDays (issue #1330), told apart from
@@ -685,6 +694,7 @@ test('with DISCORD_SLASH_COMMANDS_ENABLED=true, all commands are registered guil
     'guidelines',
     'help',
     'kb',
+    'kbforme',
     'kbhelpful',
     'kbtopics',
     'mutedlist',
@@ -714,7 +724,7 @@ test("a slash-command registration failure is caught and logged, never thrown, m
   assert.ok(warnLog.mock.calls.length >= 1, 'a registration failure must be logged, not swallowed silently');
 });
 
-test('buildSlashCommands defines exactly the twenty-one approved read-only commands, each with its expected required-ness', () => {
+test('buildSlashCommands defines exactly the twenty-two approved read-only commands, each with its expected required-ness', () => {
   const commands = buildSlashCommands();
   const byName = new Map(commands.map((c) => [c.name, c]));
   assert.deepEqual([...byName.keys()].sort(), [
@@ -728,6 +738,7 @@ test('buildSlashCommands defines exactly the twenty-one approved read-only comma
     'guidelines',
     'help',
     'kb',
+    'kbforme',
     'kbhelpful',
     'kbtopics',
     'mutedlist',
@@ -818,6 +829,12 @@ test('buildSlashCommands defines exactly the twenty-one approved read-only comma
     [],
     "/kbhelpful takes no options — always the tool's own fixed top-10 default, never a caller-supplied limit " +
       '(issue #1087)',
+  );
+  assert.deepEqual(
+    (byName.get('kbforme') as { options?: unknown[] }).options ?? [],
+    [],
+    "/kbforme takes no options — the query is always the caller's own published interests, matching " +
+      "knowledge_for_me's empty schema (issue #1411)",
   );
   assert.deepEqual(
     (byName.get('reviewqueue') as { options?: unknown[] }).options ?? [],
@@ -1884,6 +1901,97 @@ test('/mysubmissions renders a withdrawn suggestion as [withdrawn], matching the
   assert.doesNotMatch(replies[0].content, /#7 \[new\]/);
 });
 
+test('/mysubmissions renders a withdrawn appeal as [withdrawn], matching the my_submissions tool handler for the same DB state (issue #1434 — threading getWithdrawnAppealIds through this shortcut too, the appeal-side counterpart of #1243)', async (t) => {
+  const createdAt = new Date('2026-08-01T00:00:00Z');
+  mockPool(t, {
+    memberRole: 'member',
+    appealRows: [
+      {
+        id: 4,
+        platform: 'discord',
+        user_id: 'member-1',
+        user_name: 'Member One',
+        reason: 'retracted by the member',
+        active_warnings: 1,
+        strike_limit: 3,
+        status: 'open',
+        created_at: createdAt,
+        resolved_by: null,
+        resolved_at: null,
+      },
+    ],
+    withdrawnAppealIds: [4],
+  });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({ commandName: 'mysubmissions', userId: 'member-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  const expectedAppeals = [
+    {
+      id: 4,
+      platform: 'discord' as const,
+      userId: 'member-1',
+      userName: 'Member One',
+      reason: 'retracted by the member',
+      activeWarnings: 1,
+      strikeLimit: 3,
+      status: 'open' as const,
+      createdAt,
+      resolvedBy: null,
+      resolvedAt: null,
+    },
+  ];
+  assert.equal(
+    replies[0].content,
+    await adapterDeps(adapter).filtered(
+      formatMySubmissionsText([], [], expectedAppeals, [], [], 'auto', new Set(), new Set([4])),
+    ),
+  );
+  assert.match(replies[0].content, /#4 \[withdrawn\] retracted by the member/);
+  assert.doesNotMatch(replies[0].content, /#4 \[open\]/);
+});
+
+test("SECURITY: /mysubmissions queries appeal_withdrawals only for the caller's own appeal ids — a withdrawn id belonging to another member, never returned by listOwnAppeals, can never reach the query or influence rendering (issue #1434 SECURITY criterion 5)", async (t) => {
+  const createdAt = new Date('2026-08-01T00:00:00Z');
+  const calls = mockPool(t, {
+    memberRole: 'member',
+    appealRows: [
+      {
+        id: 4,
+        platform: 'discord',
+        user_id: 'member-1',
+        user_name: 'Member One',
+        reason: 'still open',
+        active_warnings: 1,
+        strike_limit: 3,
+        status: 'open',
+        created_at: createdAt,
+        resolved_by: null,
+        resolved_at: null,
+      },
+    ],
+    // Only id 4 (the caller's own appeal) is configured as withdrawn here —
+    // if the handler ever queried a wider or caller-supplied id set (e.g. a
+    // cross-member id like 99), this mock would have no way to reveal it, so
+    // the assertion below checks the query's ACTUAL params instead.
+    withdrawnAppealIds: [4],
+  });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction } = fakeInteraction({ commandName: 'mysubmissions', userId: 'member-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  const withdrawalCall = calls.find((c) => c.sql.includes('FROM appeal_withdrawals'));
+  assert.ok(withdrawalCall, 'getWithdrawnAppealIds must be queried when the caller has appeals');
+  assert.deepEqual(
+    withdrawalCall.params[0],
+    [4],
+    "SECURITY: the id set queried must be exactly listOwnAppeals' own ids for this caller — never a " +
+      'cross-member or caller-supplied id',
+  );
+});
+
 test('SECURITY: a guest caller is rejected on /mysubmissions without any of the five self-scoped reads ever being invoked (issue #1018)', async (t) => {
   const calls = mockPool(t, { memberRole: null });
   const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
@@ -1986,7 +2094,7 @@ test(
     mockPool(t, { memberRole: 'member', languagePref: 'mi' });
     const miResult = fakeInteraction({ commandName: 'mydata', userId: 'member-mi' });
     await handleInteraction(miResult.interaction as never, adapterDeps(adapter));
-    assert.match(miResult.replies[0].content, /Language preference: te reo Māori/);
+    assert.match(miResult.replies[0].content, /Kōwhiringa reo: te reo Māori/);
 
     mockPool(t, { memberRole: 'member', languagePref: 'en' });
     const enResult = fakeInteraction({ commandName: 'mydata', userId: 'member-en' });
@@ -2612,6 +2720,153 @@ test('SECURITY: /kbhelpful still replies successfully with the entries and no co
     'a lookup failure must degrade to no conflict caveat, never an error',
   );
   assert.ok(warnLog.mock.calls.length >= 1, 'the lookup failure must be logged, not silently swallowed');
+});
+
+// --- Issue #1411: /kbforme -----------------------------------------------------
+
+test(
+  "/kbforme returns output byte-identical to what formatKnowledgeSearchResults renders for searchKnowledge's " +
+    "own hits on the caller's published interests text — the same read pipeline knowledge_for_me's tool " +
+    'handler uses (issue #1411 acceptance criterion 1)',
+  async (t) => {
+    const interests = 'rust and distributed systems';
+    const knowledgeRows: PoolRow[] = [
+      {
+        id: 1,
+        title: 'Distributed systems FAQ',
+        content: 'KBFORME_DISCORD_HIT_TEXT',
+        created_by_role: 'admin',
+        similarity: 0.9,
+        updated_at: new Date(),
+      },
+    ];
+    mockPool(t, {
+      memberRole: 'member',
+      interestRows: [{ platform: 'discord', user_id: 'member-1', interests }],
+      knowledgeRows,
+    });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'kbforme', userId: 'member-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    const hits = await searchKnowledge(interests, { platform: 'discord', conversationId: 'chan-1' });
+    const expected = formatKnowledgeSearchResults(
+      hits,
+      config.adminDigest.knowledgeStaleDays,
+      config.adminDigest.knowledgeStaleMaxAgeDays,
+      false,
+      new Set(),
+    );
+    assert.equal(replies[0].content, stripEmDashes(expected));
+    assert.match(replies[0].content, /KBFORME_DISCORD_HIT_TEXT/);
+  },
+);
+
+test(
+  "/kbforme replies with formatWhoIsIntoEmptyText('noProfile', ...) verbatim, and never calls searchKnowledge, " +
+    'for a caller with no published interests (issue #1411 acceptance criterion 1)',
+  async (t) => {
+    const calls = mockPool(t, { memberRole: 'member', interestRows: [] });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'kbforme', userId: 'member-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies[0].content, stripEmDashes(formatWhoIsIntoEmptyText('noProfile', 'auto')));
+    assert.ok(
+      !calls.some((c) => c.sql.includes('FROM knowledge')),
+      'a caller with no published interests must never reach searchKnowledge',
+    );
+  },
+);
+
+test(
+  "/kbforme's no-profile guidance is translated for a caller with a standing 'mi' language preference (issue " +
+    '#1411 acceptance criterion 1)',
+  async (t) => {
+    mockPool(t, { memberRole: 'member', interestRows: [], languagePref: 'mi' });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'kbforme', userId: 'member-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies[0].content, stripEmDashes(formatWhoIsIntoEmptyText('noProfile', 'mi')));
+  },
+);
+
+test('SECURITY: a guest caller is rejected on /kbforme without getPublishedInterestsForOwners or searchKnowledge ever being invoked (issue #1411 acceptance criterion 3)', async (t) => {
+  const calls = mockPool(t, {
+    memberRole: null,
+    interestRows: [{ platform: 'discord', user_id: 'guest-1', interests: 'should never be read' }],
+  });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({ commandName: 'kbforme', userId: 'guest-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].ephemeral, true);
+  assert.match(replies[0].content, /don't have access/i);
+  assert.ok(
+    !calls.some((c) => c.sql.includes('FROM member_interests') || c.sql.includes('FROM knowledge')),
+    'a rejected guest caller must never reach getPublishedInterestsForOwners or searchKnowledge',
+  );
+});
+
+test(
+  "SECURITY: /kbforme reads only the caller's OWN {platform, userId} — a different identity's published " +
+    'interests row is never read or leaked (issue #1411 acceptance criterion 5)',
+  async (t) => {
+    const calls = mockPool(t, {
+      memberRole: 'member',
+      interestRows: [{ platform: 'discord', user_id: 'member-1', interests: 'caller-only interests' }],
+    });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction } = fakeInteraction({ commandName: 'kbforme', userId: 'member-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    const interestsCall = calls.find((c) => c.sql.includes('FROM member_interests'));
+    assert.ok(interestsCall, 'getPublishedInterestsForOwners must have run');
+    assert.deepEqual(
+      interestsCall?.params,
+      [['discord'], ['member-1']],
+      "only the caller's own {platform, userId} may reach getPublishedInterestsForOwners",
+    );
+  },
+);
+
+test("a successful /kbforme invocation calls recordShortcutHit('slash_command') exactly once (issue #1411)", async (t) => {
+  const calls = mockPool(t, { memberRole: 'member', interestRows: [] });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction } = fakeInteraction({ commandName: 'kbforme', userId: 'member-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(shortcutHitCalls(calls).length, 1, '/kbforme must record exactly one slash_command hit');
+});
+
+test('SECURITY: recordShortcutHit is never called on the NOT_AUTHORIZED_TEXT branch for /kbforme (issue #1411)', async (t) => {
+  const calls = mockPool(t, { memberRole: null });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({ commandName: 'kbforme', userId: 'guest-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.match(replies[0].content, /don't have access/i, 'sanity check: /kbforme was actually denied');
+  assert.equal(shortcutHitCalls(calls).length, 0, 'an auth-denied reply must never record a shortcut hit');
+});
+
+test('/kbforme replies ephemerally, deferring before its DB round trip', async (t) => {
+  mockPool(t, { memberRole: 'member', interestRows: [] });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies, order } = fakeInteraction({ commandName: 'kbforme', userId: 'member-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies[0].ephemeral, true);
+  assert.deepEqual(order, ['deferReply', 'editReply']);
 });
 
 // --- Issue #1095: /reviewqueue (the first admin-tier slash command); reports line added #1207 ---------

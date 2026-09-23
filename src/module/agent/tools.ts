@@ -66,6 +66,8 @@ export {
   notifyProjectRemoved,
   notifyProjectMemberAdded,
   notifyProjectMemberRemoved,
+  notifyProjectArchived,
+  notifyProjectUnarchived,
   notifySuggestionResolved,
   notifyReportResolved,
   notifyReportStale,
@@ -73,9 +75,14 @@ export {
   notifyReportWithdrawn,
   notifyAppealFiled,
   notifyAppealResolved,
+  notifyAppealStale,
+  notifyAccessRequestStale,
   notifyKnowledgeTipResolved,
+  notifyKnowledgeCandidateStale,
   notifyWarningsCleared,
   notifyKnowledgeEntryFixed,
+  notifyCommunityRoleAssigned,
+  notifyCommunityRoleRemoved,
 } from './tools/notify.js';
 export { reserveDevTeamDispatchDaily } from './tools/devTeam.js';
 export { EVENTS_LIST_LIMIT, formatCommunityInfoText, formatListEventsEmptyText } from './tools/info.js';

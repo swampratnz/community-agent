@@ -23,8 +23,63 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #868 #896 #899 #904 #949 #950 #951 #952 #953 #954 #955 #956 #957 #958 #961
 #963 #964 #965 #968 #971 #983 #988 #989 #991 #992 #994 #1017 #1071 #1086
 #1122 #1123 #1132 #1232 #1236 #1248 #1281 #1284 #1304 #1308 #1310
-#1355 #1356 #1357 #1341 #1350 #1360 #1381
+#1355 #1356 #1357 #1341 #1350 #1360 #1381 #1441
 -->
+
+## 2026-09-20
+
+### Added
+- **Assigning or removing a cosmetic community role (a regional tag,
+  "verified builder", etc.) now DMs the member it happened to.** Previously
+  `assign_community_role`/`remove_community_role` only told the acting
+  admin — the one remaining grant/revoke action in the bot where the
+  affected member learned nothing. The DM names the role as a Discord
+  mention and honours the member's language/response-style preferences,
+  same as every other grant/revoke notification.
+
+## 2026-09-18
+
+### Fixed
+- **Withdrawing a moderation appeal now shows up as withdrawn when you check
+  your own submissions via `!mysubmissions`/`/mysubmissions`, not just when
+  you ask in chat.** These two shortcuts already got this right for a
+  withdrawn suggestion; a withdrawn appeal was still rendering its stale
+  `[open]` status because the same fix was never threaded through for
+  appeals. Both now match what the full `my_submissions` tool has always
+  shown.
+
+## 2026-09-12
+
+### Added
+- **A suggestion you submitted now checks in with you if it's waiting a
+  while.** If your `suggest_improvement` idea is still pending after 7 days,
+  you now get a one-time "still being reviewed, thanks for your patience" DM —
+  the same mid-flight reassurance content reports (#1375), knowledge tips
+  (#1408) and moderation appeals (#1413) already got, extended to the last
+  remaining member-contribution queue. It fires independently of the admins'
+  own separate backlog alert, and never fires for a suggestion you withdrew
+  yourself.
+- **A moderation appeal you filed now checks in with you if it's waiting a
+  while.** If your `appeal_moderation` appeal is still open after 72 hours,
+  you now get a one-time "still being reviewed, thanks for your patience" DM —
+  the same mid-flight reassurance content reports (#1375) and knowledge tips
+  (#1408) already got, extended to the appeal queue. It fires independently of
+  the admins' own separate backlog alert, and never fires for an appeal you
+  withdrew yourself.
+- **`my_data` now replies fully in te reo Māori too.** (#1419) Members with a
+  standing te reo Māori preference already got a fully translated
+  `my_warnings`/`my_submissions` — `my_data` (and its `!mydata`/`/mydata`
+  shortcuts) was the last of the three still showing English labels around a
+  translated language-preference value. Every label now matches your
+  preference; the underlying numbers and settings it reports are unchanged.
+- **If you've asked to join and are still waiting, the bot now checks in.**
+  (#1421) If your access request is still pending after 7 days, you now get a
+  one-time "still being reviewed, thanks for your patience" DM — the same
+  mid-flight reassurance content reports (#1375), knowledge tips (#1408),
+  moderation appeals (#1413) and suggestions already got, extended to the
+  access-request queue (the only one of the five where you're a guest, not
+  yet a member). It fires independently of admins' own separate backlog
+  alert.
 
 ## 2026-09-11
 
@@ -40,6 +95,17 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   existing DMs for the last silent pair in this family. A failed DM never
   reverses the link/unlink or changes the admin's reported success — it just
   adds a short note to the admin's own reply.
+- **Archiving or restoring a project now tells its members.** (#1395)
+  `project_archive` cuts off every current member's read/write access to a
+  team project's shared memory in one call — previously that happened
+  silently, and the only way a member found out was an admin telling them
+  separately, or noticing their project notes had gone unreachable.
+  `project_archive`/`project_unarchive` now send each current member a short
+  DM saying the project was archived or restored, the same best-effort
+  pattern #1241 already added for `project_add_member`/`project_remove_member`
+  (that pair notifies one member at a time; this is the whole-project
+  equivalent). No new data is collected or retained, and the admin's own
+  reply is unchanged either way.
 - **Web research for members (off by default).** When the community knowledge
   base has no answer — release news, third-party tools, "is X out yet?" — the
   bot can look it up on the web and answer with its sources. It always checks
@@ -51,6 +117,13 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   summarises it. It only opens links a person actually posted in that
   conversation recently — never one it made up — and won't follow a link that
   redirects to a different site. Turned on with `LINK_SUMMARY_ENABLED`.
+- **A knowledge tip you suggest now checks in with you if it's waiting a
+  while.** If a `suggest_knowledge` tip is still pending review after 7 days,
+  you now get a one-time "still being reviewed, thanks for your patience" DM —
+  the same mid-flight reassurance content reports already got (#1375),
+  extended to the knowledge-candidate queue. It never fires for an
+  automatically-drafted candidate (only one you actually submitted), and
+  admins still get their own separate backlog alert unchanged.
 
 ### Security
 - **Dependency: `sharp` raised past the libheif advisory (GHSA-rgj7-g3m4-5g8c).**
@@ -77,6 +150,15 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   source — not attacker-controlled input. It will clear itself when upstream
   publishes a fix; recorded here so the four remaining `moderate` findings are
   not mistaken for something unexamined.
+
+### Fixed
+
+- **Dave keeps track of who he's talking to in group chats.** Dave keeps one ongoing conversation per chat, and it kept whatever instructions it started with. So in a group, everyone after the first person was handled as if they were that first person: an admin could be told they weren't an admin, and one member's style or language preference applied to everyone. Dave now starts a fresh conversation whenever who he's talking to (or his instructions) changes, bringing the last few messages along as context. Changes to how Dave talks now also reach existing chats straight away.
+- **Link summaries now read the page, not its scaffolding.** Dave was handed raw HTML cut at 12,000 characters. On many sites, GitHub repo pages included, that is all `<head>` boilerplate, so he had nothing real to summarise and could fill the gap with guesses. He now gets the page's readable text (the article or main content first, with scripts, styles and navigation dropped). A page with no readable text, such as a JavaScript-only app or a login wall, now gets an honest "I couldn't read that" instead of a made-up summary.
+
+### Changed
+
+- **Dave sounds more like a person and less like a helpdesk.** He no longer opens with a greeting and your name every time or signs off with "anything else I can help with?", keeps chat replies short and plain (no bold headings or mini-documents), plays along with banter instead of answering it like a policy, and says what he can't do in plain words rather than explaining his internals. Kiwi slang is now occasional rather than a verbal tic. In a side-by-side on fifteen sample messages, replies ending in a question fell from 40% to 13%, greetings from 53% to none, use of the person's name from 67% to 13%, bold from 27% to none, and the median reply halved (312 to 155 characters).
 
 ## 2026-09-10
 

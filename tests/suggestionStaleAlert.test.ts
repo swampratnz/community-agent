@@ -28,6 +28,7 @@ const {
 } = await import('../src/module/suggestionStaleAlert.js');
 const { WindowClosedError } = await import('@swampratnz/agent-base/platforms/whatsapp/cloudAdapter.js');
 const { SUGGESTION_STALE_ALERT_POLICY_KEY } = await import('../src/module/storage/policies.js');
+const { notifySuggestionStale } = await import('../src/module/agent/tools/notify.js');
 
 type Platform = 'discord' | 'whatsapp';
 type SuggestionStatus = 'new' | 'reviewed' | 'declined' | 'done';
@@ -67,6 +68,22 @@ function suggestion(overrides: Partial<Suggestion> & { ageHours: number }): Sugg
 function admins(entries: Array<Partial<AdminIdentity>>): AdminIdentity[] {
   return entries.map((e, i) => ({ platform: 'discord', platformUserId: `admin-${i}`, ...e }));
 }
+
+// Stands in for the real `getWithdrawnSuggestionIds`: always reports
+// "nothing withdrawn". Mirrors tests/appealStaleAlert.test.ts's
+// skipWithdrawnIds.
+const skipWithdrawnIds = async () => new Set<number>();
+
+// Stands in for the real `recordSuggesterStaleNotice` (issue #1415): always
+// reports "already notified" (false), so the submitter-notice branch added
+// to makeDefaultSuggestionStaleAlertRun's loop is a guaranteed no-op for
+// every test below that isn't specifically exercising the submitter-notice
+// path itself — otherwise the default would fall through to the REAL
+// storage function (a live Postgres query) and the real
+// notifySuggestionStale (a live language-preference lookup), same
+// "deps must be all-or-nothing" hazard tests/appealStaleAlert.test.ts's
+// skipAppellantNotice guards against.
+const skipSuggesterNotice = async () => false;
 
 function makeAdapter(connected = true): {
   adapter: PlatformAdapter;
@@ -182,7 +199,8 @@ test('SECURITY: the crossing-tick alert DM contains no suggestion id, content, u
     listOpenSuggestions,
     listAdminIdentities,
     fakePolicyStore(),
-    async () => new Set<number>(),
+    skipWithdrawnIds,
+    skipSuggesterNotice,
   );
 
   await runOnce();
@@ -213,7 +231,8 @@ test('makeDefaultSuggestionStaleAlertRun: a pending-suggestion set with none old
     listOpenSuggestions,
     listAdminIdentities,
     fakePolicyStore(),
-    async () => new Set<number>(),
+    skipWithdrawnIds,
+    skipSuggesterNotice,
   );
 
   await runOnce();
@@ -232,7 +251,8 @@ test('makeDefaultSuggestionStaleAlertRun: alerts exactly once on the tick the st
     listOpenSuggestions,
     listAdminIdentities,
     fakePolicyStore(),
-    async () => new Set<number>(),
+    skipWithdrawnIds,
+    skipSuggesterNotice,
   );
 
   await runOnce(); // 0 -> no alert
@@ -262,7 +282,8 @@ test('makeDefaultSuggestionStaleAlertRun: the latch re-arms once the stale count
     listOpenSuggestions,
     listAdminIdentities,
     fakePolicyStore(),
-    async () => new Set<number>(),
+    skipWithdrawnIds,
+    skipSuggesterNotice,
   );
 
   await runOnce(); // 0 -> 2, crosses
@@ -289,7 +310,8 @@ test('makeDefaultSuggestionStaleAlertRun: writes the active marker to the policy
     listOpenSuggestions,
     listAdminIdentities,
     store,
-    async () => new Set<number>(),
+    skipWithdrawnIds,
+    skipSuggesterNotice,
   );
 
   assert.equal(store.written.length, 0, 'no write before the tick runs');
@@ -313,7 +335,8 @@ test('makeDefaultSuggestionStaleAlertRun: restart-safety — a fresh factory see
     listOpenSuggestions,
     listAdminIdentities,
     store,
-    async () => new Set<number>(),
+    skipWithdrawnIds,
+    skipSuggesterNotice,
   );
 
   await runOnce();
@@ -346,7 +369,8 @@ test('makeDefaultSuggestionStaleAlertRun: re-arm survives a restart — the mark
     async () => [suggestion({ ageHours: 200 })],
     listAdminIdentities,
     store,
-    async () => new Set<number>(),
+    skipWithdrawnIds,
+    skipSuggesterNotice,
   );
   await secondProcess();
   assert.equal(dms.length, 1, 'a fresh crossing after the persisted re-arm alerts again');
@@ -367,7 +391,8 @@ test('SECURITY: makeDefaultSuggestionStaleAlertRun never threads a member/admin 
     listOpenSuggestions,
     listAdminIdentities,
     store,
-    async () => new Set<number>(),
+    skipWithdrawnIds,
+    skipSuggesterNotice,
   );
 
   await runOnce();
@@ -414,7 +439,8 @@ test('SECURITY: a WindowClosedError for one admin is queued via queueForWindowRe
     listOpenSuggestions,
     listAdminIdentities,
     fakePolicyStore(),
-    async () => new Set<number>(),
+    skipWithdrawnIds,
+    skipSuggesterNotice,
   );
 
   await runOnce();
@@ -463,6 +489,7 @@ test('makeDefaultSuggestionStaleAlertRun: a mix of one withdrawn and one non-wit
     listAdminIdentities,
     fakePolicyStore(),
     getWithdrawnIds,
+    skipSuggesterNotice,
   );
 
   await runOnce();
@@ -494,6 +521,7 @@ test('makeDefaultSuggestionStaleAlertRun: getWithdrawnIds is invoked with exactl
     listAdminIdentities,
     fakePolicyStore(),
     getWithdrawnIds,
+    skipSuggesterNotice,
   );
 
   await runOnce();
@@ -519,6 +547,7 @@ test('makeDefaultSuggestionStaleAlertRun: zero-withdrawal parity — with an emp
     listAdminIdentities,
     store,
     getWithdrawnIds,
+    skipSuggesterNotice,
   );
 
   await runOnce();
@@ -560,6 +589,7 @@ test('SECURITY: the withdrawal filter does not widen the alert DM — a withdraw
     listAdminIdentities,
     fakePolicyStore(),
     getWithdrawnIds,
+    skipSuggesterNotice,
   );
 
   await runOnce();
@@ -574,6 +604,365 @@ test('SECURITY: the withdrawal filter does not widen the alert DM — a withdraw
   );
   assert.ok(!body.includes(secretContent), 'withdrawn suggestion content must never appear in the alert DM');
 });
+
+// --- submitter-side mid-flight stale notice (issue #1415) -------------------
+
+/** Stands in for `recordSuggesterStaleNotice`: an in-memory Set, same
+ * "returns true only the first time" contract the real `INSERT ... ON
+ * CONFLICT DO NOTHING` gives. Also exposes every id it was called with, so a
+ * test can assert it was never called at all for a withdrawn suggestion.
+ * Mirrors tests/appealStaleAlert.test.ts's fakeAppellantNoticeRecorder. */
+function fakeSuggesterNoticeRecorder(): {
+  record: (id: number) => Promise<boolean>;
+  calledWith: number[];
+} {
+  const seen = new Set<number>();
+  const calledWith: number[] = [];
+  return {
+    record: async (id: number) => {
+      calledWith.push(id);
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    },
+    calledWith,
+  };
+}
+
+/** Mirrors tests/appealStaleAlert.test.ts's fakeNotifyStale. */
+function fakeNotifyStale(): {
+  notifyStale: (adapter: PlatformAdapter, userId: string, platform: Platform) => Promise<void>;
+  calls: Array<{ userId: string; platform: Platform }>;
+} {
+  const calls: Array<{ userId: string; platform: Platform }> = [];
+  return {
+    notifyStale: async (_adapter, userId, platform) => {
+      calls.push({ userId, platform });
+    },
+    calls,
+  };
+}
+
+test(
+  'submitter stale notice: exactly one call to notifySuggestionStale for a suggestion crossing the threshold, ' +
+    'zero for one still under it (issue #1415 acceptance criterion 1)',
+  async () => {
+    const { adapter } = makeAdapter();
+    const listOpenSuggestions = async () => [
+      suggestion({ ageHours: SUGGESTION_STALE_ALERT_THRESHOLD_HOURS, id: 1, userId: 'submitter-stale' }),
+      suggestion({
+        ageHours: SUGGESTION_STALE_ALERT_THRESHOLD_HOURS - 1,
+        id: 2,
+        userId: 'submitter-fresh',
+      }),
+    ];
+    const listAdminIdentities = async () => admins([{}]);
+    const { record: recordSuggesterStaleNotice } = fakeSuggesterNoticeRecorder();
+    const { notifyStale, calls } = fakeNotifyStale();
+    const runOnce = makeDefaultSuggestionStaleAlertRun(
+      [adapter],
+      listOpenSuggestions,
+      listAdminIdentities,
+      fakePolicyStore(),
+      skipWithdrawnIds,
+      recordSuggesterStaleNotice,
+      notifyStale,
+    );
+
+    await runOnce();
+
+    assert.deepEqual(
+      calls,
+      [{ userId: 'submitter-stale', platform: 'discord' }],
+      'only the suggestion at/over the threshold gets a notice, with its own userId/platform',
+    );
+  },
+);
+
+test('submitter stale notice: sent exactly once per suggestion id — a second tick for the same still-stale suggestion does not re-send (issue #1415 acceptance criterion 4)', async () => {
+  const { adapter } = makeAdapter();
+  const listOpenSuggestions = async () => [
+    suggestion({ ageHours: 200, id: 5, platform: 'discord', userId: 'submitter-1' }),
+  ];
+  const listAdminIdentities = async () => admins([{}]);
+  const { record: recordSuggesterStaleNotice } = fakeSuggesterNoticeRecorder();
+  const { notifyStale, calls } = fakeNotifyStale();
+  const runOnce = makeDefaultSuggestionStaleAlertRun(
+    [adapter],
+    listOpenSuggestions,
+    listAdminIdentities,
+    fakePolicyStore(),
+    skipWithdrawnIds,
+    recordSuggesterStaleNotice,
+    notifyStale,
+  );
+
+  await runOnce();
+  await runOnce();
+
+  assert.deepEqual(calls, [{ userId: 'submitter-1', platform: 'discord' }]);
+});
+
+test(
+  'submitter stale notice: fires independently of the admin crossing latch — an admin backlog already latched ' +
+    'open (shouldAlert false) still gets the submitter notified (issue #1415 acceptance criterion 2)',
+  async () => {
+    const { adapter, dms } = makeAdapter();
+    const store = fakePolicyStore({ [SUGGESTION_STALE_ALERT_POLICY_KEY]: 'true' });
+    const listOpenSuggestions = async () => [
+      suggestion({ ageHours: 200, id: 11, platform: 'discord', userId: 'submitter-1' }),
+    ];
+    const listAdminIdentities = async () => admins([{}]);
+    const { record: recordSuggesterStaleNotice } = fakeSuggesterNoticeRecorder();
+    const { notifyStale, calls } = fakeNotifyStale();
+    const runOnce = makeDefaultSuggestionStaleAlertRun(
+      [adapter],
+      listOpenSuggestions,
+      listAdminIdentities,
+      store,
+      skipWithdrawnIds,
+      recordSuggesterStaleNotice,
+      notifyStale,
+    );
+
+    await runOnce();
+
+    assert.equal(dms.length, 0, "the admin's own alert stays latched (already active) and does not re-send");
+    assert.deepEqual(
+      calls,
+      [{ userId: 'submitter-1', platform: 'discord' }],
+      'the submitter notice must not be gated behind the admin`s own shouldAlert',
+    );
+  },
+);
+
+test("SECURITY: submitter stale notice is addressed only to the suggestion's own userId, never an admin's id", async () => {
+  const { adapter } = makeAdapter();
+  const listOpenSuggestions = async () => [
+    suggestion({ ageHours: 200, id: 21, platform: 'discord', userId: 'submitter-distinct-from-admin' }),
+  ];
+  const listAdminIdentities = async () => admins([{ platformUserId: 'admin-0' }]);
+  const { record: recordSuggesterStaleNotice } = fakeSuggesterNoticeRecorder();
+  const { notifyStale, calls } = fakeNotifyStale();
+  const runOnce = makeDefaultSuggestionStaleAlertRun(
+    [adapter],
+    listOpenSuggestions,
+    listAdminIdentities,
+    fakePolicyStore(),
+    skipWithdrawnIds,
+    recordSuggesterStaleNotice,
+    notifyStale,
+  );
+
+  await runOnce();
+
+  assert.deepEqual(calls, [{ userId: 'submitter-distinct-from-admin', platform: 'discord' }]);
+});
+
+test(
+  'submitter stale notice: a throwing recordSuggesterStaleNotice for one suggestion is caught, never blocking ' +
+    "another stale suggestion's notice or the admin alert",
+  async () => {
+    const { adapter, dms } = makeAdapter();
+    const listOpenSuggestions = async () => [
+      suggestion({ ageHours: 200, id: 31, platform: 'discord', userId: 'submitter-broken' }),
+      suggestion({ ageHours: 200, id: 32, platform: 'discord', userId: 'submitter-fine' }),
+    ];
+    const listAdminIdentities = async () => admins([{}]);
+    const recordSuggesterStaleNotice = async (id: number) => {
+      if (id === 31) throw new Error('transient DB blip');
+      return true;
+    };
+    const { notifyStale, calls } = fakeNotifyStale();
+    const runOnce = makeDefaultSuggestionStaleAlertRun(
+      [adapter],
+      listOpenSuggestions,
+      listAdminIdentities,
+      fakePolicyStore(),
+      skipWithdrawnIds,
+      recordSuggesterStaleNotice,
+      notifyStale,
+    );
+
+    await assert.doesNotReject(runOnce());
+
+    assert.deepEqual(calls, [{ userId: 'submitter-fine', platform: 'discord' }]);
+    assert.equal(dms.length, 1, 'the admin alert must still fire despite one submitter notice failing');
+  },
+);
+
+test(
+  "submitter stale notice: no connected adapter for the suggestion's platform is a silent skip — no throw, " +
+    'no notify call, and no idempotency row (so a later tick with an adapter can still notify) ' +
+    '(issue #1415 acceptance criterion 6)',
+  async () => {
+    const { adapter: discordAdapter } = makeAdapter(); // no whatsapp adapter registered at all
+    const listOpenSuggestions = async () => [
+      suggestion({ ageHours: 200, id: 61, platform: 'whatsapp', userId: 'submitter-1' }),
+    ];
+    const listAdminIdentities = async () => admins([{}]);
+    const { record: recordSuggesterStaleNotice, calledWith } = fakeSuggesterNoticeRecorder();
+    const { notifyStale, calls } = fakeNotifyStale();
+    const runOnce = makeDefaultSuggestionStaleAlertRun(
+      [discordAdapter],
+      listOpenSuggestions,
+      listAdminIdentities,
+      fakePolicyStore(),
+      skipWithdrawnIds,
+      recordSuggesterStaleNotice,
+      notifyStale,
+    );
+
+    await assert.doesNotReject(runOnce());
+
+    assert.deepEqual(calls, [], 'no notify call when no adapter is registered for the platform');
+    assert.deepEqual(calledWith, [], 'no idempotency row when the notice was never actually sent');
+  },
+);
+
+test(
+  'SECURITY: a withdrawn stale suggestion produces zero recordSuggesterStaleNotice/notifySuggestionStale calls, ' +
+    'even when its age exceeds the threshold (issue #1415 acceptance criterion 3)',
+  async () => {
+    const { adapter, dms } = makeAdapter();
+    const listOpenSuggestions = async () => [
+      suggestion({ ageHours: 200, id: 41, platform: 'discord', userId: 'withdrawn-submitter' }),
+      suggestion({ ageHours: 200, id: 42, platform: 'discord', userId: 'live-submitter' }),
+    ];
+    const listAdminIdentities = async () => admins([{}]);
+    const getWithdrawnIds = async (ids: readonly number[]) => new Set(ids.filter((id) => id === 41));
+    const { record: recordSuggesterStaleNotice, calledWith } = fakeSuggesterNoticeRecorder();
+    const { notifyStale, calls } = fakeNotifyStale();
+    const runOnce = makeDefaultSuggestionStaleAlertRun(
+      [adapter],
+      listOpenSuggestions,
+      listAdminIdentities,
+      fakePolicyStore(),
+      getWithdrawnIds,
+      recordSuggesterStaleNotice,
+      notifyStale,
+    );
+
+    await runOnce();
+
+    assert.deepEqual(
+      calls,
+      [{ userId: 'live-submitter', platform: 'discord' }],
+      'the withdrawn suggestion must never reach the submitter notice',
+    );
+    assert.deepEqual(
+      calledWith,
+      [42],
+      'the withdrawn suggestion id must never reach recordSuggesterStaleNotice',
+    );
+    assert.equal(dms.length, 1, 'the admin alert still fires for the one non-withdrawn stale suggestion');
+  },
+);
+
+test(
+  'SECURITY: a WindowClosedError from the submitter sendDirectMessage is queued via queueForWindowReopen and ' +
+    "swallowed — never rethrown, and never blocking another suggestion's notice in the same tick " +
+    '(issue #1415 acceptance criterion 5)',
+  async () => {
+    const { adapter, dms, queued } = makeCloudAdapter({
+      'submitter-closed': new WindowClosedError('submitter-closed'),
+    });
+    const listOpenSuggestions = async () => [
+      suggestion({ ageHours: 200, id: 51, platform: 'whatsapp', userId: 'submitter-closed' }),
+      suggestion({ ageHours: 200, id: 52, platform: 'whatsapp', userId: 'submitter-open' }),
+    ];
+    const listAdminIdentities = async () => admins([{}]);
+    const { record: recordSuggesterStaleNotice } = fakeSuggesterNoticeRecorder();
+    const runOnce = makeDefaultSuggestionStaleAlertRun(
+      [adapter],
+      listOpenSuggestions,
+      listAdminIdentities,
+      fakePolicyStore(),
+      skipWithdrawnIds,
+      recordSuggesterStaleNotice,
+      notifySuggestionStale,
+    );
+
+    await assert.doesNotReject(runOnce());
+
+    assert.deepEqual(
+      dms.map((d) => d.userId),
+      ['submitter-open'],
+      'the open-window submitter is still delivered live',
+    );
+    assert.equal(queued.length, 1);
+    assert.equal(queued[0].userId, 'submitter-closed');
+    assert.equal(queued[0].priority, 'low');
+  },
+);
+
+test(
+  'SECURITY: recordSuggesterStaleNotice commits BEFORE the send — a WindowClosedError at send time never ' +
+    'causes a later tick to re-notify the same suggestion (issue #1415 acceptance criterion 5)',
+  async () => {
+    const { adapter, dms, queued } = makeCloudAdapter({
+      'submitter-closed': new WindowClosedError('submitter-closed'),
+    });
+    const listOpenSuggestions = async () => [
+      suggestion({ ageHours: 200, id: 71, platform: 'whatsapp', userId: 'submitter-closed' }),
+    ];
+    const listAdminIdentities = async () => admins([{}]);
+    const { record: recordSuggesterStaleNotice, calledWith } = fakeSuggesterNoticeRecorder();
+    const runOnce = makeDefaultSuggestionStaleAlertRun(
+      [adapter],
+      listOpenSuggestions,
+      listAdminIdentities,
+      fakePolicyStore(),
+      skipWithdrawnIds,
+      recordSuggesterStaleNotice,
+      notifySuggestionStale,
+    );
+
+    await runOnce();
+    await runOnce();
+
+    assert.equal(dms.length, 0, 'both ticks hit the closed window');
+    assert.equal(
+      queued.length,
+      1,
+      'the row committed on tick 1 (before the send) makes tick 2 skip the send entirely, so no second reopen notice is queued',
+    );
+    assert.deepEqual(
+      calledWith,
+      [71, 71],
+      'the ON CONFLICT DO NOTHING insert is attempted every tick, but only inserts (and only sends) on the first',
+    );
+  },
+);
+
+test(
+  'submitter stale notice: a suggestion resolved before crossing the threshold never reaches notifySuggestionStale ' +
+    "(issue #1415 acceptance criterion 8 — resolve_suggestion's own resolution DM is unaffected)",
+  async () => {
+    const { adapter } = makeAdapter();
+    // Models listSuggestions('new', ...): a resolved suggestion is excluded
+    // by the DB query itself, so it never reaches this job's stale scan at
+    // all, let alone the submitter-notice loop.
+    const listOpenSuggestions = async () => [];
+    const listAdminIdentities = async () => admins([{}]);
+    const { record: recordSuggesterStaleNotice, calledWith } = fakeSuggesterNoticeRecorder();
+    const { notifyStale, calls } = fakeNotifyStale();
+    const runOnce = makeDefaultSuggestionStaleAlertRun(
+      [adapter],
+      listOpenSuggestions,
+      listAdminIdentities,
+      fakePolicyStore(),
+      skipWithdrawnIds,
+      recordSuggesterStaleNotice,
+      notifyStale,
+    );
+
+    await runOnce();
+
+    assert.deepEqual(calls, [], 'a resolved suggestion must never receive the stale notice');
+    assert.deepEqual(calledWith, [], 'a resolved suggestion must never reach the idempotency record either');
+  },
+);
 
 test('startSuggestionStaleAlert: always-on, no enable flag — creates a timer even with no *_ENABLED env set', () => {
   const timer = startSuggestionStaleAlert([], async () => {});

@@ -29,6 +29,7 @@ const {
 } = await import('../src/module/appealStaleAlert.js');
 const { WindowClosedError } = await import('@swampratnz/agent-base/platforms/whatsapp/cloudAdapter.js');
 const { APPEAL_STALE_ALERT_POLICY_KEY } = await import('../src/module/storage/policies.js');
+const { notifyAppealStale } = await import('../src/module/agent/tools/notify.js');
 
 type Platform = 'discord' | 'whatsapp';
 type ModerationAppeal = {
@@ -67,6 +68,22 @@ function appeal(overrides: Partial<ModerationAppeal> & { ageHours: number }): Mo
 function admins(entries: Array<Partial<AdminIdentity>>): AdminIdentity[] {
   return entries.map((e, i) => ({ platform: 'discord', platformUserId: `admin-${i}`, ...e }));
 }
+
+// Stands in for the real `getWithdrawnAppealIds` (issue #1413): always
+// reports "nothing withdrawn", so the appellant-notice loop's withdrawal
+// guard added to makeDefaultAppealStaleAlertRun never short-circuits it for
+// a test that isn't specifically exercising that guard.
+const skipWithdrawnIds = async () => new Set<number>();
+
+// Stands in for the real `recordAppellantStaleNotice` (issue #1413): always
+// reports "already notified" (false), so the appellant-notice branch added
+// to makeDefaultAppealStaleAlertRun's loop is a guaranteed no-op for every
+// test below that isn't specifically exercising the appellant-notice path
+// itself — otherwise the default would fall through to the REAL storage
+// function (a live Postgres query) and the real notifyAppealStale (a live
+// language-preference lookup), same "deps must be all-or-nothing" hazard
+// tests/reportStaleAlert.test.ts's skipReporterNotice guards against.
+const skipAppellantNotice = async () => false;
 
 function makeAdapter(connected = true): {
   adapter: PlatformAdapter;
@@ -184,6 +201,8 @@ test('SECURITY: the crossing-tick alert DM contains no appeal id, user id/name, 
     listOpenAppeals,
     listAdminIdentities,
     fakePolicyStore(),
+    skipWithdrawnIds,
+    skipAppellantNotice,
   );
 
   await runOnce();
@@ -214,6 +233,8 @@ test('makeDefaultAppealStaleAlertRun: an open-appeals set with no appeal older t
     listOpenAppeals,
     listAdminIdentities,
     fakePolicyStore(),
+    skipWithdrawnIds,
+    skipAppellantNotice,
   );
 
   await runOnce();
@@ -232,6 +253,8 @@ test('makeDefaultAppealStaleAlertRun: alerts exactly once on the tick the stale 
     listOpenAppeals,
     listAdminIdentities,
     fakePolicyStore(),
+    skipWithdrawnIds,
+    skipAppellantNotice,
   );
 
   await runOnce(); // 0 -> no alert
@@ -261,6 +284,8 @@ test('makeDefaultAppealStaleAlertRun: the latch re-arms once the stale count ret
     listOpenAppeals,
     listAdminIdentities,
     fakePolicyStore(),
+    skipWithdrawnIds,
+    skipAppellantNotice,
   );
 
   await runOnce(); // 0 -> 2, crosses
@@ -282,7 +307,14 @@ test('makeDefaultAppealStaleAlertRun: writes the active marker to the policy sto
   const store = fakePolicyStore();
   const listOpenAppeals = async () => [appeal({ ageHours: 100 })];
   const listAdminIdentities = async () => admins([{}]);
-  const runOnce = makeDefaultAppealStaleAlertRun([adapter], listOpenAppeals, listAdminIdentities, store);
+  const runOnce = makeDefaultAppealStaleAlertRun(
+    [adapter],
+    listOpenAppeals,
+    listAdminIdentities,
+    store,
+    skipWithdrawnIds,
+    skipAppellantNotice,
+  );
 
   assert.equal(store.written.length, 0, 'no write before the tick runs');
   await runOnce();
@@ -297,7 +329,14 @@ test('makeDefaultAppealStaleAlertRun: restart-safety — a fresh factory seeded 
   const store = fakePolicyStore({ [APPEAL_STALE_ALERT_POLICY_KEY]: 'true' });
   const listOpenAppeals = async () => [appeal({ ageHours: 100 }), appeal({ ageHours: 200, id: 2 })];
   const listAdminIdentities = async () => admins([{}]);
-  const runOnce = makeDefaultAppealStaleAlertRun([adapter], listOpenAppeals, listAdminIdentities, store);
+  const runOnce = makeDefaultAppealStaleAlertRun(
+    [adapter],
+    listOpenAppeals,
+    listAdminIdentities,
+    store,
+    skipWithdrawnIds,
+    skipAppellantNotice,
+  );
 
   await runOnce();
   assert.equal(dms.length, 0, 'a restart mid-backlog must not re-fire a duplicate DM');
@@ -312,7 +351,14 @@ test('makeDefaultAppealStaleAlertRun: re-arm survives a restart — the marker c
   const store = fakePolicyStore({ [APPEAL_STALE_ALERT_POLICY_KEY]: 'true' });
   const listAdminIdentities = async () => admins([{}]);
 
-  const firstProcess = makeDefaultAppealStaleAlertRun([adapter], async () => [], listAdminIdentities, store);
+  const firstProcess = makeDefaultAppealStaleAlertRun(
+    [adapter],
+    async () => [],
+    listAdminIdentities,
+    store,
+    skipWithdrawnIds,
+    skipAppellantNotice,
+  );
   await firstProcess(); // count drops to 0 -> re-arm
   assert.equal(dms.length, 0);
   assert.deepEqual(store.written, [{ key: APPEAL_STALE_ALERT_POLICY_KEY, value: '', updatedBy: 'system' }]);
@@ -324,6 +370,8 @@ test('makeDefaultAppealStaleAlertRun: re-arm survives a restart — the marker c
     async () => [appeal({ ageHours: 100 })],
     listAdminIdentities,
     store,
+    skipWithdrawnIds,
+    skipAppellantNotice,
   );
   await secondProcess();
   assert.equal(dms.length, 1, 'a fresh crossing after the persisted re-arm alerts again');
@@ -339,7 +387,14 @@ test('SECURITY: makeDefaultAppealStaleAlertRun never threads a member/admin iden
   const secretAdminId = 'admin-should-never-be-the-actor';
   const listOpenAppeals = async () => [appeal({ ageHours: 100 })];
   const listAdminIdentities = async () => admins([{ platformUserId: secretAdminId }]);
-  const runOnce = makeDefaultAppealStaleAlertRun([adapter], listOpenAppeals, listAdminIdentities, store);
+  const runOnce = makeDefaultAppealStaleAlertRun(
+    [adapter],
+    listOpenAppeals,
+    listAdminIdentities,
+    store,
+    skipWithdrawnIds,
+    skipAppellantNotice,
+  );
 
   await runOnce();
 
@@ -418,6 +473,301 @@ test('startAppealStaleAlert: always-on, no enable flag — creates a timer even 
   assert.notEqual(timer, null, 'this job is unconditionally enabled by design');
   if (timer) clearInterval(timer);
 });
+
+// --- appellant-side mid-flight stale notice (issue #1413) -------------------
+
+/** Stands in for `recordAppellantStaleNotice`: an in-memory Set, same
+ * "returns true only the first time" contract the real `INSERT ... ON
+ * CONFLICT DO NOTHING` gives. Also exposes every id it was called with, so a
+ * test can assert it was never called at all for a withdrawn appeal. */
+function fakeAppellantNoticeRecorder(): {
+  record: (id: number) => Promise<boolean>;
+  calledWith: number[];
+} {
+  const seen = new Set<number>();
+  const calledWith: number[] = [];
+  return {
+    record: async (id: number) => {
+      calledWith.push(id);
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    },
+    calledWith,
+  };
+}
+
+function fakeNotifyStale(): {
+  notifyStale: (adapter: PlatformAdapter, userId: string, platform: Platform) => Promise<void>;
+  calls: Array<{ userId: string; platform: Platform }>;
+} {
+  const calls: Array<{ userId: string; platform: Platform }> = [];
+  return {
+    notifyStale: async (_adapter, userId, platform) => {
+      calls.push({ userId, platform });
+    },
+    calls,
+  };
+}
+
+test('appellant stale notice: sent exactly once per appeal id — a second tick for the same still-stale appeal does not re-send', async () => {
+  const { adapter } = makeAdapter();
+  const listOpenAppeals = async () => [
+    appeal({ ageHours: 100, id: 5, platform: 'discord', userId: 'appellant-1' }),
+  ];
+  const listAdminIdentities = async () => admins([{}]);
+  const { record: recordAppellantStaleNotice } = fakeAppellantNoticeRecorder();
+  const { notifyStale, calls } = fakeNotifyStale();
+  const runOnce = makeDefaultAppealStaleAlertRun(
+    [adapter],
+    listOpenAppeals,
+    listAdminIdentities,
+    fakePolicyStore(),
+    skipWithdrawnIds,
+    recordAppellantStaleNotice,
+    notifyStale,
+  );
+
+  await runOnce();
+  await runOnce();
+
+  assert.deepEqual(calls, [{ userId: 'appellant-1', platform: 'discord' }]);
+});
+
+test(
+  'appellant stale notice: fires independently of the admin crossing latch — an admin backlog already latched ' +
+    'open (shouldAlert false) still gets the appellant notified',
+  async () => {
+    const { adapter, dms } = makeAdapter();
+    const store = fakePolicyStore({ [APPEAL_STALE_ALERT_POLICY_KEY]: 'true' });
+    const listOpenAppeals = async () => [
+      appeal({ ageHours: 100, id: 11, platform: 'discord', userId: 'appellant-1' }),
+    ];
+    const listAdminIdentities = async () => admins([{}]);
+    const { record: recordAppellantStaleNotice } = fakeAppellantNoticeRecorder();
+    const { notifyStale, calls } = fakeNotifyStale();
+    const runOnce = makeDefaultAppealStaleAlertRun(
+      [adapter],
+      listOpenAppeals,
+      listAdminIdentities,
+      store,
+      skipWithdrawnIds,
+      recordAppellantStaleNotice,
+      notifyStale,
+    );
+
+    await runOnce();
+
+    assert.equal(dms.length, 0, "the admin's own alert stays latched (already active) and does not re-send");
+    assert.deepEqual(
+      calls,
+      [{ userId: 'appellant-1', platform: 'discord' }],
+      "the appellant notice must not be gated behind the admin's own shouldAlert",
+    );
+  },
+);
+
+test("SECURITY: appellant stale notice is addressed only to the appeal's own userId, never an admin's id", async () => {
+  const { adapter } = makeAdapter();
+  const listOpenAppeals = async () => [
+    appeal({ ageHours: 100, id: 21, platform: 'discord', userId: 'appellant-distinct-from-admin' }),
+  ];
+  const listAdminIdentities = async () => admins([{ platformUserId: 'admin-0' }]);
+  const { record: recordAppellantStaleNotice } = fakeAppellantNoticeRecorder();
+  const { notifyStale, calls } = fakeNotifyStale();
+  const runOnce = makeDefaultAppealStaleAlertRun(
+    [adapter],
+    listOpenAppeals,
+    listAdminIdentities,
+    fakePolicyStore(),
+    skipWithdrawnIds,
+    recordAppellantStaleNotice,
+    notifyStale,
+  );
+
+  await runOnce();
+
+  assert.deepEqual(calls, [{ userId: 'appellant-distinct-from-admin', platform: 'discord' }]);
+});
+
+test(
+  'appellant stale notice: a throwing recordAppellantStaleNotice for one appeal is caught, never blocking ' +
+    "another stale appeal's notice or the admin alert",
+  async () => {
+    const { adapter, dms } = makeAdapter();
+    const listOpenAppeals = async () => [
+      appeal({ ageHours: 100, id: 31, platform: 'discord', userId: 'appellant-broken' }),
+      appeal({ ageHours: 100, id: 32, platform: 'discord', userId: 'appellant-fine' }),
+    ];
+    const listAdminIdentities = async () => admins([{}]);
+    const recordAppellantStaleNotice = async (id: number) => {
+      if (id === 31) throw new Error('transient DB blip');
+      return true;
+    };
+    const { notifyStale, calls } = fakeNotifyStale();
+    const runOnce = makeDefaultAppealStaleAlertRun(
+      [adapter],
+      listOpenAppeals,
+      listAdminIdentities,
+      fakePolicyStore(),
+      skipWithdrawnIds,
+      recordAppellantStaleNotice,
+      notifyStale,
+    );
+
+    await assert.doesNotReject(runOnce());
+
+    assert.deepEqual(calls, [{ userId: 'appellant-fine', platform: 'discord' }]);
+    assert.equal(dms.length, 1, 'the admin alert must still fire despite one appellant notice failing');
+  },
+);
+
+test(
+  "appellant stale notice: no connected adapter for the appeal's platform is a silent skip — no throw, " +
+    'no notify call, and no idempotency row (so a later tick with an adapter can still notify)',
+  async () => {
+    const { adapter: discordAdapter } = makeAdapter(); // no whatsapp adapter registered at all
+    const listOpenAppeals = async () => [
+      appeal({ ageHours: 100, id: 61, platform: 'whatsapp', userId: 'appellant-1' }),
+    ];
+    const listAdminIdentities = async () => admins([{}]);
+    const { record: recordAppellantStaleNotice, calledWith } = fakeAppellantNoticeRecorder();
+    const { notifyStale, calls } = fakeNotifyStale();
+    const runOnce = makeDefaultAppealStaleAlertRun(
+      [discordAdapter],
+      listOpenAppeals,
+      listAdminIdentities,
+      fakePolicyStore(),
+      skipWithdrawnIds,
+      recordAppellantStaleNotice,
+      notifyStale,
+    );
+
+    await assert.doesNotReject(runOnce());
+
+    assert.deepEqual(calls, [], 'no notify call when no adapter is registered for the platform');
+    assert.deepEqual(calledWith, [], 'no idempotency row when the notice was never actually sent');
+  },
+);
+
+test(
+  'SECURITY: a withdrawn stale appeal produces zero recordAppellantStaleNotice/notifyAppealStale calls, and ' +
+    "the admin-facing stale count/alertAdmins behaviour is byte-for-byte unchanged from today's for the same input " +
+    '(issue #1413 acceptance criterion #2 — the withdrawal filter applies to the appellant loop only)',
+  async () => {
+    const { adapter, dms } = makeAdapter();
+    const listOpenAppeals = async () => [
+      appeal({ ageHours: 100, id: 41, platform: 'discord', userId: 'withdrawn-appellant' }),
+      appeal({ ageHours: 100, id: 42, platform: 'discord', userId: 'live-appellant' }),
+    ];
+    const listAdminIdentities = async () => admins([{}]);
+    const getWithdrawnIds = async (ids: readonly number[]) => new Set(ids.filter((id) => id === 41));
+    const { record: recordAppellantStaleNotice, calledWith } = fakeAppellantNoticeRecorder();
+    const { notifyStale, calls } = fakeNotifyStale();
+    const runOnce = makeDefaultAppealStaleAlertRun(
+      [adapter],
+      listOpenAppeals,
+      listAdminIdentities,
+      fakePolicyStore(),
+      getWithdrawnIds,
+      recordAppellantStaleNotice,
+      notifyStale,
+    );
+
+    await runOnce();
+
+    assert.deepEqual(
+      calls,
+      [{ userId: 'live-appellant', platform: 'discord' }],
+      'the withdrawn appeal must never reach the appellant notice',
+    );
+    assert.deepEqual(calledWith, [42], 'the withdrawn appeal id must never reach recordAppellantStaleNotice');
+    // Both stale appeals (41 AND 42) still count toward the admin-facing
+    // alert — withdrawal is not applied to the count this PR is scoped to
+    // leave alone.
+    assert.equal(
+      dms.length,
+      1,
+      'the admin count/alert must include the withdrawn appeal, unchanged from today',
+    );
+    assert.match(dms[0].text, /^📋 2 open moderation appeal\(s\)/);
+  },
+);
+
+test(
+  'SECURITY: a WindowClosedError from the appellant sendDirectMessage is queued via queueForWindowReopen and ' +
+    "swallowed — never rethrown, and never blocking another appeal's notice in the same tick",
+  async () => {
+    const { adapter, dms, queued } = makeCloudAdapter({
+      'appellant-closed': new WindowClosedError('appellant-closed'),
+    });
+    const listOpenAppeals = async () => [
+      appeal({ ageHours: 100, id: 51, platform: 'whatsapp', userId: 'appellant-closed' }),
+      appeal({ ageHours: 100, id: 52, platform: 'whatsapp', userId: 'appellant-open' }),
+    ];
+    const listAdminIdentities = async () => admins([{}]);
+    const { record: recordAppellantStaleNotice } = fakeAppellantNoticeRecorder();
+    const runOnce = makeDefaultAppealStaleAlertRun(
+      [adapter],
+      listOpenAppeals,
+      listAdminIdentities,
+      fakePolicyStore(),
+      skipWithdrawnIds,
+      recordAppellantStaleNotice,
+      notifyAppealStale,
+    );
+
+    await assert.doesNotReject(runOnce());
+
+    assert.deepEqual(
+      dms.map((d) => d.userId),
+      ['appellant-open'],
+      'the open-window appellant is still delivered live',
+    );
+    assert.equal(queued.length, 1);
+    assert.equal(queued[0].userId, 'appellant-closed');
+    assert.equal(queued[0].priority, 'low');
+  },
+);
+
+test(
+  'SECURITY: recordAppellantStaleNotice commits BEFORE the send — a WindowClosedError at send time never causes ' +
+    'a later tick to re-notify the same appeal',
+  async () => {
+    const { adapter, dms, queued } = makeCloudAdapter({
+      'appellant-closed': new WindowClosedError('appellant-closed'),
+    });
+    const listOpenAppeals = async () => [
+      appeal({ ageHours: 100, id: 71, platform: 'whatsapp', userId: 'appellant-closed' }),
+    ];
+    const listAdminIdentities = async () => admins([{}]);
+    const { record: recordAppellantStaleNotice, calledWith } = fakeAppellantNoticeRecorder();
+    const runOnce = makeDefaultAppealStaleAlertRun(
+      [adapter],
+      listOpenAppeals,
+      listAdminIdentities,
+      fakePolicyStore(),
+      skipWithdrawnIds,
+      recordAppellantStaleNotice,
+      notifyAppealStale,
+    );
+
+    await runOnce();
+    await runOnce();
+
+    assert.equal(dms.length, 0, 'both ticks hit the closed window');
+    assert.equal(
+      queued.length,
+      1,
+      'the row committed on tick 1 (before the send) makes tick 2 skip the send entirely, so no second reopen notice is queued',
+    );
+    assert.deepEqual(
+      calledWith,
+      [71, 71],
+      'the ON CONFLICT DO NOTHING insert is attempted every tick, but only inserts (and only sends) on the first',
+    );
+  },
+);
 
 // --- the scan bound (automated review of PR #1021) --------------------------
 

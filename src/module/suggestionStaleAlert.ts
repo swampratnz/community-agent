@@ -10,8 +10,10 @@ import { alertAdmins } from './appealStaleAlert.js';
 import { persistedCrossingLatch, type CrossingLatchDeps } from './crossingLatch.js';
 import { SUGGESTION_STALE_ALERT_POLICY_KEY } from './storage/policies.js';
 import { getWithdrawnSuggestionIds } from './storage/suggestionWithdrawals.js';
+import { recordSuggesterStaleNotice as recordSuggesterStaleNoticeDefault } from './storage/suggestionSubmitterStaleNotices.js';
+import { notifySuggestionStale } from './agent/tools/notify.js';
 import type { JobSpec } from '@swampratnz/agent-base/jobs/types.js';
-import type { PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
+import type { Platform, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 
 /**
  * Staleness threshold (issue #1091, mirroring `appealStaleAlert.ts`'s #1020
@@ -93,6 +95,30 @@ function staleSuggestions(suggestions: readonly Suggestion[], now: number): Sugg
  * to exactly the ids `listOpenSuggestions()` returned this tick, applied
  * before `staleSuggestions()` so a withdrawn suggestion never counts toward
  * either `stale.length` or `oldestAgeHours`.
+ *
+ * Also sends the SUBMITTER their own one-time "still being reviewed" DM
+ * (issue #1415, mirroring `appealStaleAlert.ts`'s #1413 mechanism verbatim)
+ * for each suggestion in `stale` — evaluated right after `stale` is
+ * computed, unconditionally, INDEPENDENT of the admin crossing latch below:
+ * an admin backlog already latched open (so `step.shouldAlert` is false)
+ * must not silently suppress the signal to a submitter who has never been
+ * notified about this particular suggestion before. `stale` here already
+ * has withdrawn suggestions filtered out (the withdrawal filter above is
+ * applied BEFORE `staleSuggestions()`, unlike `appealStaleAlert.ts` where it
+ * scopes only the appellant loop) — see this function's own withdrawal
+ * paragraph — so no second withdrawal check is needed for this loop.
+ * Idempotency is `recordSuggesterStaleNotice`'s `INSERT ... ON CONFLICT DO
+ * NOTHING` alone — no second latch — so a suggestion already flagged (by an
+ * earlier tick) is a no-op, and because that record commits BEFORE the
+ * send, a `WindowClosedError` at send time can never cause a later tick to
+ * re-notify. Routed via `adapters.find` on the suggestion's OWN `platform`,
+ * never any caller-supplied value; a missing/disconnected adapter for that
+ * platform is a silent skip, matching every sibling job's adapter-missing
+ * handling — the suggestion is NOT recorded as notified in that case, so it
+ * stays eligible for a real notice on a later tick, once an adapter exists.
+ * A failure recording or sending one suggestion's notice is caught
+ * per-suggestion so it can never suppress the notice to any other stale
+ * suggestion's submitter, nor the admin alert below.
  */
 export function makeDefaultSuggestionStaleAlertRun(
   adapters: readonly PlatformAdapter[],
@@ -101,6 +127,12 @@ export function makeDefaultSuggestionStaleAlertRun(
   listAdminIdentities: () => Promise<AdminIdentity[]> = listAdmins,
   latchDeps?: CrossingLatchDeps,
   getWithdrawnIds: (ids: readonly number[]) => Promise<Set<number>> = getWithdrawnSuggestionIds,
+  recordSuggesterStaleNotice: (suggestionId: number) => Promise<boolean> = recordSuggesterStaleNoticeDefault,
+  notifyStale: (
+    adapter: PlatformAdapter,
+    userId: string,
+    platform: Platform,
+  ) => Promise<void> = notifySuggestionStale,
 ): () => Promise<void> {
   const latch = persistedCrossingLatch(SUGGESTION_STALE_ALERT_POLICY_KEY, latchDeps);
   return async () => {
@@ -111,6 +143,32 @@ export function makeDefaultSuggestionStaleAlertRun(
       suggestions.filter((suggestion) => !withdrawnIds.has(suggestion.id)),
       now,
     );
+
+    // Submitter-side mid-flight notice (issue #1415) — independent of the
+    // admin crossing latch below (see the function doc comment): every
+    // still-stale suggestion in `stale` (already withdrawal-filtered above)
+    // is offered a one-time notice every tick, gated only by the ON
+    // CONFLICT DO NOTHING insert.
+    for (const staleSuggestion of stale) {
+      // Mirrors every sibling job's adapter-missing handling: resolved
+      // BEFORE recordSuggesterStaleNotice, so a suggestion whose submitter
+      // platform has no connected adapter is never marked as notified — it
+      // stays eligible for a real notice on a later tick, once an adapter
+      // exists.
+      const adapter = adapters.find((a) => a.platform === staleSuggestion.platform && a.isConnected());
+      if (!adapter) continue;
+      try {
+        const isFirstNotice = await recordSuggesterStaleNotice(staleSuggestion.id);
+        if (!isFirstNotice) continue;
+        await notifyStale(adapter, staleSuggestion.userId, staleSuggestion.platform);
+      } catch (err) {
+        logger.warn(
+          { err, platform: staleSuggestion.platform, suggestionId: staleSuggestion.id },
+          'Suggestion stale alert: submitter notice failed',
+        );
+      }
+    }
+
     const step = await latch.step(stale.length);
     if (!step.shouldAlert) return;
 

@@ -17,7 +17,12 @@ import {
   unbindProjectSurface,
 } from '@swampratnz/agent-base/storage/repository.js';
 import { platformArg, SUGGESTION_RESOLUTION_ECHO_CHARS, text } from './helpers.js';
-import { notifyProjectMemberAdded, notifyProjectMemberRemoved } from './notify.js';
+import {
+  notifyProjectArchived,
+  notifyProjectMemberAdded,
+  notifyProjectMemberRemoved,
+  notifyProjectUnarchived,
+} from './notify.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 /**
@@ -329,12 +334,13 @@ export const projectsAdminTools = [
     name: 'project_archive',
     description:
       'Archive a project when a team is finished. This is a revocation, not a label: its shared memory ' +
-      'immediately stops being readable by anyone, including its own members. Nothing is deleted, so ' +
-      'the record is kept and project_unarchive puts it back. Admin only.',
+      'immediately stops being readable by anyone, including its own members — every current member gets ' +
+      'a DM saying so. Nothing is deleted, so the record is kept and project_unarchive puts it back. ' +
+      'Admin only.',
     minTier: 'admin',
     readOnlyHint: false,
     schema: { project: z.string().describe('The project slug') },
-    handler: async (args, { caller, audited }) => {
+    handler: async (args, { caller, audited, adapterFor }) => {
       assertAtLeast(caller.role, 'admin', 'project_archive');
       // Not requireConfirm-gated, on the same reasoning as
       // project_add_member/project_remove_member above: this repo's CONFIRM
@@ -342,16 +348,47 @@ export const projectsAdminTools = [
       // neither. It deletes nothing, and project_unarchive below reverses it
       // in one call — which is precisely why that tool exists (PR #929
       // review). Ship the two together or this becomes a one-way door.
+      //
+      // Captured here, same `state` pattern as project_add_member/
+      // project_remove_member above (issue #1241), so the notify-on-archive
+      // fan-out below (issue #1395) only ever fires from a project actually
+      // archived inside audited()'s run() — never from an unvalidated
+      // `args.project`, and never on the "already archived"/"no such
+      // project" no-op branch (`archiveProject` only returns true on the
+      // actual active-to-archived transition).
+      const state: { projectName: string | null; members: Awaited<ReturnType<typeof listProjectMembers>> } = {
+        projectName: null,
+        members: [],
+      };
       const { result } = await audited({
         actionKind: 'project_archive',
         params: { project: args.project },
         run: async () => {
-          const archived = await archiveProject(args.project);
+          const project = await getProjectBySlug(args.project);
+          const archived = project ? await archiveProject(args.project) : false;
+          if (archived && project) {
+            state.projectName = project.name;
+            state.members = await listProjectMembers(project.id);
+          }
           return archived
             ? `Archived ${args.project}. Its notes are retained but no longer readable — project_unarchive restores access.`
             : `No active project "${args.project}".`;
         },
       });
+      // Best-effort notification fan-out (issue #1395) — one DM per CURRENT
+      // member, fired only on the actual archive transition, never changing
+      // this tool's own reported outcome above. Each member is reached only
+      // via their own resolved `(platform, userId)`; one member's failed or
+      // queued send (handled inside notifyProjectArchived) never blocks
+      // another's, same per-recipient isolation as notifySuperAdmins's loop.
+      if (state.projectName) {
+        for (const member of state.members) {
+          const memberAdapter = adapterFor(member.platform);
+          if (memberAdapter) {
+            await notifyProjectArchived(memberAdapter, member.userId, member.platform, state.projectName);
+          }
+        }
+      }
       return text(result);
     },
   }),
@@ -360,23 +397,45 @@ export const projectsAdminTools = [
     name: 'project_unarchive',
     description:
       'Bring an archived project back, undoing project_archive: its existing members can read and add ' +
-      'to its shared memory again from the conversations it was already bound to. This restores the ' +
-      'access that existed before archiving — it grants nobody new access. Admin only.',
+      'to its shared memory again from the conversations it was already bound to — every current member ' +
+      'gets a DM saying so. This restores the access that existed before archiving — it grants nobody new ' +
+      'access. Admin only.',
     minTier: 'admin',
     readOnlyHint: false,
     schema: { project: z.string().describe('The project slug') },
-    handler: async (args, { caller, audited }) => {
+    handler: async (args, { caller, audited, adapterFor }) => {
       assertAtLeast(caller.role, 'admin', 'project_unarchive');
+      // Same `state`/fan-out pattern as project_archive above (issue #1395).
+      const state: { projectName: string | null; members: Awaited<ReturnType<typeof listProjectMembers>> } = {
+        projectName: null,
+        members: [],
+      };
       const { result } = await audited({
         actionKind: 'project_unarchive',
         params: { project: args.project },
         run: async () => {
-          const unarchived = await unarchiveProject(args.project);
+          const project = await getProjectBySlug(args.project);
+          const unarchived = project ? await unarchiveProject(args.project) : false;
+          if (unarchived && project) {
+            state.projectName = project.name;
+            state.members = await listProjectMembers(project.id);
+          }
           return unarchived
             ? `Restored ${args.project}. Its members can read and add to it again.`
             : `No archived project "${args.project}".`;
         },
       });
+      // Best-effort restoration DM fan-out (issue #1395) — same shape as
+      // project_archive's above, fired only on the actual archived-to-active
+      // transition.
+      if (state.projectName) {
+        for (const member of state.members) {
+          const memberAdapter = adapterFor(member.platform);
+          if (memberAdapter) {
+            await notifyProjectUnarchived(memberAdapter, member.userId, member.platform, state.projectName);
+          }
+        }
+      }
       return text(result);
     },
   }),

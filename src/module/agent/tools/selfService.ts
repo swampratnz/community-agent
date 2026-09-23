@@ -330,6 +330,16 @@ export async function getMyDataSupplementalCounts(
  * `project_note_authors`. The first and third are capped counts symmetric
  * with the three above; the second is a plain boolean (`on`/`off`), since
  * opt-in state has no "count" to cap.
+ *
+ * `mi` branches (issue #1419) cover every fixed label — the same "labels
+ * translate, data doesn't" split `formatMySubmissionsText` already draws in
+ * this file. The counts, the `responseStyle` word (`'plain'`/`'standard
+ * (default)'`) and the language-preference value phrase are unchanged
+ * interpolations in both languages; only the surrounding label text swaps,
+ * reusing this file's existing glossary (`pūrongo`, `taunakitanga`, `pīra`,
+ * `tohutohu mōhiotanga`, `tono hononga`, `tono āwhina`, `kaupapa`, `hiahia`)
+ * wherever the same concept recurs, and `formatMyWarningsText`'s "reached
+ * the limit"/"active" phrasing for the daily-reply-limit lines.
  */
 export function formatMyDataText(
   summary: Awaited<ReturnType<typeof getMyDataSummary>>,
@@ -344,42 +354,87 @@ export function formatMyDataText(
   interestMatchAlertsEnabled: boolean,
   projectNotesAuthored: number,
 ): string {
+  const mi = language === 'mi';
   const lines = [
-    `Messages you've sent: ${summary.ownMessages}`,
-    `Replies the bot has sent you: ${summary.repliesToThem}`,
-    `Knowledge entries sourced from you: ${summary.knowledgeEntries}`,
-    `Content reports you've filed: ${summary.reportsFiled}`,
-    `Suggestions you've filed: ${summary.suggestionsFiled}`,
-    `Appeals filed: ${formatCappedCount(appealsFiled, MY_DATA_SUMMARY_FETCH_CAP)}`,
-    `Knowledge tips filed: ${formatCappedCount(knowledgeTipsFiled, MY_DATA_SUMMARY_FETCH_CAP)}`,
-    `Connection requests sent: ${formatCappedCount(connectionRequestsSent, MY_DATA_SUMMARY_FETCH_CAP)}`,
-    `Help requests sent: ${formatCappedCount(helpRequestsSent, MY_DATA_SUMMARY_FETCH_CAP)}`,
-    `Interest match alerts: ${interestMatchAlertsEnabled ? 'on' : 'off'}`,
-    `Project notes authored: ${formatCappedCount(projectNotesAuthored, MY_DATA_SUMMARY_FETCH_CAP)}`,
-    `Projects you've shared: ${summary.projectsShared}`,
-    `Interests published (who_is_into): ${summary.interestsPublished > 0 ? 'yes' : 'no'}`,
-    `Response style preference: ${summary.responseStyle === 'plain' ? 'plain' : 'standard (default)'}`,
-    `Language preference: ${
-      language === 'mi'
-        ? 'te reo Māori'
-        : language === 'en'
-          ? 'NZ English'
-          : 'none set (auto-detected per message)'
-    }`,
+    mi ? `Āu karere kua tukuna: ${summary.ownMessages}` : `Messages you've sent: ${summary.ownMessages}`,
+    mi
+      ? `Ngā whakautu kua tukuna mai e te kaiāwhina ki a koe: ${summary.repliesToThem}`
+      : `Replies the bot has sent you: ${summary.repliesToThem}`,
+    mi
+      ? `Ngā whakaurunga mōhiotanga nā koe: ${summary.knowledgeEntries}`
+      : `Knowledge entries sourced from you: ${summary.knowledgeEntries}`,
+    mi
+      ? `Āu pūrongo kua tukuna: ${summary.reportsFiled}`
+      : `Content reports you've filed: ${summary.reportsFiled}`,
+    mi
+      ? `Āu taunakitanga kua tukuna: ${summary.suggestionsFiled}`
+      : `Suggestions you've filed: ${summary.suggestionsFiled}`,
+    mi
+      ? `Ngā pīra kua tukuna: ${formatCappedCount(appealsFiled, MY_DATA_SUMMARY_FETCH_CAP)}`
+      : `Appeals filed: ${formatCappedCount(appealsFiled, MY_DATA_SUMMARY_FETCH_CAP)}`,
+    mi
+      ? `Ngā tohutohu mōhiotanga kua tukuna: ${formatCappedCount(knowledgeTipsFiled, MY_DATA_SUMMARY_FETCH_CAP)}`
+      : `Knowledge tips filed: ${formatCappedCount(knowledgeTipsFiled, MY_DATA_SUMMARY_FETCH_CAP)}`,
+    mi
+      ? `Ngā tono hononga kua tukuna: ${formatCappedCount(connectionRequestsSent, MY_DATA_SUMMARY_FETCH_CAP)}`
+      : `Connection requests sent: ${formatCappedCount(connectionRequestsSent, MY_DATA_SUMMARY_FETCH_CAP)}`,
+    mi
+      ? `Ngā tono āwhina kua tukuna: ${formatCappedCount(helpRequestsSent, MY_DATA_SUMMARY_FETCH_CAP)}`
+      : `Help requests sent: ${formatCappedCount(helpRequestsSent, MY_DATA_SUMMARY_FETCH_CAP)}`,
+    mi
+      ? `Ngā whakatūpato taunekeneke hiahia: ${interestMatchAlertsEnabled ? 'kua tākina' : 'kua weto'}`
+      : `Interest match alerts: ${interestMatchAlertsEnabled ? 'on' : 'off'}`,
+    mi
+      ? `Ngā tuhinga kaupapa i tuhia e koe: ${formatCappedCount(projectNotesAuthored, MY_DATA_SUMMARY_FETCH_CAP)}`
+      : `Project notes authored: ${formatCappedCount(projectNotesAuthored, MY_DATA_SUMMARY_FETCH_CAP)}`,
+    mi
+      ? `Ngā kaupapa kua tohaina e koe: ${summary.projectsShared}`
+      : `Projects you've shared: ${summary.projectsShared}`,
+    mi
+      ? `Ngā hiahia kua whakaputaina (who_is_into): ${summary.interestsPublished > 0 ? 'āe' : 'kāore'}`
+      : `Interests published (who_is_into): ${summary.interestsPublished > 0 ? 'yes' : 'no'}`,
+    mi
+      ? `Kōwhiringa momo whakautu: ${summary.responseStyle === 'plain' ? 'plain' : 'standard (default)'}`
+      : `Response style preference: ${summary.responseStyle === 'plain' ? 'plain' : 'standard (default)'}`,
+    mi
+      ? `Kōwhiringa reo: ${
+          language === 'mi'
+            ? 'te reo Māori'
+            : language === 'en'
+              ? 'NZ English'
+              : 'none set (auto-detected per message)'
+        }`
+      : `Language preference: ${
+          language === 'mi'
+            ? 'te reo Māori'
+            : language === 'en'
+              ? 'NZ English'
+              : 'none set (auto-detected per message)'
+        }`,
   ];
   if (role === 'super_admin') {
-    lines.push('Daily reply limit: exempt (super admin).');
+    lines.push(
+      mi
+        ? 'Te tepe whakautu o ia rā: kāore e pā ana (he kaiwhakahaere matua).'
+        : 'Daily reply limit: exempt (super admin).',
+    );
   } else if (limit === 0) {
-    lines.push('Daily reply limit: none configured.');
+    lines.push(mi ? 'Te tepe whakautu o ia rā: kāore i whakaritea.' : 'Daily reply limit: none configured.');
   } else {
     lines.push(
-      `Replies in the last 24h: ${used} / ${limit}` +
-        (used !== null && used >= limit ? " — you've reached today's limit." : ''),
+      mi
+        ? `Ngā whakautu i ngā haora 24 kua hipa: ${used} / ${limit}` +
+            (used !== null && used >= limit ? ' — kua eke koe ki te tepe o tēnei rā.' : '')
+        : `Replies in the last 24h: ${used} / ${limit}` +
+            (used !== null && used >= limit ? " — you've reached today's limit." : ''),
     );
   }
   lines.push(
     '',
-    'For your active warnings, use my_warnings. For the status of a specific report or suggestion, use my_submissions.',
+    mi
+      ? 'Mō āu whakatūpato e mahi tonu ana, whakamahia te my_warnings. Mō te tūnga o tētahi pūrongo, ' +
+          'taunakitanga rānei, whakamahia te my_submissions.'
+      : 'For your active warnings, use my_warnings. For the status of a specific report or suggestion, use my_submissions.',
   );
   return lines.join('\n');
 }

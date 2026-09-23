@@ -11,8 +11,9 @@ import {
   KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD,
   searchKnowledge,
   searchKnowledgeLexical,
+  type LanguagePreference,
 } from '@swampratnz/agent-base/storage/repository.js';
-import { relayLanguageNote, text, untrusted } from './helpers.js';
+import { relayLanguageNote, text, untrustedWeb } from './helpers.js';
 
 /**
  * Member web research, built as an ISOLATED sub-turn rather than by widening
@@ -30,7 +31,7 @@ import { relayLanguageNote, text, untrusted } from './helpers.js';
  *     built-in `WebSearch` (never `WebFetch`). An instruction planted in a
  *     search result reaches a context with nothing worth exfiltrating and no
  *     tool that can act on anything.
- *  2. **The answer comes back quarantined** through `untrusted()` — the same
+ *  2. **The answer comes back quarantined** through `untrustedWeb()` — the same flattening
  *     wrapper as recalled chat and fetched pages — with sources filtered to
  *     https and capped before the model ever sees them. That filtering is
  *     the control: the prompt's citation rule is scoped to knowledge_search's
@@ -154,7 +155,7 @@ export function formatWebResearchForModel(result: WebResearchResult): string {
     result.sources.length > 0
       ? result.sources.map((s, i) => `[${i + 1}] ${s.title ? `${s.title} — ` : ''}${s.url}`).join(' ; ')
       : 'none returned';
-  return untrusted('Web research result', `${result.answer} SOURCES: ${sources}`);
+  return untrustedWeb('Web research result', `${result.answer} SOURCES: ${sources}`);
 }
 
 /**
@@ -244,6 +245,66 @@ export async function researchQuestion(question: string): Promise<WebResearchRes
   return parseWebResearchResult(structuredOutput);
 }
 
+/**
+ * Pure render for `web_research`'s 7 refusal/error outcomes (issue #1429) —
+ * same "one function per tool, outcome as a parameter" shape as
+ * `formatLinkSummaryText`/`formatReactToMessageText`. The one dynamic-content
+ * reply (the research answer itself) stays outside this function: it is
+ * built with `relayLanguageNote()` directly, as it always has been, because
+ * that content can't be pre-written in `mi`.
+ */
+export function formatWebResearchText(
+  outcome:
+    | { kind: 'not_enabled' }
+    | { kind: 'knowledge_search_first' }
+    | { kind: 'precheck_failed' }
+    | { kind: 'already_covered' }
+    | { kind: 'dedup' }
+    | { kind: 'daily_limit'; limit: number }
+    | { kind: 'research_failed' },
+  language: LanguagePreference,
+): string {
+  const mi = language === 'mi';
+  switch (outcome.kind) {
+    case 'not_enabled':
+      return mi
+        ? 'Kāore e whakaaetia: kāore i whakahohea te rangahau ipurangi i tēnei tūmau.'
+        : 'Refusing: web research is not enabled on this deployment.';
+    case 'knowledge_search_first':
+      return mi
+        ? 'Kāore e whakaaetia: rapua te pātaka mātauranga o te hapori mā te knowledge_search i te ' +
+            'tuatahi. Whakamahia te web_research ina kāore he hua whai take i kitea e tērā mō tēnei pātai.'
+        : 'Refusing: search the community knowledge base with knowledge_search first. Use web_research only ' +
+            'when that found nothing relevant for this question.';
+    case 'precheck_failed':
+      return mi
+        ? 'Kāore i taea te tirotiro i te pātaka mātauranga o te hapori i te tuatahi, nō reira kāore i ' +
+            'whakahaerehia te rangahau ipurangi. Kōrerohia mai tēnei, kaua e whakaaro noa i tētahi whakautu.'
+        : 'Could not check the community knowledge base first, so web research was not run. Say so, and ' +
+            'do not guess an answer.';
+    case 'already_covered':
+      return mi
+        ? 'Kāore e whakaaetia: kei te pātaka mātauranga o te hapori he kōrero mō tēnei pātai. Whakautua ' +
+            'mai mā te knowledge_search (karangahia mēnā kāore anō i karangahia) kaua ko te ipurangi.'
+        : 'Refusing: the community knowledge base has material on this question. Answer from ' +
+            'knowledge_search (call it with this question if you have not) instead of the web.';
+    case 'dedup':
+      return mi
+        ? 'Kāore e whakaaetia: nāu anō tēnā pātai tonu i rangahau i ngā meneti kua pahemo — whakamahia ' +
+            'anō tērā hua.'
+        : 'Refusing: you researched that exact question moments ago — reuse that result instead.';
+    case 'daily_limit':
+      return mi
+        ? `Kua eke koe ki te tepe rangahau ipurangi o tēnei rā (${outcome.limit}). Whakamātauria anō āpōpō.`
+        : `You've hit today's web-research limit (${outcome.limit}). Try again tomorrow.`;
+    case 'research_failed':
+      return mi
+        ? 'I rahua te rangahau ipurangi i tēnei wā. Kōrerohia mai tēnei, kaua e whakaaro noa i tētahi ' +
+            'whakautu.'
+        : 'Web research failed this time. Say so, and do not guess an answer.';
+  }
+}
+
 export const webResearchTools = [
   defineTool({
     name: 'web_research',
@@ -268,21 +329,23 @@ export const webResearchTools = [
     },
     handler: async (args, { caller, turnState }) => {
       assertAtLeast(caller.role, 'member', 'web_research');
+      // Read once, ahead of every refusal branch (issue #1429) — not only on
+      // the success path — so a standing 'mi' preference is honoured by
+      // refusals too, not just the research answer.
+      const language = await getLanguagePreference(caller.platform, caller.userId).catch(
+        () => 'auto' as const,
+      );
       // Re-checked in-handler as well as via featureFlag: the predicate shapes
       // the per-turn tool surface, but a handler is reachable directly (tests,
       // any future dispatch path), and a metered tool must not depend on
       // surface filtering alone for its off switch.
       if (!config.webResearch.enabled) {
-        return text('Refusing: web research is not enabled on this deployment.', true);
+        return text(formatWebResearchText({ kind: 'not_enabled' }, language), true);
       }
       // Knowledge base first. Fails closed with no turn state at all: without
       // it there is no evidence the knowledge base was consulted.
       if (!turnState?.knowledgeSearchMissed) {
-        return text(
-          'Refusing: search the community knowledge base with knowledge_search first. Use web_research only ' +
-            'when that found nothing relevant for this question.',
-          true,
-        );
+        return text(formatWebResearchText({ kind: 'knowledge_search_first' }, language), true);
       }
 
       const question = args.question.replace(/\s+/g, ' ').trim();
@@ -299,30 +362,19 @@ export const webResearchTools = [
           { err, platform: caller.platform, conversationId: hashId(caller.conversationId) },
           'web_research knowledge pre-check failed',
         );
-        return text(
-          'Could not check the community knowledge base first, so web research was not run. Say so, and ' +
-            'do not guess an answer.',
-          true,
-        );
+        return text(formatWebResearchText({ kind: 'precheck_failed' }, language), true);
       }
       if (covered) {
-        return text(
-          'Refusing: the community knowledge base has material on this question. Answer from ' +
-            'knowledge_search (call it with this question if you have not) instead of the web.',
-          true,
-        );
+        return text(formatWebResearchText({ kind: 'already_covered' }, language), true);
       }
       // Checked before the daily quota so a caught duplicate costs nothing.
       const dedupKey = `${caller.platform}:${caller.userId}:${question.toLowerCase()}`;
       if (!reserveResearchDedup(dedupKey, 1)) {
-        return text(
-          'Refusing: you researched that exact question moments ago — reuse that result instead.',
-          true,
-        );
+        return text(formatWebResearchText({ kind: 'dedup' }, language), true);
       }
       const limit = config.webResearch.dailyLimit;
       if (limit > 0 && !reserveResearchDaily(`${caller.platform}:${caller.userId}`, limit)) {
-        return text(`You've hit today's web-research limit (${limit}). Try again tomorrow.`, true);
+        return text(formatWebResearchText({ kind: 'daily_limit', limit }, language), true);
       }
 
       let result: WebResearchResult;
@@ -333,7 +385,7 @@ export const webResearchTools = [
           { err, platform: caller.platform, conversationId: hashId(caller.conversationId) },
           'web_research failed',
         );
-        return text('Web research failed this time. Say so, and do not guess an answer.', true);
+        return text(formatWebResearchText({ kind: 'research_failed' }, language), true);
       }
       // Adoption/usage signal without a table: counts and outcome only — never
       // the question, which the dedup map above holds in memory and nowhere else.
@@ -345,9 +397,6 @@ export const webResearchTools = [
           sourceCount: result.sources.length,
         },
         'web_research invocation',
-      );
-      const language = await getLanguagePreference(caller.platform, caller.userId).catch(
-        () => 'auto' as const,
       );
       return text(relayLanguageNote(language) + formatWebResearchForModel(result));
     },
