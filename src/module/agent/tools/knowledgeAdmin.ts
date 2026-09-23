@@ -11,6 +11,7 @@ import {
   getKnowledgeContentById,
   hasConflictAmongIds,
   type KnowledgeCandidate,
+  type KnowledgeConflictPair,
   type KnowledgeDuplicateMatch,
   listAnswerFeedback,
   listDuplicateKnowledge,
@@ -178,6 +179,69 @@ async function notifyUnhelpfulRatersFixed(
   );
 }
 
+// Write-time counterpart to list_knowledge_conflicts' retroactive audit
+// (issue #1445): save_knowledge/update_knowledge already nudge on the
+// near-duplicate band (findNearDuplicateKnowledge, issue #93/#584); this
+// closes the matching gap on the sibling conflict band, which
+// listKnowledgeConflictCandidates (issue #330) otherwise only ever surfaces
+// on a manual admin audit. Reuses listKnowledgeConflictCandidates verbatim —
+// no new repository function, no agent-base change — filtered in module
+// code to pairs that include the just-written entry's id.
+//
+// `scope` is passed through EXACTLY as given to saveKnowledge/updateKnowledge
+// (may be undefined). The underlying query's own `a.scope = b.scope` join
+// predicate means a returned pair can never span two scopes regardless of
+// whether this parameter narrows the search further, so cross-scope leakage
+// is structurally impossible even when scope is omitted — passing it through
+// is belt-and-suspenders, not the sole safeguard, and it keeps the lookup
+// itself provably scoped to the same value the write used.
+//
+// KNOWLEDGE_CONFLICT_NUDGE_FETCH_LIMIT (100) is the hard clamp
+// listKnowledgeConflictCandidates already applies internally, so this asks
+// for the largest single page it will ever return. A scope with more
+// conflict-band pairs than that may still miss one involving this entry —
+// the same accepted bounded-cost tradeoff TOP_KNOWLEDGE_FETCH_CAP documents
+// above for this community's expected KB size. That tradeoff assumes a
+// scope-narrowed candidate set: true for save_knowledge's typical explicit
+// `scope` call, but update_knowledge's typical call OMITS `scope` (see the
+// comment above), so this 100-pair cap there competes against every pair in
+// the ENTIRE knowledge base across all scopes, not just the edited entry's
+// own — a materially tighter bound as the whole KB (not one scope) grows.
+//
+// Fail-soft: a lookup failure is caught, logged, and treated as "no match"
+// so it can never affect the write's own success outcome, mirroring
+// find_knowledge's hasConflictAmongIds `.catch()` above.
+export const KNOWLEDGE_CONFLICT_NUDGE_FETCH_LIMIT = 100;
+
+async function findConflictNudgeMatch(
+  scope: string | undefined,
+  entryId: number,
+): Promise<KnowledgeConflictPair | undefined> {
+  const pairs = await listKnowledgeConflictCandidates(scope, KNOWLEDGE_CONFLICT_NUDGE_FETCH_LIMIT).catch(
+    (err) => {
+      logger.warn({ err }, 'Knowledge conflict-nudge lookup failed; omitting the conflict note');
+      return [];
+    },
+  );
+  return pairs.find((p) => p.aId === entryId || p.bId === entryId);
+}
+
+// Distinctly-worded from the near-duplicate nudge (issue #1445 acceptance
+// criterion 3): "may conflict"/"disagree" rather than "looks similar"/
+// "converge", since the remediation differs (compare-and-decide vs. merge).
+// Only ever called when no near-duplicate nudge already fired for this write
+// (see the two call sites below), so the two nudges are mutually exclusive
+// per write (acceptance criterion 4).
+function formatConflictNudge(entryId: number, pair: KnowledgeConflictPair): string {
+  const other =
+    pair.aId === entryId ? { id: pair.bId, title: pair.bTitle } : { id: pair.aId, title: pair.aTitle };
+  const label = other.title ? `"${other.title}"` : `#${other.id}`;
+  return (
+    ` Note: this may conflict with existing entry #${other.id} (${label}) — worded differently enough it ` +
+    'might disagree rather than duplicate; check both with list_knowledge_conflicts and merge/correct as needed.'
+  );
+}
+
 export const knowledgeAdminTools = [
   defineTool({
     name: 'save_knowledge',
@@ -232,6 +296,9 @@ export const knowledgeAdminTools = [
         const pct = (similarEntry.similarity * 100).toFixed(0);
         const label = similarEntry.title ? `"${similarEntry.title}"` : similarEntry.content.slice(0, 80);
         reply += ` Note: this looks similar (${pct}%) to existing entry #${similarEntry.id} (${label}) — consider update_knowledge on #${similarEntry.id} instead if this is the same topic.`;
+      } else if (state.id !== undefined) {
+        const conflictMatch = await findConflictNudgeMatch(args.scope, state.id);
+        if (conflictMatch) reply += formatConflictNudge(state.id, conflictMatch);
       }
       return text(reply);
     },
@@ -561,6 +628,9 @@ export const knowledgeAdminTools = [
           const pct = (similarEntry.similarity * 100).toFixed(0);
           const label = similarEntry.title ? `"${similarEntry.title}"` : similarEntry.content.slice(0, 80);
           reply += ` Note: this looks similar (${pct}%) to existing entry #${similarEntry.id} (${label}) — consider update_knowledge on #${similarEntry.id} instead if this is the same topic.`;
+        } else {
+          const conflictMatch = await findConflictNudgeMatch(args.scope, args.id);
+          if (conflictMatch) reply += formatConflictNudge(args.id, conflictMatch);
         }
         if (truncated) reply += KNOWLEDGE_FIX_NOTIFY_TRUNCATION_CAVEAT;
         return reply;

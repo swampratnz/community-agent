@@ -92,6 +92,8 @@ const {
   notifyKnowledgeCandidateStale,
   notifyWarningsCleared,
   notifyKnowledgeEntryFixed,
+  notifyCommunityRoleAssigned,
+  notifyCommunityRoleRemoved,
   buildToolServer,
   formatAccessRequestsList,
   formatAdminRoster,
@@ -532,7 +534,10 @@ function stubAdapter(sendDirectMessage: PlatformAdapter['sendDirectMessage']): P
  * lets the tools.ts layer (RBAC, allowlist gate, target validation, CONFIRM,
  * audit) be exercised independently of the real Discord client.
  */
-function stubDiscordRoleAdapter(performAdminAction: PlatformAdapter['performAdminAction']): PlatformAdapter {
+function stubDiscordRoleAdapter(
+  performAdminAction: PlatformAdapter['performAdminAction'],
+  sendDirectMessage: PlatformAdapter['sendDirectMessage'] = async () => {},
+): PlatformAdapter {
   return {
     platform: 'discord',
     start: async () => {},
@@ -540,7 +545,7 @@ function stubDiscordRoleAdapter(performAdminAction: PlatformAdapter['performAdmi
     isConnected: () => true,
     onMessage: () => {},
     sendMessage: async () => {},
-    sendDirectMessage: async () => {},
+    sendDirectMessage,
     conversationsForUser: async () => [],
     adminCapabilities: new Set(['assign_community_role', 'remove_community_role', 'list_assignable_roles']),
     performAdminAction,
@@ -2860,6 +2865,287 @@ test("SECURITY: notifyProjectUnarchived never consults the response-style lookup
   );
 
   assert.equal(respStyleCalls, 0);
+});
+
+// notifyCommunityRoleAssigned / notifyCommunityRoleRemoved close the one
+// remaining grant/revoke pair in this codebase with no notification path in
+// either direction (issue #1439) — modelled line-for-line on
+// notifyProjectMemberAdded/notifyProjectMemberRemoved above, but the trailing
+// clause is a Discord role mention rather than a quoted, truncateForEcho-
+// capped name.
+test('notifyCommunityRoleAssigned sends a neutral grant DM naming the role as a Discord role mention', async () => {
+  const calls: Array<[string, string]> = [];
+  const adapter = stubAdapter(async (userId, text) => {
+    calls.push([userId, text]);
+  });
+
+  await notifyCommunityRoleAssigned(adapter, 'user-1', 'discord', 'role-cosmetic-1');
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'user-1');
+  assert.match(calls[0][1], /given a community role/i);
+  assert.match(calls[0][1], /<@&role-cosmetic-1>$/);
+});
+
+test('notifyCommunityRoleAssigned swallows a DM failure rather than throwing (the grant stays the source of truth)', async () => {
+  const adapter = stubAdapter(async () => {
+    throw new Error('DMs closed');
+  });
+
+  await assert.doesNotReject(notifyCommunityRoleAssigned(adapter, 'user-1', 'discord', 'role-cosmetic-1'));
+});
+
+test("notifyCommunityRoleAssigned sends the te reo Māori variant for a caller with a stored 'mi' preference", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyCommunityRoleAssigned(adapter, 'user-1', 'discord', 'role-cosmetic-1', async () => 'mi');
+
+  assert.match(calls[0], /whakawhiwhia/);
+  assert.match(calls[0], /<@&role-cosmetic-1>$/);
+});
+
+test("notifyCommunityRoleAssigned sends the plain-language variant for a caller with a stored 'plain' response style", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyCommunityRoleAssigned(
+    adapter,
+    'user-1',
+    'discord',
+    'role-cosmetic-1',
+    async () => 'auto',
+    async () => 'plain',
+  );
+
+  assert.match(calls[0], /^An admin gave you a community role/);
+});
+
+test("SECURITY: notifyCommunityRoleAssigned degrades to the English default, rather than throwing or dropping the DM, when the language-preference lookup fails (issue #52's invariant)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyCommunityRoleAssigned(adapter, 'user-1', 'discord', 'role-cosmetic-1', async () => {
+    throw new Error('DB unreachable');
+  });
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /given a community role/i);
+});
+
+test("SECURITY: notifyCommunityRoleAssigned degrades to the English default, rather than throwing or dropping the DM, when the response-style lookup fails (issue #52's invariant)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyCommunityRoleAssigned(
+    adapter,
+    'user-1',
+    'discord',
+    'role-cosmetic-1',
+    async () => 'auto',
+    async () => {
+      throw new Error('DB unreachable');
+    },
+  );
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /given a community role/i);
+});
+
+test("SECURITY: notifyCommunityRoleAssigned never consults the response-style lookup once language has resolved to 'mi'", async () => {
+  let respStyleCalls = 0;
+  const adapter = stubAdapter(async () => {});
+
+  await notifyCommunityRoleAssigned(
+    adapter,
+    'user-1',
+    'discord',
+    'role-cosmetic-1',
+    async () => 'mi',
+    async () => {
+      respStyleCalls += 1;
+      throw new Error('must never be reached when lang is mi');
+    },
+  );
+
+  assert.equal(respStyleCalls, 0);
+});
+
+test('SECURITY: notifyCommunityRoleAssigned queues via queueForWindowReopen at "low" priority on a WindowClosedError, rather than dropping the DM (issue #1439, #644 recovery extended)', async () => {
+  const queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }> = [];
+  const adapter: PlatformAdapter = {
+    ...stubAdapter(async () => {
+      throw new WindowClosedError('user-1');
+    }),
+    queueForWindowReopen(userId: string, message: string, priority: 'system' | 'low') {
+      queued.push({ userId, message, priority });
+    },
+  };
+
+  await notifyCommunityRoleAssigned(adapter, 'user-1', 'discord', 'role-cosmetic-1');
+
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0]?.userId, 'user-1');
+  assert.equal(queued[0]?.priority, 'low');
+});
+
+test(
+  'SECURITY: notifyCommunityRoleAssigned/notifyCommunityRoleRemoved render no acting-admin identity or ' +
+    'free-text — each variant is fixed copy plus only the (already-allowlisted) roleId as a Discord role ' +
+    "mention, never interpolated with the target's own userId or any other value (issue #1439)",
+  async () => {
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (_userId, message) => {
+      calls.push(message);
+    });
+
+    await notifyCommunityRoleAssigned(adapter, 'user-1', 'discord', 'role-cosmetic-1');
+    await notifyCommunityRoleRemoved(adapter, 'user-1', 'discord', 'role-cosmetic-1');
+    await notifyCommunityRoleAssigned(adapter, 'user-1', 'discord', 'role-cosmetic-1', async () => 'mi');
+    await notifyCommunityRoleRemoved(adapter, 'user-1', 'discord', 'role-cosmetic-1', async () => 'mi');
+
+    for (const message of calls) {
+      assert.doesNotMatch(message, /user-1/, 'the target userId must never be echoed into the DM body');
+      assert.doesNotMatch(message, /admin/i, 'no acting-admin identity or reference may appear in the DM');
+      assert.match(
+        message,
+        /^\S[\s\S]*<@&role-cosmetic-1>$/,
+        'the message must be fixed copy followed by exactly the role mention',
+      );
+    }
+  },
+);
+
+test('notifyCommunityRoleRemoved sends a neutral revoke DM naming the role as a Discord role mention', async () => {
+  const calls: Array<[string, string]> = [];
+  const adapter = stubAdapter(async (userId, text) => {
+    calls.push([userId, text]);
+  });
+
+  await notifyCommunityRoleRemoved(adapter, 'user-1', 'discord', 'role-cosmetic-1');
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'user-1');
+  assert.match(calls[0][1], /removed from you/i);
+  assert.match(calls[0][1], /<@&role-cosmetic-1>$/);
+});
+
+test('notifyCommunityRoleRemoved swallows a DM failure rather than throwing (the removal stays the source of truth)', async () => {
+  const adapter = stubAdapter(async () => {
+    throw new Error('DMs closed');
+  });
+
+  await assert.doesNotReject(notifyCommunityRoleRemoved(adapter, 'user-1', 'discord', 'role-cosmetic-1'));
+});
+
+test("notifyCommunityRoleRemoved sends the te reo Māori variant for a caller with a stored 'mi' preference", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyCommunityRoleRemoved(adapter, 'user-1', 'discord', 'role-cosmetic-1', async () => 'mi');
+
+  assert.match(calls[0], /tangohia/);
+  assert.match(calls[0], /<@&role-cosmetic-1>$/);
+});
+
+test("notifyCommunityRoleRemoved sends the plain-language variant for a caller with a stored 'plain' response style", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyCommunityRoleRemoved(
+    adapter,
+    'user-1',
+    'discord',
+    'role-cosmetic-1',
+    async () => 'auto',
+    async () => 'plain',
+  );
+
+  assert.match(calls[0], /^An admin removed a community role from you/);
+});
+
+test("SECURITY: notifyCommunityRoleRemoved degrades to the English default, rather than throwing or dropping the DM, when the language-preference lookup fails (issue #52's invariant)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyCommunityRoleRemoved(adapter, 'user-1', 'discord', 'role-cosmetic-1', async () => {
+    throw new Error('DB unreachable');
+  });
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /removed from you/i);
+});
+
+test("SECURITY: notifyCommunityRoleRemoved degrades to the English default, rather than throwing or dropping the DM, when the response-style lookup fails (issue #52's invariant)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyCommunityRoleRemoved(
+    adapter,
+    'user-1',
+    'discord',
+    'role-cosmetic-1',
+    async () => 'auto',
+    async () => {
+      throw new Error('DB unreachable');
+    },
+  );
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /removed from you/i);
+});
+
+test("SECURITY: notifyCommunityRoleRemoved never consults the response-style lookup once language has resolved to 'mi'", async () => {
+  let respStyleCalls = 0;
+  const adapter = stubAdapter(async () => {});
+
+  await notifyCommunityRoleRemoved(
+    adapter,
+    'user-1',
+    'discord',
+    'role-cosmetic-1',
+    async () => 'mi',
+    async () => {
+      respStyleCalls += 1;
+      throw new Error('must never be reached when lang is mi');
+    },
+  );
+
+  assert.equal(respStyleCalls, 0);
+});
+
+test('SECURITY: notifyCommunityRoleRemoved queues via queueForWindowReopen at "low" priority on a WindowClosedError, rather than dropping the DM (issue #1439, #644 recovery extended)', async () => {
+  const queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }> = [];
+  const adapter: PlatformAdapter = {
+    ...stubAdapter(async () => {
+      throw new WindowClosedError('user-1');
+    }),
+    queueForWindowReopen(userId: string, message: string, priority: 'system' | 'low') {
+      queued.push({ userId, message, priority });
+    },
+  };
+
+  await notifyCommunityRoleRemoved(adapter, 'user-1', 'discord', 'role-cosmetic-1');
+
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0]?.userId, 'user-1');
+  assert.equal(queued[0]?.priority, 'low');
 });
 
 // notifySuggestionResolved holds all of resolve_suggestion's new (issue #116)
@@ -36723,6 +37009,237 @@ test(
   },
 );
 
+// audit_view oldestFirst (issue #1443) — the last of the moderation.ts
+// oldestFirst sweep (#1255/#1259/#1261/#1265/#1371/#1379/#1426) applied to
+// the one super-admin history tool it never reached. recentAuditEntries
+// (agent-base) has no ordering parameter and always queries newest-first, so
+// this is implemented module-side as a single bounded fetch + JS sort — same
+// shape as moderation_history's own oldestFirst above, unscoped (audit_view
+// is global, not conversation-scoped) so there is no callerScope() filter to
+// preserve.
+const AUDIT_VIEW_SCAN_LIMIT = 100;
+
+function auditViewHandler(role: 'member' | 'admin' | 'super_admin', userId = 'super-audit-view-caller') {
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId,
+      userName: 'SuperAdmin',
+      role,
+      conversationId: 'convo-audit-view',
+    },
+    stubAdapter(async () => {}),
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: { limit?: number; oldestFirst?: boolean }) => Promise<{
+            content: Array<{ type: string; text: string }>;
+            isError?: boolean;
+          }>;
+        }
+      >;
+    }
+  )._registeredTools['audit_view'];
+}
+
+test(
+  'audit_view: oldestFirst orders by createdAt ascending, sliced to limit ?? 20; omitted/false stays ' +
+    'byte-identical to the default newest-first order (issue #1443 acceptance criteria 1, 2)',
+  { skip },
+  async (t) => {
+    // audit_view is unscoped (global, not conversation-scoped like
+    // moderation_history) by design — a super admin sees the whole audit
+    // log. Real inserts would be drowned out by the rest of this suite's
+    // concurrent admin_audit writes within AUDIT_VIEW_SCAN_LIMIT's fixed
+    // 100-row window, so this mocks pool.query with a small controlled row
+    // set instead, same technique as the scan-limit caveat test below.
+    const now = Date.now();
+    const syntheticRows = [
+      {
+        created_at: new Date(now - 1000),
+        platform: 'discord',
+        actor_user_id: 'admin-1',
+        action_kind: 'set_policy',
+        target_user_id: null,
+        success: true,
+        result: 'entry-newer',
+      },
+      {
+        created_at: new Date(now - 2000),
+        platform: 'discord',
+        actor_user_id: 'admin-1',
+        action_kind: 'set_policy',
+        target_user_id: null,
+        success: true,
+        result: 'entry-older',
+      },
+    ];
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && /FROM admin_audit\b/.test(sql)) {
+        return Promise.resolve({ rows: syntheticRows, rowCount: syntheticRows.length });
+      }
+      return (realQuery as (...a: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+    try {
+      const defaultOrder = await auditViewHandler('super_admin').handler({});
+      const defaultText = defaultOrder.content[0]?.text ?? '';
+      assert.ok(
+        defaultText.indexOf('entry-newer') < defaultText.indexOf('entry-older'),
+        'default (no oldestFirst) lists the newest entry before the oldest one, unchanged from before this issue',
+      );
+
+      const explicitFalse = await auditViewHandler('super_admin').handler({ oldestFirst: false });
+      assert.equal(
+        explicitFalse.content[0]?.text,
+        defaultText,
+        'oldestFirst: false must render byte-identical to the omitted-field default',
+      );
+
+      const oldestFirstOrder = await auditViewHandler('super_admin').handler({ oldestFirst: true });
+      const oldestFirstText = oldestFirstOrder.content[0]?.text ?? '';
+      assert.ok(
+        oldestFirstText.indexOf('entry-older') < oldestFirstText.indexOf('entry-newer'),
+        'oldestFirst: true lists the earliest entry before the more recent one',
+      );
+      assert.doesNotMatch(
+        oldestFirstText,
+        /oldestFirst caveat/i,
+        'a scan well under AUDIT_VIEW_SCAN_LIMIT must not carry the "may be incomplete" caveat',
+      );
+    } finally {
+      t.mock.restoreAll();
+    }
+  },
+);
+
+test(
+  'audit_view: oldestFirst appends an explicit caveat when the scan hits AUDIT_VIEW_SCAN_LIMIT, since that ' +
+    'many entries means the genuinely earliest one could sit outside the single bounded scan and never ' +
+    'surface — the tool must say so rather than silently reporting a mid-recent row as "oldest"; the default ' +
+    '(non-oldestFirst) path never carries the caveat (issue #1443 acceptance criterion 4)',
+  { skip },
+  async (t) => {
+    const now = Date.now();
+    const syntheticRows = Array.from({ length: AUDIT_VIEW_SCAN_LIMIT }, (_, i) => ({
+      created_at: new Date(now - i * 1000),
+      platform: 'discord',
+      actor_user_id: 'admin-1',
+      action_kind: 'set_policy',
+      target_user_id: null,
+      success: true,
+      result: `entry-${i}`,
+    }));
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && /FROM admin_audit\b/.test(sql)) {
+        return Promise.resolve({ rows: syntheticRows, rowCount: syntheticRows.length });
+      }
+      return (realQuery as (...a: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+    try {
+      const result = await auditViewHandler('super_admin').handler({ oldestFirst: true });
+      const rendered = result.content[0]?.text ?? '';
+      assert.match(
+        rendered,
+        /oldestFirst caveat/i,
+        'hitting the scan limit must surface an explicit caveat that the true oldest row may not be shown',
+      );
+      assert.match(
+        rendered,
+        /audit_view/,
+        'the caveat should name this tool, same wording pattern as moderation_history',
+      );
+      assert.match(
+        rendered,
+        new RegExp(String(AUDIT_VIEW_SCAN_LIMIT)),
+        'the caveat should name the scan-limit constant so a super admin understands the bound',
+      );
+
+      const defaultResult = await auditViewHandler('super_admin').handler({});
+      assert.doesNotMatch(
+        defaultResult.content[0]?.text ?? '',
+        /oldestFirst caveat/i,
+        'the default (non-oldestFirst) path must never carry the caveat, regardless of underlying volume',
+      );
+    } finally {
+      t.mock.restoreAll();
+    }
+  },
+);
+
+test(
+  'SECURITY: audit_view queries admin_audit exactly once regardless of oldestFirst, binding the SQL LIMIT ' +
+    'to args.limit ?? 20 on the default path and to the module-local scan-limit constant (100) — never an ' +
+    'unbounded scan — only when oldestFirst: true (issue #1443 acceptance criterion 3)',
+  { skip },
+  async (t) => {
+    const actor = `${RUN}-audit-view-scanlimit-security`;
+    await pool.query(
+      `INSERT INTO admin_audit (platform, actor_user_id, action_kind, success, result)
+       VALUES ('discord', $1, 'set_policy', true, 'entry')`,
+      [actor],
+    );
+    try {
+      for (const args of [{}, { oldestFirst: false }, { oldestFirst: true }] as const) {
+        const calls: unknown[][] = [];
+        const realQuery = pool.query.bind(pool);
+        t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+          if (typeof sql === 'string' && /FROM admin_audit\b/.test(sql)) calls.push(rest);
+          return (realQuery as (...a: unknown[]) => unknown)(sql, ...rest);
+        }) as typeof pool.query);
+        try {
+          await auditViewHandler('super_admin').handler(args);
+          assert.equal(
+            calls.length,
+            1,
+            `audit_view must query admin_audit exactly once for ${JSON.stringify(args)}`,
+          );
+          const params = calls[0][0] as unknown[];
+          assert.equal(
+            params[params.length - 1],
+            args.oldestFirst ? AUDIT_VIEW_SCAN_LIMIT : 20,
+            args.oldestFirst
+              ? 'oldestFirst: true must bind the module-local AUDIT_VIEW_SCAN_LIMIT (100) to the SQL LIMIT ' +
+                  'parameter, never an unbounded scan'
+              : 'the default/oldestFirst:false path must bind args.limit ?? 20, never the scan-limit constant',
+          );
+        } finally {
+          t.mock.restoreAll();
+        }
+      }
+    } finally {
+      await pool.query(`DELETE FROM admin_audit WHERE actor_user_id = $1`, [actor]);
+    }
+  },
+);
+
+test(
+  "SECURITY: audit_view's minTier stays super_admin and a below-tier caller is refused even with " +
+    'oldestFirst: true — the new param cannot be used to route around the existing tier gate, and no ' +
+    'admin_audit row is ever read on the refused path (issue #1443 acceptance criterion 5)',
+  async (t) => {
+    const calls: unknown[][] = [];
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && /FROM admin_audit\b/.test(sql)) calls.push(rest);
+      return (realQuery as (...a: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+    try {
+      for (const role of ['member', 'admin'] as const) {
+        const registeredTool = auditViewHandler(role);
+        await assert.rejects(() => registeredTool.handler({ oldestFirst: true }), /Permission denied/);
+      }
+      assert.equal(calls.length, 0, 'a refused caller must never reach the admin_audit query');
+    } finally {
+      t.mock.restoreAll();
+    }
+  },
+);
+
 test(
   'SECURITY: a successful save_knowledge call fires the real-time notifySuperAdmins alert, and a failed one does not — the invariant audited() already guarantees for every sibling tool, verified here for save_knowledge specifically (issue #1201 acceptance criterion 6)',
   { skip },
@@ -37072,6 +37589,470 @@ test(
   },
 );
 
+// Write-time conflict-band nudge (issue #1445): the sibling of the
+// near-duplicate nudge suite above (#584), for the conflict band
+// list_knowledge_conflicts otherwise only ever audits retroactively.
+// Building an entry whose pairwise similarity to a fixture lands inside the
+// exact conflict band from real content isn't reliably predictable (the same
+// reason the knowledge_search conflict-caveat tests near line 20287 avoid
+// it) — instead each fixture's embedding is derived mathematically from the
+// SAVED/EDITED content's own real embed() output, via the atCosineSimilarity
+// helper defined above, to land at an exact known cosine similarity
+// independent of the model's actual semantic judgement. The identifying SQL
+// substring `1 - (a.embedding <=> b.embedding) < $3` below is unique to
+// listKnowledgeConflictCandidates's own query shape (the near-duplicate
+// lookups saveKnowledge/updateKnowledge run internally, and
+// list_duplicate_knowledge's own audit query, both lack the upper bound).
+
+test(
+  'save_knowledge appends a distinctly-worded conflict-band nudge naming the other entry, and never the near-duplicate wording (issue #1445 acceptance criteria 1 and 3)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-save-conflict-nudge-scope`;
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-save-conflict-nudge-admin`,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: `${RUN}-save-conflict-nudge-convo`,
+    };
+    const server = buildToolServer(caller, adapter);
+    const tools = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }
+        >;
+      }
+    )._registeredTools;
+
+    const title = 'How the roster rotation works';
+    const content = 'The roster assigns hosts weekly and resets automatically every month.';
+    const contentEmbedding = await embed(`${title}\n${content}`);
+    const midBandVec = atCosineSimilarity(contentEmbedding, 0.7); // inside [0.55, 0.92)
+
+    const { rows: anchorRows } = await pool.query(
+      `INSERT INTO knowledge (scope, title, content, embedding) VALUES ($1,$2,$3,$4) RETURNING id`,
+      [scope, 'Roster rotation FAQ', 'Hosts rotate on a fixed weekly cadence.', pgvector.toSql(midBandVec)],
+    );
+    const anchorId = Number(anchorRows[0].id);
+
+    const result = await tools['save_knowledge'].handler({ title, content, scope });
+    const reply = result.content[0]?.text ?? '';
+
+    assert.match(
+      reply,
+      /^Saved knowledge entry #\d+\./,
+      'the base reply is unchanged, the nudge is appended after it',
+    );
+    assert.doesNotMatch(
+      reply,
+      /looks similar/,
+      "the conflict nudge must never reuse the near-duplicate nudge's wording",
+    );
+    assert.match(
+      reply,
+      new RegExp(`may conflict with existing entry #${anchorId}\\b`),
+      'the nudge names the conflicting entry by id',
+    );
+    assert.match(reply, /\("Roster rotation FAQ"\)/, 'the nudge names the conflicting entry by title');
+
+    await pool.query(`DELETE FROM knowledge WHERE scope = $1`, [scope]);
+  },
+);
+
+test(
+  'update_knowledge appends the same conflict-band nudge shape as save_knowledge, rendered only on a successful edit (issue #1445 acceptance criteria 2 and 3)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-update-conflict-nudge-scope`;
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-update-conflict-nudge-admin`,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: `${RUN}-update-conflict-nudge-convo`,
+    };
+    const server = buildToolServer(caller, adapter);
+    const tools = (
+      server.instance as unknown as {
+        _registeredTools: Record<string, { handler: (args: Record<string, unknown>) => Promise<unknown> }>;
+      }
+    )._registeredTools;
+
+    const { id: editedId } = await saveKnowledge({
+      title: 'Meetup schedule',
+      content: 'We meet monthly on the first Tuesday at the community hall.',
+      scope,
+    });
+
+    const newTitle = 'How the roster rotation works';
+    const newContent = 'The roster assigns hosts weekly and resets automatically every month.';
+    const contentEmbedding = await embed(`${newTitle}\n${newContent}`);
+    const midBandVec = atCosineSimilarity(contentEmbedding, 0.7); // inside [0.55, 0.92)
+
+    const { rows: anchorRows } = await pool.query(
+      `INSERT INTO knowledge (scope, title, content, embedding) VALUES ($1,$2,$3,$4) RETURNING id`,
+      [scope, 'Roster rotation FAQ', 'Hosts rotate on a fixed weekly cadence.', pgvector.toSql(midBandVec)],
+    );
+    const anchorId = Number(anchorRows[0].id);
+
+    await tools['update_knowledge'].handler({ id: editedId, title: newTitle, content: newContent });
+    const reply = await takePendingAction('discord', caller.conversationId, caller.userId)?.execute();
+
+    assert.match(
+      reply ?? '',
+      new RegExp(`^Updated knowledge entry #${editedId}\\.`),
+      'the base reply is unchanged, the nudge is appended after it',
+    );
+    assert.doesNotMatch(
+      reply ?? '',
+      /looks similar/,
+      "the conflict nudge must never reuse the near-duplicate nudge's wording",
+    );
+    assert.match(
+      reply ?? '',
+      new RegExp(`may conflict with existing entry #${anchorId}\\b`),
+      'the nudge names the conflicting entry by id',
+    );
+    assert.match(reply ?? '', /\("Roster rotation FAQ"\)/, 'the nudge names the conflicting entry by title');
+
+    await pool.query(`DELETE FROM knowledge WHERE scope = $1`, [scope]);
+  },
+);
+
+test(
+  'save_knowledge renders only the near-duplicate nudge, never the conflict nudge, when a write matches both bands against two different entries (issue #1445 acceptance criterion 4)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-nudge-mutual-exclusivity-scope`;
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-nudge-mutual-exclusivity-admin`,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: `${RUN}-nudge-mutual-exclusivity-convo`,
+    };
+    const server = buildToolServer(caller, adapter);
+    const tools = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }
+        >;
+      }
+    )._registeredTools;
+
+    const title = 'Duplicate-and-conflict fixture write';
+    const content =
+      'Content chosen to be a near-duplicate of one fixture and a conflict-band match of another.';
+    const contentEmbedding = await embed(`${title}\n${content}`);
+    const nearDupVec = atCosineSimilarity(contentEmbedding, 0.97); // >= 0.92 near-duplicate threshold
+    const midBandVec = atCosineSimilarity(contentEmbedding, 0.7); // inside [0.55, 0.92)
+
+    const { rows: dupRows } = await pool.query(
+      `INSERT INTO knowledge (scope, title, content, embedding) VALUES ($1,$2,$3,$4) RETURNING id`,
+      [scope, 'Near-duplicate fixture', 'Near-duplicate filler content.', pgvector.toSql(nearDupVec)],
+    );
+    const { rows: conflictRows } = await pool.query(
+      `INSERT INTO knowledge (scope, title, content, embedding) VALUES ($1,$2,$3,$4) RETURNING id`,
+      [scope, 'Conflict-band fixture', 'Conflict-band filler content.', pgvector.toSql(midBandVec)],
+    );
+    const dupId = Number(dupRows[0].id);
+    const conflictId = Number(conflictRows[0].id);
+
+    const result = await tools['save_knowledge'].handler({ title, content, scope });
+    const reply = result.content[0]?.text ?? '';
+
+    assert.match(
+      reply,
+      new RegExp(`looks similar \\(\\d+%\\) to existing entry #${dupId}\\b`),
+      'the near-duplicate nudge fires as normal',
+    );
+    assert.doesNotMatch(
+      reply,
+      /may conflict/,
+      'the conflict nudge must not also fire once the near-duplicate nudge already matched',
+    );
+    assert.doesNotMatch(
+      reply,
+      new RegExp(`#${conflictId}\\b`),
+      'the conflict-band fixture must not be named when the near-duplicate nudge already fired',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE scope = $1`, [scope]);
+  },
+);
+
+test(
+  "SECURITY: the conflict-nudge lookup is invoked scoped to the write's own scope, and a conflict-band match in a DIFFERENT scope never surfaces a nudge (issue #1445 acceptance criterion 6)",
+  { skip },
+  async (t) => {
+    const scopeA = `${RUN}-conflict-cross-scope-a`;
+    const scopeB = `${RUN}-conflict-cross-scope-b`;
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-conflict-cross-scope-admin`,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: `${RUN}-conflict-cross-scope-convo`,
+    };
+    const server = buildToolServer(caller, adapter);
+    const tools = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }
+        >;
+      }
+    )._registeredTools;
+
+    const title = 'Cross-scope conflict fixture write';
+    const content = 'Scope-A content that would land in the conflict band against a scope-B-only fixture.';
+    const contentEmbedding = await embed(`${title}\n${content}`);
+    const midBandVec = atCosineSimilarity(contentEmbedding, 0.7); // inside [0.55, 0.92)
+
+    // The would-be conflict partner lives in scope B — never scope A, the
+    // scope this write targets.
+    const { rows: bRows } = await pool.query(
+      `INSERT INTO knowledge (scope, title, content, embedding) VALUES ($1,$2,$3,$4) RETURNING id`,
+      [
+        scopeB,
+        'Cross-scope fixture (must never leak into scope A)',
+        'unrelated filler',
+        pgvector.toSql(midBandVec),
+      ],
+    );
+    const crossScopeId = Number(bRows[0].id);
+
+    const realQuery = pool.query.bind(pool);
+    const conflictLookupScopes: unknown[] = [];
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && sql.includes('1 - (a.embedding <=> b.embedding) < $3')) {
+        conflictLookupScopes.push((rest[0] as unknown[])[0]);
+      }
+      return (realQuery as (...a: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+
+    let reply: string;
+    try {
+      const result = await tools['save_knowledge'].handler({ title, content, scope: scopeA });
+      reply = result.content[0]?.text ?? '';
+    } finally {
+      t.mock.restoreAll();
+    }
+
+    assert.doesNotMatch(
+      reply,
+      /may conflict/,
+      'SECURITY: a conflict-band match that lives in a different scope must never surface a nudge',
+    );
+    assert.doesNotMatch(
+      reply,
+      new RegExp(`#${crossScopeId}\\b`),
+      'SECURITY: the cross-scope entry id must never be named',
+    );
+    assert.ok(conflictLookupScopes.length >= 1, 'the conflict-nudge lookup must run for this write');
+    assert.ok(
+      conflictLookupScopes.every((s) => s === scopeA),
+      "SECURITY: every conflict-nudge lookup this write triggers must be scoped to the write's own scope",
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE scope = ANY($1)`, [[scopeA, scopeB]]);
+  },
+);
+
+test(
+  "SECURITY: update_knowledge's conflict-nudge lookup, called with scope OMITTED (the call shape almost every real edit uses — editing title/content only), never surfaces a conflict-band match that lives in a scope different from the edited entry's own real (retained), non-default scope (issue #1445)",
+  { skip },
+  async (t) => {
+    const scopeA = `${RUN}-update-conflict-cross-scope-a`;
+    const scopeB = `${RUN}-update-conflict-cross-scope-b`;
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-update-conflict-cross-scope-admin`,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: `${RUN}-update-conflict-cross-scope-convo`,
+    };
+    const server = buildToolServer(caller, adapter);
+    const tools = (
+      server.instance as unknown as {
+        _registeredTools: Record<string, { handler: (args: Record<string, unknown>) => Promise<unknown> }>;
+      }
+    )._registeredTools;
+
+    // The edited entry's real, retained scope is A throughout — update_knowledge
+    // is called below WITHOUT a scope argument (the "leave unchanged" case).
+    const { id: editedId } = await saveKnowledge({
+      title: 'Meetup schedule',
+      content: 'We meet monthly on the first Tuesday at the community hall.',
+      scope: scopeA,
+    });
+
+    const newTitle = 'How the roster rotation works';
+    const newContent = 'The roster assigns hosts weekly and resets automatically every month.';
+    const contentEmbedding = await embed(`${newTitle}\n${newContent}`);
+    const midBandVec = atCosineSimilarity(contentEmbedding, 0.7); // inside [0.55, 0.92)
+
+    // The would-be conflict partner lives in scope B — never scope A, the
+    // edited entry's own real scope.
+    const { rows: bRows } = await pool.query(
+      `INSERT INTO knowledge (scope, title, content, embedding) VALUES ($1,$2,$3,$4) RETURNING id`,
+      [
+        scopeB,
+        'Cross-scope fixture (must never leak into scope A)',
+        'unrelated filler',
+        pgvector.toSql(midBandVec),
+      ],
+    );
+    const crossScopeId = Number(bRows[0].id);
+
+    const realQuery = pool.query.bind(pool);
+    const conflictLookupScopes: unknown[] = [];
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && sql.includes('1 - (a.embedding <=> b.embedding) < $3')) {
+        conflictLookupScopes.push((rest[0] as unknown[])[0]);
+      }
+      return (realQuery as (...a: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+
+    let reply: string | undefined;
+    try {
+      // scope deliberately omitted — the call shape update_knowledge uses
+      // almost every time (editing title/content only, per its own schema
+      // doc: "New scope; omit to leave unchanged").
+      await tools['update_knowledge'].handler({ id: editedId, title: newTitle, content: newContent });
+      reply = await takePendingAction('discord', caller.conversationId, caller.userId)?.execute();
+    } finally {
+      t.mock.restoreAll();
+    }
+
+    assert.ok(
+      conflictLookupScopes.length >= 1 && conflictLookupScopes.every((s) => s === null),
+      'this call shape genuinely omits scope (the lookup runs unscoped/null) — confirms the test exercises ' +
+        "update_knowledge's actual common call shape, not an accidentally-scoped one",
+    );
+    assert.doesNotMatch(
+      reply ?? '',
+      /may conflict/,
+      'SECURITY: with scope omitted, a conflict-band match living in a scope different from the edited ' +
+        "entry's own real scope must never surface a nudge",
+    );
+    assert.doesNotMatch(
+      reply ?? '',
+      new RegExp(`#${crossScopeId}\\b`),
+      'SECURITY: the cross-scope entry id must never be named',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE scope = ANY($1)`, [[scopeA, scopeB]]);
+  },
+);
+
+test(
+  'save_knowledge renders no nudge of either kind when real, unrelated content matches neither similarity band (issue #1445 acceptance criterion 5)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-nudge-no-match-scope`;
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-nudge-no-match-admin`,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: `${RUN}-nudge-no-match-convo`,
+    };
+    const server = buildToolServer(caller, adapter);
+    const tools = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }
+        >;
+      }
+    )._registeredTools;
+
+    const result = await tools['save_knowledge'].handler({
+      title: 'Completely unrelated fixture, nothing else in this suite is about this topic',
+      content:
+        'Deliberately generic filler content chosen not to land near any other fixture in embedding space.',
+      scope,
+    });
+    const reply = result.content[0]?.text ?? '';
+
+    assert.match(
+      reply,
+      /^Saved knowledge entry #\d+\.$/,
+      'no nudge of either kind is appended when neither similarity band is cleared',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE scope = $1`, [scope]);
+  },
+);
+
+test(
+  "SECURITY: a conflict-nudge lookup failure is caught and logged, and never fails, delays, or changes save_knowledge's own success outcome — only the optional nudge line is omitted (issue #1445 acceptance criterion 7)",
+  { skip },
+  async (t) => {
+    const scope = `${RUN}-conflict-nudge-failsoft-scope`;
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-conflict-nudge-failsoft-admin`,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: `${RUN}-conflict-nudge-failsoft-convo`,
+    };
+    const server = buildToolServer(caller, adapter);
+    const tools = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }
+        >;
+      }
+    )._registeredTools;
+
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && sql.includes('1 - (a.embedding <=> b.embedding) < $3')) {
+        return Promise.reject(new Error('DB unreachable'));
+      }
+      return (realQuery as (...a: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+    const warnLog = t.mock.method(logger, 'warn', () => {});
+
+    let reply: string;
+    try {
+      const result = await tools['save_knowledge'].handler({
+        title: 'Conflict lookup fail-soft fixture',
+        content: 'Content unrelated to anything else, used only to prove the save itself still succeeds.',
+        scope,
+      });
+      reply = result.content[0]?.text ?? '';
+    } finally {
+      t.mock.restoreAll();
+    }
+
+    assert.match(
+      reply,
+      /^Saved knowledge entry #\d+\.$/,
+      'the save must still succeed and render byte-identical to the no-match case when the conflict lookup throws',
+    );
+    assert.ok(
+      warnLog.mock.calls.length >= 1,
+      'the conflict-nudge lookup failure must be logged, not silently swallowed',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE scope = $1`, [scope]);
+  },
+);
+
 // update_knowledge / merge_knowledge unhelpful-rater resolution DM (issue
 // #1169) — the member-facing half #540 left untouched: closing an
 // unhelpful-rated entry now tells the raters who flagged it, mirroring the
@@ -37135,6 +38116,7 @@ test(
     const { id: entryId } = await saveKnowledge({
       content: `${RUN} kf-update entry content`,
       title: `${RUN} kf-update entry`,
+      scope: admin,
     });
 
     const raterA = `${RUN}-kf-update-rater-a`;
@@ -37179,10 +38161,12 @@ test(
     const { id: keepId } = await saveKnowledge({
       content: `${RUN} kf-merge keep content`,
       title: `${RUN} kf-merge keep`,
+      scope: admin,
     });
     const { id: mergeId } = await saveKnowledge({
       content: `${RUN} kf-merge merge content`,
       title: `${RUN} kf-merge merge`,
+      scope: admin,
     });
     const keepRater = `${RUN}-kf-merge-keep-rater`;
     const mergeRater = `${RUN}-kf-merge-merge-rater`;
@@ -37216,6 +38200,7 @@ test(
     const { id: entryId } = await saveKnowledge({
       content: `${RUN} kf-noop entry content`,
       title: `${RUN} kf-noop entry`,
+      scope: admin,
     });
 
     const dmCalls: string[] = [];
@@ -37244,6 +38229,7 @@ test(
     const { id: entryId } = await saveKnowledge({
       content: `${RUN} kf-scope entry content`,
       title: `${RUN} kf-scope entry`,
+      scope: admin,
     });
     const outOfScopeRater = `${RUN}-kf-scope-rater`;
     await rateKnowledgeAnswer(outOfScopeRater, outOfScopeConvo, entryId, false);
@@ -37277,6 +38263,7 @@ test(
     const { id: entryId } = await saveKnowledge({
       content: `${RUN} kf-cap entry content`,
       title: `${RUN} kf-cap entry`,
+      scope: admin,
     });
 
     const raterCount = KNOWLEDGE_FIX_NOTIFY_CAP + 2;
@@ -37336,10 +38323,18 @@ test(
     const { id: targetEntryId } = await saveKnowledge({
       content: `${RUN} kf-crowd target entry content`,
       title: `${RUN} kf-crowd target entry`,
+      scope: admin,
     });
     const { id: noiseEntryId } = await saveKnowledge({
       content: `${RUN} kf-crowd noise entry content`,
       title: `${RUN} kf-crowd noise entry`,
+      // Deliberately a DIFFERENT scope from targetEntryId above (issue #1445):
+      // this fixture's wording is intentionally near-identical to target's own
+      // (crowding out its notification fetch window is the point of this
+      // test), which would otherwise land inside the new write-time
+      // conflict-band nudge and perturb update_knowledge's reply below —
+      // unrelated to what this test actually exercises.
+      scope: `${admin}-noise`,
     });
 
     // The target entry's own rater rates FIRST, so its row is the OLDEST
@@ -37398,10 +38393,14 @@ test(
     const { id: targetEntryId } = await saveKnowledge({
       content: `${RUN} kf-notrunc target entry content`,
       title: `${RUN} kf-notrunc target entry`,
+      scope: admin,
     });
     const { id: noiseEntryId } = await saveKnowledge({
       content: `${RUN} kf-notrunc noise entry content`,
       title: `${RUN} kf-notrunc noise entry`,
+      // Deliberately a DIFFERENT scope from targetEntryId above — see the
+      // matching comment on the sibling "known limitation" test above.
+      scope: `${admin}-noise`,
     });
 
     const targetRater = `${RUN}-kf-notrunc-target-rater`;
@@ -37454,10 +38453,12 @@ test(
     const { id: keepId } = await saveKnowledge({
       content: `${RUN} kf-merge-notrunc keep content`,
       title: `${RUN} kf-merge-notrunc keep`,
+      scope: admin,
     });
     const { id: mergeId } = await saveKnowledge({
       content: `${RUN} kf-merge-notrunc merge content`,
       title: `${RUN} kf-merge-notrunc merge`,
+      scope: admin,
     });
 
     const dmCalls: string[] = [];
@@ -37485,10 +38486,12 @@ test(
     const { id: keepId } = await saveKnowledge({
       content: `${RUN} kf-caveat-leak keep SECRET CONTENT`,
       title: `${RUN} kf-caveat-leak keep SECRET TITLE`,
+      scope: admin,
     });
     const { id: mergeId } = await saveKnowledge({
       content: `${RUN} kf-caveat-leak merge content`,
       title: `${RUN} kf-caveat-leak merge`,
+      scope: admin,
     });
 
     const keepRater = `${RUN}-kf-caveat-leak-keep-rater`;
@@ -37500,6 +38503,7 @@ test(
     const { id: noiseEntryId } = await saveKnowledge({
       content: `${RUN} kf-caveat-leak noise entry content`,
       title: `${RUN} kf-caveat-leak noise entry`,
+      scope: admin,
     });
     const noiseRaters = Array.from(
       { length: KNOWLEDGE_FIX_NOTIFY_FETCH_CAP },
@@ -37552,6 +38556,7 @@ test(
     const { id: entryId } = await saveKnowledge({
       content: `${RUN} kf-leak SECRET CONTENT`,
       title: secretTitle,
+      scope: admin,
     });
     const rater = `${RUN}-kf-leak-rater`;
     await rateKnowledgeAnswer(rater, conversationId, entryId, false);
@@ -37589,6 +38594,7 @@ test(
     const { id: entryId } = await saveKnowledge({
       content: `${RUN} kf-failopen entry content`,
       title: `${RUN} kf-failopen entry`,
+      scope: admin,
     });
     const rater = `${RUN}-kf-failopen-rater`;
     await rateKnowledgeAnswer(rater, conversationId, entryId, false);
@@ -37636,6 +38642,7 @@ test(
     const { id: entryId } = await saveKnowledge({
       content: `${RUN} kf-delete entry content`,
       title: `${RUN} kf-delete entry`,
+      scope: admin,
     });
 
     const raterA = `${RUN}-kf-delete-rater-a`;
@@ -37705,6 +38712,7 @@ test(
     const { id: entryId } = await saveKnowledge({
       content: `${RUN} kf-delete-scope entry content`,
       title: `${RUN} kf-delete-scope entry`,
+      scope: admin,
     });
     const outOfScopeRater = `${RUN}-kf-delete-scope-rater`;
     await rateKnowledgeAnswer(outOfScopeRater, outOfScopeConvo, entryId, false);
@@ -37734,6 +38742,7 @@ test(
     const { id: entryId } = await saveKnowledge({
       content: `${RUN} kf-delete-cap entry content`,
       title: `${RUN} kf-delete-cap entry`,
+      scope: admin,
     });
 
     const raterCount = KNOWLEDGE_FIX_NOTIFY_CAP + 2;
@@ -37779,6 +38788,7 @@ test(
     const { id: entryId } = await saveKnowledge({
       content: `${RUN} kf-delete-leak SECRET CONTENT`,
       title: secretTitle,
+      scope: admin,
     });
     const rater = `${RUN}-kf-delete-leak-rater`;
     await rateKnowledgeAnswer(rater, conversationId, entryId, false);
@@ -37820,6 +38830,7 @@ test(
     const { id: entryId } = await saveKnowledge({
       content: `${RUN} kf-delete-failopen entry content`,
       title: `${RUN} kf-delete-failopen entry`,
+      scope: admin,
     });
     const rater = `${RUN}-kf-delete-failopen-rater`;
     await rateKnowledgeAnswer(rater, conversationId, entryId, false);
@@ -37857,10 +38868,12 @@ test(
     const { id: targetEntryId } = await saveKnowledge({
       content: `${RUN} kf-delete-trunc target entry content`,
       title: `${RUN} kf-delete-trunc target entry`,
+      scope: admin,
     });
     const { id: noiseEntryId } = await saveKnowledge({
       content: `${RUN} kf-delete-trunc noise entry content`,
       title: `${RUN} kf-delete-trunc noise entry`,
+      scope: admin,
     });
 
     // The target entry's own rater rates FIRST, so its row is the OLDEST
@@ -43464,6 +44477,134 @@ test(
     );
     assert.equal(rows.length, 1);
     assert.equal(rows[0].success, true);
+  },
+);
+
+test(
+  'SECURITY: assign_community_role/remove_community_role fire their notify DM only on the actual assign/remove ' +
+    'transition — never before requireConfirm executes, on the unsupported-platform refusal, the off-allowlist ' +
+    'refusal, or the unknown-target refusal (issue #1439 acceptance criterion #3)',
+  { skip },
+  async () => {
+    const targetUserId = `${COMMUNITY_ROLE_HANDLER_USER}-notify-gating`;
+    await upsertMember({ platform: 'discord', userId: targetUserId, role: 'member', addedBy: 'admin-1' });
+
+    const dmCalls: Array<[string, string]> = [];
+    const adapter = stubDiscordRoleAdapter(
+      async (action) => `ok:${action.kind}`,
+      async (userId, message) => {
+        dmCalls.push([userId, message]);
+      },
+    );
+    const unsupportedAdapter = stubAdapter(async (userId, message) => {
+      dmCalls.push([userId, message]);
+    });
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'admin-1',
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: 'convo-role-notify-gating',
+    };
+
+    // Unsupported platform (no community-role capability): no DM.
+    await toolFrom(buildToolServer(caller, unsupportedAdapter), 'assign_community_role').handler({
+      userId: targetUserId,
+      roleId: 'role-cosmetic-1',
+    });
+    assert.equal(dmCalls.length, 0, 'an unsupported platform must never fire a notify DM');
+
+    // Off-allowlist role: no DM, no pending action.
+    const server = buildToolServer(caller, adapter);
+    await toolFrom(server, 'assign_community_role').handler({
+      userId: targetUserId,
+      roleId: 'role-not-on-list',
+    });
+    assert.equal(dmCalls.length, 0, 'an off-allowlist role must never fire a notify DM');
+
+    // Unknown target: no DM, no pending action.
+    await toolFrom(server, 'assign_community_role').handler({
+      userId: `${targetUserId}-unknown`,
+      roleId: 'role-cosmetic-1',
+    });
+    assert.equal(dmCalls.length, 0, 'an unknown target must never fire a notify DM');
+
+    // CONFIRM requested but not yet executed: no DM.
+    const assignResult = await toolFrom(server, 'assign_community_role').handler({
+      userId: targetUserId,
+      roleId: 'role-cosmetic-1',
+    });
+    assert.match(assignResult.content[0].text, /CONFIRM/);
+    assert.equal(
+      dmCalls.length,
+      0,
+      'a CONFIRM request that has not executed yet must never fire a notify DM',
+    );
+
+    // Executed: exactly one DM.
+    const assignPending = takePendingAction('discord', 'convo-role-notify-gating', 'admin-1');
+    assert.ok(assignPending, 'assign_community_role must register a pending action');
+    await assignPending?.execute();
+    assert.equal(dmCalls.length, 1, 'a successful assign must fire exactly one notify DM');
+    assert.equal(dmCalls[0][0], targetUserId, 'the DM must reach only the target member');
+    assert.match(dmCalls[0][1], /<@&role-cosmetic-1>$/);
+
+    // remove_community_role: same CONFIRM-gating, then exactly one more DM.
+    const removeResult = await toolFrom(server, 'remove_community_role').handler({
+      userId: targetUserId,
+      roleId: 'role-cosmetic-1',
+    });
+    assert.match(removeResult.content[0].text, /CONFIRM/);
+    assert.equal(
+      dmCalls.length,
+      1,
+      'a CONFIRM request that has not executed yet must never fire a second DM',
+    );
+
+    const removePending = takePendingAction('discord', 'convo-role-notify-gating', 'admin-1');
+    assert.ok(removePending, 'remove_community_role must register a pending action');
+    await removePending?.execute();
+    assert.equal(dmCalls.length, 2, 'a successful remove must fire exactly one more notify DM');
+    assert.equal(dmCalls[1][0], targetUserId, 'the DM must reach only the target member');
+    assert.match(dmCalls[1][1], /<@&role-cosmetic-1>$/);
+  },
+);
+
+test(
+  'SECURITY: assign_community_role/remove_community_role never fire their notify DM when performAdminAction ' +
+    'itself throws — a failed grant/revoke must not tell the member it happened (issue #1439 acceptance criterion #2)',
+  { skip },
+  async () => {
+    const targetUserId = `${COMMUNITY_ROLE_HANDLER_USER}-notify-failed-action`;
+    await upsertMember({ platform: 'discord', userId: targetUserId, role: 'member', addedBy: 'admin-1' });
+
+    const dmCalls: Array<[string, string]> = [];
+    const adapter = stubDiscordRoleAdapter(
+      async () => {
+        throw new Error('Discord API unavailable');
+      },
+      async (userId, message) => {
+        dmCalls.push([userId, message]);
+      },
+    );
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'admin-1',
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: 'convo-role-notify-failed',
+    };
+    const server = buildToolServer(caller, adapter);
+
+    await toolFrom(server, 'assign_community_role').handler({
+      userId: targetUserId,
+      roleId: 'role-cosmetic-1',
+    });
+    const pending = takePendingAction('discord', 'convo-role-notify-failed', 'admin-1');
+    assert.ok(pending);
+    const execResult = await pending?.execute();
+    assert.match(execResult ?? '', /Failed:/);
+    assert.equal(dmCalls.length, 0, 'a failed performAdminAction must never fire a notify DM');
   },
 );
 
