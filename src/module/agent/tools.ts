@@ -58,6 +58,8 @@ export {
   notifyAdmins,
   notifyMemberApproved,
   notifyMemberRemoved,
+  notifyMemberLinked,
+  notifyMemberUnlinked,
   notifyAdminApproved,
   notifyAdminRevoked,
   notifyAccessRequestDeclined,
