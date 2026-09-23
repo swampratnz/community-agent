@@ -83,6 +83,15 @@ if (invokedDirectly) {
     process.exit(0);
   }
 
+  // Recency-hedge fidelity case (issue #1441) needs staleness tracking
+  // actually enabled to produce a stale hit — the deployment default
+  // (`KNOWLEDGE_STALE_DAYS=0`) turns it off. Only fills the var in when the
+  // maintainer's own shell hasn't already set one, so a deliberately
+  // configured value is never overridden; config's own zod schema requires
+  // this at >= 30 when nonzero, so this must run before the first dynamic
+  // import below pulls in config parsing.
+  process.env.KNOWLEDGE_STALE_DAYS ??= '30';
+
   const { pool, closeDb } = await import('@swampratnz/agent-base/storage/db.js');
   const { saveKnowledge } = await import('@swampratnz/agent-base/storage/repository.js');
   const { runAgentTurn } = await import('@swampratnz/agent-base/agent/core.js');
@@ -97,6 +106,15 @@ if (invokedDirectly) {
     sourceUrl?: string;
     sourceTitle?: string;
     createdByRole?: KnowledgeCreatedByRole;
+    /**
+     * When set, the entry is aged this many days (issue #1441) after being
+     * saved, so it surfaces as a genuinely stale `knowledge_search` hit at
+     * eval time — proving the model relays the deterministic "may be
+     * outdated" hedge (`formatKnowledgeCitationNote`) rather than it being
+     * asserted only in the system prompt and graded nowhere. Should exceed
+     * `KNOWLEDGE_STALE_DAYS` (defaulted below) comfortably.
+     */
+    backdateDays?: number;
   }
 
   interface Fixture {
@@ -167,6 +185,24 @@ if (invokedDirectly) {
         sourceTitle: entry.sourceTitle,
         createdByRole: entry.createdByRole,
       });
+      // Recency-hedge fidelity (issue #1441): backdate updated_at so
+      // isKnowledgeStale's `staleDays` branch sees this entry as untouched
+      // since well before the window. last_retrieved_at is reset to NULL
+      // too — a freshly-saved entry already has it NULL, but this keeps the
+      // aged row unambiguous regardless of insert-time defaults. Scoped to
+      // this entry's own scope+title, parameterized like every other query
+      // in this file, and cleaned up by the harness's existing
+      // `DELETE FROM knowledge WHERE scope = $1` teardown same as any other
+      // fixture row.
+      if (entry.backdateDays !== undefined) {
+        await pool.query(
+          `UPDATE knowledge
+              SET updated_at = now() - ($1 || ' days')::interval,
+                  last_retrieved_at = NULL
+            WHERE scope = $2 AND title = $3`,
+          [entry.backdateDays, EVAL_SCOPE, entry.title],
+        );
+      }
     }
 
     const results: CaseResult[] = [];

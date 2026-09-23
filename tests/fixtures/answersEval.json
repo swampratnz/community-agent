@@ -1,5 +1,5 @@
 {
-  "_comment": "Answer-quality golden set (issue #779, docs/CAPABILITY-IDEAS.md §F1; expectedCitedUrl added by issue #1381). Unlike tests/fixtures/knowledgeEval.json (retrieval-only), scripts/eval-answers.ts runs each `question` through the REAL runAgentTurn pipeline and grades the model's REPLY, not just which entry was retrieved. Questions are paraphrases of their target knowledgeEntries' content, never verbatim quotes, per the same convention knowledgeEval.json documents. Each case's mustContain names a specific, hard-to-paraphrase-away fact fragment (a number, a proper noun, a channel name) that only appears in ITS target entry, so a grounded reply passes and a hallucinated or wrong-entry reply fails; mustNotContain names a plausible wrong answer (usually a conflicting number) that would indicate the model answered from a different entry or guessed. expectedCitedUrl, when set, is the ONLY URL a reply may cite (checked via scripts/eval-answers.ts's checkCitedUrls); when omitted, ANY URL in the reply is a failure, since nothing in that case's target entry is legitimately citable. This file is never read by `npm test`/CI — only by the off-CI scripts/eval-answers.ts, per tests/evalAnswersOffCi.test.ts.",
+  "_comment": "Answer-quality golden set (issue #779, docs/CAPABILITY-IDEAS.md §F1; expectedCitedUrl added by issue #1381; backdateDays/recency-hedge fidelity added by issue #1441). Unlike tests/fixtures/knowledgeEval.json (retrieval-only), scripts/eval-answers.ts runs each `question` through the REAL runAgentTurn pipeline and grades the model's REPLY, not just which entry was retrieved. Questions are paraphrases of their target knowledgeEntries' content, never verbatim quotes, per the same convention knowledgeEval.json documents. Each case's mustContain names a specific, hard-to-paraphrase-away fact fragment (a number, a proper noun, a channel name) that only appears in ITS target entry, so a grounded reply passes and a hallucinated or wrong-entry reply fails; mustNotContain names a plausible wrong answer (usually a conflicting number) that would indicate the model answered from a different entry or guessed. expectedCitedUrl, when set, is the ONLY URL a reply may cite (checked via scripts/eval-answers.ts's checkCitedUrls); when omitted, ANY URL in the reply is a failure, since nothing in that case's target entry is legitimately citable. backdateDays, when set on a knowledgeEntries item, ages that row past the harness's KNOWLEDGE_STALE_DAYS default so its case proves the model relays the deterministic 'may be outdated' hedge on a genuinely stale hit (see the 'Recommended meetup dress code' entry and its case below) — kept off every other entry so their cases stay proof that a fresh hit's reply does NOT fabricate the hedge. This file is never read by `npm test`/CI — only by the off-CI scripts/eval-answers.ts, per tests/evalAnswersOffCi.test.ts.",
   "knowledgeEntries": [
     {
       "title": "Community office hours",
@@ -83,6 +83,11 @@
     {
       "title": "Book club meeting time",
       "content": "Members gather to talk about the current book selection every second Tuesday around 7pm in #book-club."
+    },
+    {
+      "title": "Recommended meetup dress code",
+      "content": "Meetups are casual — there is no dress code, just wear whatever's comfortable.",
+      "backdateDays": 120
     }
   ],
   "cases": [
@@ -114,7 +119,7 @@
     {
       "question": "how do I connect my phone number to my discord account",
       "mustContain": ["link-whatsapp"],
-      "mustNotContain": []
+      "mustNotContain": ["outdated"]
     },
     {
       "question": "how do I get all my stored messages wiped for good",
@@ -194,6 +199,11 @@
       "question": "when does the reading group get together to talk about the current book",
       "mustContain": ["may disagree"],
       "mustNotContain": ["last verified"]
+    },
+    {
+      "question": "do I need to dress up for the meetups or can I just wear normal clothes",
+      "mustContain": ["casual", "outdated"],
+      "mustNotContain": ["formal"]
     }
   ]
 }
