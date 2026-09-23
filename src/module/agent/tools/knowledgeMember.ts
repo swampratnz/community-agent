@@ -10,6 +10,7 @@ import {
   findKnowledgeCoveringTopic,
   getLanguagePreference,
   getPublishedInterestsForOwners,
+  getResponseStyle,
   hasConflictAmongIds,
   isKnowledgeStale,
   KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD,
@@ -21,6 +22,7 @@ import {
   listKnowledgeTopics,
   recordKnowledgeGap,
   recordKnowledgeRetrieval,
+  type ResponseStyle,
   searchKnowledge,
   searchKnowledgeLexical,
   withdrawOwnKnowledgeTips,
@@ -217,6 +219,22 @@ export const knowledgeMemberTools = [
           }
         }
       }
+      // Response-style resolution (issue #1448), same lang-gates-the-lookup
+      // shape as notify.ts's ~20 sites and #1436's feedback.ts/
+      // reportsMember.ts formatters: 'mi' always wins, so a resolved 'mi'
+      // language skips the response-style lookup entirely, and any lookup
+      // failure fail-safes to 'standard' rather than erroring or dropping
+      // the reply. `lang` is resolved here purely to gate this precedence —
+      // it is deliberately NOT threaded into formatKnowledgeSearchResults'
+      // own `lang` parameter, which this call site has never passed (see
+      // that parameter's doc comment: the model composes an in-language
+      // reply itself on this path), so this stays byte-identical for the
+      // language axis and only adds the style axis.
+      const lang = await getLanguagePreference(caller.platform, caller.userId);
+      const style: ResponseStyle | undefined =
+        lang === 'mi'
+          ? undefined
+          : await getResponseStyle(caller.platform, caller.userId).catch(() => 'standard' as const);
       return text(
         formatKnowledgeSearchResults(
           finalHits,
@@ -224,6 +242,8 @@ export const knowledgeMemberTools = [
           config.adminDigest.knowledgeStaleMaxAgeDays,
           hasConflict,
           lowRatedIds,
+          undefined,
+          style,
         ),
       );
     },
@@ -340,6 +360,16 @@ export const knowledgeMemberTools = [
           }
         }
       }
+      // Response-style resolution (issue #1448), byte-for-byte the same
+      // lang-gates-the-lookup shape as knowledge_search's own handler above
+      // in this file — `lang` is resolved purely to gate the precedence and
+      // is deliberately NOT threaded into formatKnowledgeSearchResults' own
+      // `lang` parameter, matching knowledge_search's identical call.
+      const lang = await getLanguagePreference(caller.platform, caller.userId);
+      const style: ResponseStyle | undefined =
+        lang === 'mi'
+          ? undefined
+          : await getResponseStyle(caller.platform, caller.userId).catch(() => 'standard' as const);
       return text(
         formatKnowledgeSearchResults(
           hits,
@@ -347,6 +377,8 @@ export const knowledgeMemberTools = [
           config.adminDigest.knowledgeStaleMaxAgeDays,
           hasConflict,
           lowRatedIds,
+          undefined,
+          style,
         ),
       );
     },
@@ -371,7 +403,13 @@ export const knowledgeMemberTools = [
         config.behaviour.knowledgeTopicsListLimit,
       );
       const language = await getLanguagePreference(caller.platform, caller.userId);
-      return text(formatKnowledgeTopics(titles, totalCount, language));
+      // Response-style resolution (issue #1448), same lang-gates-the-lookup
+      // shape as knowledge_search's own handler above in this file.
+      const style: ResponseStyle | undefined =
+        language === 'mi'
+          ? undefined
+          : await getResponseStyle(caller.platform, caller.userId).catch(() => 'standard' as const);
+      return text(formatKnowledgeTopics(titles, totalCount, language, style));
     },
   }),
 
@@ -448,7 +486,13 @@ export const knowledgeMemberTools = [
             })
           : false;
       const language = await getLanguagePreference(caller.platform, caller.userId);
-      return text(formatMostHelpfulKnowledge(ranked, language, lowRatedIds, hasConflict));
+      // Response-style resolution (issue #1448), same lang-gates-the-lookup
+      // shape as knowledge_search's own handler above in this file.
+      const style: ResponseStyle | undefined =
+        language === 'mi'
+          ? undefined
+          : await getResponseStyle(caller.platform, caller.userId).catch(() => 'standard' as const);
+      return text(formatMostHelpfulKnowledge(ranked, language, lowRatedIds, hasConflict, style));
     },
   }),
 
@@ -494,6 +538,12 @@ export const knowledgeMemberTools = [
       // new table, the exact same getLanguagePreference call the sibling
       // read-path tools in this file already pay for.
       const language = await getLanguagePreference(caller.platform, caller.userId);
+      // Response-style resolution (issue #1448), same lang-gates-the-lookup
+      // shape as knowledge_search's own handler above in this file.
+      const style: ResponseStyle | undefined =
+        language === 'mi'
+          ? undefined
+          : await getResponseStyle(caller.platform, caller.userId).catch(() => 'standard' as const);
 
       // Topic = title, and this reuses the context builder's OWN pre-insert
       // dedup guard verbatim (issue #503) so a member's tip is held to the
@@ -503,7 +553,7 @@ export const knowledgeMemberTools = [
       const { blocked: alreadyQueued, embedding: topicEmbedding } =
         await candidateTopicAlreadyReviewed(topic);
       if (alreadyQueued) {
-        return text(formatSuggestKnowledgeDedupText(language));
+        return text(formatSuggestKnowledgeDedupText(language, style));
       }
       const created = await createKnowledgeTip({
         platform: caller.platform,
@@ -514,7 +564,10 @@ export const knowledgeMemberTools = [
         topicEmbedding,
       });
       if (!created) {
-        return text(formatSuggestKnowledgeRateLimitText(KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY, language), true);
+        return text(
+          formatSuggestKnowledgeRateLimitText(KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY, language, style),
+          true,
+        );
       }
       // A high-similarity match here is also what a genuine CORRECTION to
       // that entry looks like (issue #1066) — the topic is by construction
@@ -530,9 +583,9 @@ export const knowledgeMemberTools = [
       const covering = await findKnowledgeCoveringTopic(topicEmbedding);
       if (covering) {
         const label = covering.title ? `"${covering.title}"` : `entry #${covering.id}`;
-        return text(formatSuggestKnowledgeQueuedText(created.id, label, language));
+        return text(formatSuggestKnowledgeQueuedText(created.id, label, language, style));
       }
-      return text(formatSuggestKnowledgeQueuedText(created.id, null, language));
+      return text(formatSuggestKnowledgeQueuedText(created.id, null, language, style));
     },
   }),
 
@@ -556,10 +609,16 @@ export const knowledgeMemberTools = [
       // Mirrors suggest_knowledge's own read of the caller's standing
       // preference above (issue #1155) — no new field, no new table.
       const language = await getLanguagePreference(caller.platform, caller.userId);
+      // Response-style resolution (issue #1448), same lang-gates-the-lookup
+      // shape as knowledge_search's own handler above in this file.
+      const style: ResponseStyle | undefined =
+        language === 'mi'
+          ? undefined
+          : await getResponseStyle(caller.platform, caller.userId).catch(() => 'standard' as const);
       if (ids.length === 0) {
-        return text(formatWithdrawKnowledgeTipEmptyText(language), true);
+        return text(formatWithdrawKnowledgeTipEmptyText(language, style), true);
       }
-      return text(formatWithdrawKnowledgeTipConfirmText(ids, language));
+      return text(formatWithdrawKnowledgeTipConfirmText(ids, language, style));
     },
   }),
 ];

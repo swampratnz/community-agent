@@ -29,6 +29,18 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-09-23
 
 ### Added
+- **Browsing and suggesting community knowledge now honours your "keep it
+  simple" plain-language preference too.** (#1448) `set_response_style('plain')`
+  (#126) already simplified moderation warnings, approval DMs and
+  member-resolution DMs (#430/#657/#1212), and yesterday's #1436 extended it
+  to `suggest_improvement`/reports/appeals — but the bot's highest-traffic
+  member tool family, `knowledge_search`, `knowledge_for_me`,
+  `list_knowledge_topics`, `most_helpful_knowledge`, `suggest_knowledge` and
+  `withdraw_knowledge_tip`, never read it. All six now do, with te reo still
+  taking priority when both preferences are set. No new tool, table, or
+  preference — same `response_style_prefs` row every other plain-aware reply
+  already reads, degrading safely to the standard English reply on a lookup
+  failure.
 - **Linking or unlinking a member's identities now tells the people it
   affects.** (#1393) `link_member` permanently expands what a single
   `forget_me`/`purge_user_data` call erases — from then on, either linked
