@@ -2142,6 +2142,7 @@ test('notifyAccessRequestDeclined sends a neutral decline DM', async () => {
   assert.equal(calls.length, 1);
   assert.equal(calls[0][0], 'user-1');
   assert.match(calls[0][1], /was not approved/i);
+  assert.match(calls[0][1], /welcome to request access again — a decline is never held against a fresh request\.$/);
 });
 
 test('notifyAccessRequestDeclined swallows a DM failure rather than throwing (the decline stays the source of truth)', async () => {
@@ -2179,6 +2180,7 @@ test("notifyAccessRequestDeclined sends the te reo Māori variant for a caller w
   await notifyAccessRequestDeclined(adapter, 'user-1', 'discord', async () => 'mi');
 
   assert.match(calls[0], /kāore i whakaaetia/);
+  assert.match(calls[0], /kāore te whakahēnga o mua e whai pānga ki tētahi tono hou\.$/);
 });
 
 test("notifyAccessRequestDeclined sends the English default for the default 'auto' preference, byte-identical to today", async () => {
@@ -2191,7 +2193,7 @@ test("notifyAccessRequestDeclined sends the English default for the default 'aut
 
   assert.equal(
     calls[0],
-    'Your request for access to NZ Claude Community was reviewed and was not approved this time.',
+    "Your request for access to NZ Claude Community was reviewed and was not approved this time. You're welcome to request access again — a decline is never held against a fresh request.",
   );
 });
 
@@ -2224,7 +2226,10 @@ test("notifyAccessRequestDeclined sends the plain-language variant for a caller 
     async () => 'plain',
   );
 
-  assert.match(calls[0], /Your request to join NZ Claude Community was not approved this time\./);
+  assert.equal(
+    calls[0],
+    'Your request to join NZ Claude Community was not approved this time. You can request access again any time.',
+  );
   assert.doesNotMatch(calls[0], /was reviewed and was not approved/);
 });
 
@@ -2245,7 +2250,7 @@ test("notifyAccessRequestDeclined sends the English default for the default 'sta
 
   assert.equal(
     calls[0],
-    'Your request for access to NZ Claude Community was reviewed and was not approved this time.',
+    "Your request for access to NZ Claude Community was reviewed and was not approved this time. You're welcome to request access again — a decline is never held against a fresh request.",
   );
 });
 
@@ -2325,7 +2330,7 @@ test("notifyAccessRequestDeclined's reason clause is unaffected by a 'plain' res
 
   assert.match(
     calls[0],
-    /^Your request to join NZ Claude Community was not approved this time\. Reason: "looked like a throwaway account"$/,
+    /^Your request to join NZ Claude Community was not approved this time\. You can request access again any time\. Reason: "looked like a throwaway account"$/,
   );
 });
 
@@ -2364,11 +2369,11 @@ test('notifyAccessRequestDeclined appends a quoted reason clause after the base 
 
   assert.match(
     calls[0],
-    /^Your request for access to NZ Claude Community was reviewed and was not approved this time\. Reason: "looked like a throwaway account"$/,
+    /^Your request for access to NZ Claude Community was reviewed and was not approved this time\. You're welcome to request access again — a decline is never held against a fresh request\. Reason: "looked like a throwaway account"$/,
   );
 });
 
-test('SECURITY: notifyAccessRequestDeclined truncates a long reason in the echoed clause, never the raw payload (issue #1126 acceptance criterion #3)', async () => {
+test('SECURITY: notifyAccessRequestDeclined truncates a long reason in the echoed clause, never the raw payload, and never alters the base/added sentences ahead of it (issue #1126 acceptance criterion #3, issue #1456)', async () => {
   const calls: string[] = [];
   const adapter = stubAdapter(async (_userId, message) => {
     calls.push(message);
@@ -2379,6 +2384,12 @@ test('SECURITY: notifyAccessRequestDeclined truncates a long reason in the echoe
 
   assert.ok(!calls[0].includes(longReason), 'the full 500-char reason must not appear verbatim');
   assert.match(calls[0], /z{100,140}\.\.\./, 'the echoed reason is truncated with an ellipsis');
+  assert.ok(
+    calls[0].startsWith(
+      "Your request for access to NZ Claude Community was reviewed and was not approved this time. You're welcome to request access again — a decline is never held against a fresh request. Reason: \"",
+    ),
+    'the hostile reason must never alter the base or added sentences that precede the Reason clause',
+  );
 });
 
 test("notifyAccessRequestDeclined's reason clause renders in te reo Māori for a caller with a stored 'mi' preference, the reason text itself untranslated (issue #1126 acceptance criterion #3, issue #331)", async () => {
@@ -2396,6 +2407,42 @@ test("notifyAccessRequestDeclined's reason clause renders in te reo Māori for a
     'the reason clause label is te reo, the text is not',
   );
 });
+
+test(
+  'SECURITY: notifyAccessRequestDeclined renders only the two static catalogue sentences — in base, mi and plain — when no admin reason is supplied, with no acting-admin identity, audit metadata, or caller-supplied content (issue #1456)',
+  async () => {
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (_userId, message) => {
+      calls.push(message);
+    });
+
+    await notifyAccessRequestDeclined(adapter, 'user-1', 'discord', async () => 'auto');
+    await notifyAccessRequestDeclined(adapter, 'user-1', 'discord', async () => 'mi');
+    await notifyAccessRequestDeclined(
+      adapter,
+      'user-1',
+      'discord',
+      async () => 'auto',
+      undefined,
+      async () => 'plain',
+    );
+
+    assert.equal(calls.length, 3);
+    assert.equal(
+      calls[0],
+      "Your request for access to NZ Claude Community was reviewed and was not approved this time. You're welcome to request access again — a decline is never held against a fresh request.",
+    );
+    assert.equal(
+      calls[1],
+      'I arotakehia tō tono uru ki NZ Claude Community, ā, kāore i whakaaetia i tēnei wā. ' +
+        'Ka taea e koe te tono anō i ngā wā katoa — kāore te whakahēnga o mua e whai pānga ki tētahi tono hou.',
+    );
+    assert.equal(
+      calls[2],
+      'Your request to join NZ Claude Community was not approved this time. You can request access again any time.',
+    );
+  },
+);
 
 // notifyProjectRemoved holds all of remove_project's resolution DM (issue
 // #1185) — same shape as notifyAccessRequestDeclined above, and previously
