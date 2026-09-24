@@ -26,6 +26,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #1355 #1356 #1357 #1341 #1350 #1360 #1381 #1391 #1441 #1382
 -->
 
+## 2026-09-25
+
+### Changed
+- **A declined access request now says a fresh one is welcome.** (#1456) A
+  decline was already, by design, non-destructive — a fresh request from the
+  same identity simply re-queues exactly as it does after any other clear —
+  but the only person who'd act on that, the declined guest, was never told.
+  The decline DM now adds one sentence inviting a fresh request, in English,
+  te reo Māori, and plain language alike.
+
 ## 2026-09-24
 
 ### Fixed
