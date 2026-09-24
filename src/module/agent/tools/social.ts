@@ -314,7 +314,7 @@ export function formatFindHelperText(
       const base = mi
         ? 'Kāore he tangata e wātea ana hei āwhina i tērā i tēnei wā.'
         : plain
-          ? 'No one is available to help with that right now.'
+          ? 'No one can help with that right now.'
           : 'No one available to help with that right now.';
       if (!suggestionBlock) return base;
       const framing = mi
@@ -400,7 +400,7 @@ export function formatShareProjectText(
       return mi
         ? 'Me whai whakaahuatanga hei tohatoha, hei whakatika rānei i tētahi kaupapa.'
         : plain
-          ? 'You need to add a description to share or edit a project.'
+          ? 'Add a description to share or edit a project.'
           : 'A description is required to share or edit a project.';
     case 'cap':
       return mi
