@@ -332,7 +332,7 @@ test(
 
     assert.equal(
       text,
-      formatWhoIsIntoEmptyText('noProfile', 'mi'),
+      formatWhoIsIntoEmptyText('noProfile', 'mi', undefined),
       "a 'mi'-preference caller must get the Māori no-profile guidance, not the English-only constant",
     );
     assert.notEqual(

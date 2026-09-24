@@ -295,7 +295,11 @@ async function handleProjects(
     const projects = await listOwnProjects('discord', interaction.user.id);
     const reply =
       projects.length === 0
-        ? formatListProjectsEmptyText('mine', await getLanguagePreference('discord', interaction.user.id))
+        ? formatListProjectsEmptyText(
+            'mine',
+            await getLanguagePreference('discord', interaction.user.id),
+            undefined,
+          )
         : await formatProjectResults(projects);
     recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
     await replyEphemeral(interaction, reply, deps);
@@ -312,6 +316,7 @@ async function handleProjects(
       ? formatListProjectsEmptyText(
           seekingCollaborators ? 'seeking' : query ? 'query' : 'none',
           await getLanguagePreference('discord', interaction.user.id),
+          undefined,
         )
       : await formatProjectResults(projects);
   recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
@@ -343,12 +348,20 @@ async function handleWhois(interaction: ChatInputCommandInteraction, deps: Slash
     const own = interestsByOwner.get(`discord:${interaction.user.id}`);
     reply = own
       ? await formatInterestResults([{ platform: 'discord', userId: interaction.user.id, interests: own }])
-      : formatWhoIsIntoEmptyText('noProfile', await getLanguagePreference('discord', interaction.user.id));
+      : formatWhoIsIntoEmptyText(
+          'noProfile',
+          await getLanguagePreference('discord', interaction.user.id),
+          undefined,
+        );
   } else if (query) {
     const hits = await searchMemberInterests(query);
     reply =
       hits.length === 0
-        ? formatWhoIsIntoEmptyText('query', await getLanguagePreference('discord', interaction.user.id))
+        ? formatWhoIsIntoEmptyText(
+            'query',
+            await getLanguagePreference('discord', interaction.user.id),
+            undefined,
+          )
         : await formatInterestResults(hits);
   } else {
     const selfMatch = await searchMemberInterestsForSelf('discord', interaction.user.id);
@@ -367,6 +380,7 @@ async function handleWhois(interaction: ChatInputCommandInteraction, deps: Slash
           ? formatWhoIsIntoEmptyText(
               'selfNoMatch',
               await getLanguagePreference('discord', interaction.user.id),
+              undefined,
             )
           : await formatInterestResults(selfMatch.hits);
     }
@@ -721,7 +735,7 @@ async function handleKbForMe(
   let message: string;
   if (!interestsText) {
     const language = await getLanguagePreference('discord', interaction.user.id);
-    message = formatWhoIsIntoEmptyText('noProfile', language);
+    message = formatWhoIsIntoEmptyText('noProfile', language, undefined);
   } else {
     const hits = await searchKnowledge(interestsText, {
       platform: 'discord',

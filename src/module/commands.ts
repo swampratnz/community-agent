@@ -134,7 +134,7 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
         if (!atLeast(role, 'member')) return null;
         const projects = await deps.listOwnProjectsFn(msg.platform, msg.userId);
         return projects.length === 0
-          ? formatListProjectsEmptyText('mine', await deps.getLangPref(msg.platform, msg.userId))
+          ? formatListProjectsEmptyText('mine', await deps.getLangPref(msg.platform, msg.userId), undefined)
           : await formatProjectResults(projects);
       }
 
@@ -152,7 +152,11 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
         const opts = { seekingCollaboratorsOnly: true };
         const projects = await listRecentProjects(LIST_PROJECTS_DEFAULT_LIMIT, opts);
         return projects.length === 0
-          ? formatListProjectsEmptyText('seeking', await deps.getLangPref(msg.platform, msg.userId))
+          ? formatListProjectsEmptyText(
+              'seeking',
+              await deps.getLangPref(msg.platform, msg.userId),
+              undefined,
+            )
           : await formatProjectResults(projects);
       }
 
@@ -167,6 +171,7 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
         ? formatListProjectsEmptyText(
             query ? 'query' : 'none',
             await deps.getLangPref(msg.platform, msg.userId),
+            undefined,
           )
         : await formatProjectResults(projects);
     },
@@ -193,7 +198,11 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
         const own = interestsByOwner.get(`${msg.platform}:${msg.userId}`);
         return own
           ? await formatInterestResults([{ platform: msg.platform, userId: msg.userId, interests: own }])
-          : formatWhoIsIntoEmptyText('noProfile', await deps.getLangPref(msg.platform, msg.userId));
+          : formatWhoIsIntoEmptyText(
+              'noProfile',
+              await deps.getLangPref(msg.platform, msg.userId),
+              undefined,
+            );
       }
 
       const whoisMatch = /^!whois(?:\s+(.+))?$/i.exec(text);
@@ -203,7 +212,7 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
       if (query) {
         const hits = await deps.searchMemberInterestsFn(query);
         return hits.length === 0
-          ? formatWhoIsIntoEmptyText('query', await deps.getLangPref(msg.platform, msg.userId))
+          ? formatWhoIsIntoEmptyText('query', await deps.getLangPref(msg.platform, msg.userId), undefined)
           : await formatInterestResults(hits);
       }
       // Bare `!whois` (issue #889): mirror who_is_into's/`/whois`'s own
@@ -217,12 +226,16 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
         // Issue #920: same no-profile browse fallback as who_is_into's chat
         // path and /whois — a separate call site, wired independently via
         // the injected listRecentInterestsFn.
-        const hint = formatWhoIsIntoEmptyText('noProfile', await deps.getLangPref(msg.platform, msg.userId));
+        const hint = formatWhoIsIntoEmptyText(
+          'noProfile',
+          await deps.getLangPref(msg.platform, msg.userId),
+          undefined,
+        );
         const recent = await deps.listRecentInterestsFn();
         return recent.length === 0 ? hint : `${await formatInterestResults(recent)}\n\n${hint}`;
       }
       return selfMatch.hits.length === 0
-        ? formatWhoIsIntoEmptyText('query', await deps.getLangPref(msg.platform, msg.userId))
+        ? formatWhoIsIntoEmptyText('query', await deps.getLangPref(msg.platform, msg.userId), undefined)
         : await formatInterestResults(selfMatch.hits);
     },
   },
@@ -500,7 +513,7 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
       const interestsText = interestsByOwner.get(`${msg.platform}:${msg.userId}`);
       if (!interestsText) {
         const language = await deps.getLangPref(msg.platform, msg.userId);
-        return formatWhoIsIntoEmptyText('noProfile', language);
+        return formatWhoIsIntoEmptyText('noProfile', language, undefined);
       }
       const hits = await searchKnowledge(interestsText, {
         platform: msg.platform,

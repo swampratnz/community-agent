@@ -174,6 +174,7 @@ const {
 } = await import('../src/module/agent/tools.js');
 const { reserveVoiceTranscriptionSlot } = await import('@swampratnz/agent-base/agent/rateReservers.js');
 const { filterOutbound } = await import('@swampratnz/agent-base/agent/outbound.js');
+const { resolveRecipientNoticeSelection } = await import('../src/module/agent/tools/helpers.js');
 const {
   MODERATION_ACTION_KINDS,
   listKnowledge,
@@ -30407,6 +30408,265 @@ test("formatSetHelperAvailabilityText/formatFindHelperText/formatShareProjectTex
     );
   }
 });
+
+// --- issue #1458: social.ts's eight member-discovery formatters gain 'style' support ---
+
+test(
+  "formatListProjectsEmptyText's 'plain' style renders a materially shorter English string than the " +
+    "default for every kind, is byte-identical to the default when style is 'standard'/undefined, and " +
+    "'mi' wins over 'plain' regardless of style (issue #1458)",
+  () => {
+    for (const kind of ['mine', 'seeking', 'query', 'none'] as const) {
+      const defaultText = formatListProjectsEmptyText(kind, 'en', undefined);
+      assert.equal(formatListProjectsEmptyText(kind, 'en', 'standard'), defaultText);
+      const plainText = formatListProjectsEmptyText(kind, 'en', 'plain');
+      assert.notEqual(plainText, defaultText);
+      assert.ok(plainText.length < defaultText.length, `plain must be shorter for kind=${kind}`);
+      assert.equal(
+        formatListProjectsEmptyText(kind, 'mi', 'plain'),
+        formatListProjectsEmptyText(kind, 'mi', 'standard'),
+      );
+    }
+  },
+);
+
+test(
+  "formatWhoIsIntoEmptyText's 'plain' style renders a materially shorter English string than the default " +
+    "for every kind, is byte-identical to the default when style is 'standard'/undefined, and 'mi' wins " +
+    "over 'plain' regardless of style (issue #1458)",
+  () => {
+    for (const kind of ['noProfile', 'query', 'selfNoMatch'] as const) {
+      const defaultText = formatWhoIsIntoEmptyText(kind, 'en', undefined);
+      assert.equal(formatWhoIsIntoEmptyText(kind, 'en', 'standard'), defaultText);
+      const plainText = formatWhoIsIntoEmptyText(kind, 'en', 'plain');
+      assert.notEqual(plainText, defaultText);
+      assert.ok(plainText.length < defaultText.length, `plain must be shorter for kind=${kind}`);
+      assert.equal(
+        formatWhoIsIntoEmptyText(kind, 'mi', 'plain'),
+        formatWhoIsIntoEmptyText(kind, 'mi', 'standard'),
+      );
+    }
+  },
+);
+
+test(
+  "formatSetInterestMatchAlertsText's 'plain' style renders a materially shorter English string than the " +
+    "default for every outcome, is byte-identical to the default when style is 'standard'/undefined, and " +
+    "'mi' wins over 'plain' regardless of style (issue #1458)",
+  () => {
+    for (const outcome of ['noProfile', 'optedIn', 'optedOut'] as const) {
+      const defaultText = formatSetInterestMatchAlertsText(outcome, 'en', undefined);
+      assert.equal(formatSetInterestMatchAlertsText(outcome, 'en', 'standard'), defaultText);
+      const plainText = formatSetInterestMatchAlertsText(outcome, 'en', 'plain');
+      assert.notEqual(plainText, defaultText);
+      assert.ok(plainText.length < defaultText.length, `plain must be shorter for outcome=${outcome}`);
+      assert.equal(
+        formatSetInterestMatchAlertsText(outcome, 'mi', 'plain'),
+        formatSetInterestMatchAlertsText(outcome, 'mi', 'standard'),
+      );
+    }
+  },
+);
+
+test(
+  "formatSetHelperAvailabilityText's 'plain' style renders a materially shorter English string than the " +
+    "default for every outcome, is byte-identical to the default when style is 'standard'/undefined, and " +
+    "'mi' wins over 'plain' regardless of style (issue #1458)",
+  () => {
+    for (const outcome of ['disabled', 'noProfile', 'optedIn', 'optedOut'] as const) {
+      const defaultText = formatSetHelperAvailabilityText(outcome, 3, 'en', undefined);
+      assert.equal(formatSetHelperAvailabilityText(outcome, 3, 'en', 'standard'), defaultText);
+      const plainText = formatSetHelperAvailabilityText(outcome, 3, 'en', 'plain');
+      assert.notEqual(plainText, defaultText);
+      assert.ok(plainText.length < defaultText.length, `plain must be shorter for outcome=${outcome}`);
+      assert.equal(
+        formatSetHelperAvailabilityText(outcome, 3, 'mi', 'plain'),
+        formatSetHelperAvailabilityText(outcome, 3, 'mi', 'standard'),
+      );
+    }
+  },
+);
+
+test(
+  "formatFindHelperText's 'plain' style renders a materially shorter English string than the default for " +
+    "every outcome, is byte-identical to the default when style is 'standard'/undefined, and 'mi' wins " +
+    "over 'plain' regardless of style (issue #1458)",
+  () => {
+    for (const outcome of ['disabled', 'dailyCap', 'matched', 'noMatch'] as const) {
+      const defaultText = formatFindHelperText(outcome, 5, 'en', undefined);
+      assert.equal(formatFindHelperText(outcome, 5, 'en', 'standard'), defaultText);
+      const plainText = formatFindHelperText(outcome, 5, 'en', 'plain');
+      assert.notEqual(plainText, defaultText);
+      assert.ok(plainText.length < defaultText.length, `plain must be shorter for outcome=${outcome}`);
+      assert.equal(
+        formatFindHelperText(outcome, 5, 'mi', 'plain'),
+        formatFindHelperText(outcome, 5, 'mi', 'standard'),
+      );
+    }
+    // The noMatch + suggestionBlock framing sentence also shrinks under 'plain'.
+    const block = '[#1] "Foo" by Bar';
+    const defaultNoMatch = formatFindHelperText('noMatch', 5, 'en', undefined, block);
+    const plainNoMatch = formatFindHelperText('noMatch', 5, 'en', 'plain', block);
+    assert.notEqual(plainNoMatch, defaultNoMatch);
+    assert.ok(plainNoMatch.length < defaultNoMatch.length);
+    assert.match(plainNoMatch, new RegExp(block.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  },
+);
+
+test(
+  "formatShareProjectText's 'plain' style renders a materially shorter English string than the default " +
+    "for every outcome, is byte-identical to the default when style is 'standard'/undefined, and 'mi' " +
+    "wins over 'plain' regardless of style (issue #1458)",
+  () => {
+    const outcomes = [
+      { kind: 'missingDescription' as const },
+      { kind: 'cap' as const, limit: 10 },
+      { kind: 'rateLimit' as const, limit: 3 },
+      { kind: 'removed' as const, name: 'Foo' },
+      { kind: 'notFound' as const, name: 'Foo' },
+      { kind: 'created' as const, name: 'Foo' },
+      { kind: 'created' as const, name: 'Foo', notifiedHelper: true },
+      { kind: 'updated' as const, name: 'Foo' },
+      {
+        kind: 'similar' as const,
+        name: 'Foo',
+        matchId: 1,
+        matchName: 'Bar',
+        matchOwner: 'Baz',
+        matchSeekingCollaborators: false,
+      },
+      {
+        kind: 'similar' as const,
+        name: 'Foo',
+        matchId: 1,
+        matchName: 'Bar',
+        matchOwner: 'Baz',
+        matchSeekingCollaborators: true,
+      },
+    ];
+    for (const outcome of outcomes) {
+      const defaultText = formatShareProjectText(outcome, 'en', undefined);
+      assert.equal(formatShareProjectText(outcome, 'en', 'standard'), defaultText);
+      const plainText = formatShareProjectText(outcome, 'en', 'plain');
+      assert.notEqual(plainText, defaultText);
+      assert.ok(plainText.length < defaultText.length, `plain must be shorter for outcome=${outcome.kind}`);
+      assert.equal(
+        formatShareProjectText(outcome, 'mi', 'plain'),
+        formatShareProjectText(outcome, 'mi', 'standard'),
+      );
+    }
+  },
+);
+
+test(
+  "formatRequestProjectConnectionText's 'plain' style renders a materially shorter English string than " +
+    "the default for every outcome, is byte-identical to the default when style is 'standard'/undefined, " +
+    "and 'mi' wins over 'plain' regardless of style (issue #1458)",
+  () => {
+    const outcomes = [
+      { kind: 'dailyCap' as const, limit: 5 },
+      'notFound' as const,
+      'notSeeking' as const,
+      'selfMatch' as const,
+      'ownerUnreachable' as const,
+      'ownerCapped' as const,
+      'sent' as const,
+    ];
+    for (const outcome of outcomes) {
+      const defaultText = formatRequestProjectConnectionText(outcome, 'en', undefined);
+      assert.equal(formatRequestProjectConnectionText(outcome, 'en', 'standard'), defaultText);
+      const plainText = formatRequestProjectConnectionText(outcome, 'en', 'plain');
+      assert.notEqual(plainText, defaultText);
+      assert.ok(
+        plainText.length < defaultText.length,
+        `plain must be shorter for outcome=${typeof outcome === 'string' ? outcome : outcome.kind}`,
+      );
+      assert.equal(
+        formatRequestProjectConnectionText(outcome, 'mi', 'plain'),
+        formatRequestProjectConnectionText(outcome, 'mi', 'standard'),
+      );
+    }
+  },
+);
+
+test(
+  "formatSetMyInterestsText's 'plain' style renders a materially shorter English string than the default " +
+    "for both outcomes, is byte-identical to the default when style is 'standard'/undefined, and 'mi' " +
+    "wins over 'plain' regardless of style (issue #1458)",
+  () => {
+    for (const cleared of [true, false]) {
+      const defaultText = formatSetMyInterestsText(cleared, 'en', undefined);
+      assert.equal(formatSetMyInterestsText(cleared, 'en', 'standard'), defaultText);
+      const plainText = formatSetMyInterestsText(cleared, 'en', 'plain');
+      assert.notEqual(plainText, defaultText);
+      assert.ok(plainText.length < defaultText.length, `plain must be shorter for cleared=${cleared}`);
+      assert.equal(
+        formatSetMyInterestsText(cleared, 'mi', 'plain'),
+        formatSetMyInterestsText(cleared, 'mi', 'standard'),
+      );
+    }
+  },
+);
+
+test(
+  "SECURITY: a getResponseStyle rejection for the caller's own identity degrades " +
+    "resolveRecipientNoticeSelection to 'standard' rather than throwing, and every one of social.ts's eight " +
+    "caller-reply formatters renders its normal 'standard' English text for that degraded style — never a " +
+    'thrown error and never a dropped reply (issue #1458)',
+  async () => {
+    const rejectingLangPref = async () => {
+      throw new Error('simulated getLanguagePreference failure');
+    };
+    const rejectingRespStyle = async () => {
+      throw new Error('simulated getResponseStyle failure');
+    };
+
+    const { language, style } = await resolveRecipientNoticeSelection(
+      'discord',
+      `${RUN}-1458-caller-fail-safe-degrade`,
+      rejectingLangPref,
+      rejectingRespStyle,
+    );
+    assert.deepEqual(
+      { language, style },
+      { language: 'auto', style: 'standard' },
+      "a rejected caller-identity lookup degrades to English/'standard' rather than throwing",
+    );
+
+    assert.equal(
+      formatListProjectsEmptyText('none', language, style),
+      formatListProjectsEmptyText('none', language, 'standard'),
+    );
+    assert.equal(
+      formatWhoIsIntoEmptyText('query', language, style),
+      formatWhoIsIntoEmptyText('query', language, 'standard'),
+    );
+    assert.equal(
+      formatSetInterestMatchAlertsText('optedIn', language, style),
+      formatSetInterestMatchAlertsText('optedIn', language, 'standard'),
+    );
+    assert.equal(
+      formatSetHelperAvailabilityText('optedIn', 3, language, style),
+      formatSetHelperAvailabilityText('optedIn', 3, language, 'standard'),
+    );
+    assert.equal(
+      formatFindHelperText('matched', 5, language, style),
+      formatFindHelperText('matched', 5, language, 'standard'),
+    );
+    assert.equal(
+      formatShareProjectText({ kind: 'created', name: 'Foo' }, language, style),
+      formatShareProjectText({ kind: 'created', name: 'Foo' }, language, 'standard'),
+    );
+    assert.equal(
+      formatRequestProjectConnectionText('sent', language, style),
+      formatRequestProjectConnectionText('sent', language, 'standard'),
+    );
+    assert.equal(
+      formatSetMyInterestsText(false, language, style),
+      formatSetMyInterestsText(false, language, 'standard'),
+    );
+  },
+);
 
 // --- issue #1118: list_projects' 'mine'/'none' empty states name share_project ---
 
