@@ -26,6 +26,19 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #1355 #1356 #1357 #1341 #1350 #1360 #1381 #1391 #1441 #1382
 -->
 
+## 2026-09-24
+
+### Fixed
+- **`set_my_interests` now confirms in te reo Māori too.** (#1451) Every
+  other tool in the member-discovery family — `who_is_into`,
+  `set_interest_match_alerts`, `set_helper_availability`, `find_helper`,
+  `share_project`, `list_projects`, `request_project_connection` — already
+  honoured a standing te reo Māori preference, but `set_my_interests` itself,
+  the mandatory first step before any of them do anything, was still
+  hardcoded English. Both its confirmation ("published") and its "cleared"
+  reply now match your language preference; the English wording is
+  unchanged.
+
 ## 2026-09-23
 
 ### Added

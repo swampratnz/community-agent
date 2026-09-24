@@ -111,6 +111,7 @@ const {
   formatRequestProjectConnectionText,
   formatSetHelperAvailabilityText,
   formatSetInterestMatchAlertsText,
+  formatSetMyInterestsText,
   formatShareProjectText,
   formatWhoIsIntoEmptyText,
   PROJECT_DUPLICATE_SIMILARITY_THRESHOLD,
@@ -241,6 +242,7 @@ const {
   removeMemberProject,
   getActiveProjectById,
   setMemberInterests,
+  MEMBER_INTERESTS_MAX_CHARS,
   purgeUserData,
   recordProjectConnectionIfUnderCap,
 } = await import('@swampratnz/agent-base/storage/repository.js');
@@ -29608,6 +29610,121 @@ test(
 
     const afterClear = await whoTool.handler({ query: 'MCP servers' });
     assert.doesNotMatch(afterClear.content[0]?.text ?? '', /Now also into MCP servers/);
+
+    await pool.query(`DELETE FROM member_interests WHERE platform = 'discord' AND user_id = $1`, [userId]);
+  },
+);
+
+// --- issue #1451: set_my_interests honours a standing 'mi' language
+// preference — the one social.ts handler that never threaded
+// getLanguagePreference through, unlike its seven bilingual siblings ---
+
+test(
+  "set_my_interests threads the caller's own stored 'mi' language preference through both the 'clear' and normal-set outcomes, byte-identical English for a distinct caller with no stored preference (issue #1451 acceptance criteria 1, 2)",
+  { skip },
+  async () => {
+    const miUser = `${RUN}-set-my-interests-mi-lang`;
+    const enUser = `${RUN}-set-my-interests-en-lang`;
+    await setLanguagePreference('discord', miUser, 'mi');
+
+    const miTool = setMyInterestsHandler({ platform: 'discord', userId: miUser });
+    const enTool = setMyInterestsHandler({ platform: 'discord', userId: enUser });
+
+    // Deliberately distinct wording from other set_my_interests tests in this
+    // file (e.g. the lifecycle test's "Building RAG systems"/"MCP servers"
+    // fixtures) — who_is_into's no-query browse fallback lists rows across
+    // ALL callers with no per-test scoping, so overlapping substrings here
+    // could leak into and break an unrelated test's assertion.
+    const miSet = await miTool.handler({ interests: 'Debugging Discord webhook signatures (mi lang test)' });
+    assert.equal(miSet.isError, false);
+    assert.equal(miSet.content[0]?.text, formatSetMyInterestsText(false, 'mi'));
+    const enSet = await enTool.handler({
+      interests: 'Debugging Discord webhook signatures (en lang test)',
+    });
+    assert.equal(enSet.isError, false);
+    assert.equal(
+      enSet.content[0]?.text,
+      formatSetMyInterestsText(false, 'auto'),
+      'no stored preference renders byte-identical to the pre-#1451 English literal',
+    );
+
+    const miCleared = await miTool.handler({ interests: 'clear' });
+    assert.equal(miCleared.isError, false);
+    assert.equal(miCleared.content[0]?.text, formatSetMyInterestsText(true, 'mi'));
+    const enCleared = await enTool.handler({ interests: 'clear' });
+    assert.equal(enCleared.isError, false);
+    assert.equal(
+      enCleared.content[0]?.text,
+      formatSetMyInterestsText(true, 'auto'),
+      'no stored preference renders byte-identical to the pre-#1451 English literal',
+    );
+
+    await pool.query(`DELETE FROM member_interests WHERE platform = 'discord' AND user_id = ANY($1)`, [
+      [miUser, enUser],
+    ]);
+    await pool.query(`DELETE FROM language_prefs WHERE platform = 'discord' AND user_id = $1`, [miUser]);
+  },
+);
+
+test(
+  "SECURITY: set_my_interests' write-path invariants — the member-tier floor (assertAtLeast re-check), the MEMBER_INTERESTS_MAX_CHARS schema cap, and the 'clear'-vs-set row delete/upsert branching — are unchanged by the #1451 language-formatting diff, which touches only the returned string (issue #1451 acceptance criterion 4)",
+  { skip },
+  async () => {
+    const guestTool = setMyInterestsHandler({ platform: 'discord', userId: 'guest-1451', role: 'guest' });
+    await assert.rejects(
+      () => guestTool.handler({ interests: 'anything' }),
+      /Permission denied/,
+      'set_my_interests must still refuse a guest-tier caller before any DB write',
+    );
+
+    const server = buildToolServer(
+      {
+        platform: 'discord',
+        userId: `${RUN}-set-my-interests-cap`,
+        userName: 'Member',
+        role: 'member',
+        conversationId: 'convo-set-my-interests-cap',
+      },
+      stubAdapter(async () => {}),
+    );
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { inputSchema: { safeParse: (v: unknown) => { success: boolean } } }
+        >;
+      }
+    )._registeredTools['set_my_interests'];
+    assert.equal(
+      registeredTool.inputSchema.safeParse({ interests: 'x'.repeat(MEMBER_INTERESTS_MAX_CHARS) }).success,
+      true,
+      'exactly MEMBER_INTERESTS_MAX_CHARS is still accepted',
+    );
+    assert.equal(
+      registeredTool.inputSchema.safeParse({ interests: 'x'.repeat(MEMBER_INTERESTS_MAX_CHARS + 1) }).success,
+      false,
+      'one character over MEMBER_INTERESTS_MAX_CHARS is still rejected at the schema boundary',
+    );
+
+    const userId = `${RUN}-set-my-interests-write-path`;
+    const setTool = setMyInterestsHandler({ platform: 'discord', userId });
+    await setTool.handler({ interests: 'Writing pgvector HNSW index tuning guides' });
+    const afterSet = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM member_interests WHERE platform = 'discord' AND user_id = $1`,
+      [userId],
+    );
+    assert.equal(afterSet.rows[0].n, 1, 'a normal set still upserts exactly one row');
+
+    await setTool.handler({ interests: 'clear' });
+    const afterClear = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM member_interests WHERE platform = 'discord' AND user_id = $1`,
+      [userId],
+    );
+    assert.equal(
+      afterClear.rows[0].n,
+      0,
+      "'clear' still DELETEs the row rather than upserting a cleared value",
+    );
 
     await pool.query(`DELETE FROM member_interests WHERE platform = 'discord' AND user_id = $1`, [userId]);
   },

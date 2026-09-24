@@ -442,6 +442,23 @@ export function formatRequestProjectConnectionText(
   }
 }
 
+/**
+ * `set_my_interests`'s two caller-facing reply outcomes (issue #1451) — the
+ * one handler in this file that had never threaded `getLanguagePreference`
+ * through, unlike its seven `mi`-covered siblings above. `en`/unset renders
+ * byte-identical to the pre-#1451 inline literals.
+ */
+export function formatSetMyInterestsText(cleared: boolean, language: LanguagePreference): string {
+  const mi = language === 'mi';
+  return cleared
+    ? mi
+      ? 'Kua mukua ō hiahia — kāore koe e kitea anō i ngā hua o te who_is_into.'
+      : "Cleared your interests — you'll no longer appear in who_is_into results."
+    : mi
+      ? 'Kua mau — kua kitea ō hiahia e ētahi atu mema mā te who_is_into.'
+      : 'Got it — your interests are now visible to other members via who_is_into.';
+}
+
 export const socialTools = [
   // Self-scoped write (one row per identity, upsert/clear semantics),
   // instantly reversible ('clear') like set_response_style — no CONFIRM gate.
@@ -477,11 +494,8 @@ export const socialTools = [
       // member-tier re-check share_project/list_projects below use.
       assertAtLeast(caller.role, 'member', 'set_my_interests');
       const { cleared } = await setMemberInterests(caller.platform, caller.userId, args.interests);
-      return text(
-        cleared
-          ? "Cleared your interests — you'll no longer appear in who_is_into results."
-          : 'Got it — your interests are now visible to other members via who_is_into.',
-      );
+      const language = await getLanguagePreference(caller.platform, caller.userId);
+      return text(formatSetMyInterestsText(cleared, language));
     },
   }),
 
