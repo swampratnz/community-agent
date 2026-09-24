@@ -29630,10 +29630,17 @@ test(
     const miTool = setMyInterestsHandler({ platform: 'discord', userId: miUser });
     const enTool = setMyInterestsHandler({ platform: 'discord', userId: enUser });
 
-    const miSet = await miTool.handler({ interests: 'Building RAG systems (mi lang test)' });
+    // Deliberately distinct wording from other set_my_interests tests in this
+    // file (e.g. the lifecycle test's "Building RAG systems"/"MCP servers"
+    // fixtures) — who_is_into's no-query browse fallback lists rows across
+    // ALL callers with no per-test scoping, so overlapping substrings here
+    // could leak into and break an unrelated test's assertion.
+    const miSet = await miTool.handler({ interests: 'Debugging Discord webhook signatures (mi lang test)' });
     assert.equal(miSet.isError, false);
     assert.equal(miSet.content[0]?.text, formatSetMyInterestsText(false, 'mi'));
-    const enSet = await enTool.handler({ interests: 'Building RAG systems (en lang test)' });
+    const enSet = await enTool.handler({
+      interests: 'Debugging Discord webhook signatures (en lang test)',
+    });
     assert.equal(enSet.isError, false);
     assert.equal(
       enSet.content[0]?.text,
@@ -29682,7 +29689,10 @@ test(
     );
     const registeredTool = (
       server.instance as unknown as {
-        _registeredTools: Record<string, { inputSchema: { safeParse: (v: unknown) => { success: boolean } } }>;
+        _registeredTools: Record<
+          string,
+          { inputSchema: { safeParse: (v: unknown) => { success: boolean } } }
+        >;
       }
     )._registeredTools['set_my_interests'];
     assert.equal(
@@ -29698,7 +29708,7 @@ test(
 
     const userId = `${RUN}-set-my-interests-write-path`;
     const setTool = setMyInterestsHandler({ platform: 'discord', userId });
-    await setTool.handler({ interests: 'Building RAG systems' });
+    await setTool.handler({ interests: 'Writing pgvector HNSW index tuning guides' });
     const afterSet = await pool.query(
       `SELECT COUNT(*)::int AS n FROM member_interests WHERE platform = 'discord' AND user_id = $1`,
       [userId],
@@ -29710,7 +29720,11 @@ test(
       `SELECT COUNT(*)::int AS n FROM member_interests WHERE platform = 'discord' AND user_id = $1`,
       [userId],
     );
-    assert.equal(afterClear.rows[0].n, 0, "'clear' still DELETEs the row rather than upserting a cleared value");
+    assert.equal(
+      afterClear.rows[0].n,
+      0,
+      "'clear' still DELETEs the row rather than upserting a cleared value",
+    );
 
     await pool.query(`DELETE FROM member_interests WHERE platform = 'discord' AND user_id = $1`, [userId]);
   },

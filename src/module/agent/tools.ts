@@ -119,6 +119,7 @@ export {
   formatRequestProjectConnectionText,
   formatSetHelperAvailabilityText,
   formatSetInterestMatchAlertsText,
+  formatSetMyInterestsText,
   formatShareProjectText,
   formatWhoIsIntoEmptyText,
   LIST_PROJECTS_DEFAULT_LIMIT,
