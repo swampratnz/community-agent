@@ -475,7 +475,8 @@ const NOTICE_ENTRIES = {
         'Ka taea e koe te tono anō i ngā wā katoa — kāore te whakahēnga o mua e whai pānga ki tētahi tono hou.',
     },
     style: {
-      plain: 'Your request to join NZ Claude Community was not approved this time. You can request access again any time.',
+      plain:
+        'Your request to join NZ Claude Community was not approved this time. You can request access again any time.',
     },
   },
   // --- remove_project resolution DM (agent/tools/notify.ts, issue #1185) ---
