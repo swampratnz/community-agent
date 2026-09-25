@@ -35,6 +35,7 @@ import {
   formatWithdrawKnowledgeTipConfirmText,
   formatWithdrawKnowledgeTipEmptyText,
   rankKnowledgeByRetrieval,
+  resolveRecipientNoticeSelection,
   text,
 } from './helpers.js';
 import { formatWhoIsIntoEmptyText } from './social.js';
@@ -278,8 +279,8 @@ export const knowledgeMemberTools = [
         // formatWhoIsIntoEmptyText so a 'mi'-preference caller gets the same
         // translated wording that call site gives them, not an English-only
         // bypass of it.
-        const language = await getLanguagePreference(caller.platform, caller.userId);
-        return text(formatWhoIsIntoEmptyText('noProfile', language));
+        const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
+        return text(formatWhoIsIntoEmptyText('noProfile', language, style));
       }
       const hits = await searchKnowledge(interestsText, {
         platform: caller.platform,

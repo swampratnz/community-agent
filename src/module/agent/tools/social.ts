@@ -11,7 +11,6 @@ import {
   FIND_HELPER_WEEKLY_LIMIT_PER_HELPER,
   findHelperCandidates,
   getActiveProjectById,
-  getLanguagePreference,
   getPublishedInterestsForOwners,
   isFindHelperRequesterAtDailyCap,
   isProjectConnectionRequesterAtDailyCap,
@@ -29,6 +28,7 @@ import {
   recordHelperNotificationIfUnderCap,
   recordProjectConnectionIfUnderCap,
   removeMemberProject,
+  type ResponseStyle,
   searchMemberInterests,
   searchMemberInterestsForSelf,
   searchProjects,
@@ -80,27 +80,41 @@ export const WHO_IS_INTO_NO_PROFILE_HINT =
  * `WHO_IS_INTO_NO_PROFILE_HINT`'s "you have nothing yet" pattern below — both
  * are true dead ends without it, unlike `'seeking'`/`'query'`, which are "no
  * match for this filter" rather than "you have nothing", so they stay as-is.
+ * `style` (issue #1458), same `'mi'`-wins-over-`'plain'` precedence as every
+ * formatter in this file.
  */
 export function formatListProjectsEmptyText(
   kind: 'mine' | 'seeking' | 'query' | 'none',
   language: LanguagePreference,
+  style: ResponseStyle | undefined,
 ): string {
   const mi = language === 'mi';
+  const plain = style === 'plain';
   switch (kind) {
     case 'mine':
       return mi
         ? 'Kāore anō koe kia tohatoha i tētahi kaupapa — karangahia te share_project ki te tāpiri i tētahi.'
-        : "You haven't shared any projects yet — call share_project to add one.";
+        : plain
+          ? "You haven't shared a project yet. Use share_project to add one."
+          : "You haven't shared any projects yet — call share_project to add one.";
     case 'seeking':
       return mi
         ? 'Kāore he kaupapa e rapu hoa mahi ana i tēnei wā.'
-        : 'No projects are currently looking for collaborators.';
+        : plain
+          ? 'No projects need help right now.'
+          : 'No projects are currently looking for collaborators.';
     case 'query':
-      return mi ? 'Kāore he kaupapa kua tohaina e ōrite ana ki tērā.' : 'No shared projects match that.';
+      return mi
+        ? 'Kāore he kaupapa kua tohaina e ōrite ana ki tērā.'
+        : plain
+          ? 'No projects match that.'
+          : 'No shared projects match that.';
     case 'none':
       return mi
         ? 'Kāore anō he kaupapa kua tohaina — karangahia te share_project ki te tāpiri i tētahi.'
-        : 'No projects have been shared yet — call share_project to add one.';
+        : plain
+          ? 'No projects have been shared yet. Use share_project to add one.'
+          : 'No projects have been shared yet — call share_project to add one.';
   }
 }
 
@@ -108,9 +122,10 @@ export function formatListProjectsEmptyText(
  * `who_is_into`'s bot-authored empty-state/guidance strings, same shape as
  * `formatListProjectsEmptyText` above and shared with its `!whois`/`/whois`
  * command mirrors. `'noProfile'` is byte-identical to the standalone
- * `WHO_IS_INTO_NO_PROFILE_HINT` constant in English (kept exported above
- * since existing call sites reference it directly); this function is what
- * threads the caller's own `getLanguagePreference` result through it. The
+ * `WHO_IS_INTO_NO_PROFILE_HINT` constant at the default `'standard'` style
+ * (kept exported above since existing call sites reference it directly);
+ * this function is what threads the caller's own language/style preference
+ * through it. The
  * Discord slash command's own differently-worded no-profile hint (it tells a
  * member to talk to the bot rather than call a tool by name) is NOT one of
  * these — it stays local to `slashCommands.ts`, since consolidating it here
@@ -119,22 +134,31 @@ export function formatListProjectsEmptyText(
 export function formatWhoIsIntoEmptyText(
   kind: 'noProfile' | 'query' | 'selfNoMatch',
   language: LanguagePreference,
+  style: ResponseStyle | undefined,
 ): string {
   const mi = language === 'mi';
+  const plain = style === 'plain';
   switch (kind) {
     case 'noProfile':
       return mi
         ? 'Kāore anō koe kia whakaputa i ō hiahia, karangahia te set_my_interests i te tuatahi, kātahi, ' +
             'ki te kore he kaupapa e tohua ana ki a who_is_into, ka rapu mā ō hiahia kua whakaputaina.'
-        : WHO_IS_INTO_NO_PROFILE_HINT;
+        : plain
+          ? "You haven't shared your interests yet. Use set_my_interests first. Then who_is_into with no " +
+            'topic will search using your interests.'
+          : WHO_IS_INTO_NO_PROFILE_HINT;
     case 'query':
       return mi
         ? 'Kāore anō he mema kua whakaputa i ngā hiahia e ōrite ana ki tērā.'
-        : 'No members have published interests matching that yet.';
+        : plain
+          ? 'No members have interests like that yet.'
+          : 'No members have published interests matching that yet.';
     case 'selfNoMatch':
       return mi
         ? 'Kāore anō ētahi atu mema kua whakaputa i ngā hiahia e ōrite ana ki ōu.'
-        : 'No other members have published interests matching yours yet.';
+        : plain
+          ? 'No other members have interests like yours yet.'
+          : 'No other members have published interests matching yours yet.';
   }
 }
 
@@ -145,30 +169,40 @@ export function formatWhoIsIntoEmptyText(
  * separate outcome/function rather than folding into that one, since the two
  * tools flip different, independently-meaning flags (see the tool's own doc
  * comment for why `set_helper_availability`'s existing boolean was rejected
- * as a ride-along).
+ * as a ride-along). `style` (issue #1458), same `'mi'`-wins-over-`'plain'`
+ * precedence as every formatter in this file.
  */
 export function formatSetInterestMatchAlertsText(
   outcome: 'noProfile' | 'optedIn' | 'optedOut',
   language: LanguagePreference,
+  style: ResponseStyle | undefined,
 ): string {
   const mi = language === 'mi';
+  const plain = style === 'plain';
   switch (outcome) {
     case 'noProfile':
       return mi
         ? 'Kāore anō koe kia whakaputa i ō hiahia — karangahia te set_my_interests i te tuatahi, kātahi ka ' +
             'taea e set_interest_match_alerts te whakahohe i ngā whakamōhiotanga mō ngā taunekeneke hou.'
-        : "You don't have published interests yet — call set_my_interests first, then " +
+        : plain
+          ? "You haven't shared your interests yet. Use set_my_interests first. Then set_interest_match_alerts " +
+            'can turn on match notifications.'
+          : "You don't have published interests yet — call set_my_interests first, then " +
             'set_interest_match_alerts can turn on notifications for new matches.';
     case 'optedIn':
       return mi
         ? 'Ka whakamōhiotia koe ināianei ina puta tētahi taunekeneke hou mō ō hiahia kua whakaputaina — ' +
             'karangahia te who_is_into ki te tiro.'
-        : "You'll now be notified when you have new interest matches on the community — run who_is_into " +
+        : plain
+          ? "You'll now get a message when you have new matches. Use who_is_into to see who."
+          : "You'll now be notified when you have new interest matches on the community — run who_is_into " +
             'to see who.';
     case 'optedOut':
       return mi
         ? 'Kāore koe e whakamōhiotia anō mō ngā taunekeneke hou.'
-        : "You won't be notified for new interest matches anymore.";
+        : plain
+          ? "You won't get match messages anymore."
+          : "You won't be notified for new interest matches anymore.";
   }
 }
 
@@ -178,35 +212,48 @@ export function formatSetInterestMatchAlertsText(
  * `formatAppealModerationText`/`formatRateAnswerText` (issue #1147) —
  * `weeklyLimit` is an unchanged interpolation in both languages, passed
  * through even for the branches that don't use it, matching
- * `formatRateAnswerText`'s precedent.
+ * `formatRateAnswerText`'s precedent. `style` (issue #1458), same
+ * `'mi'`-wins-over-`'plain'` precedence as every formatter in this file.
  */
 export function formatSetHelperAvailabilityText(
   outcome: 'disabled' | 'noProfile' | 'optedIn' | 'optedOut',
   weeklyLimit: number,
   language: LanguagePreference,
+  style: ResponseStyle | undefined,
 ): string {
   const mi = language === 'mi';
+  const plain = style === 'plain';
   switch (outcome) {
     case 'disabled':
       return mi
         ? 'Kāore i whakahohea te whakawhiti āwhina-ā-mema i tēnei tūmau.'
-        : 'Peer-help handoff is not enabled on this server.';
+        : plain
+          ? 'This feature is off on this server.'
+          : 'Peer-help handoff is not enabled on this server.';
     case 'noProfile':
       return mi
         ? 'Kāore anō koe kia whakaputa i ō hiahia — karangahia te set_my_interests i te tuatahi, kātahi ka ' +
             'taea e set_helper_availability te whakahohe i ngā whakamōhiotanga mō ngā kaupapa e ōrite ana ki ērā.'
-        : "You don't have published interests yet — call set_my_interests first, then " +
+        : plain
+          ? "You haven't shared your interests yet. Use set_my_interests first. Then set_helper_availability " +
+            'can turn on notifications for matching topics.'
+          : "You don't have published interests yet — call set_my_interests first, then " +
             'set_helper_availability can turn on notifications for topics matching them.';
     case 'optedIn':
       return mi
         ? `Ka whakamōhiotia koe ināianei (kia ${weeklyLimit} noa ngā wā ia wiki) ina ōrite tētahi kaupapa ` +
             'find_helper a tētahi atu mema ki ō hiahia kua whakaputaina.'
-        : `You'll now be notified (at most ${weeklyLimit} times a week) when ` +
+        : plain
+          ? `You'll now get up to ${weeklyLimit} messages a week when your interests match a find_helper ` +
+            'request.'
+          : `You'll now be notified (at most ${weeklyLimit} times a week) when ` +
             "another member's find_helper topic matches your published interests.";
     case 'optedOut':
       return mi
         ? 'Kāore koe e whakamōhiotia anō mō ngā tono find_helper.'
-        : "You won't be notified for find_helper requests anymore.";
+        : plain
+          ? "You won't get find_helper messages anymore."
+          : "You won't be notified for find_helper requests anymore.";
   }
 }
 
@@ -231,36 +278,50 @@ export const FIND_HELPER_PROJECT_SUGGESTION_LIMIT = 2;
  * an added bot-authored framing sentence. Omitting it (the common case today)
  * renders byte-identical to the pre-#1178 `noMatch` text — only the framing
  * sentence is bilingual; the appended project rows stay member-authored and
- * untranslated, same as `formatProjectResults`' other call sites.
+ * untranslated, same as `formatProjectResults`' other call sites. `style`
+ * (issue #1458), same `'mi'`-wins-over-`'plain'` precedence as every
+ * formatter in this file.
  */
 export function formatFindHelperText(
   outcome: 'disabled' | 'dailyCap' | 'matched' | 'noMatch',
   dailyLimit: number,
   language: LanguagePreference,
+  style: ResponseStyle | undefined,
   suggestionBlock?: string,
 ): string {
   const mi = language === 'mi';
+  const plain = style === 'plain';
   switch (outcome) {
     case 'disabled':
       return mi
         ? 'Kāore i whakahohea te whakawhiti āwhina-ā-mema i tēnei tūmau.'
-        : 'Peer-help handoff is not enabled on this server.';
+        : plain
+          ? 'This feature is off on this server.'
+          : 'Peer-help handoff is not enabled on this server.';
     case 'dailyCap':
       return mi
         ? `Kua eke koe ki te tepe tono-āwhina o tēnei rā (${dailyLimit}). Whakamātauria anō āpōpō.`
-        : `You've hit today's ask-for-help limit (${dailyLimit}). Try again tomorrow.`;
+        : plain
+          ? `You've reached today's limit (${dailyLimit}). Try again tomorrow.`
+          : `You've hit today's ask-for-help limit (${dailyLimit}). Try again tomorrow.`;
     case 'matched':
       return mi
         ? 'Kua whakapā atu ki tētahi tangata ka taea pea te āwhina — kia manawanui.'
-        : 'Reached out to someone who may be able to help — hang tight.';
+        : plain
+          ? 'Contacted someone who may be able to help. Please wait.'
+          : 'Reached out to someone who may be able to help — hang tight.';
     case 'noMatch': {
       const base = mi
         ? 'Kāore he tangata e wātea ana hei āwhina i tērā i tēnei wā.'
-        : 'No one available to help with that right now.';
+        : plain
+          ? 'No one can help with that right now.'
+          : 'No one available to help with that right now.';
       if (!suggestionBlock) return base;
       const framing = mi
         ? 'Engari, kei kōnei tētahi kaupapa e rapu hoa mahi ana mō tētahi mea e rite ana ki tērā:'
-        : "but there's a project already looking for help with something similar:";
+        : plain
+          ? 'There is also a project looking for help with something similar:'
+          : "but there's a project already looking for help with something similar:";
       return `${base} ${framing}\n\n${suggestionBlock}`;
     }
   }
@@ -309,6 +370,8 @@ export const PROJECT_DUPLICATE_SEARCH_LIMIT = 3;
  * match-and-notify path) actually reached an opted-in helper — never who,
  * same non-disclosure discipline as `find_helper`'s own `matched` outcome.
  * Omitted/false renders byte-identical to the pre-#1200 `created` text.
+ * `style` (issue #1458), same `'mi'`-wins-over-`'plain'` precedence as every
+ * formatter in this file.
  */
 export function formatShareProjectText(
   outcome:
@@ -328,47 +391,67 @@ export function formatShareProjectText(
         matchSeekingCollaborators: boolean;
       },
   language: LanguagePreference,
+  style: ResponseStyle | undefined,
 ): string {
   const mi = language === 'mi';
+  const plain = style === 'plain';
   switch (outcome.kind) {
     case 'missingDescription':
       return mi
         ? 'Me whai whakaahuatanga hei tohatoha, hei whakatika rānei i tētahi kaupapa.'
-        : 'A description is required to share or edit a project.';
+        : plain
+          ? 'Add a description to share or edit a project.'
+          : 'A description is required to share or edit a project.';
     case 'cap':
       return mi
         ? `Kua ${outcome.limit} ō kaupapa kua tohaina kētia — tangohia tētahi i te tuatahi (share_project me ` +
             `te remove: true) i mua i te tāpiri i tētahi atu.`
-        : `You already have ${outcome.limit} shared projects — remove one first (share_project ` +
+        : plain
+          ? `You already have ${outcome.limit} shared projects. Remove one before adding another.`
+          : `You already have ${outcome.limit} shared projects — remove one first (share_project ` +
             'with remove: true) before adding another.';
     case 'rateLimit':
       return mi
         ? `Kua tohaina kētia e koe ${outcome.limit} ngā kaupapa hou i roto i ngā haora 24 kua hipa. Tēnā koa, ` +
             'tatari i mua i te tohatoha i tētahi atu.'
-        : `You've already shared ${outcome.limit} new projects in the last 24 hours. ` +
+        : plain
+          ? `You've shared ${outcome.limit} projects today. Please wait before sharing another.`
+          : `You've already shared ${outcome.limit} new projects in the last 24 hours. ` +
             'Please wait before sharing another.';
     case 'removed':
       return mi
         ? `Kua tangohia a "${outcome.name}" mai i te whakaaturanga kaupapa.`
-        : `Removed "${outcome.name}" from the project showcase.`;
+        : plain
+          ? `Removed "${outcome.name}".`
+          : `Removed "${outcome.name}" from the project showcase.`;
     case 'notFound':
       return mi
         ? `Kāore āu kaupapa kua tohaina e kīia ana ko "${outcome.name}".`
-        : `You don't have a shared project named "${outcome.name}".`;
+        : plain
+          ? `You don't have a project named "${outcome.name}".`
+          : `You don't have a shared project named "${outcome.name}".`;
     case 'created': {
       const base = mi
         ? `Kua tohaina a "${outcome.name}" — ka kitea e ētahi atu mema mā te list_projects.`
-        : `Shared "${outcome.name}" — other members can find it with list_projects.`;
+        : plain
+          ? `Shared "${outcome.name}".`
+          : `Shared "${outcome.name}" — other members can find it with list_projects.`;
       if (!outcome.notifiedHelper) return base;
       return (
         base +
         (mi
           ? ' Kua whakapā atu hoki ki tētahi mema e rite ana ōna hiahia — kia manawanui.'
-          : ' Also reached out to a member whose published interests match — hang tight.')
+          : plain
+            ? ' Also contacted a member with matching interests.'
+            : ' Also reached out to a member whose published interests match — hang tight.')
       );
     }
     case 'updated':
-      return mi ? `Kua whakahoutia a "${outcome.name}".` : `Updated "${outcome.name}".`;
+      return mi
+        ? `Kua whakahoutia a "${outcome.name}".`
+        : plain
+          ? `Saved "${outcome.name}".`
+          : `Updated "${outcome.name}".`;
     case 'similar': {
       const matchName = untrustedEntryContent(outcome.matchName);
       if (!outcome.matchSeekingCollaborators) {
@@ -376,14 +459,20 @@ export function formatShareProjectText(
           ? `Kua tohaina a "${outcome.name}" — ka kitea e ētahi atu mema mā te list_projects. Tuhinga: he rite ` +
               `tēnei ki te kaupapa #${outcome.matchId} "${matchName}" a ${outcome.matchOwner} — tirohia te ` +
               'list_projects.'
-          : `Shared "${outcome.name}" — other members can find it with list_projects. Note: this looks similar ` +
+          : plain
+            ? `Shared "${outcome.name}". Note: this looks like #${outcome.matchId} "${matchName}" by ` +
+              `${outcome.matchOwner}. Check list_projects.`
+            : `Shared "${outcome.name}" — other members can find it with list_projects. Note: this looks similar ` +
               `to #${outcome.matchId} "${matchName}" by ${outcome.matchOwner} — check list_projects.`;
       }
       return mi
         ? `Kua tohaina a "${outcome.name}" — ka kitea e ētahi atu mema mā te list_projects. Tuhinga: he rite ` +
             `tēnei ki te kaupapa #${outcome.matchId} "${matchName}" a ${outcome.matchOwner} — tirohia te ` +
             'list_projects, whakamahia rānei te request_project_connection mēnā he pai ake te mahi tahi.'
-        : `Shared "${outcome.name}" — other members can find it with list_projects. Note: this looks similar ` +
+        : plain
+          ? `Shared "${outcome.name}". Note: this looks like #${outcome.matchId} "${matchName}" by ` +
+            `${outcome.matchOwner}. Check list_projects, or use request_project_connection to team up.`
+          : `Shared "${outcome.name}" — other members can find it with list_projects. Note: this looks similar ` +
             `to #${outcome.matchId} "${matchName}" by ${outcome.matchOwner} — check list_projects, or ` +
             "request_project_connection if you'd rather team up.";
     }
@@ -395,7 +484,9 @@ export function formatShareProjectText(
  * #1163). The DM to the PROJECT OWNER stays untranslated by design — out of
  * scope, same carve-out as `find_helper`'s match notification. `limit` is an
  * unchanged interpolation on the one outcome that carries it, mirroring
- * `formatRateAnswerText`'s mixed bare-literal/object union shape.
+ * `formatRateAnswerText`'s mixed bare-literal/object union shape. `style`
+ * (issue #1458), same `'mi'`-wins-over-`'plain'` precedence as every
+ * formatter in this file.
  */
 export function formatRequestProjectConnectionText(
   outcome:
@@ -407,56 +498,82 @@ export function formatRequestProjectConnectionText(
     | 'sent'
     | { kind: 'dailyCap'; limit: number },
   language: LanguagePreference,
+  style: ResponseStyle | undefined,
 ): string {
   const mi = language === 'mi';
+  const plain = style === 'plain';
   if (typeof outcome !== 'string') {
     return mi
       ? `Kua eke koe ki te tepe tono-hononga o tēnei rā (${outcome.limit}). Whakamātauria anō āpōpō.`
-      : `You've hit today's connection-request limit (${outcome.limit}). ` + 'Try again tomorrow.';
+      : plain
+        ? `You've reached today's limit (${outcome.limit}). Try again tomorrow.`
+        : `You've hit today's connection-request limit (${outcome.limit}). ` + 'Try again tomorrow.';
   }
   switch (outcome) {
     case 'notFound':
       return mi
         ? 'Kāore he kaupapa e mahi ana e whai ana i taua tuhinga (id).'
-        : 'No active project with that id.';
+        : plain
+          ? 'No project with that id.'
+          : 'No active project with that id.';
     case 'notSeeking':
       return mi
         ? 'Kāore taua kaupapa e rapu hoa mahi ana i tēnei wā.'
-        : 'That project is not currently looking for collaborators.';
+        : plain
+          ? 'That project is not looking for help right now.'
+          : 'That project is not currently looking for collaborators.';
     case 'selfMatch':
       return mi
         ? 'Kāore e taea e koe te tono hononga ki tō ake kaupapa.'
-        : "You can't request to connect with your own project.";
+        : plain
+          ? "You can't connect with your own project."
+          : "You can't request to connect with your own project.";
     case 'ownerUnreachable':
       return mi
         ? 'Kāore e taea te whakapā atu ki te rangatira o taua kaupapa i tēnei whakatakotoranga i tēnei wā.'
-        : "That project's owner can't be reached on this deployment right now.";
+        : plain
+          ? "That project's owner can't be reached right now."
+          : "That project's owner can't be reached on this deployment right now.";
     case 'ownerCapped':
       return mi
         ? 'Kāore e taea e te rangatira o taua kaupapa te whiwhi tono hononga hou i tēnei wā.'
-        : "That project's owner can't receive new connection requests right now.";
+        : plain
+          ? "That project's owner can't get new requests right now."
+          : "That project's owner can't receive new connection requests right now.";
     case 'sent':
       return mi
         ? 'Kua whakapā atu ki te rangatira o te kaupapa — kia manawanui.'
-        : 'Reached out to the project owner — hang tight.';
+        : plain
+          ? 'Contacted the project owner. Please wait.'
+          : 'Reached out to the project owner — hang tight.';
   }
 }
 
 /**
  * `set_my_interests`'s two caller-facing reply outcomes (issue #1451) — the
- * one handler in this file that had never threaded `getLanguagePreference`
+ * one handler in this file that had never threaded a language preference
  * through, unlike its seven `mi`-covered siblings above. `en`/unset renders
- * byte-identical to the pre-#1451 inline literals.
+ * byte-identical to the pre-#1451 inline literals. `style` (issue #1458),
+ * same `'mi'`-wins-over-`'plain'` precedence as every formatter in this file.
  */
-export function formatSetMyInterestsText(cleared: boolean, language: LanguagePreference): string {
+export function formatSetMyInterestsText(
+  cleared: boolean,
+  language: LanguagePreference,
+  style: ResponseStyle | undefined,
+): string {
   const mi = language === 'mi';
+  const plain = style === 'plain';
   return cleared
     ? mi
       ? 'Kua mukua ō hiahia — kāore koe e kitea anō i ngā hua o te who_is_into.'
-      : "Cleared your interests — you'll no longer appear in who_is_into results."
+      : plain
+        ? "Cleared your interests. You won't show up in who_is_into anymore."
+        : "Cleared your interests — you'll no longer appear in who_is_into results."
     : mi
       ? 'Kua mau — kua kitea ō hiahia e ētahi atu mema mā te who_is_into.'
-      : 'Got it — your interests are now visible to other members via who_is_into.';
+      : plain
+        ? 'Got it. Other members can now find you with who_is_into.'
+        : 'Got it — your interests are now visible to other members via who_is_into.';
 }
 
 export const socialTools = [
@@ -494,8 +611,8 @@ export const socialTools = [
       // member-tier re-check share_project/list_projects below use.
       assertAtLeast(caller.role, 'member', 'set_my_interests');
       const { cleared } = await setMemberInterests(caller.platform, caller.userId, args.interests);
-      const language = await getLanguagePreference(caller.platform, caller.userId);
-      return text(formatSetMyInterestsText(cleared, language));
+      const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
+      return text(formatSetMyInterestsText(cleared, language, style));
     },
   }),
 
@@ -545,8 +662,8 @@ export const socialTools = [
         ]);
         const own = interestsByOwner.get(`${caller.platform}:${caller.userId}`);
         if (!own) {
-          const language = await getLanguagePreference(caller.platform, caller.userId);
-          return text(formatWhoIsIntoEmptyText('noProfile', language));
+          const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
+          return text(formatWhoIsIntoEmptyText('noProfile', language, style));
         }
         return text(
           await formatInterestResults([{ platform: caller.platform, userId: caller.userId, interests: own }]),
@@ -555,8 +672,8 @@ export const socialTools = [
       if (args.query) {
         const hits = await searchMemberInterests(args.query, WHO_IS_INTO_LIMIT);
         if (hits.length === 0) {
-          const language = await getLanguagePreference(caller.platform, caller.userId);
-          return text(formatWhoIsIntoEmptyText('query', language));
+          const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
+          return text(formatWhoIsIntoEmptyText('query', language, style));
         }
         return text(await formatInterestResults(hits));
       }
@@ -567,14 +684,14 @@ export const socialTools = [
         // most recently published/updated interests (mirroring
         // list_projects' no-query listRecentProjects default), still
         // appending the same set_my_interests hint after the list.
-        const language = await getLanguagePreference(caller.platform, caller.userId);
-        const hint = formatWhoIsIntoEmptyText('noProfile', language);
+        const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
+        const hint = formatWhoIsIntoEmptyText('noProfile', language, style);
         const recent = await listRecentInterests(WHO_IS_INTO_LIMIT);
         return text(recent.length === 0 ? hint : `${await formatInterestResults(recent)}\n\n${hint}`);
       }
       if (selfMatch.hits.length === 0) {
-        const language = await getLanguagePreference(caller.platform, caller.userId);
-        return text(formatWhoIsIntoEmptyText('selfNoMatch', language));
+        const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
+        return text(formatWhoIsIntoEmptyText('selfNoMatch', language, style));
       }
       return text(await formatInterestResults(selfMatch.hits));
     },
@@ -619,12 +736,12 @@ export const socialTools = [
         { platform: caller.platform, userId: caller.userId },
       ]);
       const hasProfile = interestsByOwner.has(`${caller.platform}:${caller.userId}`);
-      const language = await getLanguagePreference(caller.platform, caller.userId);
+      const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
       if (!hasProfile) {
-        return text(formatSetInterestMatchAlertsText('noProfile', language), true);
+        return text(formatSetInterestMatchAlertsText('noProfile', language, style), true);
       }
       await setInterestMatchAlertOptIn(caller.platform, caller.userId, args.enabled);
-      return text(formatSetInterestMatchAlertsText(args.enabled ? 'optedIn' : 'optedOut', language));
+      return text(formatSetInterestMatchAlertsText(args.enabled ? 'optedIn' : 'optedOut', language, style));
     },
   }),
 
@@ -656,26 +773,27 @@ export const socialTools = [
       // reaches other members, same as set_my_interests/share_project above.
       assertAtLeast(caller.role, 'member', 'set_helper_availability');
       if (!config.findHelper.enabled) {
-        const language = await getLanguagePreference(caller.platform, caller.userId);
+        const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
         return text(
-          formatSetHelperAvailabilityText('disabled', FIND_HELPER_WEEKLY_LIMIT_PER_HELPER, language),
+          formatSetHelperAvailabilityText('disabled', FIND_HELPER_WEEKLY_LIMIT_PER_HELPER, language, style),
           true,
         );
       }
       const result = await setHelperAvailability(caller.platform, caller.userId, args.available);
       if (!result.ok) {
-        const language = await getLanguagePreference(caller.platform, caller.userId);
+        const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
         return text(
-          formatSetHelperAvailabilityText('noProfile', FIND_HELPER_WEEKLY_LIMIT_PER_HELPER, language),
+          formatSetHelperAvailabilityText('noProfile', FIND_HELPER_WEEKLY_LIMIT_PER_HELPER, language, style),
           true,
         );
       }
-      const language = await getLanguagePreference(caller.platform, caller.userId);
+      const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
       return text(
         formatSetHelperAvailabilityText(
           args.available ? 'optedIn' : 'optedOut',
           FIND_HELPER_WEEKLY_LIMIT_PER_HELPER,
           language,
+          style,
         ),
       );
     },
@@ -710,12 +828,18 @@ export const socialTools = [
     handler: async (args, { caller, adapterFor }) => {
       assertAtLeast(caller.role, 'member', 'find_helper');
       if (!config.findHelper.enabled) {
-        const language = await getLanguagePreference(caller.platform, caller.userId);
-        return text(formatFindHelperText('disabled', FIND_HELPER_REQUESTER_DAILY_LIMIT, language), true);
+        const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
+        return text(
+          formatFindHelperText('disabled', FIND_HELPER_REQUESTER_DAILY_LIMIT, language, style),
+          true,
+        );
       }
       if (await isFindHelperRequesterAtDailyCap(caller.platform, caller.userId)) {
-        const language = await getLanguagePreference(caller.platform, caller.userId);
-        return text(formatFindHelperText('dailyCap', FIND_HELPER_REQUESTER_DAILY_LIMIT, language), true);
+        const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
+        return text(
+          formatFindHelperText('dailyCap', FIND_HELPER_REQUESTER_DAILY_LIMIT, language, style),
+          true,
+        );
       }
       // Walks best-match-first; the FIRST candidate under its own weekly cap
       // wins and the loop stops — at most one DM is ever sent per call
@@ -767,12 +891,12 @@ export const socialTools = [
           }
           logger.warn({ err, userId: hashId(candidate.userId) }, 'find_helper DM failed');
         });
-        const language = await getLanguagePreference(caller.platform, caller.userId);
+        const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
         // Issue #1313: log this real ask for the caller's own my_submissions
         // receipt — never the matched candidate's identity, preserving
         // find_helper's non-disclosure guarantee above.
         await recordFindHelperRequest(caller.platform, caller.userId, args.topic, true);
-        return text(formatFindHelperText('matched', FIND_HELPER_REQUESTER_DAILY_LIMIT, language));
+        return text(formatFindHelperText('matched', FIND_HELPER_REQUESTER_DAILY_LIMIT, language, style));
       }
       // Issue #1178: no live person matched — before giving up, check
       // list_projects' own seeking-collaborators search for a related
@@ -792,12 +916,12 @@ export const socialTools = [
         .filter((p) => !(p.platform === caller.platform && p.userId === caller.userId))
         .slice(0, FIND_HELPER_PROJECT_SUGGESTION_LIMIT);
       const suggestionBlock = suggestions.length > 0 ? await formatProjectResults(suggestions) : undefined;
-      const language = await getLanguagePreference(caller.platform, caller.userId);
+      const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
       // Issue #1313: log this real ask (no live match) for the caller's own
       // my_submissions receipt — see the matched branch's identical call above.
       await recordFindHelperRequest(caller.platform, caller.userId, args.topic, false);
       return text(
-        formatFindHelperText('noMatch', FIND_HELPER_REQUESTER_DAILY_LIMIT, language, suggestionBlock),
+        formatFindHelperText('noMatch', FIND_HELPER_REQUESTER_DAILY_LIMIT, language, style, suggestionBlock),
       );
     },
   }),
@@ -870,14 +994,14 @@ export const socialTools = [
       assertAtLeast(caller.role, 'member', 'share_project');
       if (args.remove) {
         const removed = await removeMemberProject(caller.platform, caller.userId, args.name);
-        const language = await getLanguagePreference(caller.platform, caller.userId);
+        const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
         return removed
-          ? text(formatShareProjectText({ kind: 'removed', name: args.name }, language))
-          : text(formatShareProjectText({ kind: 'notFound', name: args.name }, language), true);
+          ? text(formatShareProjectText({ kind: 'removed', name: args.name }, language, style))
+          : text(formatShareProjectText({ kind: 'notFound', name: args.name }, language, style), true);
       }
       if (!args.description) {
-        const language = await getLanguagePreference(caller.platform, caller.userId);
-        return text(formatShareProjectText({ kind: 'missingDescription' }, language), true);
+        const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
+        return text(formatShareProjectText({ kind: 'missingDescription' }, language, style), true);
       }
       const result = await shareProject({
         platform: caller.platform,
@@ -888,18 +1012,19 @@ export const socialTools = [
         seekingCollaborators: args.seekingCollaborators,
       });
       if (!result.ok) {
-        const language = await getLanguagePreference(caller.platform, caller.userId);
+        const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
         return text(
           formatShareProjectText(
             result.reason === 'cap'
               ? { kind: 'cap', limit: MEMBER_PROJECT_CAP }
               : { kind: 'rateLimit', limit: PROJECT_RATE_LIMIT_PER_DAY },
             language,
+            style,
           ),
           true,
         );
       }
-      const language = await getLanguagePreference(caller.platform, caller.userId);
+      const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
       if (result.created) {
         // Issue #1200: the push complement to seekingCollaborators (pull-only
         // until now) — a brand-new seeking-collaborators share also runs
@@ -987,12 +1112,15 @@ export const socialTools = [
                 matchSeekingCollaborators: Boolean(match.seekingCollaborators),
               },
               language,
+              style,
             ),
           );
         }
-        return text(formatShareProjectText({ kind: 'created', name: args.name, notifiedHelper }, language));
+        return text(
+          formatShareProjectText({ kind: 'created', name: args.name, notifiedHelper }, language, style),
+        );
       }
-      return text(formatShareProjectText({ kind: 'updated', name: args.name }, language));
+      return text(formatShareProjectText({ kind: 'updated', name: args.name }, language, style));
     },
   }),
 
@@ -1035,8 +1163,8 @@ export const socialTools = [
       if (args.mine) {
         const projects = await listOwnProjects(caller.platform, caller.userId);
         if (projects.length === 0) {
-          const language = await getLanguagePreference(caller.platform, caller.userId);
-          return text(formatListProjectsEmptyText('mine', language));
+          const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
+          return text(formatListProjectsEmptyText('mine', language, style));
         }
         return text(await formatProjectResults(projects));
       }
@@ -1045,11 +1173,12 @@ export const socialTools = [
         ? await searchProjects(args.query, LIST_PROJECTS_DEFAULT_LIMIT, opts)
         : await listRecentProjects(LIST_PROJECTS_DEFAULT_LIMIT, opts);
       if (projects.length === 0) {
-        const language = await getLanguagePreference(caller.platform, caller.userId);
+        const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
         return text(
           formatListProjectsEmptyText(
             args.seekingCollaborators ? 'seeking' : args.query ? 'query' : 'none',
             language,
+            style,
           ),
         );
       }
@@ -1097,34 +1226,35 @@ export const socialTools = [
       // order-of-operations as find_helper's isFindHelperRequesterAtDailyCap
       // check (issue #729 AC #6 precedent).
       if (await isProjectConnectionRequesterAtDailyCap(caller.platform, caller.userId)) {
-        const language = await getLanguagePreference(caller.platform, caller.userId);
+        const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
         return text(
           formatRequestProjectConnectionText(
             { kind: 'dailyCap', limit: PROJECT_CONNECTION_REQUESTER_DAILY_LIMIT },
             language,
+            style,
           ),
           true,
         );
       }
       const project = await getActiveProjectById(args.projectId);
       if (!project) {
-        const language = await getLanguagePreference(caller.platform, caller.userId);
-        return text(formatRequestProjectConnectionText('notFound', language), true);
+        const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
+        return text(formatRequestProjectConnectionText('notFound', language, style), true);
       }
       if (!project.seekingCollaborators) {
-        const language = await getLanguagePreference(caller.platform, caller.userId);
-        return text(formatRequestProjectConnectionText('notSeeking', language), true);
+        const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
+        return text(formatRequestProjectConnectionText('notSeeking', language, style), true);
       }
       // Self-match structurally impossible: this check runs BEFORE any DB
       // write (issue #729's find_helper precedent for self-exclusion).
       if (project.platform === caller.platform && project.userId === caller.userId) {
-        const language = await getLanguagePreference(caller.platform, caller.userId);
-        return text(formatRequestProjectConnectionText('selfMatch', language), true);
+        const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
+        return text(formatRequestProjectConnectionText('selfMatch', language, style), true);
       }
       const target = adapterFor(project.platform);
       if (!target) {
-        const language = await getLanguagePreference(caller.platform, caller.userId);
-        return text(formatRequestProjectConnectionText('ownerUnreachable', language), true);
+        const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
+        return text(formatRequestProjectConnectionText('ownerUnreachable', language, style), true);
       }
       const claimed = await recordProjectConnectionIfUnderCap(
         project.platform,
@@ -1136,8 +1266,8 @@ export const socialTools = [
       if (!claimed) {
         // Generic refusal — never discloses the owner's cap state, same
         // discipline as find_helper's "no one available" message.
-        const language = await getLanguagePreference(caller.platform, caller.userId);
-        return text(formatRequestProjectConnectionText('ownerCapped', language), true);
+        const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
+        return text(formatRequestProjectConnectionText('ownerCapped', language, style), true);
       }
       const requesterLabel = await resolveSanitizedLabel(caller.platform, caller.userId);
       // Issue #1245: the DM RECIPIENT's (project owner's) own language/style
@@ -1171,8 +1301,8 @@ export const socialTools = [
         }
         logger.warn({ err, userId: hashId(project.userId) }, 'request_project_connection DM failed');
       });
-      const language = await getLanguagePreference(caller.platform, caller.userId);
-      return text(formatRequestProjectConnectionText('sent', language));
+      const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
+      return text(formatRequestProjectConnectionText('sent', language, style));
     },
   }),
 
