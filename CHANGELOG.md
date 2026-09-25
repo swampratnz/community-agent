@@ -26,6 +26,20 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #1355 #1356 #1357 #1341 #1350 #1360 #1381 #1391 #1441 #1382
 -->
 
+## 2026-09-26
+
+### Changed
+- **`user_history` can now show a member's message history oldest first, not
+  just newest first.** (#1460) The same "slow-building pattern vs. sudden
+  flare-up" question `list_member_warnings`/`moderation_history` already let
+  admins ask of warning strikes and moderation actions couldn't be asked of a
+  member's raw message history — newest-first-only ordering meant an admin
+  could never see where a pattern started once a member had more messages
+  than the default limit. A new optional `oldestFirst` flag reorders the
+  same data ascending by date, matching the `oldestFirst` option already on
+  `list_member_warnings`/`moderation_history`/`list_muted_members`/
+  `list_blocked_members`.
+
 ## 2026-09-25
 
 ### Changed
