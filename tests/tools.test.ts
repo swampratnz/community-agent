@@ -14568,50 +14568,48 @@ test(
 );
 
 test(
-  "SECURITY: user_history's conversation scope — the callerScope() result passed to userMessages — is " +
-    'identical on the oldestFirst-omitted, false, and true paths, so requesting oldestFirst can never widen ' +
-    'which conversations are visible (issue #1460 acceptance criterion 4)',
+  "SECURITY: user_history's conversation scope is preserved identically on both paths — requesting " +
+    "oldestFirst can never surface a message from a conversation outside the caller admin's callerScope() " +
+    '(issue #1460 acceptance criterion 4)',
   { skip },
-  async (t) => {
-    const conv = `${RUN}-userhistory-scope-identical`;
-    const target = `${RUN}-userhistory-scope-identical-target`;
-    await insertUserHistoryInteraction({
-      platform: 'discord',
-      conversationId: conv,
-      userId: target,
-      content: 'hi',
-    });
+  async () => {
+    const inScope = `${RUN}-userhistory-scope-in`;
+    const outOfScope = `${RUN}-userhistory-scope-out`;
+    const target = `${RUN}-userhistory-scope-target`;
     try {
-      const scopeParams: unknown[] = [];
-      const realQuery = pool.query.bind(pool);
-      t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
-        if (typeof sql === 'string' && /FROM interactions\b/.test(sql)) {
-          const params = rest[0] as unknown[];
-          scopeParams.push(params[2]);
-        }
-        return (realQuery as (...a: unknown[]) => unknown)(sql, ...rest);
-      }) as typeof pool.query);
-      try {
-        for (const args of [{}, { oldestFirst: false }, { oldestFirst: true }] as const) {
-          await userHistoryHandler('admin', 'admin-1', conv).handler({ userId: target, ...args });
-        }
-      } finally {
-        t.mock.restoreAll();
-      }
-      assert.equal(scopeParams.length, 3, 'each of the three variants must query interactions exactly once');
-      assert.deepEqual(
-        scopeParams[1],
-        scopeParams[0],
-        'oldestFirst: false must pass the identical callerScope() array as the omitted-field default',
+      await insertUserHistoryInteraction({
+        platform: 'discord',
+        conversationId: inScope,
+        userId: target,
+        content: 'in-scope-message',
+      });
+      await insertUserHistoryInteraction({
+        platform: 'discord',
+        conversationId: outOfScope,
+        userId: target,
+        content: 'out-of-scope-message',
+      });
+
+      const defaultResult = await userHistoryHandler('admin', 'admin-1', inScope).handler({ userId: target });
+      assert.match(defaultResult.content[0]?.text ?? '', /in-scope-message/);
+      assert.doesNotMatch(
+        defaultResult.content[0]?.text ?? '',
+        /out-of-scope-message/,
+        'SECURITY: default path must never surface a message from outside callerScope()',
       );
-      assert.deepEqual(
-        scopeParams[2],
-        scopeParams[0],
-        'oldestFirst: true must pass the identical callerScope() array as the default — never a wider or ' +
-          'narrower conversation set',
+
+      const oldestFirstResult = await userHistoryHandler('admin', 'admin-1', inScope).handler({
+        userId: target,
+        oldestFirst: true,
+      });
+      assert.match(oldestFirstResult.content[0]?.text ?? '', /in-scope-message/);
+      assert.doesNotMatch(
+        oldestFirstResult.content[0]?.text ?? '',
+        /out-of-scope-message/,
+        'SECURITY: oldestFirst: true must never widen visibility past callerScope()',
       );
     } finally {
-      await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conv]);
+      await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [[inScope, outOfScope]]);
     }
   },
 );
