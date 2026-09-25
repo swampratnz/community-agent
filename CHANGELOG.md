@@ -77,6 +77,17 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   existing DMs for the last silent pair in this family. A failed DM never
   reverses the link/unlink or changes the admin's reported success — it just
   adds a short note to the admin's own reply.
+- **Eight more member replies now honour your "keep it simple" plain-language
+  preference.** (#1437) `set_response_style('plain')` (#126) already
+  simplified the later resolution DMs for a suggestion, report, appeal, or
+  help request (#1212), but the tool's own immediate reply when you submit or
+  withdraw one — `suggest_improvement`, `withdraw_suggestion`, `rate_answer`,
+  `request_human_help`, `report_content`, `withdraw_report`,
+  `appeal_moderation`, `withdraw_appeal` — still came back in full English or
+  te reo regardless of a standing plain preference. All eight now check it
+  too, with te reo still taking priority when both preferences are set. No
+  new tool, table, or preference — same `response_style_prefs` row every
+  other plain-aware notice already reads.
 
 ## 2026-09-20
 
