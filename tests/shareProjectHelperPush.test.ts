@@ -123,6 +123,33 @@ test('formatShareProjectText: notifiedHelper appends a distinct line (byte-ident
 });
 
 test(
+  "formatShareProjectText: 'updated' gains the identical optional notifiedHelper field 'created' already has, " +
+    'appending the SAME line (issue #1462)',
+  () => {
+    const base = formatShareProjectText({ kind: 'updated', name: 'Foo' }, 'en');
+    assert.equal(
+      formatShareProjectText({ kind: 'updated', name: 'Foo', notifiedHelper: false }, 'en'),
+      base,
+      'notifiedHelper: false must render byte-identical to omitting the field entirely',
+    );
+    const withNotify = formatShareProjectText({ kind: 'updated', name: 'Foo', notifiedHelper: true }, 'en');
+    assert.notEqual(withNotify, base);
+    assert.ok(
+      withNotify.startsWith(base),
+      'the notified line is appended, never replacing the base sentence',
+    );
+    const createdWithNotify = formatShareProjectText(
+      { kind: 'created', name: 'Bar', notifiedHelper: true },
+      'en',
+    );
+    assert.ok(
+      withNotify.endsWith(createdWithNotify.slice(createdWithNotify.indexOf(' Also'))),
+      "'updated' and 'created' append the exact same notified-helper line",
+    );
+  },
+);
+
+test(
   "share_project sends exactly one DM to the single best-matching opted-in helper on a brand-new seeking-collaborators share, and appends the notified line to the caller's own reply (issue #1200 AC #1)",
   { skip },
   async () => {
@@ -206,8 +233,16 @@ test(
   },
 );
 
+// Issue #1462: this test used to also cover editing a project to ADD
+// seekingCollaborators (the false->true transition) as one of its
+// zero-DM cases — that assertion is now backwards (the transition is the one
+// edit shape that SHOULD push), so it moved out into its own dedicated test
+// below. What remains here are every edit/removal/disabled shape that must
+// stay silent both before and after this issue.
 test(
-  'share_project never queries or DMs on an edit, a removal, a non-seeking share, or with find_helper disabled — every one of those replies is byte-identical to the pre-#1200 text (issue #1200 AC #3)',
+  'share_project sends zero DMs on a non-seeking share, a true→true resubmit, a true→false edit, an edit ' +
+    'that omits seekingCollaborators, a removal, or with find_helper disabled — every one of those replies ' +
+    'is byte-identical to today (issue #1200 AC #3; issue #1462 AC #2, #3, #4)',
   { skip },
   async () => {
     const owner = `${RUN}-gated-owner`;
@@ -229,30 +264,65 @@ test(
     );
     assert.equal(sends.length, 0);
 
-    // (b) editing the same project to add seekingCollaborators — result.created
-    // is now false, so the push must not run even though the flag is true.
-    const edited = await shareTool.handler({
+    // (b) editing the same project without mentioning seekingCollaborators at
+    // all — an edit that never touches the flag must stay silent (issue
+    // #1462 AC #4 "untouched paths").
+    const omitted = await shareTool.handler({ name: 'Gated Project', description: `${description} v2` });
+    assert.equal(omitted.isError, false);
+    assert.equal(
+      omitted.content[0]?.text,
+      formatShareProjectText({ kind: 'updated', name: 'Gated Project' }, 'auto'),
+    );
+    assert.equal(sends.length, 0, 'an edit that omits seekingCollaborators must never trigger the push');
+
+    // (c) the false->true transition itself — sends exactly one DM, verified
+    // in isolation by the dedicated test below. Reused here ONLY to reach an
+    // already-seeking state for (d)/(e); this test does not re-assert its
+    // one-DM behaviour.
+    const flipped = await shareTool.handler({
       name: 'Gated Project',
       description,
       seekingCollaborators: true,
     });
-    assert.equal(edited.isError, false);
+    assert.equal(flipped.isError, false);
+    assert.equal(sends.length, 1);
+
+    // (d) resubmitting seekingCollaborators: true on an already-seeking
+    // project — no transition, so zero ADDITIONAL DMs (issue #1462 AC #2:
+    // the transition check reads the pre-write persisted value, not the
+    // incoming arg).
+    const resubmitted = await shareTool.handler({
+      name: 'Gated Project',
+      description,
+      seekingCollaborators: true,
+    });
+    assert.equal(resubmitted.isError, false);
     assert.equal(
-      edited.content[0]?.text,
+      resubmitted.content[0]?.text,
       formatShareProjectText({ kind: 'updated', name: 'Gated Project' }, 'auto'),
     );
-    assert.equal(
-      sends.length,
-      0,
-      'an edit must never trigger the push, even with seekingCollaborators: true',
-    );
+    assert.equal(sends.length, 1, 'a true->true resubmit must never re-trigger the push');
 
-    // (c) removing the project.
+    // (e) turning seekingCollaborators back off — zero additional DMs (issue
+    // #1462 AC #3).
+    const turnedOff = await shareTool.handler({
+      name: 'Gated Project',
+      description,
+      seekingCollaborators: false,
+    });
+    assert.equal(turnedOff.isError, false);
+    assert.equal(
+      turnedOff.content[0]?.text,
+      formatShareProjectText({ kind: 'updated', name: 'Gated Project' }, 'auto'),
+    );
+    assert.equal(sends.length, 1, 'a true->false edit must never trigger the push');
+
+    // (f) removing the project.
     const removed = await shareTool.handler({ name: 'Gated Project', remove: true });
     assert.equal(removed.isError, false);
-    assert.equal(sends.length, 0, 'a removal must never trigger the push');
+    assert.equal(sends.length, 1, 'a removal must never trigger the push');
 
-    // (d) config.findHelper.enabled === false — a brand-new seeking share with
+    // (g) config.findHelper.enabled === false — a brand-new seeking share with
     // a matching helper still sends zero DMs and the reply drops the notified
     // line entirely.
     const wasEnabled = config.findHelper.enabled;
@@ -268,12 +338,56 @@ test(
         disabled.content[0]?.text,
         formatShareProjectText({ kind: 'created', name: 'Gated Project Disabled' }, 'auto'),
       );
-      assert.equal(sends.length, 0, 'a disabled find_helper feature flag must suppress the push entirely');
+      assert.equal(sends.length, 1, 'a disabled find_helper feature flag must suppress the push entirely');
     } finally {
       config.findHelper.enabled = wasEnabled;
     }
 
     await pool.query(`DELETE FROM member_interests WHERE platform = 'discord' AND user_id = $1`, [helper]);
+    await pool.query(`DELETE FROM member_projects WHERE platform = 'discord' AND user_id = $1`, [owner]);
+    await pool.query(`DELETE FROM helper_notifications WHERE helper_user_id = $1`, [helper]);
+  },
+);
+
+test(
+  'share_project sends exactly one DM to the single best-matching opted-in helper when an edit flips ' +
+    "seekingCollaborators from false/unset to true, and the caller's updated reply carries the notified " +
+    'line (issue #1462 AC #1)',
+  { skip },
+  async () => {
+    const owner = `${RUN}-transition-owner`;
+    const helper = `${RUN}-transition-helper`;
+    const description = `${RUN} an eighth very unique project description about edit-transition helper matching`;
+    await setMemberInterests('discord', helper, description);
+    await setHelperAvailability('discord', helper, true);
+
+    const sends: Array<{ userId: string; text: string }> = [];
+    const shareTool = shareProjectHandler(owner, stubAdapter(sends));
+
+    // Share WITHOUT seekingCollaborators first — the "now I want help" edit
+    // this issue closes only makes sense starting from a non-seeking share.
+    const created = await shareTool.handler({ name: 'Transition Project', description });
+    assert.equal(created.isError, false);
+    assert.equal(sends.length, 0, 'precondition: the initial non-seeking share sends zero DMs');
+
+    // Now edit the SAME project, flipping the flag on — the exact state
+    // transition #1462 closes: a member who shared without asking for help
+    // later decides they want collaborators.
+    const edited = await shareTool.handler({
+      name: 'Transition Project',
+      description,
+      seekingCollaborators: true,
+    });
+    assert.equal(edited.isError, false);
+    assert.equal(sends.length, 1, 'exactly one DM is sent on the false->true transition');
+    assert.equal(sends[0]?.userId, helper);
+    assert.equal(
+      edited.content[0]?.text,
+      formatShareProjectText({ kind: 'updated', name: 'Transition Project', notifiedHelper: true }, 'auto'),
+    );
+
+    await pool.query(`DELETE FROM member_interests WHERE platform = 'discord' AND user_id = $1`, [helper]);
+    await pool.query(`DELETE FROM helper_notifications WHERE helper_user_id = $1`, [helper]);
     await pool.query(`DELETE FROM member_projects WHERE platform = 'discord' AND user_id = $1`, [owner]);
   },
 );
@@ -479,6 +593,92 @@ test(
     await pool.query(`DELETE FROM helper_notifications WHERE helper_user_id = ANY($1)`, [
       [cappedHelper, nextHelper],
     ]);
+  },
+);
+
+test(
+  "SECURITY: share_project's edit-triggered updated reply never discloses the notified helper's platform, user id, or interest text — the same non-disclosure #1200 AC #4 pins for the created reply, extended to updated (issue #1462 AC #5)",
+  { skip },
+  async () => {
+    const owner = `${RUN}-leak-edit-owner`;
+    const helper = `${RUN}-leak-edit-helper`;
+    const description = 'a very identifiable edit-leak-test interest phrase about vector search tuning';
+    await setMemberInterests('discord', helper, description);
+    await setHelperAvailability('discord', helper, true);
+
+    const sends: Array<{ userId: string; text: string }> = [];
+    const shareTool = shareProjectHandler(owner, stubAdapter(sends));
+    await shareTool.handler({ name: 'Leak Edit Project', description });
+    const result = await shareTool.handler({
+      name: 'Leak Edit Project',
+      description,
+      seekingCollaborators: true,
+    });
+
+    assert.equal(result.isError, false);
+    assert.equal(sends.length, 1);
+    const replyText = result.content[0]?.text ?? '';
+    assert.doesNotMatch(
+      replyText,
+      new RegExp(helper),
+      "SECURITY: the sharer's own edit reply must never contain the matched helper's user id",
+    );
+    assert.doesNotMatch(
+      replyText,
+      /vector search/i,
+      "SECURITY: the sharer's own edit reply must never contain the matched helper's interest text",
+    );
+
+    await pool.query(`DELETE FROM member_interests WHERE platform = 'discord' AND user_id = $1`, [helper]);
+    await pool.query(`DELETE FROM helper_notifications WHERE helper_user_id = $1`, [helper]);
+    await pool.query(`DELETE FROM member_projects WHERE platform = 'discord' AND user_id = $1`, [owner]);
+  },
+);
+
+test(
+  "SECURITY: share_project's edit-transition push honours the shared weekly per-helper cap — a helper already at FIND_HELPER_WEEKLY_LIMIT_PER_HELPER from ANY trigger path (create-push, find_helper, or a prior edit-transition push) is skipped by the edit-transition push too, in favor of the next candidate (issue #1462 AC #6)",
+  { skip },
+  async () => {
+    const owner = `${RUN}-weeklycap-edit-owner`;
+    const cappedHelper = `${RUN}-weeklycap-edit-capped`;
+    const nextHelper = `${RUN}-weeklycap-edit-next`;
+    const description = `${RUN} a ninth very unique project description about edit-transition rate limiting`;
+
+    await setMemberInterests('discord', cappedHelper, description);
+    await setHelperAvailability('discord', cappedHelper, true);
+    await setMemberInterests('discord', nextHelper, `${description} (paraphrase)`);
+    await setHelperAvailability('discord', nextHelper, true);
+
+    // Seed the capped helper's weekly quota directly, as if a PRIOR trigger
+    // path (create-push or find_helper) already notified them — one shared
+    // budget across all three trigger paths, not a third one.
+    for (let i = 0; i < FIND_HELPER_WEEKLY_LIMIT_PER_HELPER; i++) {
+      await pool.query(
+        `INSERT INTO helper_notifications
+           (helper_platform, helper_user_id, requester_platform, requester_user_id, topic)
+         VALUES ('discord', $1, 'discord', $2, $3)`,
+        [cappedHelper, `${RUN}-weeklycap-edit-prior-requester-${i}`, `prior topic ${i}`],
+      );
+    }
+
+    const sends: Array<{ userId: string; text: string }> = [];
+    const shareTool = shareProjectHandler(owner, stubAdapter(sends));
+    await shareTool.handler({ name: 'Weekly Cap Edit Project', description });
+    const result = await shareTool.handler({
+      name: 'Weekly Cap Edit Project',
+      description,
+      seekingCollaborators: true,
+    });
+
+    assert.equal(result.isError, false);
+    assert.equal(sends.length, 1);
+    assert.equal(sends[0]?.userId, nextHelper, 'the capped helper is skipped in favor of the next candidate');
+
+    await pool.query(`DELETE FROM member_interests WHERE user_id = ANY($1)`, [[cappedHelper, nextHelper]]);
+    await pool.query(`DELETE FROM helper_notifications WHERE helper_user_id = ANY($1)`, [
+      [cappedHelper, nextHelper],
+    ]);
+    await pool.query(`DELETE FROM member_projects WHERE platform = 'discord' AND user_id = $1`, [owner]);
   },
 );
 

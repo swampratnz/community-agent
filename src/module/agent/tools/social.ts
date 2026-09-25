@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
 import { config } from '@swampratnz/agent-base/config.js';
 import { logger, hashId } from '@swampratnz/agent-base/logger.js';
-import type { Platform } from '@swampratnz/agent-base/platforms/types.js';
+import type { Platform, PlatformAdapter } from '@swampratnz/agent-base/platforms/types.js';
 import { WindowClosedError } from '@swampratnz/agent-base/platforms/types.js';
 import { untrustedEntryContent } from '@swampratnz/agent-base/agent/systemPrompt.js';
 import {
@@ -370,6 +370,10 @@ export const PROJECT_DUPLICATE_SEARCH_LIMIT = 3;
  * match-and-notify path) actually reached an opted-in helper — never who,
  * same non-disclosure discipline as `find_helper`'s own `matched` outcome.
  * Omitted/false renders byte-identical to the pre-#1200 `created` text.
+ * `updated` gains the identical optional `notifiedHelper` field (issue
+ * #1462): an edit that flips `seekingCollaborators` from false/unset to true
+ * runs the same push, reusing the exact appended line `created` already has,
+ * so the caller is told the same way regardless of which branch fired it.
  * `style` (issue #1458), same `'mi'`-wins-over-`'plain'` precedence as every
  * formatter in this file.
  */
@@ -381,7 +385,7 @@ export function formatShareProjectText(
     | { kind: 'removed'; name: string }
     | { kind: 'notFound'; name: string }
     | { kind: 'created'; name: string; notifiedHelper?: boolean }
-    | { kind: 'updated'; name: string }
+    | { kind: 'updated'; name: string; notifiedHelper?: boolean }
     | {
         kind: 'similar';
         name: string;
@@ -395,6 +399,14 @@ export function formatShareProjectText(
 ): string {
   const mi = language === 'mi';
   const plain = style === 'plain';
+  // Shared by `created` and `updated` (issue #1462) — the exact same
+  // appended line regardless of which branch's push actually fired, so the
+  // caller is told the same way either time.
+  const notifiedHelperLine = mi
+    ? ' Kua whakapā atu hoki ki tētahi mema e rite ana ōna hiahia — kia manawanui.'
+    : plain
+      ? ' Also contacted a member with matching interests.'
+      : ' Also reached out to a member whose published interests match — hang tight.';
   switch (outcome.kind) {
     case 'missingDescription':
       return mi
@@ -437,21 +449,16 @@ export function formatShareProjectText(
           ? `Shared "${outcome.name}".`
           : `Shared "${outcome.name}" — other members can find it with list_projects.`;
       if (!outcome.notifiedHelper) return base;
-      return (
-        base +
-        (mi
-          ? ' Kua whakapā atu hoki ki tētahi mema e rite ana ōna hiahia — kia manawanui.'
-          : plain
-            ? ' Also contacted a member with matching interests.'
-            : ' Also reached out to a member whose published interests match — hang tight.')
-      );
+      return base + notifiedHelperLine;
     }
-    case 'updated':
-      return mi
+    case 'updated': {
+      const base = mi
         ? `Kua whakahoutia a "${outcome.name}".`
         : plain
           ? `Saved "${outcome.name}".`
           : `Updated "${outcome.name}".`;
+      return outcome.notifiedHelper ? base + notifiedHelperLine : base;
+    }
     case 'similar': {
       const matchName = untrustedEntryContent(outcome.matchName);
       if (!outcome.matchSeekingCollaborators) {
@@ -574,6 +581,73 @@ export function formatSetMyInterestsText(
       : plain
         ? 'Got it. Other members can now find you with who_is_into.'
         : 'Got it — your interests are now visible to other members via who_is_into.';
+}
+
+/**
+ * `share_project`'s match-and-notify push (issue #1200), extracted (issue
+ * #1462) so the `updated` branch below can trigger the identical path a
+ * brand-new seeking-collaborators share already does, rather than living
+ * only inside the `created` branch. Matches `description` against opted-in
+ * helpers (`findHelperCandidates`, same consent basis as `find_helper`) and
+ * sends AT MOST ONE DM, to the single best-matching candidate still under
+ * `find_helper`'s own shared weekly cap (`recordHelperNotificationIfUnderCap`)
+ * — never a broadcast, and never a second budget. Returns whether a helper
+ * was actually notified, for the `notifiedHelper` reply field. Callers are
+ * responsible for their own `config.findHelper.enabled` gate — this function
+ * only matches and sends.
+ */
+async function runSeekingCollaboratorsPush(
+  description: string,
+  platform: Platform,
+  userId: string,
+  adapterFor: (rowPlatform: Platform) => PlatformAdapter | undefined,
+): Promise<boolean> {
+  const candidates = await findHelperCandidates(description, platform, userId);
+  for (const candidate of candidates) {
+    const target = adapterFor(candidate.platform);
+    if (!target) continue;
+    const claimed = await recordHelperNotificationIfUnderCap(
+      candidate.platform,
+      candidate.userId,
+      platform,
+      userId,
+      description,
+    );
+    if (!claimed) continue;
+    const requesterLabel = await resolveSanitizedLabel(platform, userId);
+    // Issue #1245: the DM RECIPIENT's own language/style preference — never
+    // the requester's (SECURITY: caller/recipient must never mix up which
+    // identity's preference is resolved here).
+    const { language: recipientLanguage, style: recipientStyle } = await resolveRecipientNoticeSelection(
+      candidate.platform,
+      candidate.userId,
+    );
+    // untrusted() quarantines the member-supplied project description before
+    // it reaches a DIFFERENT member's DM (issue #1200 SECURITY criterion) —
+    // same discipline find_helper's topic field already uses.
+    const message =
+      notice('shareProjectMatchMessage', { language: recipientLanguage, style: recipientStyle })(
+        requesterLabel,
+      ) +
+      '\n' +
+      untrusted('project', description);
+    // Best-effort send, same fire-and-forget/WindowClosedError-queue shape as
+    // find_helper — a failed or queued send still counts as "the one DM this
+    // call sends" (the notification row above is already committed).
+    await target.sendDirectMessage(candidate.userId, message).catch((err) => {
+      if (err instanceof WindowClosedError && target.queueForWindowReopen) {
+        target.queueForWindowReopen(candidate.userId, message, 'low');
+        logger.warn(
+          { userId: hashId(candidate.userId), platform: candidate.platform },
+          "share_project DM: recipient's window is closed, queued for reopen",
+        );
+        return;
+      }
+      logger.warn({ err, userId: hashId(candidate.userId) }, 'share_project DM failed');
+    });
+    return true;
+  }
+  return false;
 }
 
 export const socialTools = [
@@ -1003,6 +1077,19 @@ export const socialTools = [
         const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
         return text(formatShareProjectText({ kind: 'missingDescription' }, language, style), true);
       }
+      // Issue #1462: the caller's OWN persisted state for this name, read
+      // BEFORE the write below, so the `updated` branch can tell a flag flip
+      // (false/unset -> true) from a no-op resubmit or a turning-off edit —
+      // shareProject's own result only reports created/updated, never what
+      // the PRIOR value was. listOwnProjects is already imported/used
+      // elsewhere in this file (list_projects below); no new repository
+      // function. A brand-new share simply finds no row here, so
+      // wasSeekingCollaborators is false and the created branch below is
+      // unaffected.
+      const existing = (await listOwnProjects(caller.platform, caller.userId)).find(
+        (p) => p.name === args.name,
+      );
+      const wasSeekingCollaborators = existing?.seekingCollaborators ?? false;
       const result = await shareProject({
         platform: caller.platform,
         userId: caller.userId,
@@ -1037,55 +1124,10 @@ export const socialTools = [
         // duplicate-content check below — a genuinely new seeking-
         // collaborators share is a real signal worth pushing on regardless of
         // whether it also happens to look similar to an existing project.
-        let notifiedHelper = false;
-        if (args.seekingCollaborators && config.findHelper.enabled) {
-          const candidates = await findHelperCandidates(args.description, caller.platform, caller.userId);
-          for (const candidate of candidates) {
-            const target = adapterFor(candidate.platform);
-            if (!target) continue;
-            const claimed = await recordHelperNotificationIfUnderCap(
-              candidate.platform,
-              candidate.userId,
-              caller.platform,
-              caller.userId,
-              args.description,
-            );
-            if (!claimed) continue;
-            const requesterLabel = await resolveSanitizedLabel(caller.platform, caller.userId);
-            // Issue #1245: the DM RECIPIENT's own language/style preference —
-            // never the caller's (SECURITY: caller/recipient must never mix
-            // up which identity's preference is resolved here).
-            const { language: recipientLanguage, style: recipientStyle } =
-              await resolveRecipientNoticeSelection(candidate.platform, candidate.userId);
-            // untrusted() quarantines the member-supplied project description
-            // before it reaches a DIFFERENT member's DM (issue #1200
-            // SECURITY criterion) — same discipline find_helper's topic field
-            // already uses.
-            const message =
-              notice('shareProjectMatchMessage', { language: recipientLanguage, style: recipientStyle })(
-                requesterLabel,
-              ) +
-              '\n' +
-              untrusted('project', args.description);
-            // Best-effort send, same fire-and-forget/WindowClosedError-queue
-            // shape as find_helper — a failed or queued send still counts as
-            // "the one DM this call sends" (the notification row above is
-            // already committed).
-            await target.sendDirectMessage(candidate.userId, message).catch((err) => {
-              if (err instanceof WindowClosedError && target.queueForWindowReopen) {
-                target.queueForWindowReopen(candidate.userId, message, 'low');
-                logger.warn(
-                  { userId: hashId(candidate.userId), platform: candidate.platform },
-                  "share_project DM: recipient's window is closed, queued for reopen",
-                );
-                return;
-              }
-              logger.warn({ err, userId: hashId(candidate.userId) }, 'share_project DM failed');
-            });
-            notifiedHelper = true;
-            break;
-          }
-        }
+        const notifiedHelper =
+          args.seekingCollaborators && config.findHelper.enabled
+            ? await runSeekingCollaboratorsPush(args.description, caller.platform, caller.userId, adapterFor)
+            : false;
         // Issue #1190: write-time duplicate-content nudge, only on a
         // brand-new share (never `updated`/`removed`/a cap-or-rate-limit
         // refusal above, which return earlier) — mirroring save_knowledge's
@@ -1120,7 +1162,21 @@ export const socialTools = [
           formatShareProjectText({ kind: 'created', name: args.name, notifiedHelper }, language, style),
         );
       }
-      return text(formatShareProjectText({ kind: 'updated', name: args.name }, language, style));
+      // Issue #1462: the push complement for the "now I want help" edit
+      // moment — fires ONLY on the exact state transition into seeking mode
+      // (false/unset -> true), read from `wasSeekingCollaborators` above
+      // (the PRE-write persisted value, never the incoming arg — a
+      // true->true resubmit or a true->false edit must stay silent). Any
+      // other edit shape (flag omitted, remove, config.findHelper.enabled
+      // false) leaves notifiedHelper false and the reply byte-identical to
+      // before this issue.
+      const notifiedHelper =
+        args.seekingCollaborators === true && !wasSeekingCollaborators && config.findHelper.enabled
+          ? await runSeekingCollaboratorsPush(args.description, caller.platform, caller.userId, adapterFor)
+          : false;
+      return text(
+        formatShareProjectText({ kind: 'updated', name: args.name, notifiedHelper }, language, style),
+      );
     },
   }),
 
