@@ -14348,6 +14348,295 @@ test(
   },
 );
 
+// user_history oldestFirst (issue #1460) — the one per-member moderation
+// history tool the oldestFirst sweep had never named (#1371/#1379/#1426/
+// #1443/#1255/#1259/#1261/#1265). agent-base's userMessages has no ordering
+// parameter, so this is implemented module-side as a single bounded fetch +
+// JS sort, same shape as moderation_history above; unlike moderation_history's
+// own 100 (recentModerationEntries clamps its own limit), USER_HISTORY_SCAN_LIMIT
+// is 200, matching list_member_warnings/list_muted_members/list_blocked_members.
+const USER_HISTORY_SCAN_LIMIT = 200;
+
+function userHistoryHandler(
+  role: 'member' | 'admin',
+  userId = 'admin-user-history',
+  conversationId = 'convo-user-history',
+) {
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId,
+      userName: 'Admin',
+      role,
+      conversationId,
+    },
+    stubAdapter(async () => {}),
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: { userId: string; limit?: number; oldestFirst?: boolean }) => Promise<{
+            content: Array<{ type: string; text: string }>;
+            isError?: boolean;
+          }>;
+        }
+      >;
+    }
+  )._registeredTools['user_history'];
+}
+
+async function insertUserHistoryInteraction(row: {
+  platform: 'discord' | 'whatsapp';
+  conversationId: string;
+  userId: string;
+  content: string;
+  createdAt?: Date;
+}) {
+  await pool.query(
+    `INSERT INTO interactions (platform, conversation_id, user_id, role, direction, content, created_at)
+     VALUES ($1,$2,$3,'member','inbound',$4, COALESCE($5, now()))`,
+    [row.platform, row.conversationId, row.userId, row.content, row.createdAt ?? null],
+  );
+}
+
+test(
+  'user_history: oldestFirst orders by createdAt ascending, sliced to limit ?? 20; omitted/false stays byte-' +
+    'identical to the default newest-first order (issue #1460 acceptance criteria 1-2)',
+  { skip },
+  async () => {
+    const conv = `${RUN}-userhistory-order`;
+    const target = `${RUN}-userhistory-order-target`;
+    try {
+      await insertUserHistoryInteraction({
+        platform: 'discord',
+        conversationId: conv,
+        userId: target,
+        content: 'msg-older',
+        createdAt: new Date(Date.now() - 2 * 86_400_000),
+      });
+      await insertUserHistoryInteraction({
+        platform: 'discord',
+        conversationId: conv,
+        userId: target,
+        content: 'msg-newer',
+        createdAt: new Date(Date.now() - 1 * 86_400_000),
+      });
+
+      const defaultOrder = await userHistoryHandler('admin', 'admin-1', conv).handler({ userId: target });
+      const defaultText = defaultOrder.content[0]?.text ?? '';
+      assert.ok(
+        defaultText.indexOf('msg-newer') < defaultText.indexOf('msg-older'),
+        'default (no oldestFirst) lists the newest message before the oldest one, unchanged from before this ' +
+          'issue',
+      );
+
+      const explicitFalse = await userHistoryHandler('admin', 'admin-1', conv).handler({
+        userId: target,
+        oldestFirst: false,
+      });
+      assert.equal(
+        explicitFalse.content[0]?.text,
+        defaultText,
+        'oldestFirst: false must render byte-identical to the omitted-field default',
+      );
+
+      const oldestFirstOrder = await userHistoryHandler('admin', 'admin-1', conv).handler({
+        userId: target,
+        oldestFirst: true,
+      });
+      const oldestFirstText = oldestFirstOrder.content[0]?.text ?? '';
+      assert.ok(
+        oldestFirstText.indexOf('msg-older') < oldestFirstText.indexOf('msg-newer'),
+        'oldestFirst: true lists the earliest message before the more recent one',
+      );
+      assert.doesNotMatch(
+        oldestFirstText,
+        /oldestFirst caveat/i,
+        'a scan well under USER_HISTORY_SCAN_LIMIT must not carry the "may be incomplete" caveat',
+      );
+    } finally {
+      await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conv]);
+    }
+  },
+);
+
+test(
+  'user_history: oldestFirst appends an explicit caveat when the scan hits USER_HISTORY_SCAN_LIMIT, since that ' +
+    'many messages means the genuinely earliest one could sit outside the single bounded scan and never ' +
+    'surface — the tool must say so rather than silently reporting a mid-recent row as "oldest"; the default ' +
+    '(non-oldestFirst) path never carries the caveat (issue #1460 acceptance criterion 6)',
+  { skip },
+  async (t) => {
+    const conv = `${RUN}-userhistory-scanlimit-caveat`;
+    const target = `${RUN}-userhistory-scanlimit-caveat-target`;
+    const now = Date.now();
+    const syntheticRows = Array.from({ length: USER_HISTORY_SCAN_LIMIT }, (_, i) => ({
+      conversation_id: conv,
+      direction: 'inbound',
+      content: `entry-${i}`,
+      created_at: new Date(now - i * 1000),
+    }));
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && /FROM interactions\b/.test(sql)) {
+        return Promise.resolve({ rows: syntheticRows, rowCount: syntheticRows.length });
+      }
+      return (realQuery as (...a: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+    try {
+      const result = await userHistoryHandler('admin', 'admin-1', conv).handler({
+        userId: target,
+        oldestFirst: true,
+      });
+      const rendered = result.content[0]?.text ?? '';
+      assert.match(
+        rendered,
+        /oldestFirst caveat/i,
+        'hitting the scan limit must surface an explicit caveat that the true oldest row may not be shown',
+      );
+      assert.match(
+        rendered,
+        /user_history/,
+        'the caveat should name this tool, same wording pattern as list_member_warnings/moderation_history',
+      );
+      assert.match(
+        rendered,
+        new RegExp(String(USER_HISTORY_SCAN_LIMIT)),
+        'the caveat should name the scan-limit constant so an admin understands the bound',
+      );
+
+      const defaultResult = await userHistoryHandler('admin', 'admin-1', conv).handler({ userId: target });
+      assert.doesNotMatch(
+        defaultResult.content[0]?.text ?? '',
+        /oldestFirst caveat/i,
+        'the default (non-oldestFirst) path must never carry the caveat, regardless of underlying volume',
+      );
+    } finally {
+      t.mock.restoreAll();
+    }
+  },
+);
+
+test(
+  'user_history queries interactions exactly once regardless of oldestFirst, binding the SQL LIMIT to args.' +
+    'limit ?? 20 on the default path and to the module-local scan-limit constant (200) — never an unbounded ' +
+    'scan — only when oldestFirst: true (issue #1460 acceptance criterion 3)',
+  { skip },
+  async (t) => {
+    const conv = `${RUN}-userhistory-scanlimit-bound`;
+    const target = `${RUN}-userhistory-scanlimit-bound-target`;
+    await insertUserHistoryInteraction({
+      platform: 'discord',
+      conversationId: conv,
+      userId: target,
+      content: 'hi',
+    });
+    try {
+      for (const args of [{}, { oldestFirst: false }, { oldestFirst: true }] as const) {
+        const calls: unknown[][] = [];
+        const realQuery = pool.query.bind(pool);
+        t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+          if (typeof sql === 'string' && /FROM interactions\b/.test(sql)) calls.push(rest);
+          return (realQuery as (...a: unknown[]) => unknown)(sql, ...rest);
+        }) as typeof pool.query);
+        try {
+          await userHistoryHandler('admin', 'admin-1', conv).handler({ userId: target, ...args });
+          assert.equal(
+            calls.length,
+            1,
+            `user_history must query interactions exactly once for ${JSON.stringify(args)}`,
+          );
+          const params = calls[0][0] as unknown[];
+          assert.equal(
+            params[params.length - 1],
+            args.oldestFirst ? USER_HISTORY_SCAN_LIMIT : 20,
+            args.oldestFirst
+              ? 'oldestFirst: true must bind the module-local USER_HISTORY_SCAN_LIMIT (200) to the SQL LIMIT ' +
+                  'parameter, never an unbounded scan'
+              : 'the default/oldestFirst:false path must bind args.limit ?? 20, never the scan-limit constant',
+          );
+        } finally {
+          t.mock.restoreAll();
+        }
+      }
+    } finally {
+      await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conv]);
+    }
+  },
+);
+
+test(
+  "SECURITY: user_history's conversation scope is preserved identically on both paths — requesting " +
+    "oldestFirst can never surface a message from a conversation outside the caller admin's callerScope() " +
+    '(issue #1460 acceptance criterion 4)',
+  { skip },
+  async () => {
+    const inScope = `${RUN}-userhistory-scope-in`;
+    const outOfScope = `${RUN}-userhistory-scope-out`;
+    const target = `${RUN}-userhistory-scope-target`;
+    try {
+      await insertUserHistoryInteraction({
+        platform: 'discord',
+        conversationId: inScope,
+        userId: target,
+        content: 'in-scope-message',
+      });
+      await insertUserHistoryInteraction({
+        platform: 'discord',
+        conversationId: outOfScope,
+        userId: target,
+        content: 'out-of-scope-message',
+      });
+
+      const defaultResult = await userHistoryHandler('admin', 'admin-1', inScope).handler({ userId: target });
+      assert.match(defaultResult.content[0]?.text ?? '', /in-scope-message/);
+      assert.doesNotMatch(
+        defaultResult.content[0]?.text ?? '',
+        /out-of-scope-message/,
+        'SECURITY: default path must never surface a message from outside callerScope()',
+      );
+
+      const oldestFirstResult = await userHistoryHandler('admin', 'admin-1', inScope).handler({
+        userId: target,
+        oldestFirst: true,
+      });
+      assert.match(oldestFirstResult.content[0]?.text ?? '', /in-scope-message/);
+      assert.doesNotMatch(
+        oldestFirstResult.content[0]?.text ?? '',
+        /out-of-scope-message/,
+        'SECURITY: oldestFirst: true must never widen visibility past callerScope()',
+      );
+    } finally {
+      await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [[inScope, outOfScope]]);
+    }
+  },
+);
+
+test(
+  'SECURITY: a member-tier caller invoking user_history with oldestFirst: true is refused before any ' +
+    'repository read — interactions is never queried on the refused path (issue #1460 acceptance criterion 5)',
+  async (t) => {
+    const calls: unknown[][] = [];
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && /FROM interactions\b/.test(sql)) calls.push(rest);
+      return (realQuery as (...a: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+    try {
+      const registeredTool = userHistoryHandler('member');
+      await assert.rejects(
+        () => registeredTool.handler({ userId: 'anyone', oldestFirst: true }),
+        /Permission denied/,
+      );
+      assert.equal(calls.length, 0, 'a refused caller must never reach the interactions query');
+    } finally {
+      t.mock.restoreAll();
+    }
+  },
+);
+
 // list_muted_members (issue #487): enumerates currently-muted members by
 // identity — the growth path #403 named and deferred for the digest's bare
 // count. Uses a run-scoped fake platform (see tests/moderationRepo.test.ts'
