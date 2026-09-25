@@ -14377,11 +14377,7 @@ function userHistoryHandler(
       _registeredTools: Record<
         string,
         {
-          handler: (args: {
-            userId: string;
-            limit?: number;
-            oldestFirst?: boolean;
-          }) => Promise<{
+          handler: (args: { userId: string; limit?: number; oldestFirst?: boolean }) => Promise<{
             content: Array<{ type: string; text: string }>;
             isError?: boolean;
           }>;

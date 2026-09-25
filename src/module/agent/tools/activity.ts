@@ -73,7 +73,9 @@ export const activityTools = [
         ? await userMessages(caller.platform, args.userId, USER_HISTORY_SCAN_LIMIT, allowed ?? undefined)
         : null;
       const rows = scanned
-        ? [...scanned].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime()).slice(0, args.limit ?? 20)
+        ? [...scanned]
+            .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+            .slice(0, args.limit ?? 20)
         : await userMessages(caller.platform, args.userId, args.limit ?? 20, allowed ?? undefined);
       const linked = await resolveLinkedIdentities(caller.platform, args.userId);
       const linkNote =
