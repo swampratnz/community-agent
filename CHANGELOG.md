@@ -39,6 +39,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   same data ascending by date, matching the `oldestFirst` option already on
   `list_member_warnings`/`moderation_history`/`list_muted_members`/
   `list_blocked_members`.
+- **Editing a shared project to turn on "seeking collaborators" now notifies
+  a matching helper, not just a brand-new share.** (#1462) `share_project`'s
+  helper-matching push previously only fired when a project was first
+  created with collaborators requested — a member who shared without asking
+  for help, then later edited the same project to say they now want help,
+  got silent success with no signal to the community. Editing a project to
+  flip that setting from off to on now runs the same one-DM match-and-notify
+  push, sharing the identical weekly per-helper budget. Resubmitting an
+  already-on setting, turning it off, or any other edit shape stays exactly
+  as before: silent.
 
 ## 2026-09-25
 

@@ -160,7 +160,7 @@
   "securityDocSections.test.ts": 1,
   "securityGateCanary.test.ts": 1,
   "securityGateWrite.test.ts": 7,
-  "shareProjectHelperPush.test.ts": 7,
+  "shareProjectHelperPush.test.ts": 9,
   "staleKnowledgeAlert.router.test.ts": 3,
   "statusCheckAlert.test.ts": 4,
   "statusCheckMemberChannelAlert.test.ts": 3,
