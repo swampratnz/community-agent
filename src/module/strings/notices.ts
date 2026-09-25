@@ -1215,15 +1215,24 @@ const NOTICE_ENTRIES = {
     language: {
       mi: 'i kitea e ētahi atu mema he kore-āwhina tēnei — ka taea hoki e koe te tohu mā te rate_answer',
     },
+    style: {
+      plain: 'other members said this did not help',
+    },
   },
   knowledgeStaleNote: {
     base: 'may be outdated',
     language: { mi: 'tērā pea kua tawhito' },
+    style: {
+      plain: 'might be old',
+    },
   },
   knowledgeConflictCaveat: {
     base: "some of these entries may disagree with each other — an admin hasn't reconciled them yet",
     language: {
       mi: 'tērā pea kāore ētahi o ēnei mōhiotanga e whakaae ana ki a rātou anō — kāore anō i whakatikahia e tētahi kaiwhakahaere',
+    },
+    style: {
+      plain: "some of these may not agree with each other — an admin hasn't checked this yet",
     },
   },
   knowledgeSearchEmpty: {
@@ -1235,6 +1244,11 @@ const NOTICE_ENTRIES = {
         'Kāore he mōhiohio e tau ana. Ki te kitea e koe te whakautu, mā te suggest_knowledge e tiaki mō ' +
         'te tangata e whai ake nei, ki te hiahia koe, ka taea e au te karanga i tētahi kaiwhakahaere ' +
         'ā-tangata hei āwhina.',
+    },
+    style: {
+      plain:
+        'No matching answers. If you find the answer, save it with suggest_knowledge. I can also ask a ' +
+        'human admin to help.',
     },
   },
   // --- moderation DM texts (moderation/moderator.ts) ------------------------

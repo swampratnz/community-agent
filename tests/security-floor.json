@@ -114,6 +114,7 @@
   "knowledgeEntryIdRouter.test.ts": 1,
   "knowledgeForMe.test.ts": 8,
   "knowledgeGapAlert.router.test.ts": 2,
+  "knowledgeMemberResponseStyle.test.ts": 2,
   "knowledgeRefresh.test.ts": 2,
   "knowledgeRefreshStructuredOutput.test.ts": 4,
   "knowledgeSearchFailSafe.test.ts": 3,
