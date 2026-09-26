@@ -28,6 +28,19 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 
 ## 2026-09-26
 
+### Added
+- **Admins can now remove a bad project note.** (#1464) `project_note`'s
+  shared team memory was the one member-authored, community-visible content
+  surface left with no admin removal lever, after `remove_project` (#1185)
+  and `remove_interests` (#1230) closed the gap for the project showcase and
+  published interests — an admin who found a scam link, harassment, or
+  simply wrong information in a team's notes could previously only ask the
+  original author to withdraw it themselves. The new `remove_project_note`
+  quarantines any note by id, the same way the existing self-service
+  `withdraw_project_note` does, and works regardless of who wrote it or
+  whether they're still around to fix it. An optional reason sends the
+  original author a one-line DM; omitting one removes the note silently.
+
 ### Changed
 - **`user_history` can now show a member's message history oldest first, not
   just newest first.** (#1460) The same "slow-building pattern vs. sudden
