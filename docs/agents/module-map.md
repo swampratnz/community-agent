@@ -71,7 +71,7 @@ is marked **🔒**. Changes there need a `SECURITY:` test (see
 - `src/module/agent/tools/policyText.ts` — The `set_community_guidelines`/`set_welcome_message`/`welcome_message` ToolDef domain plus the two Discord-message-limit-derived text caps.
 - `src/module/agent/tools/prefs.ts` — The `set_response_style`/`set_language_preference` ToolDef domain: self-scoped, closed-enum standing preferences.
 - `src/module/agent/tools/projectNotes.ts` — The `project_recall`/`project_note`/`project_list` ToolDef domain: team-project shared memory, access-scoped in SQL via `visibleProjectIds`.
-- `src/module/agent/tools/projectsAdmin.ts` — The `project_*` admin ToolDef domain (create/add/remove member, bind/unbind, info, archive/unarchive): team-project membership and surface bindings, never tiers.
+- `src/module/agent/tools/projectsAdmin.ts` — The `project_*` admin ToolDef domain (create/add/remove member, bind/unbind, info, archive/unarchive): team-project membership and surface bindings, never tiers. Also `remove_project_note` (issue #1464), the admin-moderation counterpart to `withdraw_project_note`'s self-service-only removal — the one exception that touches note content, not membership/bindings.
 - `src/module/agent/tools/reactions.ts` — The `react_to_message` ToolDef domain plus its closed emoji allowlist and per-user daily reaction reserver.
 - `src/module/agent/tools/reportsAdmin.ts` — The `list_reports`/`resolve_report` ToolDef domain: content-report triage with the linked-identity accused-admin exclusion.
 - `src/module/agent/tools/reportsMember.ts` — The `report_content`/`withdraw_report`/`appeal_moderation` ToolDef domain plus the per-caller appeal cooldown reserver.

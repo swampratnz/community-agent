@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
+import type { Platform } from '@swampratnz/agent-base/platforms/types.js';
 import {
   addProjectMember,
   archiveProject,
@@ -21,8 +22,10 @@ import {
   notifyProjectArchived,
   notifyProjectMemberAdded,
   notifyProjectMemberRemoved,
+  notifyProjectNoteRemoved,
   notifyProjectUnarchived,
 } from './notify.js';
+import { getProjectNoteAuthor, recordProjectNoteWithdrawal } from '../../storage/projectNoteRecords.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 /**
@@ -473,6 +476,91 @@ export const projectsAdminTools = [
         },
       });
       return text(result);
+    },
+  }),
+
+  // Admin-moderation counterpart to withdraw_project_note's self-service-only
+  // removal (issue #1464, #1344's own doc comment flagged the gap) —
+  // project_note was the one member-authored, community-visible content
+  // surface with no admin removal lever after remove_project/remove_interests
+  // (social.ts) closed the gap for the other two. CONFIRM-gated + audited(),
+  // same shape as those two. Reuses the exact quarantine mechanism
+  // withdraw_project_note already uses (recordProjectNoteWithdrawal),
+  // bypassing its isOwnProjectNote ownership check for admin tier — there is
+  // no ownership-privacy concern at admin tier, unlike a member learning who
+  // authored a note they don't own. getProjectNoteAuthor doubles as both the
+  // existence gate (this module never queries project_notes, the base table,
+  // directly — schema/85-project-note-records.sql's header) and the sole
+  // source of the resolution-DM recipient identity: a note with no recorded
+  // author — a wholly unknown id, or one predating #1344's authorship
+  // tracking — fails closed with a distinct error, never the ambiguous
+  // "doesn't exist, or isn't yours" refusal withdraw_project_note uses (that
+  // ambiguity exists to protect a MEMBER from learning about another
+  // member's note; it has no purpose at admin tier).
+  defineTool({
+    name: 'remove_project_note',
+    description:
+      "Remove a note from a project's shared memory (project_recall), regardless of who recorded it — the " +
+      "admin-moderation counterpart to withdraw_project_note's self-service removal (which only the " +
+      'original author can do), for a scam link, harassment aimed at a teammate or an outsider, or wrong ' +
+      'information an uncooperative author will not correct. Looks up the note by the id shown to its ' +
+      'author when it was recorded. The base note is kept on record (not deleted) but is quarantined out ' +
+      `of every project_recall result from then on. Optional reason (max ${SUGGESTION_RESOLUTION_ECHO_CHARS} ` +
+      "characters) sends the note's original author a one-line resolution DM; omit it to remove silently " +
+      '(e.g. for spam/abuse where alerting the actor is undesirable). Requires confirmation. Admin only.',
+    minTier: 'admin',
+    readOnlyHint: false,
+    schema: {
+      noteId: z
+        .number()
+        .int()
+        .describe('The note id, shown to its author when it was recorded with project_note.'),
+      reason: z
+        .string()
+        .max(SUGGESTION_RESOLUTION_ECHO_CHARS)
+        .optional()
+        .describe(
+          "Optional, one-line, member-facing explanation sent to the note's original author as a " +
+            'resolution DM — omit to remove the note silently, with no notification. Never persisted.',
+        ),
+    },
+    handler: async (args, { caller, requireConfirm, audited, adapterFor }) => {
+      assertAtLeast(caller.role, 'admin', 'remove_project_note');
+      return requireConfirm(`remove project note #${args.noteId}`, 'admin', async () => {
+        // Resolved inside run() so a failed/unknown lookup never produces a
+        // successful audited() row, and so the author is never trusted from
+        // anything but this admin-tier repository read.
+        const state: { author: { platform: Platform; userId: string } | null } = { author: null };
+        const { success, result } = await audited({
+          actionKind: 'remove_project_note',
+          // reason is deliberately excluded — it only ever reaches the one DM
+          // below, same non-persistence convention as remove_project's.
+          params: { noteId: args.noteId },
+          run: async () => {
+            const author = await getProjectNoteAuthor(args.noteId);
+            if (!author) throw new Error(`No project note with id ${args.noteId}.`);
+            await recordProjectNoteWithdrawal(args.noteId);
+            state.author = author;
+            return `removed note #${args.noteId}`;
+          },
+        });
+        // Best-effort, same fire-and-forget/WindowClosedError-queue shape as
+        // notifyProjectRemoved — only sent when the admin supplied a reason;
+        // omitting one keeps the removal silent (useful for spam/abuse).
+        if (success && state.author && args.reason) {
+          const target = adapterFor(state.author.platform);
+          if (target) {
+            await notifyProjectNoteRemoved(
+              target,
+              state.author.userId,
+              state.author.platform,
+              undefined,
+              args.reason,
+            );
+          }
+        }
+        return success ? `Removed project note #${args.noteId}.` : `Failed: ${result}`;
+      });
     },
   }),
 ];
