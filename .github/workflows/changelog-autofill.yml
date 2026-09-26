@@ -196,7 +196,7 @@ jobs:
         id: draft
         if: env.HAS_TOKEN == 'true' && steps.standing.outputs.proceed == 'true'
         continue-on-error: true # the scope-check step below is the source of truth
-        uses: anthropics/claude-code-action@7b0b255830a1fab6e602658672acad11c12d841d # v1.0.226
+        uses: anthropics/claude-code-action@8cf3482550831fb35a4fc3fbf7ca139cf8028b4c # v1.0.233
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # A scheduled run's actor is github-actions[bot]; the action rejects
