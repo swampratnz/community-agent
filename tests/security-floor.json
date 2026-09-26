@@ -137,6 +137,7 @@
   "pipelineOutcomes.test.ts": 2,
   "pipelineWorkflowAllowlist.test.ts": 3,
   "platformRegistry.test.ts": 3,
+  "projectNoteRemoval.test.ts": 4,
   "projectNoteWithdrawal.test.ts": 2,
   "projectScope.test.ts": 16,
   "rateLimitNotice.router.test.ts": 2,
