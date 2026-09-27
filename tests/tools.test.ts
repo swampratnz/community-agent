@@ -29717,6 +29717,230 @@ test(
   },
 );
 
+// --- issue #1469: the seven project-notes notices honour a standing 'plain' response style ---
+
+const PROJECT_NOTES_STYLE_CASES = [
+  ['projectRecallEmpty', []],
+  ['projectNoteInvalidProject', []],
+  ['projectNoteRateLimited', [50]],
+  ['projectNoteSaved', ['impact-lab', 142]],
+  ['projectNoteWithdrawn', [142]],
+  ['projectNoteWithdrawRefused', []],
+  ['projectListEmpty', []],
+] as const;
+
+function renderProjectNotesCase(
+  id: (typeof PROJECT_NOTES_STYLE_CASES)[number][0],
+  args: readonly unknown[],
+  selection?: { language?: 'mi'; style?: 'plain' | 'standard' },
+): string {
+  const value = notice(id, selection);
+  return typeof value === 'function' ? (value as (...a: unknown[]) => string)(...args) : value;
+}
+
+test(
+  'the seven project-notes notices (projectRecallEmpty/projectNoteInvalidProject/projectNoteRateLimited/' +
+    'projectNoteSaved/projectNoteWithdrawn/projectNoteWithdrawRefused/projectListEmpty) each gain a ' +
+    "'plain' style variant materially shorter than 'base', byte-identical to 'base' for 'standard'/undefined " +
+    "style, and 'mi' wins over any style value (issue #1469 acceptance criteria 1, 3)",
+  () => {
+    for (const [id, args] of PROJECT_NOTES_STYLE_CASES) {
+      const base = renderProjectNotesCase(id, args);
+      assert.equal(
+        renderProjectNotesCase(id, args, { style: 'standard' }),
+        base,
+        `${id}: 'standard' style must be byte-identical to base`,
+      );
+      assert.equal(
+        renderProjectNotesCase(id, args, { style: undefined }),
+        base,
+        `${id}: undefined style must be byte-identical to base`,
+      );
+      const plain = renderProjectNotesCase(id, args, { style: 'plain' });
+      assert.notEqual(plain, base, `${id}: 'plain' style must actually differ from base`);
+      assert.ok(plain.length < base.length, `${id}: 'plain' style must be materially shorter than base`);
+
+      const mi = renderProjectNotesCase(id, args, { language: 'mi' });
+      assert.equal(
+        renderProjectNotesCase(id, args, { language: 'mi', style: 'plain' }),
+        mi,
+        `${id}: 'mi' must win over a 'plain' style`,
+      );
+      assert.equal(
+        renderProjectNotesCase(id, args, { language: 'mi', style: 'standard' }),
+        mi,
+        `${id}: 'mi' must win over a 'standard' style`,
+      );
+    }
+  },
+);
+
+test(
+  "SECURITY: a getResponseStyle rejection for the caller's own identity degrades " +
+    "resolveRecipientNoticeSelection to 'standard' rather than throwing, and every one of the seven " +
+    "project-notes notices renders its normal 'standard' English text for that degraded style — never a " +
+    'thrown error and never a dropped reply (issue #1469 acceptance criterion 4)',
+  async () => {
+    const rejectingLangPref = async () => {
+      throw new Error('simulated getLanguagePreference failure');
+    };
+    const rejectingRespStyle = async () => {
+      throw new Error('simulated getResponseStyle failure');
+    };
+
+    const { language, style } = await resolveRecipientNoticeSelection(
+      'discord',
+      `${RUN}-1469-caller-fail-safe-degrade`,
+      rejectingLangPref,
+      rejectingRespStyle,
+    );
+    assert.deepEqual(
+      { language, style },
+      { language: 'auto', style: 'standard' },
+      "a rejected caller-identity lookup degrades to English/'standard' rather than throwing",
+    );
+
+    for (const [id, args] of PROJECT_NOTES_STYLE_CASES) {
+      assert.equal(
+        renderProjectNotesCase(id, args, { language, style }),
+        renderProjectNotesCase(id, args, { language, style: 'standard' }),
+        `${id}: a degraded style must render the same as an explicit 'standard' style`,
+      );
+    }
+  },
+);
+
+test(
+  "project_recall/project_note/project_list/withdraw_project_note render the 'plain' style variant for a " +
+    "caller with a standing 'plain' response style (and no 'mi' preference), across all eight touched " +
+    'render sites, and stay byte-identical to today for a caller with no stored style (issue #1469 ' +
+    'acceptance criteria 2, 3)',
+  { skip },
+  async () => {
+    const {
+      createProject,
+      addProjectMember,
+      bindProjectSurface,
+      upsertMember,
+      PROJECT_NOTE_RATE_LIMIT_PER_DAY,
+    } = await import('@swampratnz/agent-base/storage/repository.js');
+    const slug = `${RUN}-1469-style-wiring`;
+    const project = await createProject({ slug, name: 'Style Wiring Lab', createdBy: 'test' });
+    assert.ok(project, 'fixture setup: slug must be free');
+
+    const plainOutsider = `${RUN}-1469-outsider-plain`;
+    const stdOutsider = `${RUN}-1469-outsider-std`;
+    const plainInsider = `${RUN}-1469-insider-plain`;
+    const stdInsider = `${RUN}-1469-insider-std`;
+    const plainCapMember = `${RUN}-1469-cap-plain`;
+
+    for (const userId of [plainOutsider, stdOutsider, plainInsider, stdInsider, plainCapMember]) {
+      await upsertMember({ platform: 'discord', userId, role: 'member', addedBy: 'test' });
+    }
+    await setResponseStyle('discord', plainOutsider, 'plain');
+    await setResponseStyle('discord', plainInsider, 'plain');
+    await setResponseStyle('discord', plainCapMember, 'plain');
+
+    await addProjectMember(project.id, 'discord', plainInsider, 'test');
+    await addProjectMember(project.id, 'discord', stdInsider, 'test');
+    await addProjectMember(project.id, 'discord', plainCapMember, 'test');
+    await bindProjectSurface(project.id, 'discord', 'convo-project-guest', 'test');
+
+    // project_list (no-arg empty branch): outsiders are in no project reachable here.
+    const plainList = await projectToolHandler('project_list', {
+      role: 'member',
+      userId: plainOutsider,
+    }).handler({});
+    const stdList = await projectToolHandler('project_list', { role: 'member', userId: stdOutsider }).handler(
+      {},
+    );
+    assert.equal(plainList.content[0].text, notice('projectListEmpty', { style: 'plain' }));
+    assert.equal(stdList.content[0].text, notice('projectListEmpty'));
+
+    // project_recall (empty branch): visibleProjectIds is empty for the outsiders.
+    const plainRecall = await projectToolHandler('project_recall', {
+      role: 'member',
+      userId: plainOutsider,
+    }).handler({ query: 'anything' });
+    const stdRecall = await projectToolHandler('project_recall', {
+      role: 'member',
+      userId: stdOutsider,
+    }).handler({ query: 'anything' });
+    assert.equal(plainRecall.content[0].text, notice('projectRecallEmpty', { style: 'plain' }));
+    assert.equal(stdRecall.content[0].text, notice('projectRecallEmpty'));
+
+    // project_note (invalid-project branch): an outsider naming this real project.
+    const plainInvalid = await projectToolHandler('project_note', {
+      role: 'member',
+      userId: plainOutsider,
+    }).handler({ project: slug, content: `${RUN} invalid path plain` });
+    const stdInvalid = await projectToolHandler('project_note', {
+      role: 'member',
+      userId: stdOutsider,
+    }).handler({ project: slug, content: `${RUN} invalid path std` });
+    assert.equal(plainInvalid.content[0].text, notice('projectNoteInvalidProject', { style: 'plain' }));
+    assert.equal(stdInvalid.content[0].text, notice('projectNoteInvalidProject'));
+
+    // project_list (roster branch): reuses the same projectNoteInvalidProject
+    // refusal for a nonexistent slug, so exercised here too.
+    const plainRoster = await projectToolHandler('project_list', {
+      role: 'member',
+      userId: plainInsider,
+    }).handler({ project: `${slug}-does-not-exist` });
+    assert.equal(plainRoster.content[0].text, notice('projectNoteInvalidProject', { style: 'plain' }));
+
+    // project_note (saved branch): an actual member of the project.
+    const plainSaved = await projectToolHandler('project_note', {
+      role: 'member',
+      userId: plainInsider,
+    }).handler({
+      project: slug,
+      content: `${RUN} saved content plain`,
+    });
+    const stdSaved = await projectToolHandler('project_note', { role: 'member', userId: stdInsider }).handler(
+      {
+        project: slug,
+        content: `${RUN} saved content std`,
+      },
+    );
+    const plainSavedId = Number(plainSaved.content[0].text.match(/\[#(\d+)\]/)?.[1]);
+    const stdSavedId = Number(stdSaved.content[0].text.match(/\[#(\d+)\]/)?.[1]);
+    assert.ok(Number.isInteger(plainSavedId), 'the plain-style reply must carry the new note id');
+    assert.ok(Number.isInteger(stdSavedId), 'the standard-style reply must carry the new note id');
+    assert.equal(
+      plainSaved.content[0].text,
+      notice('projectNoteSaved', { style: 'plain' })(slug, plainSavedId),
+    );
+    assert.equal(stdSaved.content[0].text, notice('projectNoteSaved')(slug, stdSavedId));
+
+    // project_note (rate-limited branch): a plain-style member over the cap.
+    const capTool = projectToolHandler('project_note', { role: 'member', userId: plainCapMember });
+    for (let i = 0; i < PROJECT_NOTE_RATE_LIMIT_PER_DAY; i++) {
+      const ok = await capTool.handler({ project: slug, content: `${RUN} 1469 cap note ${i}` });
+      assert.equal(ok.isError, false, `write ${i + 1} must land while under the cap`);
+    }
+    const overCap = await capTool.handler({ project: slug, content: `${RUN} 1469 over cap` });
+    assert.equal(
+      overCap.content[0].text,
+      notice('projectNoteRateLimited', { style: 'plain' })(PROJECT_NOTE_RATE_LIMIT_PER_DAY),
+    );
+
+    // withdraw_project_note (both refused + withdrawn branches), plain style.
+    const withdrawTool = projectToolHandler('withdraw_project_note', {
+      role: 'member',
+      userId: plainInsider,
+    });
+    const refused = await withdrawTool.handler({ noteId: plainSavedId + 999_000_000 });
+    assert.equal(refused.content[0].text, notice('projectNoteWithdrawRefused', { style: 'plain' }));
+    const withdrawn = await withdrawTool.handler({ noteId: plainSavedId });
+    assert.equal(withdrawn.content[0].text, notice('projectNoteWithdrawn', { style: 'plain' })(plainSavedId));
+
+    await pool.query(`DELETE FROM response_style_prefs WHERE platform = 'discord' AND user_id LIKE $1`, [
+      `${RUN}-1469-%`,
+    ]);
+  },
+);
+
 // --- issue #1256: project_list gains an optional `project` roster view ---
 
 test(
