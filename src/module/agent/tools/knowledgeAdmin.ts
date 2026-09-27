@@ -32,6 +32,7 @@ import {
 import { classifySourceUrl } from '../../context/linkCheck.js';
 import {
   formatFoundKnowledge,
+  formatKnowledgeConflictPairs,
   formatKnowledgeEntryLine,
   formatTopKnowledgeList,
   rankKnowledgeByRetrieval,
@@ -535,20 +536,7 @@ export const knowledgeAdminTools = [
     handler: async (args, { caller }) => {
       assertAtLeast(caller.role, 'admin', 'list_knowledge_conflicts');
       const pairs = await listKnowledgeConflictCandidates(args.scope, args.limit);
-      if (pairs.length === 0) return text('No conflict-candidate knowledge pairs found.');
-      return text(
-        untrusted(
-          'Conflict-candidate knowledge pairs — each is a candidate for admin review, not a confirmed contradiction',
-          pairs
-            .map((p) => {
-              const pct = (p.similarity * 100).toFixed(0);
-              const aLabel = p.aTitle ? `"${p.aTitle}"` : `#${p.aId}`;
-              const bLabel = p.bTitle ? `"${p.bTitle}"` : `#${p.bId}`;
-              return `#${p.aId} (${aLabel}) ↔ #${p.bId} (${bLabel}) — ${pct}% similar`;
-            })
-            .join('\n'),
-        ),
-      );
+      return text(formatKnowledgeConflictPairs(pairs));
     },
   }),
 

@@ -71,6 +71,7 @@ const {
   formatAdminRoster,
   formatBlockedMembersList,
   formatFeatureFlags,
+  formatKnowledgeConflictPairs,
   formatKnowledgeSearchResults,
   formatKnowledgeTopics,
   formatListProjectsEmptyText,
@@ -235,6 +236,8 @@ function mockPool(
     adminRosterRows?: PoolRow[];
     /** `listAccessRequests`' rows for `/accessrequests` (issue #1346), raw snake_case DB shape — distinct from the `accessRequestCount`/`accessRequestAgeDays` aggregates above. */
     accessRequestRows?: PoolRow[];
+    /** `listKnowledgeConflictCandidates`' rows for `/kbconflicts` (issue #1471), raw snake_case DB shape (`a_id`/`a_title`/`b_id`/`b_title`/`similarity`) — distinct from `hasConflictAmongIds`' boolean `conflictExists` check below, which shares the same `JOIN knowledge b` substring but selects no `a_id` column. */
+    knowledgeConflictPairRows?: PoolRow[];
   } = {},
 ): Array<{ sql: string; params: unknown[] }> {
   const calls: Array<{ sql: string; params: unknown[] }> = [];
@@ -275,6 +278,13 @@ function mockPool(
     // on a more specific substring FIRST. listOwnKnowledgeCandidates' `FROM
     // knowledge_candidates kc` also starts with the literal characters "FROM
     // knowledge", so it needs the same specific-first treatment (issue #1018).
+    // listKnowledgeConflictCandidates' pair-returning read (issue #1471's
+    // /kbconflicts), told apart from hasConflictAmongIds' boolean existence
+    // check below by its distinguishing 'a_id' select column — checked first,
+    // same specific-first discipline as every other multi-query table above.
+    if (sql.includes('JOIN knowledge b') && sql.includes('a_id')) {
+      return { rows: opts.knowledgeConflictPairRows ?? [], rowCount: 0 };
+    }
     if (sql.includes('JOIN knowledge b')) {
       return { rows: opts.conflictExists ? [{ '?column?': 1 }] : [], rowCount: 0 };
     }
@@ -694,6 +704,7 @@ test('with DISCORD_SLASH_COMMANDS_ENABLED=true, all commands are registered guil
     'guidelines',
     'help',
     'kb',
+    'kbconflicts',
     'kbforme',
     'kbhelpful',
     'kbtopics',
@@ -724,7 +735,7 @@ test("a slash-command registration failure is caught and logged, never thrown, m
   assert.ok(warnLog.mock.calls.length >= 1, 'a registration failure must be logged, not swallowed silently');
 });
 
-test('buildSlashCommands defines exactly the twenty-two approved read-only commands, each with its expected required-ness', () => {
+test('buildSlashCommands defines exactly the twenty-three approved read-only commands, each with its expected required-ness', () => {
   const commands = buildSlashCommands();
   const byName = new Map(commands.map((c) => [c.name, c]));
   assert.deepEqual([...byName.keys()].sort(), [
@@ -738,6 +749,7 @@ test('buildSlashCommands defines exactly the twenty-two approved read-only comma
     'guidelines',
     'help',
     'kb',
+    'kbconflicts',
     'kbforme',
     'kbhelpful',
     'kbtopics',
@@ -881,6 +893,13 @@ test('buildSlashCommands defines exactly the twenty-two approved read-only comma
     [],
     '/accessrequests takes no options — always listAccessRequests(50), the same byte-identical default ' +
       "list_access_requests's own handler uses when called with no arguments, admin-tier only (issue #1346)",
+  );
+  assert.deepEqual(
+    (byName.get('kbconflicts') as { options?: unknown[] }).options ?? [],
+    [],
+    '/kbconflicts takes no options — always listKnowledgeConflictCandidates(undefined, undefined), the same ' +
+      "default arguments list_knowledge_conflicts's own handler uses when called with no arguments, " +
+      'admin-tier only (issue #1471)',
   );
 });
 
@@ -4247,6 +4266,137 @@ test('/accessrequests replies ephemerally, deferring before its DB round trip', 
   const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
   const { interaction, replies, order } = fakeInteraction({
     commandName: 'accessrequests',
+    userId: 'admin-1',
+  });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies[0].ephemeral, true);
+  assert.deepEqual(order, ['deferReply', 'editReply']);
+});
+
+// --- Issue #1471: /kbconflicts (the ninth admin-tier slash command) ---------
+
+test(
+  "/kbconflicts renders formatKnowledgeConflictPairs's output for the same pairs listKnowledgeConflictCandidates " +
+    'returns (issue #1471 acceptance criteria 1, 8)',
+  async (t) => {
+    mockPool(t, {
+      memberRole: 'admin',
+      knowledgeConflictPairRows: [
+        {
+          a_id: 1,
+          a_title: 'Meetup cadence current',
+          b_id: 2,
+          b_title: 'Meetup cadence old',
+          similarity: 0.7,
+        },
+      ],
+    });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'kbconflicts', userId: 'admin-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    const expected = formatKnowledgeConflictPairs([
+      { aId: 1, aTitle: 'Meetup cadence current', bId: 2, bTitle: 'Meetup cadence old', similarity: 0.7 },
+    ]);
+    assert.equal(replies[0].content, stripEmDashes(expected));
+    assert.match(replies[0].content, /Meetup cadence current/);
+  },
+);
+
+test(
+  '/kbconflicts renders "No conflict-candidate knowledge pairs found." when nothing qualifies (issue #1471 ' +
+    'acceptance criterion 3)',
+  async (t) => {
+    mockPool(t, { memberRole: 'admin', knowledgeConflictPairRows: [] });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'kbconflicts', userId: 'admin-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies[0].content, 'No conflict-candidate knowledge pairs found.');
+  },
+);
+
+test(
+  'SECURITY: a guest caller is rejected on /kbconflicts without any knowledge-conflict repository read ever ' +
+    'being invoked (issue #1471 acceptance criterion 6)',
+  async (t) => {
+    const calls = mockPool(t, {
+      memberRole: null,
+      knowledgeConflictPairRows: [{ a_id: 1, a_title: 'leak', b_id: 2, b_title: 'leak', similarity: 0.7 }],
+    });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'kbconflicts', userId: 'guest-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].ephemeral, true);
+    assert.match(replies[0].content, /don't have access/i);
+    assert.ok(
+      !calls.some((c) => c.sql.includes('JOIN knowledge b') && c.sql.includes('a_id')),
+      'no knowledge-conflict repository read must run for a rejected caller',
+    );
+  },
+);
+
+test(
+  "SECURITY: a member-tier caller is rejected on /kbconflicts — the same atLeast(role, 'admin') gate as " +
+    '/mutedlist/blockedlist/accessrequests, not just the member-tier toolsForRole check every other command ' +
+    'uses (issue #1471 acceptance criterion 6)',
+  async (t) => {
+    const calls = mockPool(t, {
+      memberRole: 'member',
+      knowledgeConflictPairRows: [{ a_id: 1, a_title: 'leak', b_id: 2, b_title: 'leak', similarity: 0.7 }],
+    });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const { interaction, replies } = fakeInteraction({ commandName: 'kbconflicts', userId: 'member-1' });
+
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].ephemeral, true);
+    assert.match(
+      replies[0].content,
+      /don't have access/i,
+      'a member-tier caller must be denied, not just a guest',
+    );
+    assert.ok(
+      !calls.some((c) => c.sql.includes('JOIN knowledge b') && c.sql.includes('a_id')),
+      'no knowledge-conflict repository read must run for a member-tier caller',
+    );
+  },
+);
+
+test("a successful /kbconflicts invocation calls recordShortcutHit('slash_command') exactly once (issue #1471)", async (t) => {
+  const calls = mockPool(t, { memberRole: 'admin', knowledgeConflictPairRows: [] });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction } = fakeInteraction({ commandName: 'kbconflicts', userId: 'admin-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(shortcutHitCalls(calls).length, 1, '/kbconflicts must record exactly one slash_command hit');
+});
+
+test('SECURITY: recordShortcutHit is never called on the NOT_AUTHORIZED_TEXT branch for /kbconflicts (issue #1471)', async (t) => {
+  const calls = mockPool(t, { memberRole: null });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({ commandName: 'kbconflicts', userId: 'guest-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.match(replies[0].content, /don't have access/i, 'sanity check: /kbconflicts was actually denied');
+  assert.equal(shortcutHitCalls(calls).length, 0, 'an auth-denied reply must never record a shortcut hit');
+});
+
+test('/kbconflicts replies ephemerally, deferring before its DB round trip', async (t) => {
+  mockPool(t, { memberRole: 'admin', knowledgeConflictPairRows: [] });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies, order } = fakeInteraction({
+    commandName: 'kbconflicts',
     userId: 'admin-1',
   });
 

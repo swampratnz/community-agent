@@ -43,6 +43,7 @@ import {
   listAdminRoster,
   listBlockedUsers,
   listKnowledge,
+  listKnowledgeConflictCandidates,
   listKnowledgeTopics,
   listMutedMembers,
   listOwnAppeals,
@@ -76,6 +77,7 @@ import {
   formatCommunityInfoText,
   formatFeatureFlags,
   formatInterestResults,
+  formatKnowledgeConflictPairs,
   formatKnowledgeSearchResults,
   formatKnowledgeTopics,
   formatListProjectsEmptyText,
@@ -1109,6 +1111,33 @@ async function handleAccessRequests(
 }
 
 /**
+ * `list_knowledge_conflicts` is the ninth shortcut in this file (issue
+ * #1471) — same `admin`-floor double-check shape as `handleMutedList`/
+ * `handleBlockedList`/`handleAccessRequests` above. Calls the exact same
+ * `listKnowledgeConflictCandidates(undefined, undefined)` + `formatKnowledgeConflictPairs()`
+ * pair `list_knowledge_conflicts`'s own tool handler now delegates to
+ * (helpers.ts), so the two can never drift.
+ */
+async function handleKbConflicts(
+  interaction: ChatInputCommandInteraction,
+  deps: SlashCommandDeps,
+): Promise<void> {
+  await deferEphemeral(interaction);
+  const role = await resolveRole('discord', interaction.user.id);
+  if (
+    !toolsForRole(role, 'discord').includes('mcp__community__list_knowledge_conflicts') ||
+    !atLeast(role, 'admin')
+  ) {
+    await replyEphemeral(interaction, NOT_AUTHORIZED_TEXT, deps);
+    return;
+  }
+  const pairs = await listKnowledgeConflictCandidates(undefined, undefined);
+  const message = formatKnowledgeConflictPairs(pairs);
+  recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
+  await replyEphemeral(interaction, message, deps);
+}
+
+/**
  * `list_events` is structurally in MEMBER_TOOLS with no extra runtime floor
  * beyond `toolsForRole` (unlike `/warnings`/`/whois`/`/projects`/`/digest`
  * above) — mirrored here exactly like `/kb`'s gate (issue #1004). Takes no
@@ -1374,6 +1403,14 @@ export function bindCommunitySlashCommands(adapter: PlatformAdapter): void {
         .setDescription('Admin: enumerate guests currently waiting for access, identity and wait time.')
         .toJSON(),
     handle: handleAccessRequests,
+  });
+  bindDiscordCommand('kbconflicts', {
+    build: () =>
+      new SlashCommandBuilder()
+        .setName('kbconflicts')
+        .setDescription('Admin: audit the knowledge base for pairs of entries that may quietly disagree.')
+        .toJSON(),
+    handle: handleKbConflicts,
   });
   bindDiscordCommand('events', {
     build: () =>

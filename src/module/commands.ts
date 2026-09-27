@@ -24,6 +24,7 @@ import {
   listAdminRoster,
   listBlockedUsers,
   listKnowledge,
+  listKnowledgeConflictCandidates,
   listKnowledgeTopics,
   listMutedMembers,
   listOwnAppeals,
@@ -49,6 +50,7 @@ import {
   formatCommunityInfoText,
   formatFeatureFlags,
   formatInterestResults,
+  formatKnowledgeConflictPairs,
   formatKnowledgeSearchResults,
   formatKnowledgeTopics,
   formatListProjectsEmptyText,
@@ -94,9 +96,10 @@ import { notice } from './strings/notices.js';
  * `featureflags` (issue #1183, the fifth — and the first at the
  * `super_admin` floor rather than `admin`), `admindigest` (issue #1194, the
  * sixth), `adminlist` (issue #1218, the seventh, and the second at the
- * `super_admin` floor), `accessrequests` (issue #1346, the eighth), and
+ * `super_admin` floor), `accessrequests` (issue #1346, the eighth),
  * `kbforme` (issue #1411, closing the last member-tier zero-argument
- * browse-tool shortcut gap in the `kb*` family) appended — also safe for
+ * browse-tool shortcut gap in the `kb*` family), and `kbconflicts` (issue
+ * #1471, the ninth admin-tier entry) appended — also safe for
  * the WhatsApp side because every `!` matcher is anchored and mutually
  * exclusive.
  *
@@ -826,6 +829,27 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
       if (!atLeast(role, 'admin')) return null;
       const rows = await listAccessRequests(50);
       return formatAccessRequestsList(rows);
+    },
+  },
+  {
+    // Ninth admin-tier entry (issue #1471), same shape as `reviewqueue`/
+    // `mutedlist`/`blockedlist`/`topknowledge`/`admindigest`/`adminlist`/
+    // `accessrequests` above. Anchored, argument-rejecting matcher:
+    // `!kbconflicts anything` falls through to TEXT_COMMAND_UNMATCHED rather
+    // than matching, so no message-supplied text ever reaches
+    // listKnowledgeConflictCandidates's scope/limit arguments. Calls it with
+    // the exact same (undefined, undefined) arguments — unset scope, default
+    // limit — list_knowledge_conflicts's own handler uses when called with no
+    // arguments, and renders through the SAME shared formatKnowledgeConflictPairs
+    // (tools/helpers.ts) that handler now uses too, so the two can never
+    // drift.
+    name: 'kbconflicts',
+    platforms: ['discord', 'whatsapp'],
+    whatsapp: async (text, _msg, role) => {
+      if (!/^!kbconflicts$/i.test(text)) return TEXT_COMMAND_UNMATCHED;
+      if (!atLeast(role, 'admin')) return null;
+      const pairs = await listKnowledgeConflictCandidates(undefined, undefined);
+      return formatKnowledgeConflictPairs(pairs);
     },
   },
 ];

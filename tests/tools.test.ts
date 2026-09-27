@@ -9427,7 +9427,11 @@ test(
     // the same reason. `accessrequests` (issue #1346) is the sixth
     // `admin`-floor exception, added to the SAME `whatsappAdminTextCommands`
     // notice `reviewqueue`/`mutedlist`/`blockedlist`/`topknowledge`/
-    // `admindigest` use, for the same reason.
+    // `admindigest` use, for the same reason. `kbconflicts` (issue #1471) is
+    // the seventh `admin`-floor exception, added to the SAME
+    // `whatsappAdminTextCommands` notice
+    // `reviewqueue`/`mutedlist`/`blockedlist`/`topknowledge`/`admindigest`/
+    // `accessrequests` use, for the same reason.
     const WHATSAPP_DISCOVERY_EXEMPT_COMMANDS: readonly string[] = [
       'reviewqueue',
       'mutedlist',
@@ -9437,6 +9441,7 @@ test(
       'admindigest',
       'adminlist',
       'accessrequests',
+      'kbconflicts',
     ];
 
     const original = config.behaviour.whatsappTextCommandsEnabled;
@@ -10151,6 +10156,96 @@ test(
           /!accessrequests/,
           `a Discord caller (${role}) must never see the WhatsApp-only !accessrequests shortcut block — ` +
             'Discord already surfaces /accessrequests via its own slash-command autocomplete',
+        );
+      }
+    } finally {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    }
+  },
+);
+
+// --- issue #1471: !kbconflicts discovery for admin-tier WhatsApp callers,
+// the same whatsappAdminTextCommands notice !reviewqueue (#1097)/!mutedlist
+// (#1114)/!blockedlist (#1145)/!topknowledge (#1165)/!admindigest
+// (#1194)/!accessrequests (#1346) discover through, appended in the same
+// diff rather than needing a follow-up issue.
+
+test(
+  'community_info/formatCommunityInfoText mention !kbconflicts for admin- and super_admin-tier WhatsApp ' +
+    'callers with whatsappTextCommandsEnabled on, in both the default/en and mi language variants (issue ' +
+    '#1471 acceptance criterion 5)',
+  { skip },
+  async () => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    try {
+      config.behaviour.whatsappTextCommandsEnabled = true;
+
+      const enAdmin = `${RUN}-info-admin-kbconflicts-en`;
+      const enReply = (await communityInfoHandler('admin', 'whatsapp', enAdmin)).content[0]?.text ?? '';
+      assert.match(enReply, /!kbconflicts/, 'an admin-tier WhatsApp caller must be told about !kbconflicts');
+
+      const miAdmin = `${RUN}-info-admin-kbconflicts-mi`;
+      await setLanguagePreferenceHandler({ platform: 'whatsapp', userId: miAdmin }).handler({
+        language: 'mi',
+      });
+      const miReply = (await communityInfoHandler('admin', 'whatsapp', miAdmin)).content[0]?.text ?? '';
+      assert.match(
+        miReply,
+        /!kbconflicts/,
+        "an admin-tier WhatsApp caller with a 'mi' preference must also be told about !kbconflicts",
+      );
+
+      const enSuperAdmin = `${RUN}-info-super-admin-kbconflicts-en`;
+      const superAdminReply =
+        (await communityInfoHandler('super_admin', 'whatsapp', enSuperAdmin)).content[0]?.text ?? '';
+      assert.match(
+        superAdminReply,
+        /!kbconflicts/,
+        'a super_admin-tier WhatsApp caller must be told about !kbconflicts',
+      );
+
+      assert.equal(
+        await formatCommunityInfoText('admin', 'whatsapp', enAdmin),
+        enReply,
+        "formatCommunityInfoText's own output must match the tool handler's (single source of truth)",
+      );
+    } finally {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    }
+  },
+);
+
+test(
+  'SECURITY: !kbconflicts is never mentioned in community_info/formatCommunityInfoText output for a member ' +
+    'or guest WhatsApp caller (whatsappTextCommandsEnabled on), nor for a Discord caller at any tier (issue ' +
+    '#1471 acceptance criterion 5)',
+  async () => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    try {
+      config.behaviour.whatsappTextCommandsEnabled = true;
+
+      const memberReply = (await communityInfoHandler('member', 'whatsapp')).content[0]?.text ?? '';
+      assert.doesNotMatch(
+        memberReply,
+        /!kbconflicts/,
+        'a member-tier WhatsApp caller must never be told about the admin-only !kbconflicts shortcut',
+      );
+
+      const guestReply = (await communityInfoHandler('guest', 'whatsapp')).content[0]?.text ?? '';
+      assert.doesNotMatch(
+        guestReply,
+        /!kbconflicts/,
+        'a guest-tier WhatsApp caller must never be told about the admin-only !kbconflicts shortcut',
+      );
+
+      const roles = ['guest', 'member', 'admin', 'super_admin'] as const;
+      for (const role of roles) {
+        const discordReply = (await communityInfoHandler(role, 'discord')).content[0]?.text ?? '';
+        assert.doesNotMatch(
+          discordReply,
+          /!kbconflicts/,
+          `a Discord caller (${role}) must never see the WhatsApp-only !kbconflicts shortcut block — ` +
+            'Discord already surfaces /kbconflicts via its own slash-command autocomplete',
         );
       }
     } finally {
