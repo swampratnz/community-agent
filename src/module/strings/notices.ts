@@ -1157,11 +1157,17 @@ const NOTICE_ENTRIES = {
     language: {
       mi: 'Kāore he mea i ngā mahara tiritahi o te kaupapa e ōrite ana ki tērā (kāore rānei he kaupapa e watea ana ki a koe i konei).',
     },
+    style: {
+      plain: "I couldn't find that in project memory.",
+    },
   },
   projectNoteInvalidProject: {
     base: 'No project by that name is accessible here.',
     language: {
       mi: 'Kāore he kaupapa e taua ingoa e watea ana i konei.',
+    },
+    style: {
+      plain: "I can't find that project here.",
     },
   },
   projectNoteRateLimited: {
@@ -1172,6 +1178,9 @@ const NOTICE_ENTRIES = {
       mi: (limit: number) =>
         `Kua tuhia kētia e koe ${limit} ngā tuhinga kaupapa i roto i ngā haora 24 kua hipa. Whakamātau anō ` +
         'ā muri ake, pātai rānei ki tētahi kaiwhakahaere mehemea e hiahiatia ana e te tīma tētahi tepe teitei ake.',
+    },
+    style: {
+      plain: (limit: number) => `You've already recorded ${limit} notes today. Please try again later.`,
     },
   },
   projectNoteSaved: {
@@ -1186,11 +1195,17 @@ const NOTICE_ENTRIES = {
         `Kua tuhia ki ${project} [#${id}]. Ka taea e koe te whakahoki i tēnei wā, i tēnei wā mā te ` +
         'withdraw_project_note mehemea ka hē koe.',
     },
+    style: {
+      plain: (project: string, id: number) => `Saved to ${project} [#${id}].`,
+    },
   },
   projectNoteWithdrawn: {
     base: (id: number) => `Withdrew note #${id}.`,
     language: {
       mi: (id: number) => `Kua whakahokia te tuhinga #${id}.`,
+    },
+    style: {
+      plain: (id: number) => `#${id} withdrawn.`,
     },
   },
   // Deliberately the same reply for "no such note" and "exists but not
@@ -1202,11 +1217,17 @@ const NOTICE_ENTRIES = {
     language: {
       mi: 'Kāore tēnā tuhinga e noho ana, kāore rānei nāu i tuhi.',
     },
+    style: {
+      plain: "That note doesn't exist, or it isn't yours.",
+    },
   },
   projectListEmpty: {
     base: 'You have no project accessible in this conversation.',
     language: {
       mi: 'Kāore he kaupapa e watea ana ki a koe i roto i tēnei kōrero.',
+    },
+    style: {
+      plain: "You don't have a project here.",
     },
   },
   // --- knowledge citation-note fragments (agent/tools/helpers.ts) ----------

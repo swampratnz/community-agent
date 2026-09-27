@@ -2,7 +2,6 @@ import { z } from 'zod';
 import { assertAtLeast } from '@swampratnz/agent-base/auth/tiers.js';
 import { logger } from '@swampratnz/agent-base/logger.js';
 import {
-  getLanguagePreference,
   listProjectMembers,
   listVisibleProjects,
   PROJECT_NOTE_CONTENT_MAX_CHARS,
@@ -13,7 +12,7 @@ import {
   saveProjectNote,
   searchProjectNotes,
 } from '@swampratnz/agent-base/storage/repository.js';
-import { resolveSanitizedLabel, text, untrusted } from './helpers.js';
+import { resolveRecipientNoticeSelection, resolveSanitizedLabel, text, untrusted } from './helpers.js';
 import { notice } from '../../strings/notices.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 import { untrustedEntryContent } from '@swampratnz/agent-base/agent/systemPrompt.js';
@@ -70,8 +69,8 @@ export const projectNotesTools = [
         rawHits.length > 0 ? await getWithdrawnProjectNoteIds(rawHits.map((h) => h.id)) : new Set<number>();
       const hits = rawHits.filter((h) => !withdrawnIds.has(h.id));
       if (hits.length === 0) {
-        const language = await getLanguagePreference(caller.platform, caller.userId);
-        return text(notice('projectRecallEmpty', { language }));
+        const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
+        return text(notice('projectRecallEmpty', { language, style }));
       }
       recordProjectNoteRetrieval(hits.map((h) => h.id)).catch((err) =>
         logger.warn({ err }, 'Project note retrieval count update failed'),
@@ -149,16 +148,19 @@ export const projectNotesTools = [
       // yours / not bound here" (issue #205's wording rule): distinguishing
       // them would confirm a project's existence to a non-member.
       if (!saved) {
-        const language = await getLanguagePreference(caller.platform, caller.userId);
-        return text(notice('projectNoteInvalidProject', { language }), true);
+        const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
+        return text(notice('projectNoteInvalidProject', { language, style }), true);
       }
       // A rolling-24h write cap, same refusal shape as suggest_knowledge's
       // (PR #929 review). Deliberately worded as a limit that resets, not as
       // a rejection of the content, so a team minuting a long meeting knows
       // the note simply needs to wait rather than being lost to a bug.
       if ('atCap' in saved) {
-        const language = await getLanguagePreference(caller.platform, caller.userId);
-        return text(notice('projectNoteRateLimited', { language })(PROJECT_NOTE_RATE_LIMIT_PER_DAY), true);
+        const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
+        return text(
+          notice('projectNoteRateLimited', { language, style })(PROJECT_NOTE_RATE_LIMIT_PER_DAY),
+          true,
+        );
       }
       // Best-effort authorship record for withdraw_project_note (issue
       // #1344) — a failure here must never turn a saved note into a
@@ -173,8 +175,8 @@ export const projectNotesTools = [
       } catch (err) {
         logger.warn({ err }, 'Project note author record failed');
       }
-      const language = await getLanguagePreference(caller.platform, caller.userId);
-      return text(notice('projectNoteSaved', { language })(args.project, saved.id));
+      const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
+      return text(notice('projectNoteSaved', { language, style })(args.project, saved.id));
     },
   }),
 
@@ -224,12 +226,12 @@ export const projectNotesTools = [
         // lookup.
         const project = projects.find((p) => p.slug === args.project);
         if (!project) {
-          const language = await getLanguagePreference(caller.platform, caller.userId);
+          const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
           // Deliberately the exact same reply project_note uses for "no such
           // project" and "exists but not yours / not bound here" (issue
           // #205's wording rule) — never a new notice key, never a
           // distinguishing reply.
-          return text(notice('projectNoteInvalidProject', { language }), true);
+          return text(notice('projectNoteInvalidProject', { language, style }), true);
         }
         const members = await listProjectMembers(project.id);
         // Sanitized display name + platform only — never the raw
@@ -254,8 +256,8 @@ export const projectNotesTools = [
         );
       }
       if (projects.length === 0) {
-        const language = await getLanguagePreference(caller.platform, caller.userId);
-        return text(notice('projectListEmpty', { language }));
+        const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
+        return text(notice('projectListEmpty', { language, style }));
       }
       return text(
         untrusted(
@@ -292,7 +294,7 @@ export const projectNotesTools = [
       // SECURITY: re-check member tier in the handler, the same discipline
       // every other tool in this file uses.
       assertAtLeast(caller.role, 'member', 'withdraw_project_note');
-      const language = await getLanguagePreference(caller.platform, caller.userId);
+      const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
       // SECURITY: an unknown noteId and a real-but-not-mine noteId return
       // the IDENTICAL refusal (issue #1344 acceptance criterion 6, the
       // noteId analogue of project_note's own #205 wording rule) — never
@@ -301,10 +303,10 @@ export const projectNotesTools = [
       // which is expected (no backfill, no guessed authorship).
       const isOwn = await isOwnProjectNote(args.noteId, caller.platform, caller.userId);
       if (!isOwn) {
-        return text(notice('projectNoteWithdrawRefused', { language }), true);
+        return text(notice('projectNoteWithdrawRefused', { language, style }), true);
       }
       await recordProjectNoteWithdrawal(args.noteId);
-      return text(notice('projectNoteWithdrawn', { language })(args.noteId));
+      return text(notice('projectNoteWithdrawn', { language, style })(args.noteId));
     },
   }),
 ];
