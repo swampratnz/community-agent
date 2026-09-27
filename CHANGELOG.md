@@ -41,6 +41,13 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   added, and never filing it without the member's agreement. No new tool,
   tier, or data flow — the existing admin-reviewed queue, dedup guard, and
   rate cap are unchanged.
+- **`!kbconflicts`/`/kbconflicts`: a zero-model shortcut for
+  `list_knowledge_conflicts`.** (#1471) Admins auditing the knowledge base for
+  entries that quietly disagree can now pull the conflict-candidate pair list
+  without a full agent turn — the same zero-wait-shortcut pattern already
+  shipped for `reviewqueue`/`mutedlist`/`blockedlist`/`topknowledge`/
+  `featureflags`/`admindigest`/`adminlist`/`accessrequests`. Renders the exact
+  same pairs `list_knowledge_conflicts` already returns.
 
 ## 2026-09-26
 

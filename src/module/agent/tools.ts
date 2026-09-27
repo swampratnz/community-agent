@@ -53,6 +53,7 @@ export {
   formatTopKnowledgeList,
   formatAdminRoster,
   formatAccessRequestsList,
+  formatKnowledgeConflictPairs,
 } from './tools/helpers.js';
 export {
   notifyAdmins,

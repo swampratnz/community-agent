@@ -19,6 +19,7 @@ import {
   getResponseStyle,
   isKnowledgeStale,
   KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD,
+  type KnowledgeConflictPair,
   type KnowledgeEntry,
   type LanguagePreference,
   type MemberInterestRow,
@@ -1406,6 +1407,31 @@ export function formatAccessRequestsList(rows: readonly AccessRequest[], truncat
         );
       })
       .join('\n') + truncationCaveat,
+  );
+}
+
+/**
+ * Pure renderer shared by the `list_knowledge_conflicts` tool handler and the
+ * `!kbconflicts`/`/kbconflicts` admin shortcut (issue #1471), hoisted verbatim
+ * out of the tool handler's own inline rendering so the two call sites can
+ * never drift — same reasoning as `formatTopKnowledgeList`/
+ * `formatAccessRequestsList` above. Empty input renders the tool's own fixed
+ * "No conflict-candidate knowledge pairs found." string; a non-empty list
+ * renders each pair through the same per-pair line the tool handler already
+ * used, inside the same `untrusted()` quarantine.
+ */
+export function formatKnowledgeConflictPairs(pairs: readonly KnowledgeConflictPair[]): string {
+  if (pairs.length === 0) return 'No conflict-candidate knowledge pairs found.';
+  return untrusted(
+    'Conflict-candidate knowledge pairs — each is a candidate for admin review, not a confirmed contradiction',
+    pairs
+      .map((p) => {
+        const pct = (p.similarity * 100).toFixed(0);
+        const aLabel = p.aTitle ? `"${p.aTitle}"` : `#${p.aId}`;
+        const bLabel = p.bTitle ? `"${p.bTitle}"` : `#${p.bId}`;
+        return `#${p.aId} (${aLabel}) ↔ #${p.bId} (${bLabel}) — ${pct}% similar`;
+      })
+      .join('\n'),
   );
 }
 
