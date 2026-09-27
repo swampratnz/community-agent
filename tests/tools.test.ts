@@ -27871,68 +27871,252 @@ test('SECURITY: react_to_message enforces a per-user daily reaction cap (issue #
   );
 });
 
+/** Every `formatReactToMessageText` outcome shape, one per kind (issue #1473) — reused by the style/mi/SECURITY tests below so a new outcome kind only needs adding here once. */
+const REACT_TO_MESSAGE_OUTCOMES = [
+  { kind: 'success', emoji: '✅' },
+  { kind: 'platform_unavailable', platform: 'whatsapp' },
+  { kind: 'no_message_id' },
+  { kind: 'unknown_message', messageId: 'msg-42' },
+  { kind: 'rate_limited', limit: REACTION_RATE_LIMIT_PER_DAY },
+  { kind: 'failure' },
+] as const;
+
 test(
   'formatReactToMessageText renders te reo Māori for all six react_to_message outcomes when language is ' +
-    "'mi', and the exact pre-existing English string for 'auto'/'en' otherwise — emoji/platform/messageId/" +
-    'limit interpolations are unchanged in both languages (issue #1328)',
+    "'mi', and the exact pre-existing English string for 'auto'/'en' otherwise (with style undefined, " +
+    'matching every pre-#1473 caller) — emoji/platform/messageId/limit interpolations are unchanged in both ' +
+    'languages (issue #1328)',
   () => {
     for (const language of ['auto', 'en'] as const) {
-      assert.equal(formatReactToMessageText({ kind: 'success', emoji: '✅' }, language), 'Reacted ✅.');
       assert.equal(
-        formatReactToMessageText({ kind: 'platform_unavailable', platform: 'whatsapp' }, language),
+        formatReactToMessageText({ kind: 'success', emoji: '✅' }, language, undefined),
+        'Reacted ✅.',
+      );
+      assert.equal(
+        formatReactToMessageText({ kind: 'platform_unavailable', platform: 'whatsapp' }, language, undefined),
         "Reactions aren't available on whatsapp.",
       );
       assert.equal(
-        formatReactToMessageText({ kind: 'no_message_id' }, language),
+        formatReactToMessageText({ kind: 'no_message_id' }, language, undefined),
         'No message to react to — the current message has no visible id.',
       );
       assert.equal(
-        formatReactToMessageText({ kind: 'unknown_message', messageId: 'msg-42' }, language),
+        formatReactToMessageText({ kind: 'unknown_message', messageId: 'msg-42' }, language, undefined),
         'Refusing: message "msg-42" has never been seen in this conversation.',
       );
       assert.equal(
-        formatReactToMessageText({ kind: 'rate_limited', limit: REACTION_RATE_LIMIT_PER_DAY }, language),
+        formatReactToMessageText(
+          { kind: 'rate_limited', limit: REACTION_RATE_LIMIT_PER_DAY },
+          language,
+          undefined,
+        ),
         `You've hit today's reaction limit (${REACTION_RATE_LIMIT_PER_DAY}). Try again tomorrow.`,
       );
       assert.equal(
-        formatReactToMessageText({ kind: 'failure' }, language),
+        formatReactToMessageText({ kind: 'failure' }, language, undefined),
         'Failed to react to that message.',
       );
     }
 
-    const miSuccess = formatReactToMessageText({ kind: 'success', emoji: '✅' }, 'mi');
-    assert.notEqual(miSuccess, formatReactToMessageText({ kind: 'success', emoji: '✅' }, 'en'));
+    const miSuccess = formatReactToMessageText({ kind: 'success', emoji: '✅' }, 'mi', undefined);
+    assert.notEqual(miSuccess, formatReactToMessageText({ kind: 'success', emoji: '✅' }, 'en', undefined));
     assert.match(miSuccess, /✅/);
 
-    const miPlatform = formatReactToMessageText({ kind: 'platform_unavailable', platform: 'whatsapp' }, 'mi');
+    const miPlatform = formatReactToMessageText(
+      { kind: 'platform_unavailable', platform: 'whatsapp' },
+      'mi',
+      undefined,
+    );
     assert.notEqual(
       miPlatform,
-      formatReactToMessageText({ kind: 'platform_unavailable', platform: 'whatsapp' }, 'en'),
+      formatReactToMessageText({ kind: 'platform_unavailable', platform: 'whatsapp' }, 'en', undefined),
     );
     assert.match(miPlatform, /whatsapp/);
 
-    const miNoMessageId = formatReactToMessageText({ kind: 'no_message_id' }, 'mi');
-    assert.notEqual(miNoMessageId, formatReactToMessageText({ kind: 'no_message_id' }, 'en'));
+    const miNoMessageId = formatReactToMessageText({ kind: 'no_message_id' }, 'mi', undefined);
+    assert.notEqual(miNoMessageId, formatReactToMessageText({ kind: 'no_message_id' }, 'en', undefined));
 
-    const miUnknown = formatReactToMessageText({ kind: 'unknown_message', messageId: 'msg-42' }, 'mi');
+    const miUnknown = formatReactToMessageText(
+      { kind: 'unknown_message', messageId: 'msg-42' },
+      'mi',
+      undefined,
+    );
     assert.notEqual(
       miUnknown,
-      formatReactToMessageText({ kind: 'unknown_message', messageId: 'msg-42' }, 'en'),
+      formatReactToMessageText({ kind: 'unknown_message', messageId: 'msg-42' }, 'en', undefined),
     );
     assert.match(miUnknown, /msg-42/);
 
     const miRateLimited = formatReactToMessageText(
       { kind: 'rate_limited', limit: REACTION_RATE_LIMIT_PER_DAY },
       'mi',
+      undefined,
     );
     assert.notEqual(
       miRateLimited,
-      formatReactToMessageText({ kind: 'rate_limited', limit: REACTION_RATE_LIMIT_PER_DAY }, 'en'),
+      formatReactToMessageText({ kind: 'rate_limited', limit: REACTION_RATE_LIMIT_PER_DAY }, 'en', undefined),
     );
     assert.match(miRateLimited, new RegExp(String(REACTION_RATE_LIMIT_PER_DAY)));
 
-    const miFailure = formatReactToMessageText({ kind: 'failure' }, 'mi');
-    assert.notEqual(miFailure, formatReactToMessageText({ kind: 'failure' }, 'en'));
+    const miFailure = formatReactToMessageText({ kind: 'failure' }, 'mi', undefined);
+    assert.notEqual(miFailure, formatReactToMessageText({ kind: 'failure' }, 'en', undefined));
+  },
+);
+
+test(
+  "formatReactToMessageText renders a materially shorter 'plain' variant for all six outcomes in English " +
+    "(style === 'plain' && language !== 'mi'), is byte-identical to today's output for 'standard'/undefined " +
+    "style in any language, and 'mi' wins over any style value (issue #1473 acceptance criteria 1, 2)",
+  () => {
+    for (const outcome of REACT_TO_MESSAGE_OUTCOMES) {
+      for (const language of ['auto', 'en'] as const) {
+        const base = formatReactToMessageText(outcome, language, undefined);
+        assert.equal(
+          formatReactToMessageText(outcome, language, 'standard'),
+          base,
+          `${outcome.kind}/${language}: 'standard' style must be byte-identical to undefined style`,
+        );
+        const plain = formatReactToMessageText(outcome, language, 'plain');
+        assert.notEqual(plain, base, `${outcome.kind}/${language}: 'plain' style must actually differ`);
+        assert.ok(
+          plain.length < base.length,
+          `${outcome.kind}/${language}: 'plain' style must be materially shorter than 'standard'`,
+        );
+      }
+
+      const mi = formatReactToMessageText(outcome, 'mi', undefined);
+      assert.equal(
+        formatReactToMessageText(outcome, 'mi', 'plain'),
+        mi,
+        `${outcome.kind}: 'mi' must win over a 'plain' style`,
+      );
+      assert.equal(
+        formatReactToMessageText(outcome, 'mi', 'standard'),
+        mi,
+        `${outcome.kind}: 'mi' must win over a 'standard' style`,
+      );
+    }
+
+    // Parameterized interpolations survive into the 'plain' variant too.
+    assert.match(formatReactToMessageText({ kind: 'success', emoji: '👍' }, 'en', 'plain'), /👍/);
+    assert.match(
+      formatReactToMessageText({ kind: 'platform_unavailable', platform: 'whatsapp' }, 'en', 'plain'),
+      /whatsapp/,
+    );
+    assert.match(
+      formatReactToMessageText({ kind: 'unknown_message', messageId: 'msg-42' }, 'en', 'plain'),
+      /msg-42/,
+    );
+    assert.match(
+      formatReactToMessageText({ kind: 'rate_limited', limit: REACTION_RATE_LIMIT_PER_DAY }, 'en', 'plain'),
+      new RegExp(String(REACTION_RATE_LIMIT_PER_DAY)),
+    );
+  },
+);
+
+test(
+  "SECURITY: a getResponseStyle rejection for the caller's own identity degrades " +
+    "resolveRecipientNoticeSelection to 'standard' rather than throwing, and every one of " +
+    "react_to_message's six outcomes renders its normal 'standard' English text for that degraded style — " +
+    'never a thrown error and never a dropped reaction reply (issue #1473 acceptance criterion 5)',
+  async () => {
+    const rejectingLangPref = async () => {
+      throw new Error('simulated getLanguagePreference failure');
+    };
+    const rejectingRespStyle = async () => {
+      throw new Error('simulated getResponseStyle failure');
+    };
+
+    const { language, style } = await resolveRecipientNoticeSelection(
+      'discord',
+      `${RUN}-1473-caller-fail-safe-degrade`,
+      rejectingLangPref,
+      rejectingRespStyle,
+    );
+    assert.deepEqual(
+      { language, style },
+      { language: 'auto', style: 'standard' },
+      "a rejected caller-identity lookup degrades to English/'standard' rather than throwing",
+    );
+
+    for (const outcome of REACT_TO_MESSAGE_OUTCOMES) {
+      assert.equal(
+        formatReactToMessageText(outcome, language, style),
+        formatReactToMessageText(outcome, language, 'standard'),
+        `${outcome.kind}: a degraded style must render the same as an explicit 'standard' style`,
+      );
+    }
+  },
+);
+
+test(
+  "react_to_message's replies reflect the caller's OWN response style — 'plain' renders the shorter variant, " +
+    "a caller with no stored style stays byte-identical to today's English, and a 'mi' language preference " +
+    "wins over a stored 'plain' style (issue #1473 acceptance criteria 2, 3)",
+  { skip },
+  async () => {
+    const conv = `${REACT_TO_MESSAGE_HANDLER_CONVO}-style`;
+    const plainUser = `${conv}-plain-user`;
+    const stdUser = `${conv}-std-user`;
+    const miPlainUser = `${conv}-mi-plain-user`;
+    await setResponseStyle('discord', plainUser, 'plain');
+    await setLanguagePreference('discord', miPlainUser, 'mi');
+    await setResponseStyle('discord', miPlainUser, 'plain');
+    // stdUser deliberately has no stored style — proves the default renders
+    // byte-identical to today's English, not just an explicit 'standard'.
+
+    // no_message_id: cheapest outcome to trigger, no fixture rows needed.
+    const adapter = stubReactAdapter();
+    const plainNoId = await reactToMessageHandler(adapter, {
+      userId: plainUser,
+      conversationId: conv,
+    }).handler({ emoji: '✅' });
+    assert.equal(
+      plainNoId.content[0]?.text,
+      formatReactToMessageText({ kind: 'no_message_id' }, 'auto', 'plain'),
+    );
+
+    const stdNoId = await reactToMessageHandler(adapter, {
+      userId: stdUser,
+      conversationId: conv,
+    }).handler({ emoji: '✅' });
+    assert.equal(stdNoId.content[0]?.text, 'No message to react to — the current message has no visible id.');
+
+    const miPlainNoId = await reactToMessageHandler(adapter, {
+      userId: miPlainUser,
+      conversationId: conv,
+    }).handler({ emoji: '✅' });
+    assert.equal(
+      miPlainNoId.content[0]?.text,
+      formatReactToMessageText({ kind: 'no_message_id' }, 'mi', undefined),
+      "a 'mi' language preference must win over a stored 'plain' style",
+    );
+
+    // success: a messageId the bot HAS seen, proving the 'plain' variant on
+    // the success path too (not just the cheap refusal above).
+    const seenId = `${conv}-seen`;
+    await recordInteraction({
+      platform: 'discord',
+      conversationId: conv,
+      userId: `${conv}-author`,
+      role: 'member',
+      direction: 'inbound',
+      content: 'react to this',
+      messageId: seenId,
+    });
+    const plainSuccess = await reactToMessageHandler(adapter, {
+      userId: plainUser,
+      conversationId: conv,
+    }).handler({ emoji: '👍', messageId: seenId });
+    assert.equal(
+      plainSuccess.content[0]?.text,
+      formatReactToMessageText({ kind: 'success', emoji: '👍' }, 'auto', 'plain'),
+    );
+
+    await pool.query(`DELETE FROM response_style_prefs WHERE platform = 'discord' AND user_id = ANY($1)`, [
+      [plainUser, miPlainUser],
+    ]);
+    await pool.query(`DELETE FROM language_prefs WHERE platform = 'discord' AND user_id = $1`, [miPlainUser]);
   },
 );
 
@@ -27957,7 +28141,7 @@ test(
     }).handler({ emoji: '✅', messageId: 'unused' });
     assert.equal(
       miNoCap.content[0]?.text,
-      formatReactToMessageText({ kind: 'platform_unavailable', platform: 'discord' }, 'mi'),
+      formatReactToMessageText({ kind: 'platform_unavailable', platform: 'discord' }, 'mi', undefined),
     );
     const enNoCap = await reactToMessageHandler(noCapAdapter, {
       userId: enUser,
@@ -27970,7 +28154,10 @@ test(
     const miNoId = await reactToMessageHandler(adapter, { userId: miUser, conversationId: conv }).handler({
       emoji: '✅',
     });
-    assert.equal(miNoId.content[0]?.text, formatReactToMessageText({ kind: 'no_message_id' }, 'mi'));
+    assert.equal(
+      miNoId.content[0]?.text,
+      formatReactToMessageText({ kind: 'no_message_id' }, 'mi', undefined),
+    );
     const enNoId = await reactToMessageHandler(adapter, { userId: enUser, conversationId: conv }).handler({
       emoji: '✅',
     });
@@ -27984,7 +28171,7 @@ test(
     }).handler({ emoji: '✅', messageId: unseenId });
     assert.equal(
       miUnknown.content[0]?.text,
-      formatReactToMessageText({ kind: 'unknown_message', messageId: unseenId }, 'mi'),
+      formatReactToMessageText({ kind: 'unknown_message', messageId: unseenId }, 'mi', undefined),
     );
     const enUnknown = await reactToMessageHandler(adapter, {
       userId: enUser,
@@ -28012,7 +28199,7 @@ test(
     }).handler({ emoji: '👍', messageId: seenId });
     assert.equal(
       miSuccess.content[0]?.text,
-      formatReactToMessageText({ kind: 'success', emoji: '👍' }, 'mi'),
+      formatReactToMessageText({ kind: 'success', emoji: '👍' }, 'mi', undefined),
     );
     const enSuccess = await reactToMessageHandler(adapter, {
       userId: enUser,

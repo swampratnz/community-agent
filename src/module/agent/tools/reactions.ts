@@ -1,12 +1,12 @@
 import { z } from 'zod';
 import { logger } from '@swampratnz/agent-base/logger.js';
 import {
-  getLanguagePreference,
   isKnownMessage,
   type LanguagePreference,
+  type ResponseStyle,
 } from '@swampratnz/agent-base/storage/repository.js';
 import { makeCalendarDayReserver } from '@swampratnz/agent-base/util/rateReservation.js';
-import { text } from './helpers.js';
+import { resolveRecipientNoticeSelection, text } from './helpers.js';
 import { defineTool } from '@swampratnz/agent-base/agent/tools/types.js';
 
 /**
@@ -34,12 +34,18 @@ function reserveReactionDaily(key: string): boolean {
 }
 
 /**
- * Pure render for `react_to_message`'s six outcomes (issue #1328) — same
- * "one function per tool, outcome as a parameter" shape as
- * `formatRateAnswerText`/`formatAppealModerationText`, reusing the language-
- * as-explicit-parameter pattern every other member-tool file already uses.
- * `emoji`/`platform`/`messageId`/`limit` are unchanged interpolations in
- * both languages.
+ * Pure render for `react_to_message`'s six outcomes (issue #1328, `style`
+ * added by #1473) — same "one function per tool, outcome as a parameter"
+ * shape as `formatRateAnswerText`/`formatAppealModerationText`, reusing the
+ * language-as-explicit-parameter pattern every other member-tool file
+ * already uses. `emoji`/`platform`/`messageId`/`limit` are unchanged
+ * interpolations in every language/style combination. `style` (issue #1473),
+ * same `'mi'`-wins-over-`'plain'` precedence as every formatter in
+ * `social.ts`/`projectNotes.ts`: a `plain` variant renders only when
+ * `!mi && style === 'plain'`, so any `style` value while `language === 'mi'`
+ * is byte-identical to today's `mi` output, and `undefined`/`'standard'`
+ * style (any language) is byte-identical to today's output for that
+ * language.
  */
 export function formatReactToMessageText(
   outcome:
@@ -50,29 +56,47 @@ export function formatReactToMessageText(
     | { kind: 'rate_limited'; limit: number }
     | { kind: 'failure' },
   language: LanguagePreference,
+  style: ResponseStyle | undefined,
 ): string {
   const mi = language === 'mi';
+  const plain = style === 'plain';
   switch (outcome.kind) {
     case 'success':
-      return mi ? `Kua tohu ${outcome.emoji}.` : `Reacted ${outcome.emoji}.`;
+      return mi
+        ? `Kua tohu ${outcome.emoji}.`
+        : plain
+          ? `Done ${outcome.emoji}.`
+          : `Reacted ${outcome.emoji}.`;
     case 'platform_unavailable':
       return mi
         ? `Kāore ngā tohu e wātea ana i ${outcome.platform}.`
-        : `Reactions aren't available on ${outcome.platform}.`;
+        : plain
+          ? `Can't react on ${outcome.platform}.`
+          : `Reactions aren't available on ${outcome.platform}.`;
     case 'no_message_id':
       return mi
         ? 'Kāore he karere hei tohu — kāore he tautuhinga e kitea ana mō te karere o nāianei.'
-        : 'No message to react to — the current message has no visible id.';
+        : plain
+          ? 'No message to react to.'
+          : 'No message to react to — the current message has no visible id.';
     case 'unknown_message':
       return mi
         ? `Kāore e whakaaetia: kāore anō te karere "${outcome.messageId}" kia kitea i tēnei kōrero.`
-        : `Refusing: message "${outcome.messageId}" has never been seen in this conversation.`;
+        : plain
+          ? `I haven't seen message "${outcome.messageId}" here.`
+          : `Refusing: message "${outcome.messageId}" has never been seen in this conversation.`;
     case 'rate_limited':
       return mi
         ? `Kua eke koe ki te tepe tohu mō tēnei rā (${outcome.limit}). Whakamātauria anō āpōpō.`
-        : `You've hit today's reaction limit (${outcome.limit}). Try again tomorrow.`;
+        : plain
+          ? `Reaction limit reached (${outcome.limit}). Try again tomorrow.`
+          : `You've hit today's reaction limit (${outcome.limit}). Try again tomorrow.`;
     case 'failure':
-      return mi ? 'I rahua te tohu i taua karere.' : 'Failed to react to that message.';
+      return mi
+        ? 'I rahua te tohu i taua karere.'
+        : plain
+          ? "Couldn't react."
+          : 'Failed to react to that message.';
   }
 }
 
@@ -109,40 +133,48 @@ export const reactionsTools = [
     },
     handler: async (args, { caller, adapter }) => {
       if (!adapter.reactToMessage) {
-        const language = await getLanguagePreference(caller.platform, caller.userId);
+        const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
         return text(
-          formatReactToMessageText({ kind: 'platform_unavailable', platform: caller.platform }, language),
+          formatReactToMessageText(
+            { kind: 'platform_unavailable', platform: caller.platform },
+            language,
+            style,
+          ),
           true,
         );
       }
       const messageId = args.messageId ?? caller.messageId;
       if (!messageId) {
-        const language = await getLanguagePreference(caller.platform, caller.userId);
-        return text(formatReactToMessageText({ kind: 'no_message_id' }, language), true);
+        const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
+        return text(formatReactToMessageText({ kind: 'no_message_id' }, language, style), true);
       }
       // Same "the bot must have actually seen it" discipline as
       // moderate/announce's target validation, scoped to the caller's own
       // conversation (a member never names a different one).
       if (!(await isKnownMessage(caller.platform, caller.conversationId, messageId))) {
-        const language = await getLanguagePreference(caller.platform, caller.userId);
-        return text(formatReactToMessageText({ kind: 'unknown_message', messageId }, language), true);
+        const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
+        return text(formatReactToMessageText({ kind: 'unknown_message', messageId }, language, style), true);
       }
       const key = `${caller.platform}:${caller.userId}`;
       if (!reserveReactionDaily(key)) {
-        const language = await getLanguagePreference(caller.platform, caller.userId);
+        const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
         return text(
-          formatReactToMessageText({ kind: 'rate_limited', limit: REACTION_RATE_LIMIT_PER_DAY }, language),
+          formatReactToMessageText(
+            { kind: 'rate_limited', limit: REACTION_RATE_LIMIT_PER_DAY },
+            language,
+            style,
+          ),
           true,
         );
       }
       try {
         await adapter.reactToMessage(caller.conversationId, messageId, args.emoji);
-        const language = await getLanguagePreference(caller.platform, caller.userId);
-        return text(formatReactToMessageText({ kind: 'success', emoji: args.emoji }, language));
+        const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
+        return text(formatReactToMessageText({ kind: 'success', emoji: args.emoji }, language, style));
       } catch (err) {
         logger.warn({ err, actor: caller.userId }, 'react_to_message failed');
-        const language = await getLanguagePreference(caller.platform, caller.userId);
-        return text(formatReactToMessageText({ kind: 'failure' }, language), true);
+        const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
+        return text(formatReactToMessageText({ kind: 'failure' }, language, style), true);
       }
     },
   }),
