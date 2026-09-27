@@ -26,6 +26,22 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #1355 #1356 #1357 #1341 #1350 #1360 #1381 #1391 #1441 #1382
 -->
 
+## 2026-09-28
+
+### Added
+- **The bot now proactively offers to save a member's own hard-won fix or
+  workaround to the knowledge base.** (#1467) It already offered
+  `report_content` for rule violations and `suggest_improvement` for feature
+  ideas in the moment a member raised them — the third member-contribution
+  tool, `suggest_knowledge`, had no equivalent nudge, so it only fired if a
+  member already knew it existed. Now, when a member shares a solution framed
+  for others ("here's what worked", "for anyone else hitting this"), the bot
+  offers to record it with `suggest_knowledge`, same posture as the existing
+  offers: capture and set expectations only, never promising it will be
+  added, and never filing it without the member's agreement. No new tool,
+  tier, or data flow — the existing admin-reviewed queue, dedup guard, and
+  rate cap are unchanged.
+
 ## 2026-09-26
 
 ### Changed
