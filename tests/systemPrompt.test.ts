@@ -514,6 +514,19 @@ test('guidelines offer suggest_improvement for feature ideas without promising d
   assert.match(prompt, /no repo or issue-tracker access/);
 });
 
+test('SECURITY: guidelines offer suggest_knowledge for member-shared solutions, gated on explicit consent (issue #1467)', () => {
+  const prompt = buildSystemPrompt(caller, {
+    codeAnswers: 'snippets',
+    responseStyle: 'standard',
+    languagePreference: 'auto',
+  });
+  assert.match(prompt, /suggest_knowledge/);
+  assert.match(prompt, /here's what worked/);
+  assert.match(prompt, /for anyone else hitting\s+this/);
+  assert.match(prompt, /never\s+promise or imply it will be added/);
+  assert.match(prompt, /never call the tool without\s+the member agreeing/);
+});
+
 test('guidelines pin a conservative rate_answer trigger: clear explicit cues only, never general positivity or ambiguous chatter (issue #118)', () => {
   const prompt = buildSystemPrompt(caller, {
     codeAnswers: 'snippets',
