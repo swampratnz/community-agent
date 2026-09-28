@@ -1178,6 +1178,46 @@ async function handleEvents(interaction: ChatInputCommandInteraction, deps: Slas
 }
 
 /**
+ * `list_assignable_roles` is the second adapter-sourced (not
+ * repository-sourced) command shortcut, mirroring `/events` above exactly —
+ * the only other command whose data comes from a live Discord adapter method
+ * rather than a repository read (issue #1475). Takes no options:
+ * identity/data come only from `resolveRole` and the injected adapter, never
+ * from the interaction payload. `list_assignable_roles` is `minTier: 'admin'`,
+ * so the single `toolsForRole` gate below is already sufficient — an
+ * `admin`-tier tool never appears in the tool list `toolsForRole` returns
+ * for a `member`/`guest` caller, the same single-check shape `handleEvents`
+ * above uses for its own (member-tier) gate.
+ */
+async function handleAssignableRoles(
+  interaction: ChatInputCommandInteraction,
+  deps: SlashCommandDeps,
+): Promise<void> {
+  await deferEphemeral(interaction);
+  const role = await resolveRole('discord', interaction.user.id);
+  if (!toolsForRole(role, 'discord').includes('mcp__community__list_assignable_roles')) {
+    await replyEphemeral(interaction, NOT_AUTHORIZED_TEXT, deps);
+    return;
+  }
+  // Degrades the same way the list_assignable_roles tool itself does when
+  // the adapter doesn't implement the optional capability — never reachable
+  // in practice since /assignableroles is only ever registered on the
+  // Discord adapter, but kept for parity with the tool's own guard rather
+  // than assuming.
+  if (!discordAdapter?.adminCapabilities.has('list_assignable_roles')) {
+    await replyEphemeral(
+      interaction,
+      `This platform (${discordAdapter?.platform ?? 'discord'}) does not support community roles.`,
+      deps,
+    );
+    return;
+  }
+  const message = await discordAdapter.performAdminAction({ kind: 'list_assignable_roles' });
+  recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
+  await replyEphemeral(interaction, message, deps);
+}
+
+/**
  * `/events` is the first command whose data source is an adapter method
  * (`listUpcomingEvents`) rather than a repository read, so binding needs the
  * live Discord adapter instance, not just the command list (issue #1004).
@@ -1419,6 +1459,16 @@ export function bindCommunitySlashCommands(adapter: PlatformAdapter): void {
         .setDescription('List upcoming Discord scheduled meetups/events.')
         .toJSON(),
     handle: handleEvents,
+  });
+  bindDiscordCommand('assignableroles', {
+    build: () =>
+      new SlashCommandBuilder()
+        .setName('assignableroles')
+        .setDescription(
+          'Admin: list the configured cosmetic Discord roles and their current permission state.',
+        )
+        .toJSON(),
+    handle: handleAssignableRoles,
   });
   bindDiscordCommand('help', {
     build: () =>

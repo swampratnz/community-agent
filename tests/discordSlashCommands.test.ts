@@ -612,6 +612,35 @@ async function callListEventsTool(adapter: PlatformAdapter, userId: string): Pro
   return result.content[0]?.text ?? '';
 }
 
+/**
+ * Invokes the real `list_assignable_roles` tool handler directly (bypassing
+ * the model) against the given adapter, for the /assignableroles-vs-tool
+ * byte-identical comparison below — mirrors `callListEventsTool` above
+ * (issue #1475).
+ */
+async function callListAssignableRolesTool(adapter: PlatformAdapter, userId: string): Promise<string> {
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId,
+      userName: 'Roles Caller',
+      role: 'admin' as const,
+      conversationId: 'assignableroles-convo',
+    },
+    adapter,
+  );
+  const registered = (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        { handler: () => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }> }
+      >;
+    }
+  )._registeredTools['list_assignable_roles'];
+  const result = await registered.handler();
+  return result.content[0]?.text ?? '';
+}
+
 // --- Criterion 1 / SECURITY criterion 11: flag off ---------------------------
 
 test('SECURITY: with DISCORD_SLASH_COMMANDS_ENABLED unset, no InteractionCreate listener is attached and no commands are registered (acceptance criterion 1)', async (t) => {
@@ -697,6 +726,7 @@ test('with DISCORD_SLASH_COMMANDS_ENABLED=true, all commands are registered guil
     'accessrequests',
     'admindigest',
     'adminlist',
+    'assignableroles',
     'blockedlist',
     'digest',
     'events',
@@ -735,13 +765,14 @@ test("a slash-command registration failure is caught and logged, never thrown, m
   assert.ok(warnLog.mock.calls.length >= 1, 'a registration failure must be logged, not swallowed silently');
 });
 
-test('buildSlashCommands defines exactly the twenty-three approved read-only commands, each with its expected required-ness', () => {
+test('buildSlashCommands defines exactly the twenty-four approved read-only commands, each with its expected required-ness', () => {
   const commands = buildSlashCommands();
   const byName = new Map(commands.map((c) => [c.name, c]));
   assert.deepEqual([...byName.keys()].sort(), [
     'accessrequests',
     'admindigest',
     'adminlist',
+    'assignableroles',
     'blockedlist',
     'digest',
     'events',
@@ -820,6 +851,11 @@ test('buildSlashCommands defines exactly the twenty-three approved read-only com
     (byName.get('events') as { options?: unknown[] }).options ?? [],
     [],
     "/events takes no options — matches list_events' own empty schema (issue #1004)",
+  );
+  assert.deepEqual(
+    (byName.get('assignableroles') as { options?: unknown[] }).options ?? [],
+    [],
+    "/assignableroles takes no options — matches list_assignable_roles' own empty schema (issue #1475)",
   );
   assert.deepEqual(
     (byName.get('mysubmissions') as { options?: unknown[] }).options ?? [],
@@ -6437,4 +6473,157 @@ test('SECURITY: /events reply routes through the same outbound filter as every o
   assert.equal(replies.length, 1);
   assert.ok(!replies[0].content.includes('sk-ant-'), 'no raw secret fragment may reach the ephemeral reply');
   assert.ok(replies[0].content.includes('[redacted]'), 'the secret must be redacted, not silently dropped');
+});
+
+// --- Issue #1475: /assignableroles (the second adapter-sourced shortcut) ----
+
+test(
+  '/assignableroles returns byte-identical text to the list_assignable_roles tool for the same caller and ' +
+    'adapter state (issue #1475 acceptance criterion 3)',
+  async (t) => {
+    mockPool(t, { memberRole: 'admin' });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    t.mock.method(adapter, 'performAdminAction', async () => '- Auckland (role-cosmetic-1)');
+    bindCommunitySlashCommands(adapter);
+
+    const { interaction, replies } = fakeInteraction({ commandName: 'assignableroles', userId: 'admin-1' });
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    const toolText = await callListAssignableRolesTool(adapter, 'admin-1');
+    assert.equal(replies.length, 1);
+    assert.equal(
+      replies[0].content,
+      stripEmDashes(toolText),
+      "must carry exactly list_assignable_roles' own returned text (post outbound-filter), with no separate formatter",
+    );
+  },
+);
+
+test(
+  '/assignableroles degrades to the tool\'s own "does not support community roles" text when the injected ' +
+    'adapter lacks the list_assignable_roles capability, rather than throwing (issue #1475 acceptance criterion 5)',
+  async (t) => {
+    mockPool(t, { memberRole: 'admin' });
+    // deps.filtered() comes from a normal, fully-capable DiscordAdapter — only
+    // the module's INJECTED discordAdapter (via bindCommunitySlashCommands)
+    // lacks the capability, isolating the capability check from the
+    // unrelated outbound-filter plumbing. Reuses the same empty-capability
+    // stub /events' own degrade test uses above (issue #1004) — it advertises
+    // no admin capabilities at all, so it lacks list_assignable_roles too.
+    const filterAdapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    bindCommunitySlashCommands(stubAdapterWithoutEvents());
+
+    const { interaction, replies } = fakeInteraction({ commandName: 'assignableroles', userId: 'admin-1' });
+    await handleInteraction(interaction as never, adapterDeps(filterAdapter));
+
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].content, 'This platform (discord) does not support community roles.');
+  },
+);
+
+test(
+  'SECURITY: a member-tier caller invoking /assignableroles receives NOT_AUTHORIZED_TEXT and no role data — ' +
+    'performAdminAction is never called (issue #1475 acceptance criterion 4)',
+  async (t) => {
+    mockPool(t, { memberRole: 'member' });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const spy = t.mock.method(adapter, 'performAdminAction', async () => '- Auckland (role-cosmetic-1)');
+    bindCommunitySlashCommands(adapter);
+
+    const { interaction, replies } = fakeInteraction({ commandName: 'assignableroles', userId: 'member-1' });
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].ephemeral, true);
+    assert.match(replies[0].content, /don't have access/i);
+    assert.equal(spy.mock.calls.length, 0, 'no role data may be fetched for a rejected caller');
+  },
+);
+
+test(
+  'SECURITY: a guest (unresolved role) caller invoking /assignableroles receives NOT_AUTHORIZED_TEXT and no ' +
+    'role data — performAdminAction is never called (issue #1475 acceptance criterion 4)',
+  async (t) => {
+    mockPool(t, { memberRole: null });
+    const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+    const spy = t.mock.method(adapter, 'performAdminAction', async () => '- Auckland (role-cosmetic-1)');
+    bindCommunitySlashCommands(adapter);
+
+    const { interaction, replies } = fakeInteraction({ commandName: 'assignableroles', userId: 'guest-1' });
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].ephemeral, true);
+    assert.match(replies[0].content, /don't have access/i);
+    assert.equal(spy.mock.calls.length, 0, 'no role data may be fetched for a rejected caller');
+  },
+);
+
+test("a successful /assignableroles invocation calls recordShortcutHit('slash_command') exactly once (issue #1475 acceptance criterion 6)", async (t) => {
+  const calls = mockPool(t, { memberRole: 'admin' });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  t.mock.method(adapter, 'performAdminAction', async () => '- Auckland (role-cosmetic-1)');
+  bindCommunitySlashCommands(adapter);
+
+  const { interaction, replies } = fakeInteraction({ commandName: 'assignableroles', userId: 'admin-1' });
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(
+    shortcutHitCalls(calls).length,
+    1,
+    '/assignableroles must record exactly one slash_command hit',
+  );
+  assert.equal(replies[0].ephemeral, true);
+});
+
+test('SECURITY: recordShortcutHit is never called on the NOT_AUTHORIZED_TEXT branch for /assignableroles (issue #1475 acceptance criterion 6)', async (t) => {
+  const calls = mockPool(t, { memberRole: 'member' });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  bindCommunitySlashCommands(adapter);
+  const { interaction, replies } = fakeInteraction({ commandName: 'assignableroles', userId: 'member-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.match(
+    replies[0].content,
+    /don't have access/i,
+    'sanity check: /assignableroles was actually denied',
+  );
+  assert.equal(shortcutHitCalls(calls).length, 0, 'an auth-denied reply must never record a shortcut hit');
+});
+
+test('SECURITY: recordShortcutHit is never called on the missing-capability degrade branch for /assignableroles (issue #1475 acceptance criterion 6)', async (t) => {
+  const calls = mockPool(t, { memberRole: 'admin' });
+  bindCommunitySlashCommands(stubAdapterWithoutEvents());
+  const filterAdapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  const { interaction, replies } = fakeInteraction({ commandName: 'assignableroles', userId: 'admin-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(filterAdapter));
+
+  assert.equal(
+    replies[0].content,
+    'This platform (discord) does not support community roles.',
+    'sanity check: /assignableroles actually degraded rather than succeeding',
+  );
+  assert.equal(
+    shortcutHitCalls(calls).length,
+    0,
+    'a capability-degraded reply must never record a shortcut hit',
+  );
+});
+
+test('/assignableroles replies ephemerally, deferring before its adapter round trip', async (t) => {
+  mockPool(t, { memberRole: 'admin' });
+  const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
+  t.mock.method(adapter, 'performAdminAction', async () => '- Auckland (role-cosmetic-1)');
+  bindCommunitySlashCommands(adapter);
+  const { interaction, replies, order } = fakeInteraction({
+    commandName: 'assignableroles',
+    userId: 'admin-1',
+  });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies[0].ephemeral, true);
+  assert.deepEqual(order, ['deferReply', 'editReply']);
 });

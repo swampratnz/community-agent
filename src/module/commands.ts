@@ -98,8 +98,10 @@ import { notice } from './strings/notices.js';
  * sixth), `adminlist` (issue #1218, the seventh, and the second at the
  * `super_admin` floor), `accessrequests` (issue #1346, the eighth),
  * `kbforme` (issue #1411, closing the last member-tier zero-argument
- * browse-tool shortcut gap in the `kb*` family), and `kbconflicts` (issue
- * #1471, the ninth admin-tier entry) appended — also safe for
+ * browse-tool shortcut gap in the `kb*` family), `kbconflicts` (issue
+ * #1471, the ninth admin-tier entry), and `assignableroles` (issue #1475,
+ * Discord-only like `events` — the second adapter-sourced, not
+ * repository-sourced, shortcut) appended — also safe for
  * the WhatsApp side because every `!` matcher is anchored and mutually
  * exclusive.
  *
@@ -125,6 +127,11 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
   // Discord-only, same shape as 'kb' above — Discord Scheduled Events have no
   // WhatsApp equivalent, matching the list_events tool itself (issue #1004).
   { name: 'events', platforms: ['discord'] },
+  // Discord-only, same reasoning as 'events' above — list_assignable_roles
+  // itself is platforms: ['discord'] (Discord role/permission state has no
+  // WhatsApp equivalent), so a WhatsApp shortcut would bypass that scoping
+  // decision rather than extend it (issue #1475).
+  { name: 'assignableroles', platforms: ['discord'] },
   {
     name: 'projects',
     platforms: ['discord', 'whatsapp'],
