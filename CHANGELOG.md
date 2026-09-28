@@ -26,6 +26,18 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #1355 #1356 #1357 #1341 #1350 #1360 #1381 #1391 #1441 #1382
 -->
 
+## 2026-09-29
+
+### Added
+- **`/assignableroles`: a zero-model shortcut for `list_assignable_roles`.**
+  (#1475) Admins checking which cosmetic Discord roles are configured, and
+  whether one has quietly picked up a Discord permission (which would make
+  `assign_community_role` refuse it), can now pull that list without a full
+  agent turn. Discord only, matching the underlying tool — same pattern as
+  `/events` (#1004), the only other shortcut sourced from a live adapter read
+  rather than a database query. Renders the exact same text
+  `list_assignable_roles` already returns.
+
 ## 2026-09-28
 
 ### Added
