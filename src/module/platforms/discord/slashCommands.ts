@@ -1179,15 +1179,19 @@ async function handleEvents(interaction: ChatInputCommandInteraction, deps: Slas
 
 /**
  * `list_assignable_roles` is the second adapter-sourced (not
- * repository-sourced) command shortcut, mirroring `/events` above exactly —
- * the only other command whose data comes from a live Discord adapter method
- * rather than a repository read (issue #1475). Takes no options:
- * identity/data come only from `resolveRole` and the injected adapter, never
- * from the interaction payload. `list_assignable_roles` is `minTier: 'admin'`,
- * so the single `toolsForRole` gate below is already sufficient — an
- * `admin`-tier tool never appears in the tool list `toolsForRole` returns
- * for a `member`/`guest` caller, the same single-check shape `handleEvents`
- * above uses for its own (member-tier) gate.
+ * repository-sourced) command shortcut, mirroring `/events` above for its
+ * data-source shape — the only other command whose data comes from a live
+ * Discord adapter method rather than a repository read (issue #1475). Takes
+ * no options: identity/data come only from `resolveRole` and the injected
+ * adapter, never from the interaction payload. Unlike `/events`'s
+ * `list_events` (no extra runtime floor beyond `toolsForRole`),
+ * `list_assignable_roles`'s own tool handler
+ * (`discordRoles.ts`) calls `assertAtLeast(caller.role, 'admin', ...)` as an
+ * *extra* check beyond its `minTier: 'admin'`, and this shortcut calls
+ * `discordAdapter.performAdminAction` directly, bypassing that tool handler
+ * entirely — so it needs the `admin`-floor double-check shape
+ * `handleAccessRequests`/`handleKbConflicts` above use, not the single-check
+ * shape `handleEvents` uses.
  */
 async function handleAssignableRoles(
   interaction: ChatInputCommandInteraction,
@@ -1195,7 +1199,10 @@ async function handleAssignableRoles(
 ): Promise<void> {
   await deferEphemeral(interaction);
   const role = await resolveRole('discord', interaction.user.id);
-  if (!toolsForRole(role, 'discord').includes('mcp__community__list_assignable_roles')) {
+  if (
+    !toolsForRole(role, 'discord').includes('mcp__community__list_assignable_roles') ||
+    !atLeast(role, 'admin')
+  ) {
     await replyEphemeral(interaction, NOT_AUTHORIZED_TEXT, deps);
     return;
   }

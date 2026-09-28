@@ -6522,8 +6522,10 @@ test(
 );
 
 test(
-  'SECURITY: a member-tier caller invoking /assignableroles receives NOT_AUTHORIZED_TEXT and no role data — ' +
-    'performAdminAction is never called (issue #1475 acceptance criterion 4)',
+  "SECURITY: a member-tier caller is rejected on /assignableroles — the same atLeast(role, 'admin') gate as " +
+    'handleAccessRequests/handleKbConflicts, not just the member-tier toolsForRole check every other command ' +
+    'uses — receives NOT_AUTHORIZED_TEXT and no role data, performAdminAction is never called (issue #1475 ' +
+    'acceptance criterion 4, PR #1476 review)',
   async (t) => {
     mockPool(t, { memberRole: 'member' });
     const adapter = new DiscordAdapter(DISCORD_TEXT_PACK);
