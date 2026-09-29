@@ -54,6 +54,7 @@ export {
   formatAdminRoster,
   formatAccessRequestsList,
   formatKnowledgeConflictPairs,
+  formatKnowledgeDuplicatePairs,
 } from './tools/helpers.js';
 export {
   notifyAdmins,

@@ -20,6 +20,7 @@ import {
   isKnowledgeStale,
   KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD,
   type KnowledgeConflictPair,
+  type KnowledgeDuplicatePair,
   type KnowledgeEntry,
   type LanguagePreference,
   type MemberInterestRow,
@@ -1424,6 +1425,27 @@ export function formatKnowledgeConflictPairs(pairs: readonly KnowledgeConflictPa
   if (pairs.length === 0) return 'No conflict-candidate knowledge pairs found.';
   return untrusted(
     'Conflict-candidate knowledge pairs — each is a candidate for admin review, not a confirmed contradiction',
+    pairs
+      .map((p) => {
+        const pct = (p.similarity * 100).toFixed(0);
+        const aLabel = p.aTitle ? `"${p.aTitle}"` : `#${p.aId}`;
+        const bLabel = p.bTitle ? `"${p.bTitle}"` : `#${p.bId}`;
+        return `#${p.aId} (${aLabel}) ↔ #${p.bId} (${bLabel}) — ${pct}% similar`;
+      })
+      .join('\n'),
+  );
+}
+
+// Sibling extraction of list_duplicate_knowledge's own inline render (issue
+// #1477), hoisted verbatim (same empty-case message, same `untrusted(...)`
+// wrap, same per-pair line shape) so the `!kbdupes`/`/kbdupes` admin shortcut
+// can share this exact formatter with the tool handler — the same
+// pure-refactor precedent formatKnowledgeConflictPairs above set for
+// list_knowledge_conflicts/`!kbconflicts` (issue #1471).
+export function formatKnowledgeDuplicatePairs(pairs: readonly KnowledgeDuplicatePair[]): string {
+  if (pairs.length === 0) return 'No near-duplicate knowledge pairs found.';
+  return untrusted(
+    'Near-duplicate knowledge pairs',
     pairs
       .map((p) => {
         const pct = (p.similarity * 100).toFixed(0);

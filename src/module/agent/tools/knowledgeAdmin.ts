@@ -33,6 +33,7 @@ import { classifySourceUrl } from '../../context/linkCheck.js';
 import {
   formatFoundKnowledge,
   formatKnowledgeConflictPairs,
+  formatKnowledgeDuplicatePairs,
   formatKnowledgeEntryLine,
   formatTopKnowledgeList,
   rankKnowledgeByRetrieval,
@@ -498,20 +499,7 @@ export const knowledgeAdminTools = [
     handler: async (args, { caller }) => {
       assertAtLeast(caller.role, 'admin', 'list_duplicate_knowledge');
       const pairs = await listDuplicateKnowledge(args.scope, args.limit);
-      if (pairs.length === 0) return text('No near-duplicate knowledge pairs found.');
-      return text(
-        untrusted(
-          'Near-duplicate knowledge pairs',
-          pairs
-            .map((p) => {
-              const pct = (p.similarity * 100).toFixed(0);
-              const aLabel = p.aTitle ? `"${p.aTitle}"` : `#${p.aId}`;
-              const bLabel = p.bTitle ? `"${p.bTitle}"` : `#${p.bId}`;
-              return `#${p.aId} (${aLabel}) ↔ #${p.bId} (${bLabel}) — ${pct}% similar`;
-            })
-            .join('\n'),
-        ),
-      );
+      return text(formatKnowledgeDuplicatePairs(pairs));
     },
   }),
 

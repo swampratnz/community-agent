@@ -23,6 +23,7 @@ import {
   listAccessRequests,
   listAdminRoster,
   listBlockedUsers,
+  listDuplicateKnowledge,
   listKnowledge,
   listKnowledgeConflictCandidates,
   listKnowledgeTopics,
@@ -51,6 +52,7 @@ import {
   formatFeatureFlags,
   formatInterestResults,
   formatKnowledgeConflictPairs,
+  formatKnowledgeDuplicatePairs,
   formatKnowledgeSearchResults,
   formatKnowledgeTopics,
   formatListProjectsEmptyText,
@@ -99,9 +101,11 @@ import { notice } from './strings/notices.js';
  * `super_admin` floor), `accessrequests` (issue #1346, the eighth),
  * `kbforme` (issue #1411, closing the last member-tier zero-argument
  * browse-tool shortcut gap in the `kb*` family), `kbconflicts` (issue
- * #1471, the ninth admin-tier entry), and `assignableroles` (issue #1475,
+ * #1471, the ninth admin-tier entry), `assignableroles` (issue #1475,
  * Discord-only like `events` — the second adapter-sourced, not
- * repository-sourced, shortcut) appended — also safe for
+ * repository-sourced, shortcut), and `kbdupes` (issue #1477, the tenth
+ * admin-tier entry — list_duplicate_knowledge's own named, deferred growth
+ * path from #1471) appended — also safe for
  * the WhatsApp side because every `!` matcher is anchored and mutually
  * exclusive.
  *
@@ -857,6 +861,27 @@ export const COMMUNITY_COMMANDS: readonly RegisteredCommand[] = [
       if (!atLeast(role, 'admin')) return null;
       const pairs = await listKnowledgeConflictCandidates(undefined, undefined);
       return formatKnowledgeConflictPairs(pairs);
+    },
+  },
+  {
+    // Tenth admin-tier entry (issue #1477) — list_duplicate_knowledge's own
+    // named, deferred growth path from #1471. Same shape as `kbconflicts`
+    // above: anchored, argument-rejecting matcher (`!kbdupes anything` falls
+    // through to TEXT_COMMAND_UNMATCHED rather than matching, so no
+    // message-supplied text ever reaches listDuplicateKnowledge's
+    // scope/limit arguments), calling it with the exact same
+    // (undefined, undefined) arguments — unset scope, default limit —
+    // list_duplicate_knowledge's own handler uses when called with no
+    // arguments, and rendering through the SAME shared
+    // formatKnowledgeDuplicatePairs (tools/helpers.ts) that handler now uses
+    // too, so the two can never drift.
+    name: 'kbdupes',
+    platforms: ['discord', 'whatsapp'],
+    whatsapp: async (text, _msg, role) => {
+      if (!/^!kbdupes$/i.test(text)) return TEXT_COMMAND_UNMATCHED;
+      if (!atLeast(role, 'admin')) return null;
+      const pairs = await listDuplicateKnowledge(undefined, undefined);
+      return formatKnowledgeDuplicatePairs(pairs);
     },
   },
 ];

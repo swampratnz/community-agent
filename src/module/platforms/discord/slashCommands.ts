@@ -42,6 +42,7 @@ import {
   listAccessRequests,
   listAdminRoster,
   listBlockedUsers,
+  listDuplicateKnowledge,
   listKnowledge,
   listKnowledgeConflictCandidates,
   listKnowledgeTopics,
@@ -78,6 +79,7 @@ import {
   formatFeatureFlags,
   formatInterestResults,
   formatKnowledgeConflictPairs,
+  formatKnowledgeDuplicatePairs,
   formatKnowledgeSearchResults,
   formatKnowledgeTopics,
   formatListProjectsEmptyText,
@@ -1138,6 +1140,35 @@ async function handleKbConflicts(
 }
 
 /**
+ * `list_duplicate_knowledge` is the tenth shortcut in this file (issue
+ * #1477) — list_knowledge_conflicts'/`handleKbConflicts`'s own named,
+ * deferred growth path from #1471. Same `admin`-floor double-check shape as
+ * `handleMutedList`/`handleBlockedList`/`handleAccessRequests`/
+ * `handleKbConflicts` above. Calls the exact same
+ * `listDuplicateKnowledge(undefined, undefined)` + `formatKnowledgeDuplicatePairs()`
+ * pair `list_duplicate_knowledge`'s own tool handler now delegates to
+ * (helpers.ts), so the two can never drift.
+ */
+async function handleKbDupes(
+  interaction: ChatInputCommandInteraction,
+  deps: SlashCommandDeps,
+): Promise<void> {
+  await deferEphemeral(interaction);
+  const role = await resolveRole('discord', interaction.user.id);
+  if (
+    !toolsForRole(role, 'discord').includes('mcp__community__list_duplicate_knowledge') ||
+    !atLeast(role, 'admin')
+  ) {
+    await replyEphemeral(interaction, NOT_AUTHORIZED_TEXT, deps);
+    return;
+  }
+  const pairs = await listDuplicateKnowledge(undefined, undefined);
+  const message = formatKnowledgeDuplicatePairs(pairs);
+  recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
+  await replyEphemeral(interaction, message, deps);
+}
+
+/**
  * `list_events` is structurally in MEMBER_TOOLS with no extra runtime floor
  * beyond `toolsForRole` (unlike `/warnings`/`/whois`/`/projects`/`/digest`
  * above) — mirrored here exactly like `/kb`'s gate (issue #1004). Takes no
@@ -1458,6 +1489,14 @@ export function bindCommunitySlashCommands(adapter: PlatformAdapter): void {
         .setDescription('Admin: audit the knowledge base for pairs of entries that may quietly disagree.')
         .toJSON(),
     handle: handleKbConflicts,
+  });
+  bindDiscordCommand('kbdupes', {
+    build: () =>
+      new SlashCommandBuilder()
+        .setName('kbdupes')
+        .setDescription('Admin: audit the knowledge base for pairs of entries that look like near-duplicates.')
+        .toJSON(),
+    handle: handleKbDupes,
   });
   bindDiscordCommand('events', {
     build: () =>
