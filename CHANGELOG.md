@@ -26,6 +26,18 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #1355 #1356 #1357 #1341 #1350 #1360 #1381 #1391 #1441 #1382
 -->
 
+## 2026-09-30
+
+### Added
+- **`list_projects` gains a `forMe` flag.** (#1480) Members who've already
+  published interests via `set_my_interests` can now find related shared
+  projects without typing a search query: `list_projects({ forMe: true })`
+  searches the project showcase using the caller's own published interests
+  text, the same composition `knowledge_for_me` (#1287) already applies to
+  the knowledge base. Composes with `seekingCollaborators`; a caller with no
+  published interests gets guidance to publish them first rather than an
+  empty search.
+
 ## 2026-09-29
 
 ### Added

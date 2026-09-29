@@ -81,10 +81,14 @@ export const WHO_IS_INTO_NO_PROFILE_HINT =
  * are true dead ends without it, unlike `'seeking'`/`'query'`, which are "no
  * match for this filter" rather than "you have nothing", so they stay as-is.
  * `style` (issue #1458), same `'mi'`-wins-over-`'plain'` precedence as every
- * formatter in this file.
+ * formatter in this file. `'forMe'` (issue #1480) is the fifth dead end: a
+ * caller with no published interests can't be shown a `forMe`-driven search
+ * at all, mirroring `WHO_IS_INTO_NO_PROFILE_HINT`/`knowledge_for_me`'s
+ * "publish interests first" guidance but naming `set_my_interests`, the fix
+ * for *this* dead end, rather than `share_project`.
  */
 export function formatListProjectsEmptyText(
-  kind: 'mine' | 'seeking' | 'query' | 'none',
+  kind: 'mine' | 'seeking' | 'query' | 'none' | 'forMe',
   language: LanguagePreference,
   style: ResponseStyle | undefined,
 ): string {
@@ -97,6 +101,13 @@ export function formatListProjectsEmptyText(
         : plain
           ? "You haven't shared a project yet. Use share_project to add one."
           : "You haven't shared any projects yet — call share_project to add one.";
+    case 'forMe':
+      return mi
+        ? 'Kāore anō koe kia tuku i ō hiahia — karangahia te set_my_interests i mua i te forMe.'
+        : plain
+          ? "You haven't published interests yet. Use set_my_interests first."
+          : "You haven't published interests yet — call set_my_interests first, then list_projects's " +
+            'forMe will search projects using them.';
     case 'seeking':
       return mi
         ? 'Kāore he kaupapa e rapu hoa mahi ana i tēnei wā.'
@@ -1189,7 +1200,8 @@ export const socialTools = [
       'share_project. With no query, returns the most recently shared projects; with a query, returns ' +
       'the closest matches by meaning (e.g. "anyone working on a Discord bot?" or "RAG projects"). ' +
       'Results derive only from what members have explicitly shared — never from general chat. Links ' +
-      'render as plain text and are never fetched.',
+      "render as plain text and are never fetched. Set forMe: true to search using the caller's own " +
+      'published interests (set via set_my_interests) instead of typing a query.',
     minTier: 'member',
     readOnlyHint: true,
     schema: {
@@ -1199,7 +1211,7 @@ export const socialTools = [
         .optional()
         .describe(
           'Optional topic/keyword to search shared projects by meaning. Omit for the most recently ' +
-            'shared projects.',
+            'shared projects. Ignored when forMe is set.',
         ),
       seekingCollaborators: z
         .boolean()
@@ -1213,6 +1225,16 @@ export const socialTools = [
             'Use this to find the exact name of one of your own projects before editing or removing it ' +
             'with share_project.',
         ),
+      forMe: z
+        .boolean()
+        .optional()
+        .describe(
+          "Search shared projects using the caller's OWN published interests (set via set_my_interests) as " +
+            'the query, instead of the query argument — so the caller never has to think of search terms ' +
+            'themselves. Ignored when mine is set; otherwise takes precedence over query when both are ' +
+            'supplied. Composes with seekingCollaborators. Requires the caller to have already published ' +
+            "interests; if they haven't, this explains that rather than searching.",
+        ),
     },
     handler: async (args, { caller }) => {
       assertAtLeast(caller.role, 'member', 'list_projects');
@@ -1225,6 +1247,31 @@ export const socialTools = [
         return text(await formatProjectResults(projects));
       }
       const opts = { seekingCollaboratorsOnly: args.seekingCollaborators };
+      if (args.forMe) {
+        // Composes two already-shipped pieces (issue #1480), identical to
+        // knowledge_for_me's pattern (#1287): the caller's OWN published
+        // interests (getPublishedInterestsForOwners, the exact self-scoped
+        // lookup who_is_into({mine:true}) already uses) fed straight into
+        // searchProjects — the identical framework call this tool's own
+        // query path already makes — and rendered via the existing
+        // formatProjectResults, unchanged.
+        const interestsByOwner = await getPublishedInterestsForOwners([
+          { platform: caller.platform, userId: caller.userId },
+        ]);
+        const interestsText = interestsByOwner.get(`${caller.platform}:${caller.userId}`);
+        if (!interestsText) {
+          const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
+          return text(formatListProjectsEmptyText('forMe', language, style));
+        }
+        const projects = await searchProjects(interestsText, LIST_PROJECTS_DEFAULT_LIMIT, opts);
+        if (projects.length === 0) {
+          const { language, style } = await resolveRecipientNoticeSelection(caller.platform, caller.userId);
+          return text(
+            formatListProjectsEmptyText(args.seekingCollaborators ? 'seeking' : 'query', language, style),
+          );
+        }
+        return text(await formatProjectResults(projects));
+      }
       const projects = args.query
         ? await searchProjects(args.query, LIST_PROJECTS_DEFAULT_LIMIT, opts)
         : await listRecentProjects(LIST_PROJECTS_DEFAULT_LIMIT, opts);
