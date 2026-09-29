@@ -86,6 +86,7 @@ const {
   formatBlockedMembersList,
   formatFeatureFlags,
   formatKnowledgeConflictPairs,
+  formatKnowledgeDuplicatePairs,
   formatKnowledgeSearchResults,
   formatListProjectsEmptyText,
   formatMostHelpfulKnowledge,
@@ -5384,6 +5385,206 @@ test("a successful !kbconflicts invocation calls recordShortcutHit('whatsapp_tex
   router.register(adapter);
 
   await trigger(makeMessage({ text: '!kbconflicts', userId: 'admin-1' }));
+
+  assert.equal(sent.length, 1);
+  assert.deepEqual(hits, ['whatsapp_text_command']);
+});
+
+// --- !kbdupes (issue #1477) ------------------------------------------------
+
+/**
+ * Stubs `pool.query`'s role branch plus `listDuplicateKnowledge`'s single
+ * self-join query, mirroring `mockPoolRoleAndKnowledgeConflicts`'s
+ * single-mock-per-test discipline above. `rows` are raw snake_case DB rows
+ * (`a_id`, `a_title`, `b_id`, `b_title`, `similarity`).
+ */
+function mockPoolRoleAndKnowledgeDuplicates(
+  t: { mock: { method: typeof import('node:test').mock.method } },
+  role: 'admin' | 'member' | null,
+  rows: Array<{
+    a_id: number;
+    a_title: string | null;
+    b_id: number;
+    b_title: string | null;
+    similarity: number;
+  }> = [],
+): void {
+  t.mock.method(pool, 'query', (async (sql: string) => {
+    if (sql.includes('SELECT role FROM community_users')) {
+      return { rows: role ? [{ role }] : [], rowCount: 0 };
+    }
+    if (sql.includes('JOIN knowledge b')) {
+      return { rows, rowCount: 0 };
+    }
+    return { rows: [], rowCount: 0 };
+  }) as typeof pool.query);
+}
+
+test(
+  "!kbdupes renders formatKnowledgeDuplicatePairs's output for the same pairs listDuplicateKnowledge " +
+    'returns (issue #1477 acceptance criteria 1, 2)',
+  async (t) => {
+    mockPoolRoleAndKnowledgeDuplicates(t, 'admin', [
+      {
+        a_id: 1,
+        a_title: 'WhatsApp linking steps',
+        b_id: 2,
+        b_title: 'How to link WhatsApp',
+        similarity: 0.95,
+      },
+    ]);
+    const router = makeRouter({ runTurn: throwingRunTurn });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!kbdupes', userId: 'admin-1' }));
+
+    const expected = formatKnowledgeDuplicatePairs([
+      { aId: 1, aTitle: 'WhatsApp linking steps', bId: 2, bTitle: 'How to link WhatsApp', similarity: 0.95 },
+    ]);
+    assert.equal(sent[0].text, expected);
+    assert.match(sent[0].text, /WhatsApp linking steps/);
+  },
+);
+
+test(
+  '!kbdupes reports "No near-duplicate knowledge pairs found." when nothing qualifies (issue #1477 ' +
+    'acceptance criterion 3)',
+  async (t) => {
+    mockPoolRoleAndKnowledgeDuplicates(t, 'admin', []);
+    const router = makeRouter({ runTurn: throwingRunTurn });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!kbdupes', userId: 'admin-1' }));
+
+    assert.equal(sent[0].text, 'No near-duplicate knowledge pairs found.');
+  },
+);
+
+test(
+  'a bare "!kbdupesx" (no space, unrecognised) is not matched as the !kbdupes command — anchored ' +
+    'matcher (issue #1477 acceptance criterion 2)',
+  async (t) => {
+    mockPoolRole(t, 'admin');
+    const router = makeRouter({});
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!kbdupesx', userId: 'admin-1' }));
+
+    assert.equal(sent[0].text, REAL_TURN_REPLY);
+  },
+);
+
+test(
+  'SECURITY: "!kbdupes <anything>" is never matched — the anchored matcher rejects any argument, so no ' +
+    "message-supplied text can ever reach listDuplicateKnowledge's scope/limit arguments (issue " +
+    '#1477 acceptance criterion 8)',
+  async (t) => {
+    let queried = false;
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users')) return { rows: [{ role: 'admin' }], rowCount: 0 };
+      if (sql.includes('JOIN knowledge b')) queried = true;
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!kbdupes global', userId: 'admin-1' }));
+
+    assert.equal(sent[0].text, REAL_TURN_REPLY, 'an argument must fall through to a normal turn');
+    assert.equal(
+      queried,
+      false,
+      'no knowledge-duplicate repository read must run when an argument is present',
+    );
+  },
+);
+
+test(
+  'SECURITY: a member-tier caller\'s "!kbdupes" falls through to the normal turn — no duplicate-pair list ' +
+    'is ever rendered and no knowledge-duplicate repository read runs (issue #1477 acceptance criterion 7)',
+  async (t) => {
+    let queried = false;
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users'))
+        return { rows: [{ role: 'member' }], rowCount: 0 };
+      if (sql.includes('JOIN knowledge b')) queried = true;
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!kbdupes', userId: 'member-1' }));
+
+    assert.equal(sent.length, 1);
+    assert.equal(
+      sent[0].text,
+      REAL_TURN_REPLY,
+      'a member gets no distinguishing denial reply, per the family norm',
+    );
+    assert.equal(queried, false, 'no knowledge-duplicate repository read must run for a member-tier caller');
+  },
+);
+
+test(
+  'SECURITY: a guest caller\'s "!kbdupes" falls through to the normal turn — no duplicate-pair list is ' +
+    'ever rendered and no knowledge-duplicate repository read runs (issue #1477 acceptance criterion 7)',
+  async (t) => {
+    let queried = false;
+    t.mock.method(pool, 'query', (async (sql: string) => {
+      if (sql.includes('SELECT role FROM community_users')) return { rows: [], rowCount: 0 };
+      if (sql.includes('JOIN knowledge b')) queried = true;
+      return { rows: [], rowCount: 0 };
+    }) as typeof pool.query);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!kbdupes', userId: 'guest-1' }));
+
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].text, REAL_TURN_REPLY);
+    assert.equal(queried, false, 'no knowledge-duplicate repository read must run for a guest caller');
+  },
+);
+
+test(
+  'config.behaviour.whatsappTextCommandsEnabled === false disables !kbdupes exactly as it does every ' +
+    'other WhatsApp shortcut (issue #1477 acceptance criterion 2)',
+  async (t) => {
+    const original = config.behaviour.whatsappTextCommandsEnabled;
+    config.behaviour.whatsappTextCommandsEnabled = false;
+    t.after(() => {
+      config.behaviour.whatsappTextCommandsEnabled = original;
+    });
+    mockPoolRoleAndKnowledgeDuplicates(t, 'admin', []);
+    const router = makeRouter({ runTurn: async () => ({ text: REAL_TURN_REPLY }) });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ text: '!kbdupes', userId: 'admin-1' }));
+
+    assert.equal(sent[0].text, REAL_TURN_REPLY);
+  },
+);
+
+test("a successful !kbdupes invocation calls recordShortcutHit('whatsapp_text_command') exactly once (issue #1477)", async (t) => {
+  mockPoolRoleAndKnowledgeDuplicates(t, 'admin', []);
+  const hits: string[] = [];
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    recordShortcutHitFn: async (kind) => {
+      hits.push(kind);
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!kbdupes', userId: 'admin-1' }));
 
   assert.equal(sent.length, 1);
   assert.deepEqual(hits, ['whatsapp_text_command']);

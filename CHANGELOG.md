@@ -29,6 +29,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-09-29
 
 ### Added
+- **`!kbdupes`/`/kbdupes`: a zero-model shortcut for `list_duplicate_knowledge`.**
+  (#1477) Admins doing routine knowledge-base curation — checking for entries
+  that have converged on near-identical wording and should be merged
+  (`update_knowledge`) or retired (`delete_knowledge`) — can now pull that
+  audit without a full agent turn, matching the shortcut `list_knowledge_conflicts`
+  got in #1471 (its sibling on the opposite similarity band). Admin-tier only
+  on both WhatsApp and Discord, and renders the exact same text
+  `list_duplicate_knowledge` already returns.
 - **`/assignableroles`: a zero-model shortcut for `list_assignable_roles`.**
   (#1475) Admins checking which cosmetic Discord roles are configured, and
   whether one has quietly picked up a Discord permission (which would make

@@ -1040,6 +1040,9 @@ const NOTICE_ENTRIES = {
    * `!accessrequests` (issue #1346) is the sixth, appended in the SAME diff
    * that shipped it, for the same reason. `!kbconflicts` (issue #1471) is the
    * seventh, appended in the SAME diff that shipped it, for the same reason.
+   * `!kbdupes` (issue #1477, list_duplicate_knowledge's own named, deferred
+   * growth path from #1471) is the eighth, appended in the SAME diff that
+   * shipped it, for the same reason.
    */
   whatsappAdminTextCommands: {
     base:
@@ -1049,7 +1052,8 @@ const NOTICE_ENTRIES = {
       '- `!topknowledge` — knowledge entries ranked by retrieval count, most relied-on first\n' +
       '- `!admindigest` — your own admin-digest snapshot, on demand\n' +
       '- `!accessrequests` — guests currently waiting for access, by identity and wait time\n' +
-      '- `!kbconflicts` — knowledge entries that may quietly disagree, paired up for review',
+      '- `!kbconflicts` — knowledge entries that may quietly disagree, paired up for review\n' +
+      '- `!kbdupes` — near-duplicate knowledge entries, paired up for merge/retire review',
     language: {
       mi:
         '- `!reviewqueue` — te whakarāpopototanga o ngā ratonga arotake e rima i te tirohanga kotahi\n' +
@@ -1060,7 +1064,8 @@ const NOTICE_ENTRIES = {
         '- `!admindigest` — tō ake whakarāpopototanga whakahaere, i te wā e hiahiatia ana\n' +
         '- `!accessrequests` — ngā manuhiri e tatari ana ki te urunga, mā te tuakiri me te wā tatari\n' +
         '- `!kbconflicts` — ngā whiwhinga mōhiotanga tērā pea e whakahē pukutahi ana tētahi i tētahi, ' +
-        'kua tūhonoa mō te arotake',
+        'kua tūhonoa mō te arotake\n' +
+        '- `!kbdupes` — ngā whiwhinga mōhiotanga tata rite, kua tūhonoa mō te arotake whakakotahi/whakakore',
     },
   },
   /**
