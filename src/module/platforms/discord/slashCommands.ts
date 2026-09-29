@@ -1494,7 +1494,9 @@ export function bindCommunitySlashCommands(adapter: PlatformAdapter): void {
     build: () =>
       new SlashCommandBuilder()
         .setName('kbdupes')
-        .setDescription('Admin: audit the knowledge base for pairs of entries that look like near-duplicates.')
+        .setDescription(
+          'Admin: audit the knowledge base for pairs of entries that look like near-duplicates.',
+        )
         .toJSON(),
     handle: handleKbDupes,
   });
