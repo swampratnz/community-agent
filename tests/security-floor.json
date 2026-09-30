@@ -139,6 +139,7 @@
   "platformRegistry.test.ts": 3,
   "projectNoteWithdrawal.test.ts": 2,
   "projectScope.test.ts": 16,
+  "projectShowcaseSkill.test.ts": 2,
   "rateLimitNotice.router.test.ts": 2,
   "rbac.test.ts": 49,
   "redeploy.test.ts": 2,

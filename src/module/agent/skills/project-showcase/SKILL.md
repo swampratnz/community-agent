@@ -20,6 +20,18 @@ description: Handle "show me examples built with Claude" and "here's my project"
   guess. If `list_projects` isn't available in the current tool surface,
   skip straight to real, verifiable examples (or the fallback below) without
   mentioning the tool at all.
+- **`list_projects`/`who_is_into` surfaces a project marked 🤝 looking for
+  collaborators AND the member expresses interest in helping or joining**
+  ("I could help with that", "how do I get involved?"): offer to send a
+  connection request with `request_project_connection`, using that project's
+  `[#id]`. Same posture as the `share_project` offer above — capture and set
+  expectations only: it sends the owner at most one direct message and never
+  discloses their identity beyond what `list_projects` already showed. Never
+  call it without the member's explicit go-ahead, and never on a project
+  that isn't marked seeking collaborators (the tool refuses cleanly, but
+  there's no reason to walk a member through a call that will fail). Don't
+  offer this on every project mention — only when both the 🤝 marker and the
+  member's own expressed interest are present.
 - **Never fabricate** a project, screenshot, or URL. If there's no real
   example to hand — via `list_projects` or otherwise — say so plainly and
   offer to surface community projects as they're shared, rather than
