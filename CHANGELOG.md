@@ -23,7 +23,7 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #868 #896 #899 #904 #949 #950 #951 #952 #953 #954 #955 #956 #957 #958 #961
 #963 #964 #965 #968 #971 #983 #988 #989 #991 #992 #994 #1017 #1071 #1086
 #1122 #1123 #1132 #1232 #1236 #1248 #1281 #1284 #1304 #1308 #1310
-#1355 #1356 #1357 #1341 #1350 #1360 #1381 #1391 #1441 #1382
+#1355 #1356 #1357 #1341 #1350 #1360 #1381 #1391 #1441 #1382 #1455 #1484
 -->
 
 ## 2026-10-01
@@ -101,6 +101,21 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   `featureflags`/`admindigest`/`adminlist`/`accessrequests`. Renders the exact
   same pairs `list_knowledge_conflicts` already returns.
 
+## 2026-09-27
+
+### Added
+- **Team project notes now honour your "keep it simple" plain-language
+  preference too.** (#1470) `set_response_style('plain')` (#126) already
+  reached every other member-facing formatter — `notify.ts`, `feedback.ts`,
+  `reportsMember.ts`, `knowledgeMember.ts`, `social.ts` — but the team
+  project-notes tools, `project_recall`, `project_note`, `project_list` and
+  `withdraw_project_note`, were the last team-shared-memory surface still
+  ignoring it. All seven of their replies now check it too, with te reo
+  still taking priority when both preferences are set. No new tool, table,
+  or preference — same `response_style_prefs` row every other plain-aware
+  reply already reads, degrading safely to the standard reply on a lookup
+  failure.
+
 ## 2026-09-26
 
 ### Added
@@ -139,6 +154,21 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   as before: silent.
 
 ## 2026-09-25
+
+### Added
+- **Finding a helper, sharing a project, and the rest of member-to-member
+  discovery now honour your "keep it simple" plain-language preference
+  too.** (#1459) `set_response_style('plain')` (#126) already reached
+  `notify.ts`, `feedback.ts`/`reportsMember.ts`, and `knowledgeMember.ts` —
+  the eight member-discovery and connection tools in `social.ts`
+  (`list_projects`, `who_is_into`, `set_interest_match_alerts`,
+  `set_helper_availability`, `find_helper`, `share_project`,
+  `request_project_connection`, `set_my_interests`) were the last
+  member-facing family still ignoring it. All eight now check it too, with
+  te reo still taking priority when both preferences are set. No new tool,
+  table, or preference — same `response_style_prefs` row every other
+  plain-aware reply already reads, degrading safely to the standard reply
+  on a lookup failure.
 
 ### Changed
 - **A declined access request now says a fresh one is welcome.** (#1456) A
