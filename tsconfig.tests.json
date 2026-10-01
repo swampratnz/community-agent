@@ -45,6 +45,7 @@
     "tests/interestMatchAlert.test.ts",
     "tests/jobsRegistry.test.ts",
     "tests/knowledgeForMe.test.ts",
+    "tests/knowledgeMemberResponseStyle.test.ts",
     "tests/knowledgeSourceCheckTool.test.ts",
     "tests/linkSummaryTool.test.ts",
     "tests/memberDigest.test.ts",
