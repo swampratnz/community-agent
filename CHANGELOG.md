@@ -37,12 +37,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   directly only for the link-check connector's pinned-IP `Agent`, and
   discord.js uses it for REST calls; nothing here uses its WebSocket client or
   retry interceptor, so exposure was low, but the fix is a patch release.
-  `adm-zip` moves to 0.6.1, which fixes the GHSA-vwc7-r8mq-g2x9 symlink
-  overwrite recorded as unfixable on 2026-09-11 plus six later advisories.
-  0.6.1 was published the same day that entry was written. It is still only
-  reached by `onnxruntime-node`'s install step, which unpacks its own bundled
-  binaries; the other two findings were those two parent packages being
-  flagged for carrying it. No member-facing behaviour changes.
+  `adm-zip` 0.6.1 fixes seven advisories, including the GHSA-vwc7-r8mq-g2x9
+  symlink overwrite recorded as unfixable on 2026-09-11; 0.6.1 was published
+  the same day. The npm dependency group update (#1487) already resolved it to
+  0.6.1, and its `overrides` floor is now `^0.6.1` so a lockfile regeneration
+  cannot fall back. It is only reached by `onnxruntime-node`'s install step,
+  which unpacks its own bundled binaries; the other two findings were those
+  two parent packages being flagged for carrying it. No member-facing
+  behaviour changes.
 
 ## 2026-09-30
 
