@@ -123,6 +123,7 @@
   "knowledgeSourceCheckTool.test.ts": 2,
   "linkCheck.test.ts": 15,
   "linkSummaryTool.test.ts": 16,
+  "listProjectsForMe.test.ts": 3,
   "lowRatedCaveatRouter.test.ts": 4,
   "memberDigest.test.ts": 25,
   "memberToolLanguageCoverage.test.ts": 1,

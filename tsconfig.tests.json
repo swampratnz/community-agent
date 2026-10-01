@@ -48,6 +48,7 @@
     "tests/knowledgeMemberResponseStyle.test.ts",
     "tests/knowledgeSourceCheckTool.test.ts",
     "tests/linkSummaryTool.test.ts",
+    "tests/listProjectsForMe.test.ts",
     "tests/memberDigest.test.ts",
     "tests/memberToolLanguageCoverage.test.ts",
     "tests/noticeDebounce.test.ts",
