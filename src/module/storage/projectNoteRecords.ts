@@ -49,6 +49,28 @@ export async function isOwnProjectNote(noteId: number, platform: Platform, userI
 }
 
 /**
+ * The recorded author of `noteId`, or null when no `project_note_authors` row
+ * exists for it — either because the id is wholly unknown, or because the
+ * note predates #1344's authorship tracking (no backfill, no guessed
+ * authorship, same limitation `isOwnProjectNote`/`withdraw_project_note`
+ * already accept). `remove_project_note` (issue #1464) uses this as BOTH its
+ * existence gate (this module never queries `project_notes`, the base table,
+ * directly — see `85-project-note-records.sql`'s header) and its sole source
+ * of the resolution-DM recipient identity, so an admin never supplies (and
+ * this can never trust) who to notify.
+ */
+export async function getProjectNoteAuthor(
+  noteId: number,
+): Promise<{ platform: Platform; userId: string } | null> {
+  const { rows } = await pool.query<{ author_platform: Platform; author_user_id: string }>(
+    'SELECT author_platform, author_user_id FROM project_note_authors WHERE note_id = $1',
+    [noteId],
+  );
+  if (rows.length === 0) return null;
+  return { platform: rows[0].author_platform, userId: rows[0].author_user_id };
+}
+
+/**
  * Count of notes `platform`/`userId` has authored — `my_data`'s (issue #1363)
  * self-scoped read, mirroring `isOwnProjectNote`'s per-caller query shape but
  * counting instead of checking one id.

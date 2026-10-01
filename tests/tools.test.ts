@@ -8750,7 +8750,7 @@ test('community_info: admin-tier reply stays byte-identical, never gains SUPER_A
 
   const expectedAdminCapabilitiesText =
     'As an admin, you also have:\n' +
-    "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread, review the moderation history log, pull one member's full warning history, list everyone who's currently muted, list who's currently blocked on WhatsApp, review and resolve filed appeals, remove a project from the community showcase, or clear a member's published interests\n" +
+    "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread, review the moderation history log, pull one member's full warning history, list everyone who's currently muted, list who's currently blocked on WhatsApp, review and resolve filed appeals, remove a project from the community showcase, clear a member's published interests, or remove a project note from a team's shared memory\n" +
     "- Manage membership: add a new member, remove a member, link a member's cross-platform identity, or unlink a member's cross-platform identity\n" +
     '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, check which knowledge entries are rated poorly, and review recurring unhelpful-answer themes across all answers\n' +
     '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
@@ -8775,8 +8775,9 @@ test('community_info: admin-tier reply stays byte-identical, never gains SUPER_A
     "admin-tier reply must be byte-identical to today's deliberately-updated text (issue #1008 added the " +
       'find_knowledge clause; issue #1024 added the list_top_knowledge clause; issue #1185 added the ' +
       'remove_project clause; issue #1188 added the check_knowledge_source clause; issue #1230 added the ' +
-      'remove_interests clause; issue #1377 added the welcome_message read-back clause) — this PR must not ' +
-      'change the admin branch beyond that documented addition',
+      'remove_interests clause; issue #1377 added the welcome_message read-back clause; issue #1464 added ' +
+      'the remove_project_note clause) — this PR must not change the admin branch beyond that documented ' +
+      'addition',
   );
   assert.doesNotMatch(
     adminReply,
@@ -9019,6 +9020,7 @@ const ADMIN_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__remove_project', /remove a project from the community showcase/i],
   ['mcp__community__check_knowledge_source', /reachability re-check of a knowledge entry's citation/i],
   ['mcp__community__remove_interests', /clear a member's published interests/i],
+  ['mcp__community__remove_project_note', /remove a project note from a team's shared memory/i],
 ]);
 // Every ADMIN_TOOLS entry gets its own line — no exemptions needed (unlike
 // MEMBER_CAPABILITY_EXEMPT, ADMIN_TOOLS has no self-referential tool like
@@ -9117,7 +9119,9 @@ test('community_info: admin reply stays under a hard char cap, not a wall of tex
   // new bullet).
   // Bumped once more alongside the member cap for the web_research/
   // summarize_link clause (the admin reply includes the full member content).
-  assert.ok(adminReply.length < 5230, `admin reply should stay short; was ${adminReply.length} chars`);
+  // Bumped once more for issue #1464's remove_project_note clause
+  // (consolidated into the existing moderation bullet, not a new bullet).
+  assert.ok(adminReply.length < 5285, `admin reply should stay short; was ${adminReply.length} chars`);
 });
 
 test('SECURITY: community_info member-tier and guest-tier replies never name an admin/super_admin-only tool or contain any ADMIN_CAPABILITIES_TEXT-unique line (issue #367, issue #311)', async () => {
@@ -9273,8 +9277,10 @@ test('community_info: super_admin reply stays under a hard char cap, not a wall 
   // the admin cap for issue #1377's welcome_message read-back clause.
   // Bumped once more alongside the member/admin caps for the web_research/
   // summarize_link clause.
+  // Bumped once more alongside the admin cap for issue #1464's
+  // remove_project_note clause.
   assert.ok(
-    superAdminReply.length < 5880,
+    superAdminReply.length < 5935,
     `super_admin reply should stay short; was ${superAdminReply.length} chars`,
   );
 });

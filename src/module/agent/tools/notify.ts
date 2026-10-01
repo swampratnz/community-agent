@@ -722,6 +722,59 @@ export async function notifyProjectRemoved(
 }
 
 /**
+ * Best-effort resolution DM to a project_note's original author when an
+ * admin removes it via `remove_project_note` (issue #1464) — modeled
+ * line-for-line on `notifyProjectRemoved` above, the admin-moderation
+ * counterpart for the third and last member-authored, community-visible
+ * content surface (`project_note`, after `remove_project`/`remove_interests`
+ * closed the gap for the other two). Same shape: fire-and-forget,
+ * `.catch(logger.warn)`, never blocks or changes `remove_project_note`'s own
+ * reported outcome. The base text is a static, translated catalogue entry
+ * (`strings/notices.ts`'s `projectNoteRemovedMessage`) rather than an
+ * inline ternary, since there is no per-row content to select wording by —
+ * only a fixed neutral removal notice (the note's own content is never
+ * echoed here). Only called when the admin supplies a `reason` (the tool
+ * handler skips this entirely when it's omitted, so removal stays silent by
+ * default). `reason` is an admin-authored, one-line explanation appended via
+ * `truncateForEcho`, as a distinct trailing clause, never interpolated into
+ * the translated base string — same non-interpolation convention as
+ * `notifyProjectRemoved`'s `reason`. Never persisted: the caller keeps it
+ * out of `audited()`'s params. Honours the author's standing `'mi'` language
+ * preference, same degrade-to-`'auto'`-on-failure shape as every sibling in
+ * this file. A `WindowClosedError` rejection is queued via
+ * `queueForWindowReopen` at `'low'` priority instead of logged-and-dropped,
+ * same #644 recovery every sibling gets. Exported separately so it's
+ * unit-testable without the MCP tool-call transport, same convention as
+ * every sibling notify function in this file.
+ */
+export async function notifyProjectNoteRemoved(
+  adapter: PlatformAdapter,
+  userId: string,
+  platform: Platform,
+  getLangPref: typeof getLanguagePreference = getLanguagePreference,
+  reason?: string,
+  getRespStyle: typeof getResponseStyle = getResponseStyle,
+): Promise<void> {
+  const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
+  const style: ResponseStyle | undefined =
+    lang === 'mi' ? undefined : await getRespStyle(platform, userId).catch(() => 'standard' as const);
+  const base = notice('projectNoteRemovedMessage', { language: lang, style });
+  const echoedReason = reason ? truncateForEcho(reason) : null;
+  const message = echoedReason ? `${base} ${lang === 'mi' ? 'Take' : 'Reason'}: "${echoedReason}"` : base;
+  await adapter.sendDirectMessage(userId, message).catch((err) => {
+    if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+      adapter.queueForWindowReopen(userId, message, 'low');
+      logger.warn(
+        { userId: hashId(userId), platform },
+        "Project note removal DM: recipient's window is closed, queued for reopen",
+      );
+      return;
+    }
+    logger.warn({ err, userId: hashId(userId) }, 'Project note removal DM failed');
+  });
+}
+
+/**
  * Best-effort resolution DM to a member whose published interests an admin
  * clears via `remove_interests` (issue #1230) — modeled line-for-line on
  * `notifyProjectRemoved` above, the admin-moderation counterpart for the

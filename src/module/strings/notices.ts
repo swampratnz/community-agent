@@ -515,6 +515,25 @@ const NOTICE_ENTRIES = {
       plain: 'An admin removed your published interests from member discovery.',
     },
   },
+  // --- remove_project_note resolution DM (agent/tools/notify.ts, issue #1464) ---
+  /**
+   * The neutral removal DM for the admin-tier `remove_project_note` — static,
+   * same shape as `projectRemovedMessage`/`interestsRemovedMessage` above: the
+   * admin-authored `reason` field is never interpolated into this translated
+   * base string, only appended afterward as a distinct, quoted,
+   * `truncateForEcho`-capped clause (see `notifyProjectNoteRemoved` in
+   * notify.ts). Sent only when the admin supplies a reason — omitting one
+   * removes the note silently. Never echoes the note's own content.
+   */
+  projectNoteRemovedMessage: {
+    base: "A note you recorded in a team project's shared memory was removed by an admin.",
+    language: {
+      mi: 'I tangohia e tētahi kaiwhakahaere tētahi tuhinga i tuhia e koe ki ngā mahara tiritahi o tētahi kaupapa.',
+    },
+    style: {
+      plain: "An admin removed a note you recorded in a team project's shared memory.",
+    },
+  },
   // --- project_add_member / project_remove_member grant-and-revoke DMs
   // (agent/tools/notify.ts, issue #1241) ---
   /**
@@ -868,7 +887,7 @@ const NOTICE_ENTRIES = {
   communityInfoAdminCapabilities: {
     base:
       'As an admin, you also have:\n' +
-      "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread, review the moderation history log, pull one member's full warning history, list everyone who's currently muted, list who's currently blocked on WhatsApp, review and resolve filed appeals, remove a project from the community showcase, or clear a member's published interests\n" +
+      "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread, review the moderation history log, pull one member's full warning history, list everyone who's currently muted, list who's currently blocked on WhatsApp, review and resolve filed appeals, remove a project from the community showcase, clear a member's published interests, or remove a project note from a team's shared memory\n" +
       "- Manage membership: add a new member, remove a member, link a member's cross-platform identity, or unlink a member's cross-platform identity\n" +
       '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, check which knowledge entries are rated poorly, and review recurring unhelpful-answer themes across all answers\n' +
       '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
@@ -893,7 +912,8 @@ const NOTICE_ENTRIES = {
         'pukapuka hītori whakahaere, tiki i te hītori whakatūpato katoa o tētahi mema, whakarārangi i te ' +
         'hunga e aukatia ana ināianei, whakarārangi i te hunga kua ārairia i runga i WhatsApp ināianei, ' +
         'arotake me te whakatau rānei i ngā pīra (appeal) kua tukuna, tango rānei i tētahi kaupapa mai i te ' +
-        'whakaaturanga kaupapa a te hapori, ūkui rānei i ngā hiahia kua whakaputaina e tētahi mema\n' +
+        'whakaaturanga kaupapa a te hapori, ūkui rānei i ngā hiahia kua whakaputaina e tētahi mema, tango ' +
+        'rānei i tētahi tuhinga mai i ngā mahara tiritahi o tētahi kaupapa\n' +
         '- Whakahaere i te whakaurunga mema: tāpiri mema hōu, tango mema, hono i te tuakiri-ā-papa-rārangi-' +
         'maha o tētahi mema, wetewete rānei i taua hononga\n' +
         '- Arotake i ngā pūrongo tohu tuhinga kua tukuna, ā, whakatau i ia pūrongo, arotake i ngā ' +
