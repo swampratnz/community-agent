@@ -26,6 +26,26 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 #1355 #1356 #1357 #1341 #1350 #1360 #1381 #1391 #1441 #1382
 -->
 
+## 2026-10-01
+
+### Security
+- **Dependency advisories cleared: `undici` and `adm-zip`.** `npm audit` had
+  four findings, all from two packages. `undici` is raised to 6.28.1+ for
+  three advisories (GHSA-3wwx-pv8p-q78v, GHSA-rfgv-xxqx-mfg5,
+  GHSA-r53p-7pc4-xj5r): two denial-of-service bugs in its WebSocket client and
+  a response-splitting bug in its retry interceptor. This bot uses `undici`
+  directly only for the link-check connector's pinned-IP `Agent`, and
+  discord.js uses it for REST calls; nothing here uses its WebSocket client or
+  retry interceptor, so exposure was low, but the fix is a patch release.
+  `adm-zip` 0.6.1 fixes seven advisories, including the GHSA-vwc7-r8mq-g2x9
+  symlink overwrite recorded as unfixable on 2026-09-11; 0.6.1 was published
+  the same day. The npm dependency group update (#1487) already resolved it to
+  0.6.1, and its `overrides` floor is now `^0.6.1` so a lockfile regeneration
+  cannot fall back. It is only reached by `onnxruntime-node`'s install step,
+  which unpacks its own bundled binaries; the other two findings were those
+  two parent packages being flagged for carrying it. No member-facing
+  behaviour changes.
+
 ## 2026-09-30
 
 ### Added
