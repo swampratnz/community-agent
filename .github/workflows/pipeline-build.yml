@@ -166,7 +166,7 @@ jobs:
       # Align the build worker's Node with ci.yml (24) and cache npm tarballs —
       # previously it ran the runner's default Node with a cold npm cache every
       # attempt, paying the full dependency download on each of up to 3 retries.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: env.HAS_TOKEN == 'true'
         with:
           node-version: 24
